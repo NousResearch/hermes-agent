@@ -432,17 +432,26 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    profile_prefix = ""
+    try:
+        from runtime_context import get_current_runtime
+
+        runtime = get_current_runtime()
+        if runtime is not None and runtime.profile_name:
+            profile_prefix = f"profile:{runtime.profile_name}:"
+    except Exception:
+        profile_prefix = ""
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                return f"{profile_prefix}agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
+            return f"{profile_prefix}agent:main:{platform}:dm:{source.chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{profile_prefix}agent:main:{platform}:dm:{source.thread_id}"
+        return f"{profile_prefix}agent:main:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [f"{profile_prefix}agent:main", platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -464,7 +473,8 @@ class SessionStore:
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
                  has_active_processes_fn=None,
-                 on_auto_reset=None):
+                 on_auto_reset=None,
+                 db_path: Path | None = None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -478,7 +488,7 @@ class SessionStore:
         self._db = None
         try:
             from hermes_state import SessionDB
-            self._db = SessionDB()
+            self._db = SessionDB(db_path=db_path)
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
     

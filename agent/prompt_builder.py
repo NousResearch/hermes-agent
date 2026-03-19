@@ -320,10 +320,15 @@ def build_skills_system_prompt(
     match skills by meaning, not just name.
     Filters out skills incompatible with the current OS platform.
     """
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    skills_dir = hermes_home / "skills"
+    try:
+        from tools.skills_tool import _get_skill_roots
 
-    if not skills_dir.exists():
+        skill_roots = _get_skill_roots()
+    except Exception:
+        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        skill_roots = [hermes_home / "skills"]
+
+    if not any(root.exists() for root in skill_roots):
         return ""
 
     # Collect skills with descriptions, grouped by category.
@@ -338,27 +343,28 @@ def build_skills_system_prompt(
         disabled = set()
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
-    for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-        if not is_compatible:
+    for skills_dir in skill_roots:
+        if not skills_dir.exists():
             continue
-        rel_path = skill_file.relative_to(skills_dir)
-        parts = rel_path.parts
-        if len(parts) >= 2:
-            skill_name = parts[-2]
-            category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
-        else:
-            category = "general"
-            skill_name = skill_file.parent.name
-        # Respect user's disabled skills config
-        fm_name = frontmatter.get("name", skill_name)
-        if fm_name in disabled or skill_name in disabled:
-            continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
-        if not _skill_should_show(conditions, available_tools, available_toolsets):
-            continue
-        skills_by_category.setdefault(category, []).append((skill_name, desc))
+        for skill_file in skills_dir.rglob("SKILL.md"):
+            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+            if not is_compatible:
+                continue
+            rel_path = skill_file.relative_to(skills_dir)
+            parts = rel_path.parts
+            if len(parts) >= 2:
+                skill_name = parts[-2]
+                category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+            else:
+                category = "general"
+                skill_name = skill_file.parent.name
+            fm_name = frontmatter.get("name", skill_name)
+            if fm_name in disabled or skill_name in disabled:
+                continue
+            conditions = _read_skill_conditions(skill_file)
+            if not _skill_should_show(conditions, available_tools, available_toolsets):
+                continue
+            skills_by_category.setdefault(category, []).append((skill_name, desc))
 
     if not skills_by_category:
         return ""
@@ -368,13 +374,16 @@ def build_skills_system_prompt(
     category_descriptions = {}
     for category in skills_by_category:
         cat_path = Path(category)
-        desc_file = skills_dir / cat_path / "DESCRIPTION.md"
-        if desc_file.exists():
+        for skills_dir in skill_roots:
+            desc_file = skills_dir / cat_path / "DESCRIPTION.md"
+            if not desc_file.exists():
+                continue
             try:
                 content = desc_file.read_text(encoding="utf-8")
                 match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
                 if match:
                     category_descriptions[category] = match.group(1).strip()
+                    break
             except Exception as e:
                 logger.debug("Could not read skill description %s: %s", desc_file, e)
 
@@ -442,7 +451,12 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    try:
+        from runtime_context import get_effective_soul_path
+
+        soul_path = get_effective_soul_path()
+    except Exception:
+        soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
     if not soul_path.exists():
         return None
     try:
@@ -467,7 +481,12 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     loaded via ``load_soul_md()`` for the identity slot).
     """
     if cwd is None:
-        cwd = os.getcwd()
+        try:
+            from runtime_context import get_effective_workspace
+
+            cwd = get_effective_workspace() or os.getcwd()
+        except Exception:
+            cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
     sections = []

@@ -317,6 +317,11 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
+    if hasattr(file_ops, "_validate_path_access"):
+        access_error = file_ops._validate_path_access(op.file_path, write=True)
+        if access_error:
+            return False, access_error
+
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
     
@@ -336,6 +341,14 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    if hasattr(file_ops, "_validate_path_access"):
+        access_error = file_ops._validate_path_access(op.file_path, write=True)
+        if access_error:
+            return False, access_error
+        access_error = file_ops._validate_path_access(op.new_path, write=True)
+        if access_error:
+            return False, access_error
+
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"

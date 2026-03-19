@@ -27,10 +27,12 @@ Usage:
 """
 
 import importlib.util
+import shlex
 import json
 import logging
 import os
 import platform
+import re
 import signal
 import sys
 import time
@@ -413,6 +415,10 @@ _cleanup_running = False
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_SAFE_PATH_RE = re.compile(
+    r"(~(?:/[^\s'\";&|<>]+)?|/[^\s'\";&|<>]+|\.\./[^\s'\";&|<>]+|\./[^\s'\";&|<>]+)"
+)
+_SHELL_META_TOKENS = {"|", "||", "&", "&&", ";", ">", ">>", "<", "2>", "2>>"}
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -441,6 +447,100 @@ def clear_task_env_overrides(task_id: str):
     Called during cleanup to avoid stale entries accumulating.
     """
     _task_env_overrides.pop(task_id, None)
+
+
+def _path_module_for(path: str):
+    if re.match(r"^[A-Za-z]:[\\/]", path or ""):
+        import ntpath
+
+        return ntpath
+    import posixpath
+
+    return posixpath
+
+
+def _normalize_path(path: str, cwd: str) -> str:
+    path = str(path or "")
+    cwd = str(cwd or "/")
+    pathmod = _path_module_for(path or cwd)
+    if not path:
+        return pathmod.normpath(cwd)
+    if path.startswith("~"):
+        suffix = path[2:] if path.startswith("~/") else ""
+        path = pathmod.join(pathmod.sep, "__tilde__", suffix)
+    if pathmod.isabs(path):
+        return pathmod.normpath(path)
+    return pathmod.normpath(pathmod.join(cwd, path))
+
+
+def _path_within_root(path: str, root: str, cwd: str) -> bool:
+    normalized_root = _normalize_path(root, root)
+    normalized_path = _normalize_path(path, cwd)
+    pathmod = _path_module_for(normalized_root)
+    try:
+        return pathmod.commonpath([normalized_root, normalized_path]) == normalized_root
+    except Exception:
+        return False
+
+
+def _collect_command_paths(command: str) -> list[str]:
+    paths: list[str] = []
+    try:
+        tokens = shlex.split(command, posix=True)
+    except Exception:
+        tokens = []
+
+    for token in tokens:
+        text = str(token or "").strip()
+        if not text or text in _SHELL_META_TOKENS or text.startswith("-"):
+            continue
+        if text == "..":
+            paths.append(text)
+            continue
+        if text.startswith(("~", "/", "./", "../")):
+            paths.append(text)
+
+    for match in _SAFE_PATH_RE.findall(command or ""):
+        text = str(match or "").strip()
+        if text:
+            paths.append(text)
+    return paths
+
+
+def _get_workspace_isolation_root() -> Optional[str]:
+    try:
+        from runtime_context import get_workspace_isolation_root
+
+        root = get_workspace_isolation_root()
+        if root is not None:
+            return str(root)
+    except Exception:
+        pass
+    return None
+
+
+def _validate_workspace_isolation(command: str, cwd: str) -> Optional[str]:
+    safe_root = _get_workspace_isolation_root()
+    if not safe_root:
+        return None
+
+    if not _path_within_root(cwd, safe_root, safe_root):
+        return (
+            f"Command denied: working directory '{cwd}' is outside the isolated "
+            f"workspace root '{safe_root}'."
+        )
+
+    outside_paths: list[str] = []
+    for candidate in _collect_command_paths(command):
+        if not _path_within_root(candidate, safe_root, cwd):
+            outside_paths.append(candidate)
+    if outside_paths:
+        offending = ", ".join(sorted(dict.fromkeys(outside_paths))[:5])
+        return (
+            f"Command denied: isolated profiles cannot access paths outside "
+            f"'{safe_root}'. Offending path(s): {offending}"
+        )
+    return None
 
 # Configuration from environment variables
 
@@ -914,6 +1014,16 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+        effective_cwd = workdir or cwd
+
+        isolation_error = _validate_workspace_isolation(command, effective_cwd)
+        if isolation_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": isolation_error,
+                "status": "blocked"
+            }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1039,7 +1149,6 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = os.getenv("HERMES_SESSION_KEY", "")
-            effective_cwd = workdir or cwd
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(

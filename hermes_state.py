@@ -113,6 +113,15 @@ class SessionDB:
     """
 
     def __init__(self, db_path: Path = None):
+        if db_path is None:
+            try:
+                from runtime_context import get_current_runtime
+
+                runtime = get_current_runtime()
+                if runtime is not None:
+                    db_path = runtime.state_db_path
+            except Exception:
+                pass
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 

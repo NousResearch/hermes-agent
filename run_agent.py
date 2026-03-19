@@ -809,7 +809,12 @@ class AIAgent:
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
-        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        try:
+            from runtime_context import get_effective_home
+
+            hermes_home = get_effective_home()
+        except Exception:
+            hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"

@@ -46,12 +46,17 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         return None
 
     try:
-        from tools.skills_tool import SKILLS_DIR, skill_view
+        from tools.skills_tool import _find_skill_root, skill_view
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
             try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                root = _find_skill_root(identifier_path)
+                normalized = (
+                    str(identifier_path.resolve().relative_to(root.resolve()))
+                    if root is not None
+                    else raw_identifier
+                )
             except Exception:
                 normalized = raw_identifier
         else:
@@ -69,7 +74,22 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_dir = None
     if skill_path:
         try:
-            skill_dir = SKILLS_DIR / Path(skill_path).parent
+            resolved_skill_path = Path(skill_path)
+            if resolved_skill_path.is_absolute():
+                skill_dir = resolved_skill_path.parent
+        except Exception:
+            skill_dir = None
+    if skill_dir is None and skill_path:
+        try:
+            from tools.skills_tool import _get_skill_roots
+
+            for root in _get_skill_roots():
+                candidate = root / skill_path
+                if candidate.name == "SKILL.md":
+                    candidate = candidate.parent
+                if candidate.is_dir() and (candidate / "SKILL.md").exists():
+                    skill_dir = candidate
+                    break
         except Exception:
             skill_dir = None
 
@@ -84,7 +104,7 @@ def _build_skill_message(
     runtime_note: str = "",
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import SKILLS_DIR
+    from tools.skills_tool import _relative_skill_path
 
     content = str(loaded_skill.get("content") or "")
 
@@ -128,7 +148,11 @@ def _build_skill_message(
                         supporting.append(rel)
 
     if supporting and skill_dir:
-        skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
+        skill_view_target = _relative_skill_path(skill_dir / "SKILL.md")
+        if skill_view_target.endswith("/SKILL.md"):
+            skill_view_target = skill_view_target[: -len("/SKILL.md")]
+        elif skill_view_target == "SKILL.md":
+            skill_view_target = skill_dir.name
         parts.append("")
         parts.append("[This skill has supporting files you can load with the skill_view tool:]")
         for sf in supporting:
@@ -149,7 +173,7 @@ def _build_skill_message(
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
+    """Scan available skill roots and return a mapping of /command -> skill info.
 
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
@@ -157,13 +181,18 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        if not SKILLS_DIR.exists():
+        from tools.skills_tool import (
+            _iter_skill_files,
+            _relative_skill_path,
+            _parse_frontmatter,
+            skill_matches_platform,
+            _get_disabled_skill_names,
+        )
+        skill_files = _iter_skill_files()
+        if not skill_files:
             return _skill_commands
         disabled = _get_disabled_skill_names()
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
-                continue
+        for skill_md in skill_files:
             try:
                 content = skill_md.read_text(encoding='utf-8')
                 frontmatter, body = _parse_frontmatter(content)
@@ -186,7 +215,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     "name": name,
                     "description": description or f"Invoke the {name} skill",
                     "skill_md_path": str(skill_md),
-                    "skill_dir": str(skill_md.parent),
+                    "skill_dir": _relative_skill_path(skill_md.parent / "SKILL.md").removesuffix("/SKILL.md"),
                 }
             except Exception:
                 continue

@@ -700,6 +700,44 @@ def format_scan_report(result: ScanResult) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Heurist Marketplace — capability-based risk warnings
+# ---------------------------------------------------------------------------
+
+# Maps Heurist capability flags to human-readable risk warnings.
+HEURIST_CAPABILITY_WARNINGS = {
+    "requires_private_keys": ("critical", "This skill requires access to crypto private keys"),
+    "can_sign_transactions": ("high", "This skill can sign blockchain transactions"),
+    "uses_leverage": ("high", "This skill involves leveraged trading positions"),
+    "requires_exchange_api_keys": ("high", "This skill requires exchange API credentials"),
+    "accesses_user_portfolio": ("medium", "This skill accesses your portfolio/wallet data"),
+    "requires_secrets": ("medium", "This skill requires API keys or secrets"),
+}
+
+
+def format_heurist_risk_warnings(metadata: dict) -> list[str]:
+    """
+    Generate human-readable risk warnings from Heurist skill metadata.
+
+    Args:
+        metadata: Bundle metadata dict containing 'risk_tier' and 'capabilities'.
+
+    Returns:
+        List of formatted warning strings (empty if no warnings apply).
+    """
+    warnings: list[str] = []
+    risk_tier = metadata.get("risk_tier")
+    if risk_tier and risk_tier != "low":
+        warnings.append(f"Risk tier: {risk_tier.upper()}")
+
+    capabilities = metadata.get("capabilities", {})
+    for cap, (severity, message) in HEURIST_CAPABILITY_WARNINGS.items():
+        if capabilities.get(cap):
+            warnings.append(f"[{severity}] {message}")
+
+    return warnings
+
+
 def content_hash(skill_path: Path) -> str:
     """Compute a SHA-256 hash of all files in a skill directory for integrity tracking."""
     h = hashlib.sha256()

@@ -101,6 +101,27 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
         ordered = ", ".join(f"{name}={status}" for name, status in sorted(security.items()))
         lines.append(f"[bold]Security:[/] {ordered}")
 
+    # Heurist Marketplace metadata
+    if extra.get("risk_tier"):
+        tier = extra["risk_tier"]
+        tier_style = {"low": "green", "medium": "yellow", "high": "bold red"}.get(tier, "dim")
+        lines.append(f"[bold]Risk Tier:[/] [{tier_style}]{tier.upper()}[/]")
+    if extra.get("category"):
+        lines.append(f"[bold]Category:[/] {extra['category']}")
+    if extra.get("author"):
+        lines.append(f"[bold]Author:[/] {extra['author']}")
+    capabilities = extra.get("capabilities")
+    if isinstance(capabilities, dict):
+        active = [k for k, v in capabilities.items() if v]
+        if active:
+            cap_display = ", ".join(k.replace("_", " ") for k in active)
+            lines.append(f"[bold]Capabilities:[/] [yellow]{cap_display}[/]")
+    ext_deps = extra.get("external_api_dependencies")
+    if ext_deps:
+        lines.append(f"[bold]External APIs:[/] {', '.join(ext_deps)}")
+    if extra.get("download_count"):
+        lines.append(f"[bold]Downloads:[/] {extra['download_count']}")
+
     return lines
 
 
@@ -376,6 +397,17 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
         if metadata_lines:
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
+
+    # Show Heurist-specific risk warnings when applicable
+    if bundle.source == "heurist" and extra_metadata:
+        from tools.skills_guard import format_heurist_risk_warnings
+        risk_warnings = format_heurist_risk_warnings(extra_metadata)
+        if risk_warnings:
+            c.print(Panel(
+                "\n".join(f"[yellow]  {w}[/]" for w in risk_warnings),
+                title="Heurist Risk Warnings",
+                border_style="yellow",
+            ))
 
     # Confirm with user — show appropriate warning based on source
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)

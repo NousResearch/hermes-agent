@@ -47,10 +47,14 @@ class ContextCompressor:
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
+        observation_masking: bool = True,
+        observation_masking_window: int = 4,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
+        self.observation_masking = observation_masking
+        self.observation_masking_window = observation_masking_window
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -277,6 +281,48 @@ Write only the summary body. Do not include any preamble or prefix; the system w
             idx = check
         return idx
 
+    def mask_observations(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace tool result content in older turns with a short placeholder.
+
+        Keeps the last `observation_masking_window` assistant turns unmasked.
+        Only masks tool/function result messages (role='tool').
+        The agent's own reasoning (assistant messages) is never modified.
+        """
+        if not self.observation_masking:
+            return messages
+
+        # Count assistant turns from the end to find the masking boundary
+        assistant_turns_from_end = 0
+        mask_before_idx = 0
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "assistant":
+                assistant_turns_from_end += 1
+                if assistant_turns_from_end >= self.observation_masking_window:
+                    mask_before_idx = i
+                    break
+
+        if mask_before_idx == 0:
+            return messages  # Not enough turns to mask anything
+
+        masked = []
+        for i, msg in enumerate(messages):
+            if i >= mask_before_idx:
+                masked.append(msg)
+                continue
+            if msg.get("role") == "tool":
+                original = msg.get("content", "")
+                if isinstance(original, str):
+                    n_chars = len(original)
+                elif isinstance(original, list):
+                    n_chars = sum(len(str(c)) for c in original)
+                else:
+                    n_chars = len(str(original))
+                if n_chars > 0:
+                    msg = msg.copy()
+                    msg["content"] = f"[observation masked — {n_chars} chars, use session_search to recall if needed]"
+            masked.append(msg)
+        return masked
+
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
@@ -284,6 +330,8 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
         """
+        # First pass: mask old tool observations cheaply (no LLM call)
+        messages = self.mask_observations(messages)
         n_messages = len(messages)
         if n_messages <= self.protect_first_n + self.protect_last_n + 1:
             if not self.quiet_mode:

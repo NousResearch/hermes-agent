@@ -982,6 +982,9 @@ class AIAgent:
             except (TypeError, ValueError):
                 _config_context_length = None
         
+        _context_cfg = _agent_cfg.get("context", {})
+        _obs_masking = _context_cfg.get("observation_masking", True)
+        _obs_window = _context_cfg.get("observation_masking_window", 4)
         self.context_compressor = ContextCompressor(
             model=self.model,
             threshold_percent=compression_threshold,
@@ -993,6 +996,8 @@ class AIAgent:
             base_url=self.base_url,
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
+            observation_masking=_obs_masking,
+            observation_masking_window=_obs_window,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0

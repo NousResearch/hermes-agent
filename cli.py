@@ -212,6 +212,10 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "toolsets": ["all"],
+        "context": {
+            "observation_masking": True,   # Replace old tool outputs with placeholders before LLM summarization
+            "observation_masking_window": 4,  # Keep last N assistant turns unmasked
+        },
         "display": {
             "compact": False,
             "resume_display": "full",

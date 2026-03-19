@@ -357,6 +357,11 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
+    # Observation masking for context compression
+    "context": {
+        "observation_masking": True,
+        "observation_masking_window": 4,
+    },
     # Pre-exec security scanning via tirith
     "security": {
         "redact_secrets": True,

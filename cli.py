@@ -5887,7 +5887,12 @@ class HermesCLI:
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
-            """Tab: accept completion and re-trigger if we just completed a provider.
+            """Tab: accept completion, auto-suggestion, or start completions.
+
+            Priority:
+            1. Completion menu open → accept selected completion
+            2. Ghost text suggestion available → accept auto-suggestion
+            3. Otherwise → start completion menu
 
             After accepting a provider like 'anthropic:', the completion menu
             closes and complete_while_typing doesn't fire (no keystroke).
@@ -5896,6 +5901,7 @@ class HermesCLI:
             """
             buf = event.current_buffer
             if buf.complete_state:
+                # Completion menu is open — accept the selection
                 completion = buf.complete_state.current_completion
                 if completion is None:
                     # Menu open but nothing selected — select first then grab it
@@ -5909,8 +5915,11 @@ class HermesCLI:
                 text = buf.document.text_before_cursor
                 if text.startswith("/model ") and text.endswith(":"):
                     buf.start_completion()
+            elif buf.suggestion and buf.suggestion.text:
+                # No completion menu, but there's a ghost text auto-suggestion — accept it
+                buf.insert_text(buf.suggestion.text)
             else:
-                # No menu open — start completions from scratch
+                # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
 
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---

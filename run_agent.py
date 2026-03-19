@@ -5842,7 +5842,70 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
-                    if is_rate_limited and not self._fallback_activated:
+                    
+                    # User-friendly rate limit messaging (fixes #1826)
+                    # Instead of showing tracebacks, show clear status and retry info
+                    if is_rate_limited:
+                        # Extract Retry-After header if available
+                        retry_after = getattr(api_error, "headers", {}).get("Retry-After") if hasattr(api_error, "headers") else None
+                        if retry_after:
+                            try:
+                                retry_after_secs = int(retry_after)
+                            except (ValueError, TypeError):
+                                retry_after_secs = None
+                        else:
+                            retry_after_secs = None
+                        
+                        # Calculate wait time based on retry count or Retry-After
+                        if retry_after_secs:
+                            wait_time = min(retry_after_secs, 120)  # Cap at 2 min
+                            self._vprint(
+                                f"{self.log_prefix}⏳ Rate limit hit. "
+                                f"Waiting {wait_time}s per provider guidance...",
+                                force=True
+                            )
+                        else:
+                            wait_time = min(2 ** retry_count * 2, 60)
+                            self._vprint(
+                                f"{self.log_prefix}⏳ Rate limit hit. "
+                                f"Retrying in {wait_time}s (attempt {retry_count + 1}/{max_retries})...",
+                                force=True
+                            )
+                        
+                        # Try fallback before waiting
+                        if not self._fallback_activated and self._try_activate_fallback():
+                            self._vprint(
+                                f"{self.log_prefix}🔀 Switched to fallback provider to avoid rate limit wait.",
+                                force=True
+                            )
+                            retry_count = 0
+                            continue
+                        
+                        # Only sleep if we're going to retry
+                        if retry_count < max_retries:
+                            # Sleep in small increments for interrupt responsiveness
+                            sleep_end = time.time() + wait_time
+                            while time.time() < sleep_end:
+                                if self._interrupt_requested:
+                                    self._vprint(f"{self.log_prefix}⚡ Interrupted during rate limit wait.", force=True)
+                                    self._persist_session(messages, conversation_history)
+                                    self.clear_interrupt()
+                                    return {
+                                        "final_response": "Rate limit hit — retrying was interrupted.",
+                                        "messages": messages,
+                                        "api_calls": api_call_count,
+                                        "completed": False,
+                                        "interrupted": True,
+                                    }
+                                remaining = int(sleep_end - time.time())
+                                if remaining > 0 and remaining % 10 == 0:  # Update every 10s
+                                    self._vprint(f"{self.log_prefix}   ⏳ {remaining}s remaining...", force=True)
+                                time.sleep(0.5)
+                            retry_count += 1
+                            continue
+                    
+                    # Original fallback activation for non-rate-limit cases
+                    elif not self._fallback_activated:
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue

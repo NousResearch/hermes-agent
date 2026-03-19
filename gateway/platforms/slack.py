@@ -432,6 +432,67 @@ class SlackAdapter(BasePlatformAdapter):
             self._user_name_cache[user_id] = user_id
             return user_id
 
+    # ----- Thread context fetching (fixes #1953) -----
+
+    async def _fetch_thread_context(
+        self, channel_id: str, thread_ts: str, limit: int = 20
+    ) -> str:
+        """Fetch thread conversation history for context when bot is mentioned.
+        
+        Uses Slack conversations.replies API to get prior messages in the thread.
+        Returns formatted context string or empty string on failure.
+        
+        Args:
+            channel_id: The Slack channel ID containing the thread.
+            thread_ts: The thread's parent message timestamp.
+            limit: Maximum number of messages to fetch (default 20).
+            
+        Returns:
+            Formatted string of prior thread messages, or empty string.
+        """
+        if not self._app or not thread_ts:
+            return ""
+            
+        try:
+            result = await self._app.client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=limit,
+            )
+            
+            messages = result.get("messages", [])
+            if not messages:
+                return ""
+            
+            # Format thread context (skip bot messages and the current trigger)
+            context_lines = []
+            for msg in messages[:-1]:  # Exclude the last message (the @mention)
+                # Skip bot messages
+                if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+                    continue
+                    
+                user_id = msg.get("user", "unknown")
+                user_name = await self._resolve_user_name(user_id)
+                text = msg.get("text", "").strip()
+                
+                if text:
+                    # Strip bot mentions from context
+                    if self._bot_user_id:
+                        text = text.replace(f"<@{self._bot_user_id}>", "").strip()
+                    if text:  # Still has content after stripping
+                        context_lines.append(f"[{user_name}]: {text}")
+            
+            if not context_lines:
+                return ""
+                
+            # Format as thread context block
+            context = "\n".join(context_lines)
+            return f"[Thread context (prior messages)]\n{context}\n[End of thread context]\n\n"
+            
+        except Exception as e:
+            logger.debug("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -661,6 +722,16 @@ class SlackAdapter(BasePlatformAdapter):
                 return
             # Strip the bot mention from the text
             text = text.replace(f"<@{self._bot_user_id}>", "").strip()
+
+        # Fetch thread context when mentioned in an existing thread (fixes #1953)
+        # This allows the bot to see prior conversation context when tagged.
+        real_thread_ts = event.get("thread_ts")  # None for top-level messages
+        if real_thread_ts and not is_dm:
+            thread_context = await self._fetch_thread_context(
+                channel_id, real_thread_ts, limit=20
+            )
+            if thread_context:
+                text = f"{thread_context}{text}"
 
         # Determine message type
         msg_type = MessageType.TEXT

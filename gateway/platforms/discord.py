@@ -1498,9 +1498,21 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
-        """Build a MessageEvent from a Discord slash command interaction."""
+        """Build a MessageEvent from a Discord slash command interaction.
+        
+        Properly detects channel type including threads so that slash commands
+        like /usage and /reset route to the correct session. Fixes #2011.
+        """
         is_dm = isinstance(interaction.channel, discord.DMChannel)
-        chat_type = "dm" if is_dm else "group"
+        is_thread = isinstance(interaction.channel, discord.Thread)
+        
+        if is_dm:
+            chat_type = "dm"
+        elif is_thread:
+            chat_type = "thread"
+        else:
+            chat_type = "group"
+        
         chat_name = ""
         if not is_dm and hasattr(interaction.channel, "name"):
             chat_name = interaction.channel.name

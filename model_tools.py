@@ -242,17 +242,44 @@ def get_tool_definitions(
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
+    # The set of tool names that actually passed check_fn filtering.
+    # Use this (not tools_to_include) for any downstream schema that references
+    # other tools by name — otherwise the model sees tools mentioned in
+    # descriptions that don't actually exist, and hallucinates calls to them.
+    available_tool_names = {t["function"]["name"] for t in filtered_tools}
+
     # Rebuild execute_code schema to only list sandbox tools that are actually
-    # enabled.  Without this, the model sees "web_search is available in
-    # execute_code" even when the user disabled the web toolset (#560-discord).
-    if "execute_code" in tools_to_include:
+    # available.  Without this, the model sees "web_search is available in
+    # execute_code" even when the API key isn't configured or the toolset is
+    # disabled (#560-discord).
+    if "execute_code" in available_tool_names:
         from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
+        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
         dynamic_schema = build_execute_code_schema(sandbox_enabled)
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Strip web tool cross-references from browser_navigate description when
+    # web_search / web_extract are not available.  The static schema says
+    # "prefer web_search or web_extract" which causes the model to hallucinate
+    # those tools when they're missing.
+    if "browser_navigate" in available_tool_names:
+        web_tools_available = {"web_search", "web_extract"} & available_tool_names
+        if not web_tools_available:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "browser_navigate":
+                    desc = td["function"].get("description", "")
+                    desc = desc.replace(
+                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+                        "",
+                    )
+                    filtered_tools[i] = {
+                        "type": "function",
+                        "function": {**td["function"], "description": desc},
+                    }
+                    break
 
     if not quiet_mode:
         if filtered_tools:

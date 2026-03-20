@@ -603,8 +603,89 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
-def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
-    """Query a local server for the model's context length."""
+def _extract_parameter_context_length(parameters: Any) -> Optional[int]:
+    """Extract an Ollama context override from a parameters string."""
+    if not isinstance(parameters, str):
+        return None
+
+    for pattern in (
+        r"\bnum_ctx\s+(\d+)\b",
+        r"\bcontext_length\s+(\d+)\b",
+    ):
+        match = re.search(pattern, parameters, flags=re.IGNORECASE)
+        if not match:
+            continue
+        ctx = _coerce_reasonable_int(match.group(1))
+        if ctx is not None:
+            return ctx
+    return None
+
+
+def _extract_ollama_context_values(payload: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Return (effective_context, max_context) from an Ollama payload.
+
+    effective_context is the runtime/user-set limit to budget against.
+    max_context is the theoretical model maximum and must only be used as a
+    fallback when no effective runtime value is present.
+    """
+    effective_candidates = (
+        payload.get("current_context_length"),
+        payload.get("context_length"),
+        payload.get("details", {}).get("num_ctx") if isinstance(payload.get("details"), dict) else None,
+        payload.get("context_window"),
+    )
+    for value in effective_candidates:
+        ctx = _coerce_reasonable_int(value)
+        if ctx is not None:
+            return ctx, _coerce_reasonable_int(payload.get("max_context_length"))
+
+    model_info = payload.get("model_info")
+    if isinstance(model_info, dict):
+        for key, value in model_info.items():
+            if "context_length" not in str(key).lower():
+                continue
+            ctx = _coerce_reasonable_int(value)
+            if ctx is not None:
+                return ctx, _coerce_reasonable_int(payload.get("max_context_length"))
+
+    params_ctx = _extract_parameter_context_length(payload.get("parameters"))
+    if params_ctx is not None:
+        return params_ctx, _coerce_reasonable_int(payload.get("max_context_length"))
+
+    max_ctx = _coerce_reasonable_int(payload.get("max_context_length"))
+    return max_ctx, max_ctx
+
+
+def _find_ollama_model(models_payload: Dict[str, Any], lookup_model: str) -> Optional[Dict[str, Any]]:
+    """Find a model entry in Ollama /api/ps or /api/tags payloads."""
+    models = models_payload.get("models")
+    if not isinstance(models, list):
+        return None
+
+    lookup_candidates = {lookup_model}
+    stripped_lookup = _strip_provider_prefix(lookup_model)
+    if stripped_lookup:
+        lookup_candidates.add(stripped_lookup)
+
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("name", "model", "id"):
+            candidate = entry.get(key)
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            if any(_model_id_matches(candidate, lookup) for lookup in lookup_candidates):
+                return entry
+    return None
+
+
+def _query_local_context_length_details(model: str, base_url: str) -> tuple[Optional[int], bool]:
+    """Query a local server for the model's context length and cacheability.
+
+    Returns ``(context_length, should_persist)``. Runtime-only context values,
+    such as Ollama's current loaded context from ``/api/ps``, must not be
+    persisted as durable model metadata.
+    """
     import httpx
 
     # Strip recognised provider prefix (e.g., "local:model-name" → "model-name").
@@ -625,25 +706,27 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
         with httpx.Client(timeout=3.0) as client:
             # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
-                resp = client.post(f"{server_url}/api/show", json={"name": model})
+                resp = client.get(f"{server_url}/api/ps")
                 if resp.status_code == 200:
-                    data = resp.json()
-                    # Check model_info for context length
-                    model_info = data.get("model_info", {})
-                    for key, value in model_info.items():
-                        if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
-                    # Check parameters string for num_ctx
-                    params = data.get("parameters", "")
-                    if "num_ctx" in params:
-                        for line in params.split("\n"):
-                            if "num_ctx" in line:
-                                parts = line.strip().split()
-                                if len(parts) >= 2:
-                                    try:
-                                        return int(parts[-1])
-                                    except ValueError:
-                                        pass
+                    running_model = _find_ollama_model(resp.json(), model)
+                    if running_model:
+                        effective_ctx, _max_ctx = _extract_ollama_context_values(running_model)
+                        if effective_ctx is not None:
+                            return effective_ctx, False
+
+                resp = client.post(f"{server_url}/api/show", json={"name": model, "model": model})
+                if resp.status_code == 200:
+                    effective_ctx, _max_ctx = _extract_ollama_context_values(resp.json())
+                    if effective_ctx is not None:
+                        return effective_ctx, True
+
+                resp = client.get(f"{server_url}/api/tags")
+                if resp.status_code == 200:
+                    tagged_model = _find_ollama_model(resp.json(), model)
+                    if tagged_model:
+                        effective_ctx, _max_ctx = _extract_ollama_context_values(tagged_model)
+                        if effective_ctx is not None:
+                            return effective_ctx, True
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which
@@ -661,11 +744,11 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                                 cfg = inst.get("config", {})
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
-                                    return int(ctx)
+                                    return int(ctx), True
                             # Fall back to max_context_length (theoretical model max)
                             ctx = m.get("max_context_length") or m.get("context_length")
                             if ctx and isinstance(ctx, (int, float)):
-                                return int(ctx)
+                                return int(ctx), True
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
@@ -674,7 +757,7 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                 # vLLM returns max_model_len
                 ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
                 if ctx and isinstance(ctx, (int, float)):
-                    return int(ctx)
+                    return int(ctx), True
 
             # Try /v1/models and find the model in the list.
             # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
@@ -686,11 +769,17 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                     if _model_id_matches(m.get("id", ""), model):
                         ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
                         if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
+                            return int(ctx), True
     except Exception:
         pass
 
-    return None
+    return None, False
+
+
+def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
+    """Query a local server for the model's context length."""
+    context_length, _should_persist = _query_local_context_length_details(model, base_url)
+    return context_length
 
 
 def get_model_context_length(
@@ -748,9 +837,10 @@ def get_model_context_length(
             # defaults from unrelated providers with similarly named models.
             # But first try querying the local server directly.
             if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url)
+                local_ctx, should_persist = _query_local_context_length_details(model, base_url)
                 if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
+                    if should_persist:
+                        save_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -774,9 +864,10 @@ def get_model_context_length(
 
     # 5. Query local server for unknown models before defaulting to 2M
     if base_url and is_local_endpoint(base_url):
-        local_ctx = _query_local_context_length(model, base_url)
+        local_ctx, should_persist = _query_local_context_length_details(model, base_url)
         if local_ctx and local_ctx > 0:
-            save_context_length(model, base_url, local_ctx)
+            if should_persist:
+                save_context_length(model, base_url, local_ctx)
             return local_ctx
 
     # 6. Unknown model — start at highest probe tier

@@ -31,16 +31,17 @@ class TestQueryLocalContextLengthOllama:
         """Reads context length from model_info dict in /api/show response."""
         from agent.model_metadata import _query_local_context_length
 
+        ps_resp = self._make_resp(404, {})
         show_resp = self._make_resp(200, {
             "model_info": {"llama.context_length": 131072}
         })
-        models_resp = self._make_resp(404, {})
+        tags_resp = self._make_resp(404, {})
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
         client_mock.__exit__ = MagicMock(return_value=False)
         client_mock.post.return_value = show_resp
-        client_mock.get.return_value = models_resp
+        client_mock.get.side_effect = [ps_resp, tags_resp]
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
              patch("httpx.Client", return_value=client_mock):
@@ -48,21 +49,53 @@ class TestQueryLocalContextLengthOllama:
 
         assert result == 131072
 
-    def test_ollama_parameters_num_ctx(self):
-        """Falls back to num_ctx in parameters string when model_info lacks context_length."""
+    def test_ollama_ps_current_context_beats_model_max(self):
+        """Uses the active runtime context from /api/ps before /api/show metadata."""
         from agent.model_metadata import _query_local_context_length
 
-        show_resp = self._make_resp(200, {
-            "model_info": {},
-            "parameters": "num_ctx 32768\ntemperature 0.7\n"
+        ps_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "name": "qwen3.5:27b",
+                    "current_context_length": 32768,
+                    "max_context_length": 131072,
+                }
+            ]
         })
-        models_resp = self._make_resp(404, {})
+        show_resp = self._make_resp(200, {
+            "model_info": {"qwen.context_length": 131072},
+            "parameters": "num_ctx 65536\n",
+            "max_context_length": 131072,
+        })
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
         client_mock.__exit__ = MagicMock(return_value=False)
         client_mock.post.return_value = show_resp
-        client_mock.get.return_value = models_resp
+        client_mock.get.side_effect = [ps_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("qwen3.5:27b", "http://localhost:11434/v1")
+
+        assert result == 32768
+
+    def test_ollama_parameters_num_ctx(self):
+        """Falls back to num_ctx in parameters string when model_info lacks context_length."""
+        from agent.model_metadata import _query_local_context_length
+
+        ps_resp = self._make_resp(404, {})
+        show_resp = self._make_resp(200, {
+            "model_info": {},
+            "parameters": "num_ctx 32768\ntemperature 0.7\n"
+        })
+        tags_resp = self._make_resp(404, {})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.side_effect = [ps_resp, tags_resp]
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
              patch("httpx.Client", return_value=client_mock):
@@ -70,18 +103,71 @@ class TestQueryLocalContextLengthOllama:
 
         assert result == 32768
 
+    def test_ollama_show_details_num_ctx_beats_max_context_length(self):
+        """Prefers details.num_ctx over theoretical max_context_length in /api/show."""
+        from agent.model_metadata import _query_local_context_length
+
+        ps_resp = self._make_resp(404, {})
+        show_resp = self._make_resp(200, {
+            "details": {"num_ctx": 16384},
+            "max_context_length": 131072,
+        })
+        tags_resp = self._make_resp(404, {})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.side_effect = [ps_resp, tags_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://localhost:11434/v1")
+
+        assert result == 16384
+
+    def test_ollama_tags_fallback_uses_parameters_context_length(self):
+        """Falls back to /api/tags and still parses configured context overrides."""
+        from agent.model_metadata import _query_local_context_length
+
+        ps_resp = self._make_resp(404, {})
+        show_resp = self._make_resp(404, {})
+        tags_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "name": "some-model",
+                    "parameters": "context_length 24576\n",
+                    "max_context_length": 131072,
+                }
+            ]
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.side_effect = [ps_resp, tags_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("some-model", "http://localhost:11434/v1")
+
+        assert result == 24576
+
     def test_ollama_show_404_falls_through(self):
         """When /api/show returns 404, falls through to /v1/models/{model}."""
         from agent.model_metadata import _query_local_context_length
 
+        ps_resp = self._make_resp(404, {})
         show_resp = self._make_resp(404, {})
+        tags_resp = self._make_resp(404, {})
         model_detail_resp = self._make_resp(200, {"max_model_len": 65536})
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
         client_mock.__exit__ = MagicMock(return_value=False)
         client_mock.post.return_value = show_resp
-        client_mock.get.return_value = model_detail_resp
+        client_mock.get.side_effect = [ps_resp, tags_resp, model_detail_resp]
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
              patch("httpx.Client", return_value=client_mock):
@@ -421,7 +507,7 @@ class TestGetModelContextLengthLocalFallback:
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.is_local_endpoint", return_value=True), \
-             patch("agent.model_metadata._query_local_context_length", return_value=131072), \
+             patch("agent.model_metadata._query_local_context_length_details", return_value=(131072, True)), \
              patch("agent.model_metadata.save_context_length") as mock_save:
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
@@ -435,11 +521,26 @@ class TestGetModelContextLengthLocalFallback:
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.is_local_endpoint", return_value=True), \
-             patch("agent.model_metadata._query_local_context_length", return_value=131072), \
+             patch("agent.model_metadata._query_local_context_length_details", return_value=(131072, True)), \
              patch("agent.model_metadata.save_context_length") as mock_save:
             get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         mock_save.assert_called_once_with("omnicoder-9b", "http://localhost:11434/v1", 131072)
+
+    def test_local_endpoint_runtime_result_is_not_cached(self):
+        """Ephemeral runtime context values should not poison the persistent cache."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.is_local_endpoint", return_value=True), \
+             patch("agent.model_metadata._query_local_context_length_details", return_value=(32768, False)), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length("qwen3.5:27b", "http://localhost:11434/v1")
+
+        assert result == 32768
+        mock_save.assert_not_called()
 
     def test_local_endpoint_server_returns_none_falls_back_to_2m(self):
         """When local server returns None, still falls back to 2M probe tier."""
@@ -449,7 +550,7 @@ class TestGetModelContextLengthLocalFallback:
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.is_local_endpoint", return_value=True), \
-             patch("agent.model_metadata._query_local_context_length", return_value=None):
+             patch("agent.model_metadata._query_local_context_length_details", return_value=(None, False)):
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result == CONTEXT_PROBE_TIERS[0]
@@ -474,7 +575,7 @@ class TestGetModelContextLengthLocalFallback:
         from agent.model_metadata import get_model_context_length
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
-             patch("agent.model_metadata._query_local_context_length") as mock_query:
+             patch("agent.model_metadata._query_local_context_length_details") as mock_query:
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result == 65536
@@ -487,7 +588,7 @@ class TestGetModelContextLengthLocalFallback:
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
-             patch("agent.model_metadata._query_local_context_length") as mock_query:
+             patch("agent.model_metadata._query_local_context_length_details") as mock_query:
             result = get_model_context_length("unknown-xyz-model", "")
 
         mock_query.assert_not_called()

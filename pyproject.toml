@@ -26,6 +26,7 @@ dependencies = [
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit",
   # Tools
+  "exa-py>=2.9.0",
   "firecrawl-py",
   "parallel-web>=0.4.2",
   "fal-client",

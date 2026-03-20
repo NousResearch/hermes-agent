@@ -130,7 +130,7 @@ class TestBackendSelection:
     setups.
     """
 
-    _ENV_KEYS = ("PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "TAVILY_API_KEY")
+    _ENV_KEYS = ("EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "TAVILY_API_KEY")
 
     def setup_method(self):
         for key in self._ENV_KEYS:
@@ -238,6 +238,34 @@ class TestBackendSelection:
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
+    # ── Exa backend selection ─────────────────────────────────────────
+
+    def test_config_exa(self):
+        """web.backend=exa in config → 'exa' regardless of keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}):
+            assert _get_backend() == "exa"
+
+    def test_config_exa_case_insensitive(self):
+        """web.backend=Exa (mixed case) → 'exa'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "Exa"}):
+            assert _get_backend() == "exa"
+
+    def test_fallback_exa_only_key(self):
+        """Only EXA_API_KEY set → 'exa'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "test-key"}):
+            assert _get_backend() == "exa"
+
+    def test_fallback_exa_with_firecrawl_prefers_firecrawl(self):
+        """Exa + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "test-key", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "firecrawl"
+
 
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
@@ -276,10 +304,53 @@ class TestParallelClientConfig:
             assert client1 is client2
 
 
+class TestExaClientConfig:
+    """Test suite for Exa client initialization."""
+
+    def setup_method(self):
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        os.environ.pop("EXA_API_KEY", None)
+
+    def teardown_method(self):
+        import tools.web_tools
+        tools.web_tools._exa_client = None
+        os.environ.pop("EXA_API_KEY", None)
+
+    def test_creates_client_with_key(self):
+        """EXA_API_KEY set → creates Exa client with integration header."""
+        with patch.dict(os.environ, {"EXA_API_KEY": "test-key"}):
+            with patch("exa_py.Exa") as mock_exa:
+                mock_instance = MagicMock()
+                mock_instance.headers = {}
+                mock_exa.return_value = mock_instance
+                from tools.web_tools import _get_exa_client
+                result = _get_exa_client()
+                mock_exa.assert_called_once_with(api_key="test-key")
+                assert result is mock_instance
+                assert mock_instance.headers["x-exa-integration"] == "hermes-agent"
+
+    def test_no_key_raises_with_helpful_message(self):
+        """No EXA_API_KEY → ValueError with guidance."""
+        from tools.web_tools import _get_exa_client
+        with pytest.raises(ValueError, match="EXA_API_KEY"):
+            _get_exa_client()
+
+    def test_singleton_returns_same_instance(self):
+        """Second call returns cached client."""
+        with patch.dict(os.environ, {"EXA_API_KEY": "test-key"}):
+            with patch("exa_py.Exa") as mock_exa:
+                from tools.web_tools import _get_exa_client
+                client1 = _get_exa_client()
+                client2 = _get_exa_client()
+                assert client1 is client2
+                mock_exa.assert_called_once()
+
+
 class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 
-    _ENV_KEYS = ("PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "TAVILY_API_KEY")
+    _ENV_KEYS = ("EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "TAVILY_API_KEY")
 
     def setup_method(self):
         for key in self._ENV_KEYS:
@@ -321,8 +392,14 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_all_three_keys_returns_true(self):
+    def test_exa_key_only(self):
+        with patch.dict(os.environ, {"EXA_API_KEY": "test-key"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_all_keys_returns_true(self):
         with patch.dict(os.environ, {
+            "EXA_API_KEY": "exa-test",
             "PARALLEL_API_KEY": "test-key",
             "FIRECRAWL_API_KEY": "fc-test",
             "TAVILY_API_KEY": "tvly-test",

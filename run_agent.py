@@ -883,6 +883,7 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self._pending_nudge: str = ""
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -5221,6 +5222,7 @@ class AIAgent:
         # Preserve the original user message before nudge injection.
         # Honcho should receive the actual user input, not system nudges.
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        self._pending_nudge = ""
 
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.
@@ -5229,7 +5231,7 @@ class AIAgent:
                 and self._memory_store):
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
-                user_message += (
+                self._pending_nudge = (self._pending_nudge or "") + (
                     "\n\n[System: You've had several exchanges. Consider: "
                     "has the user shared preferences, corrected you, or revealed "
                     "something about their workflow worth remembering for future sessions?]"
@@ -5241,7 +5243,7 @@ class AIAgent:
         if (self._skill_nudge_interval > 0
                 and self._iters_since_skill >= self._skill_nudge_interval
                 and "skill_manage" in self.valid_tool_names):
-            user_message += (
+            self._pending_nudge = (self._pending_nudge or "") + (
                 "\n\n[System: The previous task involved many tool calls. "
                 "Save the approach as a skill if it's reusable, or update "
                 "any existing skill you used if it was wrong or incomplete.]"
@@ -5431,6 +5433,9 @@ class AIAgent:
                     api_msg["content"] = _inject_honcho_turn_context(
                         api_msg.get("content", ""), self._honcho_turn_context
                     )
+                if idx == current_turn_user_idx and msg.get("role") == "user" and self._pending_nudge:
+                    existing = api_msg.get("content", "")
+                    api_msg["content"] = existing + self._pending_nudge
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

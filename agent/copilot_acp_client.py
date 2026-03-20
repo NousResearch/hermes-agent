@@ -356,7 +356,7 @@ class CopilotACPClient:
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )
-            return "".join(text_parts).strip(), "".join(reasoning_parts).strip()
+            return "".join(text_parts), "".join(reasoning_parts)
         finally:
             self.close()
 
@@ -380,7 +380,7 @@ class CopilotACPClient:
             content = update.get("content") or {}
             chunk_text = ""
             if isinstance(content, dict):
-                chunk_text = str(content.get("text") or "").strip()
+                chunk_text = str(content.get("text") or "")
             if kind == "agent_message_chunk" and chunk_text and text_parts is not None:
                 text_parts.append(chunk_text)
             elif kind == "agent_thought_chunk" and chunk_text and reasoning_parts is not None:

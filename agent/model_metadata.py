@@ -106,6 +106,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Meta
     "llama": 131072,
     # Qwen
+    "qwen3.5-plus": 169984,  # Alibaba Coding Plan actual API limit
     "qwen": 131072,
     # MiniMax
     "minimax": 204800,
@@ -552,6 +553,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
+        r'range of input length should be \[1,\s*(\d+)\]',  # Alibaba/DashScope Coding Plan
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
     ]
     for pattern in patterns:

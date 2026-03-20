@@ -156,6 +156,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.anthropic.com",
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
     ),
+    "coding-plan": ProviderConfig(
+        id="coding-plan",
+        name="Alibaba Coding Plan (DashScope)",
+        auth_type="api_key",
+        inference_base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
+        api_key_env_vars=("DASHSCOPE_API_KEY",),
+        base_url_env_var="CODING_PLAN_BASE_URL",
+    ),
     "alibaba": ProviderConfig(
         id="alibaba",
         name="Alibaba Cloud (DashScope)",

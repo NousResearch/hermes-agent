@@ -798,6 +798,7 @@ def cmd_model(args):
         "ai-gateway": "AI Gateway",
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
+        "coding-plan": "Alibaba Coding Plan (DashScope)",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -824,6 +825,7 @@ def cmd_model(args):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope (Qwen models, Anthropic-compatible)"),
+        ("coding-plan", "Alibaba Coding Plan / DashScope (OpenAI-compatible, qwen3.5-plus)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -896,7 +898,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "coding-plan"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 

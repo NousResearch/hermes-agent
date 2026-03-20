@@ -6058,6 +6058,7 @@ class AIAgent:
                         'exceeds the limit', 'context window',
                         'request entity too large',  # OpenRouter/Nous 413 safety net
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
+                        'range of input length',  # Alibaba/DashScope Coding Plan
                     ])
 
                     # Fallback heuristic: Anthropic sometimes returns a generic

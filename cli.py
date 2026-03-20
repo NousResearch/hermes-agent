@@ -3517,8 +3517,17 @@ class HermesCLI:
                 # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
                 current_provider = self.provider or self.requested_provider or "openrouter"
                 target_provider, new_model = parse_model_input(raw_input, current_provider)
-                # Auto-detect provider when no explicit provider:model syntax was used
-                if target_provider == current_provider:
+                # Auto-detect provider when no explicit provider:model syntax was used.
+                # Skip auto-detection for custom providers — the model name might
+                # coincidentally match a known provider's catalog, but the user
+                # intends to use it on their custom endpoint.  Require explicit
+                # provider:model syntax (e.g. /model openai-codex:gpt-5.2-codex)
+                # to switch away from a custom endpoint.
+                _base = self.base_url or ""
+                is_custom = current_provider == "custom" or (
+                    "localhost" in _base or "127.0.0.1" in _base
+                )
+                if target_provider == current_provider and not is_custom:
                     from hermes_cli.models import detect_provider_for_model
                     detected = detect_provider_for_model(new_model, current_provider)
                     if detected:
@@ -3586,6 +3595,13 @@ class HermesCLI:
                         if message:
                             print(f"  Reason: {message}")
                         print("  Note: Model will revert on restart. Use a verified model to save to config.")
+
+                    # Helpful hint when staying on a custom endpoint
+                    if is_custom and not provider_changed:
+                        endpoint = self.base_url or "custom endpoint"
+                        print(f"  Endpoint: {endpoint}")
+                        print(f"  Tip: To switch providers, use /model provider:model")
+                        print(f"       e.g. /model openai-codex:gpt-5.2-codex")
             else:
                 self._show_model_and_providers()
         elif canonical == "provider":

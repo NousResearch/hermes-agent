@@ -42,6 +42,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         "prompt_toolkit.key_binding": MagicMock(),
         "prompt_toolkit.completion": MagicMock(),
         "prompt_toolkit.formatted_text": MagicMock(),
+        "prompt_toolkit.auto_suggest": MagicMock(),
     }
     with patch.dict(sys.modules, prompt_toolkit_stubs), \
          patch.dict("os.environ", clean_env, clear=False):

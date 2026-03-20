@@ -501,6 +501,12 @@ class AIAgent:
         else:
             self.api_mode = "chat_completions"
 
+        # Direct OpenAI sessions use the Responses API path.  GPT-5.x tool
+        # calls with reasoning are rejected on /v1/chat/completions, and
+        # Hermes is a tool-using client by default.
+        if self.api_mode == "chat_completions" and self._is_direct_openai_url():
+            self.api_mode = "codex_responses"
+
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
@@ -518,6 +524,10 @@ class AIAgent:
         self.stream_delta_callback = stream_delta_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
+        # Tool execution state — allows _vprint during tool execution
+        # even when stream consumers are registered (no tokens streaming then)
+        self._executing_tools = False
+
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
@@ -981,6 +991,27 @@ class AIAgent:
                 _config_context_length = int(_config_context_length)
             except (TypeError, ValueError):
                 _config_context_length = None
+
+        # Check custom_providers per-model context_length
+        if _config_context_length is None:
+            _custom_providers = _agent_cfg.get("custom_providers")
+            if isinstance(_custom_providers, list):
+                for _cp_entry in _custom_providers:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                    if _cp_url and _cp_url == self.base_url.rstrip("/"):
+                        _cp_models = _cp_entry.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_model_cfg = _cp_models.get(self.model, {})
+                            if isinstance(_cp_model_cfg, dict):
+                                _cp_ctx = _cp_model_cfg.get("context_length")
+                                if _cp_ctx is not None:
+                                    try:
+                                        _config_context_length = int(_cp_ctx)
+                                    except (TypeError, ValueError):
+                                        pass
+                        break
         
         self.context_compressor = ContextCompressor(
             model=self.model,
@@ -993,6 +1024,7 @@ class AIAgent:
             base_url=self.base_url,
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
+            provider=self.provider,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -1016,6 +1048,46 @@ class AIAgent:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
+
+    def reset_session_state(self):
+        """Reset all session-scoped token counters to 0 for a fresh session.
+        
+        This method encapsulates the reset logic for all session-level metrics
+        including:
+        - Token usage counters (input, output, total, prompt, completion)
+        - Cache read/write tokens
+        - API call count
+        - Reasoning tokens
+        - Estimated cost tracking
+        - Context compressor internal counters
+        
+        The method safely handles optional attributes (e.g., context compressor)
+        using ``hasattr`` checks.
+        
+        This keeps the counter reset logic DRY and maintainable in one place
+        rather than scattering it across multiple methods.
+        """
+        # Token usage counters
+        self.session_total_tokens = 0
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_reasoning_tokens = 0
+        self.session_api_calls = 0
+        self.session_estimated_cost_usd = 0.0
+        self.session_cost_status = "unknown"
+        self.session_cost_source = "none"
+        
+        # Context compressor internal counters (if present)
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            self.context_compressor.last_prompt_tokens = 0
+            self.context_compressor.last_completion_tokens = 0
+            self.context_compressor.last_total_tokens = 0
+            self.context_compressor.compression_count = 0
+            self.context_compressor._context_probed = False
     
     @staticmethod
     def _safe_print(*args, **kwargs):
@@ -1031,14 +1103,23 @@ class AIAgent:
             pass
 
     def _vprint(self, *args, force: bool = False, **kwargs):
-        """Verbose print — suppressed when streaming TTS is active.
+        """Verbose print — suppressed when actively streaming tokens.
 
         Pass ``force=True`` for error/warning messages that should always be
         shown even during streaming playback (TTS or display).
+
+        During tool execution (``_executing_tools`` is True), printing is
+        allowed even with stream consumers registered because no tokens
+        are being streamed at that point.
         """
-        if not force and self._has_stream_consumers():
+        if not force and self._has_stream_consumers() and not self._executing_tools:
             return
         self._safe_print(*args, **kwargs)
+
+    def _is_direct_openai_url(self, base_url: str = None) -> bool:
+        """Return True when a base URL targets OpenAI's native API."""
+        url = (base_url or self._base_url_lower).lower()
+        return "api.openai.com" in url and "openrouter" not in url
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -1047,11 +1128,7 @@ class AIAgent:
         'max_completion_tokens'. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        _is_direct_openai = (
-            "api.openai.com" in self._base_url_lower
-            and "openrouter" not in self._base_url_lower
-        )
-        if _is_direct_openai:
+        if self._is_direct_openai_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -1078,10 +1155,16 @@ class AIAgent:
         return bool(cleaned.strip())
     
     def _strip_think_blocks(self, content: str) -> str:
-        """Remove <think>...</think> blocks from content, returning only visible text."""
+        """Remove reasoning/thinking blocks from content, returning only visible text."""
         if not content:
             return ""
-        return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
+        # <reasoning>, <REASONING_SCRATCHPAD>
+        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+        content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
+        content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
+        return content
 
     def _looks_like_codex_intermediate_ack(
         self,
@@ -3507,13 +3590,15 @@ class AIAgent:
                     fb_provider)
                 return False
 
-            # Determine api_mode from provider
+            # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
+            elif self._is_direct_openai_url(fb_base_url):
+                fb_api_mode = "codex_responses"
 
             old_model = self.model
             self.model = fb_model
@@ -4311,14 +4396,19 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
-        if not _should_parallelize_tool_batch(tool_calls):
-            return self._execute_tool_calls_sequential(
+        # Allow _vprint during tool execution even with stream consumers
+        self._executing_tools = True
+        try:
+            if not _should_parallelize_tool_batch(tool_calls):
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
+
+            return self._execute_tool_calls_concurrent(
                 assistant_message, messages, effective_task_id, api_call_count
             )
-
-        return self._execute_tool_calls_concurrent(
-            assistant_message, messages, effective_task_id, api_call_count
-        )
+        finally:
+            self._executing_tools = False
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -5375,14 +5465,17 @@ class AIAgent:
                 self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
                 self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
-            elif not self._has_stream_consumers():
-                # Animated thinking spinner in quiet mode (skip during streaming)
+            else:
+                # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
                 if self.thinking_callback:
                     # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
+                    # (works in both streaming and non-streaming modes)
                     self.thinking_callback(f"{face} {verb}...")
-                else:
+                elif not self._has_stream_consumers():
+                    # Raw KawaiiSpinner only when no streaming consumers
+                    # (would conflict with streamed token output)
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
                     thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
                     thinking_spinner.start()
@@ -6532,7 +6625,21 @@ class AIAgent:
                                 self._response_was_previewed = True
                                 break
                             
-                            # No fallback -- append the empty message as-is
+                            # No fallback -- if reasoning_text exists, the model put its
+                            # entire response inside <think> tags; use that as the content.
+                            if reasoning_text:
+                                self._vprint(f"{self.log_prefix}Using reasoning as response content (model wrapped entire response in think tags).", force=True)
+                                final_response = reasoning_text
+                                empty_msg = {
+                                    "role": "assistant",
+                                    "content": final_response,
+                                    "reasoning": reasoning_text,
+                                    "finish_reason": finish_reason,
+                                }
+                                messages.append(empty_msg)
+                                break
+
+                            # Truly empty -- no reasoning and no content
                             empty_msg = {
                                 "role": "assistant",
                                 "content": final_response,
@@ -6540,10 +6647,10 @@ class AIAgent:
                                 "finish_reason": finish_reason,
                             }
                             messages.append(empty_msg)
-                            
+
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
-                            
+
                             return {
                                 "final_response": final_response or None,
                                 "messages": messages,

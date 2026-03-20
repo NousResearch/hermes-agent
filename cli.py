@@ -973,6 +973,8 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+
+
 # ============================================================================
 # HermesCLI Class
 # ============================================================================
@@ -1522,9 +1524,11 @@ class HermesCLI:
         # Track whether we're inside a reasoning/thinking block.
         # These tags are model-generated (system prompt tells the model
         # to use them) and get stripped from final_response. We must
-        # suppress them during streaming too.
-        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>")
-        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>")
+        # suppress them during streaming too — unless show_reasoning is
+        # enabled, in which case we route the inner content to the
+        # reasoning display box instead of discarding it.
+        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>")
+        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>")
 
         # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text
@@ -1564,6 +1568,12 @@ class HermesCLI:
                 idx = self._stream_prefilt.find(tag)
                 if idx != -1:
                     self._in_reasoning_block = False
+                    # When show_reasoning is on, route inner content to
+                    # the reasoning display box instead of discarding.
+                    if self.show_reasoning:
+                        inner = self._stream_prefilt[:idx]
+                        if inner:
+                            self._stream_reasoning_delta(inner)
                     after = self._stream_prefilt[idx + len(tag):]
                     self._stream_prefilt = ""
                     # Process remaining text after close tag through full
@@ -1571,10 +1581,15 @@ class HermesCLI:
                     if after:
                         self._stream_delta(after)
                     return
-            # Still inside reasoning block — keep only the tail that could
-            # be a partial close tag prefix (save memory on long blocks).
+            # When show_reasoning is on, stream reasoning content live
+            # instead of silently accumulating. Keep only the tail that
+            # could be a partial close tag prefix.
             max_tag_len = max(len(t) for t in _CLOSE_TAGS)
             if len(self._stream_prefilt) > max_tag_len:
+                if self.show_reasoning:
+                    # Route the safe prefix to reasoning display
+                    safe_reasoning = self._stream_prefilt[:-max_tag_len]
+                    self._stream_reasoning_delta(safe_reasoning)
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
             return
 
@@ -2731,6 +2746,7 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
+            self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
@@ -2890,6 +2906,14 @@ class HermesCLI:
                     for mid, desc in curated:
                         current_marker = " ← current" if (is_active and mid == self.model) else ""
                         print(f"      {mid}{current_marker}")
+                elif p["id"] == "custom":
+                    from hermes_cli.models import _get_custom_base_url
+                    custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                    if custom_url:
+                        print(f"      endpoint: {custom_url}")
+                    if is_active:
+                        print(f"      model: {self.model} ← current")
+                    print(f"      (use /model custom:<model-name>)")
                 else:
                     print(f"      (use /model {p['id']}:<model-name>)")
                 print()
@@ -3493,8 +3517,17 @@ class HermesCLI:
                 # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
                 current_provider = self.provider or self.requested_provider or "openrouter"
                 target_provider, new_model = parse_model_input(raw_input, current_provider)
-                # Auto-detect provider when no explicit provider:model syntax was used
-                if target_provider == current_provider:
+                # Auto-detect provider when no explicit provider:model syntax was used.
+                # Skip auto-detection for custom providers — the model name might
+                # coincidentally match a known provider's catalog, but the user
+                # intends to use it on their custom endpoint.  Require explicit
+                # provider:model syntax (e.g. /model openai-codex:gpt-5.2-codex)
+                # to switch away from a custom endpoint.
+                _base = self.base_url or ""
+                is_custom = current_provider == "custom" or (
+                    "localhost" in _base or "127.0.0.1" in _base
+                )
+                if target_provider == current_provider and not is_custom:
                     from hermes_cli.models import detect_provider_for_model
                     detected = detect_provider_for_model(new_model, current_provider)
                     if detected:
@@ -3562,6 +3595,13 @@ class HermesCLI:
                         if message:
                             print(f"  Reason: {message}")
                         print("  Note: Model will revert on restart. Use a verified model to save to config.")
+
+                    # Helpful hint when staying on a custom endpoint
+                    if is_custom and not provider_changed:
+                        endpoint = self.base_url or "custom endpoint"
+                        print(f"  Endpoint: {endpoint}")
+                        print(f"  Tip: To switch providers, use /model provider:model")
+                        print(f"       e.g. /model openai-codex:gpt-5.2-codex")
             else:
                 self._show_model_and_providers()
         elif canonical == "provider":

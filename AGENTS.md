@@ -5,7 +5,7 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 ## Development Environment
 
 ```bash
-source .venv/bin/activate  # ALWAYS activate before running Python
+source venv/bin/activate  # ALWAYS activate before running Python
 ```
 
 ## Project Structure
@@ -23,6 +23,7 @@ hermes-agent/
 │   ├── prompt_caching.py     # Anthropic prompt caching
 │   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
 │   ├── model_metadata.py     # Model context lengths, token estimation
+│   ├── models_dev.py         # models.dev registry integration (provider-aware context)
 │   ├── display.py            # KawaiiSpinner, tool preview formatting
 │   ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
 │   └── trajectory.py         # Trajectory saving helpers
@@ -377,7 +378,7 @@ The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HER
 ## Testing
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading

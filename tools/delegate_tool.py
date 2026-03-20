@@ -262,13 +262,11 @@ def _run_single_child(
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
 
-    # Save the parent's resolved tool names before the child agent can
-    # overwrite the process-global via get_tool_definitions().
-    # This must be in _run_single_child (not _build_child_agent) so the
-    # save/restore happens in the same scope as the try/finally.
+    # Restore parent tool names using the value saved before child construction
+    # mutated the global. This is the correct parent toolset, not the child's.
     import model_tools
-    _saved_tool_names = list(model_tools._last_resolved_tool_names)
-    child._delegate_saved_tool_names = _saved_tool_names
+    _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
+                                list(model_tools._last_resolved_tool_names))
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -465,6 +463,12 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
+    # Save parent tool names BEFORE any child construction mutates the global.
+    # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
+    # which overwrites model_tools._last_resolved_tool_names with child's toolset.
+    import model_tools as _model_tools
+    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+
     # Build all child agents on the main thread (thread-safe construction)
     children = []
     for i, t in enumerate(task_list):
@@ -476,7 +480,12 @@ def delegate_task(
             override_api_key=creds["api_key"],
             override_api_mode=creds["api_mode"],
         )
+        # Override with correct parent tool names (before child construction mutated global)
+        child._delegate_saved_tool_names = _parent_tool_names
         children.append((i, t, child))
+
+    # Authoritative restore: reset global to parent's tool names after all children built
+    _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)

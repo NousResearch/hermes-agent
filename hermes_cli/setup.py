@@ -876,6 +876,7 @@ def setup_model_provider(config: dict):
         "Login with Nous Portal (Nous Research subscription — OAuth)",
         "Login with OpenAI Codex",
         "OpenRouter API key (100+ models, pay-per-use)",
+        "Venice AI (Privacy-focused, uncensored models)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
         "Z.AI / GLM (Zhipu AI models)",
         "Kimi / Moonshot (Kimi coding models)",
@@ -1040,7 +1041,59 @@ def setup_model_provider(config: dict):
         except Exception as e:
             logger.debug("Could not save provider to config.yaml: %s", e)
 
-    elif provider_idx == 3:  # Custom endpoint
+    elif provider_idx == 3:  # Venice AI
+        selected_provider = "venice"
+        print()
+        print_header("Venice AI API Key")
+        print_info("Venice provides privacy-focused, uncensored inference, image generation, and web search.")
+        print_info("A single key here configures all Venice-supported capabilities.")
+        print_info("Get your API key at: https://venice.ai/settings/api")
+
+        import os
+        existing_venice = os.environ.get("VENICE_API_KEY")
+        if existing_venice:
+            print_info(f"Current: {existing_venice[:8]}... (configured)")
+            if prompt_yes_no("Update Venice AI API key?", False):
+                api_key = prompt("  Venice AI API key", password=True)
+                if api_key:
+                    save_env_value("VENICE_API_KEY", api_key)
+                    save_env_value("OPENAI_API_KEY", api_key)
+                    save_env_value("OPENAI_BASE_URL", "https://api.venice.ai/api/v1")
+                    print_success("Venice AI API key updated for inference and tools")
+        else:
+            api_key = prompt("  Venice AI API key", password=True)
+            if api_key:
+                save_env_value("VENICE_API_KEY", api_key)
+                save_env_value("OPENAI_API_KEY", api_key)
+                save_env_value("OPENAI_BASE_URL", "https://api.venice.ai/api/v1")
+                print_success("Venice AI API key saved for inference and tools")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+                
+        # Update config.yaml just like OpenRouter does
+        try:
+            from hermes_cli.auth import deactivate_provider
+            deactivate_provider()
+        except Exception:
+            pass
+        import yaml
+        config_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        try:
+            disk_cfg = {}
+            if config_path.exists():
+                disk_cfg = yaml.safe_load(config_path.read_text()) or {}
+            model_section = disk_cfg.get("model", {})
+            if isinstance(model_section, str):
+                model_section = {"default": model_section}
+            model_section["provider"] = "custom"
+            model_section["base_url"] = "https://api.venice.ai/api/v1"
+            disk_cfg["model"] = model_section
+            config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
+            _set_model_provider(config, "custom", "https://api.venice.ai/api/v1")
+        except Exception as e:
+            logger.debug("Could not save provider to config.yaml: %s", e)
+          
+    elif provider_idx == 4:  # Custom endpoint
         selected_provider = "custom"
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
@@ -1133,7 +1186,7 @@ def setup_model_provider(config: dict):
 
         print_success("Custom endpoint configured")
 
-    elif provider_idx == 4:  # Z.AI / GLM
+    elif provider_idx == 5:  # Z.AI / GLM
         selected_provider = "zai"
         print()
         print_header("Z.AI / GLM API Key")
@@ -1194,7 +1247,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "zai", zai_base_url)
         selected_base_url = zai_base_url
 
-    elif provider_idx == 5:  # Kimi / Moonshot
+    elif provider_idx == 6:  # Kimi / Moonshot
         selected_provider = "kimi-coding"
         print()
         print_header("Kimi / Moonshot API Key")
@@ -1227,7 +1280,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 6:  # MiniMax
+    elif provider_idx == 7:  # MiniMax
         selected_provider = "minimax"
         print()
         print_header("MiniMax API Key")
@@ -1260,7 +1313,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 7:  # MiniMax China
+    elif provider_idx == 8:  # MiniMax China
         selected_provider = "minimax-cn"
         print()
         print_header("MiniMax China API Key")
@@ -1293,7 +1346,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 8:  # Kilo Code
+    elif provider_idx == 9:  # Kilo Code
         selected_provider = "kilocode"
         print()
         print_header("Kilo Code API Key")
@@ -1326,7 +1379,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "kilocode", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 9:  # Anthropic
+    elif provider_idx == 10:  # Anthropic
         selected_provider = "anthropic"
         print()
         print_header("Anthropic Authentication")
@@ -1430,7 +1483,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    elif provider_idx == 10:  # AI Gateway
+    elif provider_idx == 11:  # AI Gateway
         selected_provider = "ai-gateway"
         print()
         print_header("AI Gateway API Key")
@@ -1462,7 +1515,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+    elif provider_idx == 12:  # Alibaba Cloud / DashScope
         selected_provider = "alibaba"
         print()
         print_header("Alibaba Cloud / DashScope API Key")
@@ -1494,7 +1547,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
         _set_model_provider(config, "alibaba", pconfig.inference_base_url)
 
-    elif provider_idx == 12:  # OpenCode Zen
+    elif provider_idx == 13:  # OpenCode Zen
         selected_provider = "opencode-zen"
         print()
         print_header("OpenCode Zen API Key")
@@ -1527,7 +1580,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 13:  # OpenCode Go
+    elif provider_idx == 14:  # OpenCode Go
         selected_provider = "opencode-go"
         print()
         print_header("OpenCode Go API Key")
@@ -1560,7 +1613,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 14:  # GitHub Copilot
+    elif provider_idx == 15:  # GitHub Copilot
         selected_provider = "copilot"
         print()
         print_header("GitHub Copilot")
@@ -1593,7 +1646,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 15:  # GitHub Copilot ACP
+    elif provider_idx == 16:  # GitHub Copilot ACP
         selected_provider = "copilot-acp"
         print()
         print_header("GitHub Copilot ACP")
@@ -1633,7 +1686,7 @@ def setup_model_provider(config: dict):
 
     _vision_needs_setup = not bool(_vision_backends)
 
-    if selected_provider in _vision_backends:
+    if selected_provider in _vision_backends or selected_provider == "venice":
         # If the user just selected a backend Hermes can already use for
         # vision, treat it as covered. Auth/setup failure returns earlier.
         _vision_needs_setup = False
@@ -2988,6 +3041,20 @@ def setup_tools(config: dict, first_install: bool = False):
         first_install: When True, uses the simplified first-install flow
             (no platform menu, prompts for all unconfigured API keys).
     """
+    import os
+    from hermes_cli.utils import print_success, print_info
+
+    # Issue #2205: Skip tool prompts if Venice AI is configured during onboarding
+    is_venice = os.environ.get("OPENAI_BASE_URL") == "https://api.venice.ai/api/v1" and os.environ.get("VENICE_API_KEY")
+
+    if first_install and is_venice:
+        print()
+        print_success("Venice AI configured as the primary provider!")
+        print_info("Since Venice natively supports web search and image generation,")
+        print_info("we'll skip asking for separate tool API keys to keep setup fast.")
+        print()
+        return
+
     from hermes_cli.tools_config import tools_command
 
     tools_command(first_install=first_install, config=config)

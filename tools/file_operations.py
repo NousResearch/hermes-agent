@@ -69,6 +69,7 @@ WRITE_DENIED_PREFIXES = [
         os.path.join(_HOME, ".aws"),
         os.path.join(_HOME, ".gnupg"),
         os.path.join(_HOME, ".kube"),
+        os.path.join(_HOME, ".hermes", "identity"),
         "/etc/sudoers.d",
         "/etc/systemd",
     ]

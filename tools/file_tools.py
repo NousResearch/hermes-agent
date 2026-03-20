@@ -177,6 +177,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         _blocked_dirs = [
             _hermes_home / "skills" / ".hub" / "index-cache",
             _hermes_home / "skills" / ".hub",
+            _hermes_home / "identity",
         ]
         for _blocked in _blocked_dirs:
             try:

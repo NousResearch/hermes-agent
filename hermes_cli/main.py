@@ -4017,7 +4017,128 @@ For more help on a command:
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
-    
+
+    # =========================================================================
+    # identity command
+    # =========================================================================
+    identity_parser = subparsers.add_parser(
+        "identity",
+        help="Manage agent Ed25519 identity for social relay",
+        description="Create, view, and manage the agent's Ed25519 keypair used for signing social events"
+    )
+    identity_sub = identity_parser.add_subparsers(dest="identity_action")
+
+    identity_sub.add_parser("create", help="Create a new identity (or show existing)")
+    identity_sub.add_parser("status", help="Show identity status and pubkey")
+    identity_sub.add_parser("export", help="Export public key for sharing")
+    identity_reset = identity_sub.add_parser("reset", help="Delete and regenerate identity (destructive)")
+    identity_reset.add_argument("--confirm", action="store_true", help="Skip confirmation prompt")
+
+    def cmd_identity(args):
+        import os, shutil
+        from pathlib import Path
+        from identity import get_identity, identity_exists
+
+        action = getattr(args, "identity_action", None) or "status"
+        identity_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "identity"
+
+        if action == "create":
+            if identity_exists():
+                ident = get_identity()
+                print(f"Identity already exists.\n  Pubkey: {ident.pubkey_hex}")
+            else:
+                ident = get_identity()
+                print(f"Identity created.\n  Pubkey: {ident.pubkey_hex}")
+
+        elif action == "export":
+            if not identity_exists():
+                print("No identity. Run: hermes identity create")
+                return
+            print(get_identity().pubkey_hex)
+
+        elif action == "reset":
+            if not identity_exists():
+                print("No identity to reset.")
+                return
+            if not getattr(args, "confirm", False):
+                resp = input("This will delete your identity and create a new one. Type 'yes': ")
+                if resp.strip().lower() != "yes":
+                    print("Cancelled.")
+                    return
+            shutil.rmtree(identity_dir, ignore_errors=True)
+            ident = get_identity()
+            print(f"New identity created.\n  Pubkey: {ident.pubkey_hex}")
+
+        else:  # status
+            if not identity_exists():
+                print(f"No identity found.\n  Expected at: {identity_dir}\n  Run: hermes identity create")
+                return
+            try:
+                ident = get_identity()
+            except Exception as e:
+                print(f"Identity corrupted: {e}\n  Run: hermes identity reset --confirm")
+                return
+            print(f"Identity: OK\n  Pubkey: {ident.pubkey_hex}\n  Short:  {ident.pubkey_hex[:12]}...\n  Key:    Ed25519 (256-bit)")
+            try:
+                from hermes_cli.config import load_config
+                config = load_config()
+                social = config.get("social", {})
+                if social.get("enabled"):
+                    print(f"  Relay:  {social.get('relay', 'not set')}\n  Social: enabled")
+                else:
+                    print(f"  Social: disabled")
+            except Exception:
+                pass
+
+    identity_parser.set_defaults(func=cmd_identity)
+
+    # =========================================================================
+    # wallet command
+    # =========================================================================
+    wallet_parser = subparsers.add_parser(
+        "wallet",
+        help="Manage Tempo wallet (balance, fund, login)",
+        description="Check Tempo USDC wallet status, add funds, or authenticate"
+    )
+    wallet_sub = wallet_parser.add_subparsers(dest="wallet_action")
+
+    wallet_sub.add_parser("status", help="Show wallet address, balance, and spending limit")
+    wallet_sub.add_parser("fund", help="Add USDC funds to wallet")
+    wallet_sub.add_parser("login", help="Authenticate wallet via browser passkey")
+    wallet_sub.add_parser("logout", help="Deauthenticate wallet")
+
+    def cmd_wallet(args):
+        import subprocess, shutil
+
+        action = getattr(args, "wallet_action", None) or "status"
+        tempo = shutil.which("tempo") or os.path.expanduser("~/.tempo/bin/tempo")
+
+        if not os.path.isfile(tempo):
+            print("Tempo CLI not found.")
+            print("Install: curl -fsSL https://tempo.xyz/install | bash")
+            return
+
+        if action == "status":
+            r = subprocess.run([tempo, "wallet", "-t", "whoami"], capture_output=True, text=True, timeout=10)
+            if r.returncode != 0:
+                print(f"Wallet not configured: {r.stderr.strip()}")
+                print("Run: hermes wallet login")
+                return
+            print(r.stdout.strip())
+
+        elif action == "fund":
+            subprocess.run([tempo, "wallet", "fund"], timeout=30)
+
+        elif action == "login":
+            print("Opening browser for Tempo wallet login...")
+            subprocess.run([tempo, "wallet", "login"], timeout=120)
+
+        elif action == "logout":
+            subprocess.run([tempo, "wallet", "logout", "--yes"], capture_output=True, timeout=10)
+            print("Wallet logged out.")
+
+    wallet_parser.set_defaults(func=cmd_wallet)
+
     # =========================================================================
     # Parse and execute
     # =========================================================================

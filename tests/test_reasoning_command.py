@@ -369,6 +369,8 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent._extract_reasoning = AIAgent._extract_reasoning.__get__(agent)
         agent.verbose_logging = False
         agent.reasoning_callback = None
+        # No streaming active by default; callback should fire for <think> blocks.
+        agent.stream_delta_callback = None
         return agent
 
     def test_single_think_block_extracted(self):
@@ -424,6 +426,41 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent._build_assistant_message(api_msg, "stop")
         self.assertEqual(len(captured), 1)
         self.assertIn("Deep analysis", captured[0])
+
+    def test_callback_skipped_for_inline_think_when_streaming(self):
+        """When streaming is active, <think>-extracted reasoning must NOT fire the callback.
+
+        _stream_delta() in cli.py already displayed the <think> block during
+        streaming, so firing reasoning_callback again would duplicate the output.
+        """
+        agent = self._make_agent()
+        # Simulate an active streaming consumer.
+        agent.stream_delta_callback = lambda text: None
+        captured = []
+        agent.reasoning_callback = lambda t: captured.append(t)
+        api_msg = self._build_msg("<think>Deep analysis here.</think>Answer.")
+        agent._build_assistant_message(api_msg, "stop")
+        self.assertEqual(len(captured), 0, "callback must be suppressed when streaming is active")
+
+    def test_callback_fires_for_structured_reasoning_even_when_streaming(self):
+        """Structured API reasoning (not from <think> blocks) must always fire the callback.
+
+        Structured reasoning arrives via dedicated API fields (e.g. `reasoning`),
+        not via the streamed content, so _stream_delta() never displayed it.
+        The callback must still fire so the UI can render it.
+        """
+        agent = self._make_agent()
+        # Simulate an active streaming consumer.
+        agent.stream_delta_callback = lambda text: None
+        captured = []
+        agent.reasoning_callback = lambda t: captured.append(t)
+        api_msg = self._build_msg(
+            "Response text.",
+            reasoning="Structured reasoning from API.",
+        )
+        agent._build_assistant_message(api_msg, "stop")
+        self.assertEqual(len(captured), 1)
+        self.assertIn("Structured reasoning", captured[0])
 
 
 # ---------------------------------------------------------------------------

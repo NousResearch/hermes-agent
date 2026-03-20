@@ -4173,7 +4173,10 @@ class HermesCLI:
             self.agent.quiet_mode = not self.verbose
             # Auto-enable reasoning display in verbose mode
             if self.verbose:
-                self.agent.reasoning_callback = self._on_reasoning
+                self.agent.reasoning_callback = (
+                    self._stream_reasoning_delta if self.streaming_enabled
+                    else self._on_reasoning
+                )
             elif not self.show_reasoning:
                 self.agent.reasoning_callback = None
 
@@ -4217,7 +4220,10 @@ class HermesCLI:
         if arg in ("show", "on"):
             self.show_reasoning = True
             if self.agent:
-                self.agent.reasoning_callback = self._on_reasoning
+                self.agent.reasoning_callback = (
+                    self._stream_reasoning_delta if self.streaming_enabled
+                    else self._on_reasoning
+                )
             save_config_value("display.show_reasoning", True)
             _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
             _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")

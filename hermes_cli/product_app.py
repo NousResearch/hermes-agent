@@ -10,7 +10,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from hermes_cli.product_chat import get_product_chat_session, stream_product_chat_turn
 from hermes_cli.product_config import load_product_config
 from hermes_cli.product_oidc import (
     create_oidc_login_request,
@@ -20,6 +19,7 @@ from hermes_cli.product_oidc import (
     load_product_oidc_client_settings,
 )
 from hermes_cli.product_stack import resolve_product_urls
+from hermes_cli.product_runtime import get_product_runtime_session, stream_product_runtime_turn
 from hermes_cli.product_web import build_product_index_html
 
 
@@ -161,14 +161,14 @@ def create_product_app() -> FastAPI:
     @app.get("/api/chat/session", response_model=ProductChatSessionResponse)
     def chat_session(request: Request) -> ProductChatSessionResponse:
         user = _require_product_user(request)
-        payload = get_product_chat_session(user)
+        payload = get_product_runtime_session(user)
         return ProductChatSessionResponse(**payload)
 
     @app.post("/api/chat/turn/stream")
     def chat_turn_stream(request: Request, payload: ProductChatTurnRequest) -> StreamingResponse:
         user = _require_product_user(request)
         try:
-            event_stream = stream_product_chat_turn(user, payload.user_message)
+            event_stream = stream_product_runtime_turn(user, payload.user_message)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return StreamingResponse(

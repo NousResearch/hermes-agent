@@ -3218,7 +3218,7 @@ For more help on a command:
     product_setup.add_argument(
         "section",
         nargs="?",
-        choices=["network", "model", "tools", "bootstrap"],
+        choices=["network", "identity", "model", "tools", "bootstrap"],
         default=None,
         help="Run a specific product setup section instead of the full product wizard",
     )

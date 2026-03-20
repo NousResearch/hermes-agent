@@ -182,8 +182,13 @@ The product service should configure and launch isolated per-user Hermes runtime
 In the first implementation:
 
 - the product app should read runtime defaults from `HERMES_HOME/product.yaml`
+- runtime launch settings should be derived on the host from `product.yaml` and injected into each runtime as env rather than requiring the runtime to read the host product config directly
 - explicit runtime env vars should still override product-config defaults when set
-- per-user runtimes should remain separate isolated processes or containers managed by the product app
+- per-user runtimes should remain separate isolated containers managed by the product app
+- each runtime should get its own `HERMES_HOME` under the product storage root
+- each runtime should keep its own Hermes session DB and file-backed memory state
+- browser chat APIs should proxy to runtime-local HTTP endpoints rather than calling `AIAgent` in-process
+- runtime control endpoints may be published only to host loopback for product-app proxying and must never be exposed on the LAN directly
 
 The product should treat tools as product-managed capabilities with execution metadata.
 
@@ -258,6 +263,21 @@ The product should therefore guarantee:
 - deletion and overwrite behavior are treated as normal direct edits rather than delayed sync actions in the first version
 
 The canonical storage root for the first implementation should live under `HERMES_HOME`, with per-user workspace and runtime state derived from that root.
+
+The expected first-version per-user layout is:
+
+- `HERMES_HOME/product/users/<user_id>/workspace`
+- `HERMES_HOME/product/users/<user_id>/runtime/hermes`
+
+The runtime `SOUL.md` should be rendered into:
+
+- `HERMES_HOME/product/users/<user_id>/runtime/hermes/SOUL.md`
+
+The content for that file should come from setup-owned product config:
+
+- `product.agent.soul_template_path`
+
+If no custom template path is configured, the product should render a bundled default identity template.
 
 ## Upstream Compatibility Rule
 

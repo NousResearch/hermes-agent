@@ -2,7 +2,7 @@ from argparse import Namespace
 from unittest.mock import patch
 
 from hermes_cli.product_config import load_product_config
-from hermes_cli.product_setup import run_product_setup_wizard, setup_product_network
+from hermes_cli.product_setup import run_product_setup_wizard, setup_product_identity, setup_product_network
 
 
 def _make_product_args(**overrides):
@@ -64,6 +64,18 @@ def test_product_setup_network_section_updates_public_host(tmp_path, monkeypatch
     assert product_config["network"]["public_host"] == "officebox.local"
 
 
+def test_product_setup_identity_section_updates_soul_template_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    template_path = tmp_path / "custom-soul.md"
+    template_path.write_text("custom soul", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.product_setup.prompt", lambda *args, **kwargs: str(template_path))
+
+    setup_product_identity()
+
+    product_config = load_product_config()
+    assert product_config["product"]["agent"]["soul_template_path"] == str(template_path.resolve())
+
+
 def test_product_setup_noninteractive_prints_guidance(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -72,4 +84,3 @@ def test_product_setup_noninteractive_prints_guidance(tmp_path, capsys, monkeypa
 
     out = capsys.readouterr().out
     assert "hermes config set model.provider custom" in out
-

@@ -45,6 +45,9 @@ Do not mark work done early.
 - Preserve Hermes memory semantics where practical, but always isolate them per user namespace.
 - Keep product-specific changes near the runtime edge and setup/config layer whenever possible.
 - Preserve upstream compatibility by preferring config, wrappers, and narrow extension points over deep Hermes-core patches.
+- For product runtimes, derive model/tool/runtime settings on the host from `product.yaml` and pass them into containers as env. Do not assume a per-user runtime container can read the host product config directly.
+- Per-user runtime containers may bind their internal control port to host loopback for product-app proxying, but must never be exposed on the LAN directly.
+- Each runtime must get its own `HERMES_HOME` and rendered `SOUL.md` under the product storage root.
 
 ## Current product-direction rules
 
@@ -65,6 +68,7 @@ Do not mark work done early.
 - If a local workflow depends on hostname-specific auth or container-network assumptions, document the reliable localhost path and all prerequisites clearly.
 - SSH validation on the separate Linux laptop is part of the normal closed-loop workflow when auth, Docker stack generation, runtime isolation, or filesystem-mount behavior changes.
 - Temporary SSH validation workspaces, helper scripts, containers, and logs must be cleaned up after testing.
+- If the Linux validation host does not have `runsc`, call that out explicitly. You may use `runc` only for smoke validation of the control path, but do not treat that as proof of the target isolation model.
 
 ## Pocket ID-specific rules
 
@@ -86,6 +90,7 @@ Do not mark work done early.
 - Keep product login logic provider-neutral. Discovery, PKCE, authorize URL generation, and code exchange should live in a reusable OIDC helper layer rather than being hardcoded inside future app routes.
 - The first product auth app surface should stay minimal: login, callback, session, and logout only. Do not grow browser-side auth features beyond that until the real product app exists.
 - If product setup reuses generic Hermes setup helpers for model or tool selection, that reuse should happen from the product-owned command path. Do not modify generic `hermes setup` semantics to fit the product.
+- `SOUL.md` customization is setup-owned. The product setup flow should persist the chosen template path in `product.yaml`, and runtime creation should render that content into each per-user runtime home.
 
 ## Local process hygiene
 

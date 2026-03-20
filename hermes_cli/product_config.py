@@ -58,6 +58,11 @@ DEFAULT_PRODUCT_CONFIG: Dict[str, Any] = {
     "runtime": {
         "default_profile": "tier1",
         "default_toolset": "mynah-tier1",
+        "isolation_runtime": "runsc",
+        "image": "ghcr.io/erniconcepts/hermes-agent-core:main",
+        "internal_port": 8091,
+        "host_port_start": 18091,
+        "host_port_end": 18150,
     },
     "storage": {
         "root": "product",

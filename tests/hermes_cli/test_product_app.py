@@ -277,7 +277,7 @@ def test_product_app_chat_session_returns_payload(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "hermes_cli.product_app.get_product_chat_session",
+        "hermes_cli.product_app.get_product_runtime_session",
         lambda user: {
             "session_id": "product_admin_123",
             "messages": [
@@ -339,7 +339,7 @@ def test_product_app_chat_stream_returns_sse(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "hermes_cli.product_app.stream_product_chat_turn",
+        "hermes_cli.product_app.stream_product_runtime_turn",
         lambda user, message: iter(
             [
                 'event: start\ndata: {"session_id": "product_admin_123"}\n\n',
@@ -399,7 +399,7 @@ def test_product_app_index_shows_session_details_when_signed_in(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "hermes_cli.product_app.get_product_chat_session",
+        "hermes_cli.product_app.get_product_runtime_session",
         lambda user: {"session_id": "product_admin_123", "messages": []},
     )
 

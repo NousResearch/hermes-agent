@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
 from hermes_cli.config import ensure_hermes_home, get_hermes_home, load_config
 from hermes_cli.product_config import initialize_product_config_file, load_product_config, save_product_config
@@ -36,6 +37,7 @@ from hermes_cli.setup import (
 
 PRODUCT_SETUP_SECTIONS = [
     ("network", "Product Network"),
+    ("identity", "Agent Identity"),
     ("model", "Model & Provider"),
     ("tools", "Tools"),
     ("bootstrap", "Pocket ID & First Admin"),
@@ -69,6 +71,36 @@ def setup_product_network() -> None:
         print_info(f"  App URL: {urls['app_base_url']}")
         print_info(f"  Pocket ID issuer: {urls['issuer_url']}")
         break
+
+
+def setup_product_identity() -> None:
+    product_config = load_product_config()
+    current_path = (
+        str(product_config.get("product", {}).get("agent", {}).get("soul_template_path", "")).strip()
+    )
+
+    print_header("Agent Identity")
+    print_info("Choose an optional markdown file to use as the runtime SOUL.md template.")
+    print_info("Leave this blank to use the bundled default Hermes Core identity.")
+
+    while True:
+        raw_value = (prompt("SOUL.md template path", current_path) or current_path).strip()
+        if not raw_value:
+            product_config.setdefault("product", {}).setdefault("agent", {})["soul_template_path"] = ""
+            save_product_config(product_config)
+            print_info("  Using bundled default SOUL.md template.")
+            return
+        candidate = Path(raw_value).expanduser().resolve()
+        if not candidate.exists():
+            print_warning(f"Template not found: {candidate}")
+            continue
+        if not candidate.is_file():
+            print_warning(f"Template path is not a file: {candidate}")
+            continue
+        product_config.setdefault("product", {}).setdefault("agent", {})["soul_template_path"] = str(candidate)
+        save_product_config(product_config)
+        print_info(f"  Runtime SOUL.md will be rendered from: {candidate}")
+        return
 
 
 def _sync_model_route_from_hermes_config() -> None:
@@ -123,6 +155,10 @@ def _print_product_setup_summary() -> None:
     product_config = load_product_config()
     hermes_home = get_hermes_home()
     urls = resolve_product_urls(product_config)
+    soul_template = (
+        str(product_config.get("product", {}).get("agent", {}).get("soul_template_path", "")).strip()
+        or "(bundled default)"
+    )
 
     print()
     print_header("Product Setup Summary")
@@ -133,6 +169,7 @@ def _print_product_setup_summary() -> None:
     print_info(f"Install dir:    {PROJECT_ROOT}")
     print_info(f"App URL:        {urls['app_base_url']}")
     print_info(f"Pocket ID URL:  {urls['issuer_url']}")
+    print_info(f"SOUL template:  {soul_template}")
 
 
 def _start_product_stack_best_effort() -> None:
@@ -190,6 +227,8 @@ def run_product_setup_wizard(args: Any) -> None:
     if section:
         if section == "network":
             setup_product_network()
+        elif section == "identity":
+            setup_product_identity()
         elif section == "model":
             _run_model_section()
         elif section == "tools":
@@ -228,6 +267,7 @@ def run_product_setup_wizard(args: Any) -> None:
     print()
 
     setup_product_network()
+    setup_product_identity()
     _run_model_section()
     _run_tools_section()
     _run_bootstrap_section()

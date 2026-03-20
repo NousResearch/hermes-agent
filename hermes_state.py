@@ -148,6 +148,7 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 2")
+                self._conn.commit()
             if current_version < 3:
                 # v3: add title column to sessions
                 try:
@@ -155,6 +156,7 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 3")
+                self._conn.commit()
             if current_version < 4:
                 # v4: add unique index on title (NULLs allowed, only non-NULL must be unique)
                 try:
@@ -165,6 +167,7 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Index already exists
                 cursor.execute("UPDATE schema_version SET version = 4")
+                self._conn.commit()
             if current_version < 5:
                 new_columns = [
                     ("cache_read_tokens", "INTEGER DEFAULT 0"),
@@ -189,6 +192,7 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")
+                self._conn.commit()
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -855,23 +859,25 @@ class SessionDB:
 
     def session_count(self, source: str = None) -> int:
         """Count sessions, optionally filtered by source."""
-        if source:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-            )
-        else:
-            cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
-        return cursor.fetchone()[0]
+        with self._lock:
+            if source:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
+                )
+            else:
+                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
-        if session_id:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-            )
-        else:
-            cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
-        return cursor.fetchone()[0]
+        with self._lock:
+            if session_id:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+                )
+            else:
+                cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
+            return cursor.fetchone()[0]
 
     # =========================================================================
     # Export and cleanup

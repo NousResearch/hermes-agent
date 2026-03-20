@@ -890,9 +890,12 @@ class SessionStore:
                 logger.debug("Session DB operation failed: %s", e)
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
-        transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        try:
+            transcript_path = self.get_transcript_path(session_id)
+            with open(transcript_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.debug("Failed to write JSONL transcript for session %s: %s", session_id, e)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.

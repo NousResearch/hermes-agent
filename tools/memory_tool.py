@@ -23,7 +23,10 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Not available on Windows
 import json
 import logging
 import os
@@ -130,6 +133,10 @@ class MemoryStore:
         Uses a separate .lock file so the memory file itself can still be
         atomically replaced via os.replace().
         """
+        if fcntl is None:
+            # No file locking on Windows — yield without lock
+            yield
+            return
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = open(lock_path, "w")

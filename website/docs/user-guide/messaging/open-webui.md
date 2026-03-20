@@ -10,12 +10,13 @@ description: "Connect Open WebUI to Hermes Agent via the OpenAI-compatible API s
 
 ## Architecture
 
-```
-┌──────────────────┐    POST /v1/chat/completions    ┌──────────────────────┐
-│   Open WebUI     │ ──────────────────────────────► │  hermes-agent        │
-│   (browser UI)   │    SSE streaming response       │  gateway API server  │
-│   port 3000      │ ◄────────────────────────────── │  port 8642           │
-└──────────────────┘                                  └──────────────────────┘
+```mermaid
+flowchart LR
+    webui["Open WebUI<br/>browser UI<br/>port 3000"]
+    hermes["hermes-agent<br/>gateway API server<br/>port 8642"]
+
+    webui -->|"POST /v1/chat/completions"| hermes
+    hermes -->|"SSE streaming response"| webui
 ```
 
 Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Your agent handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.

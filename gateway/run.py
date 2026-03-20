@@ -1056,6 +1056,8 @@ class GatewayRunner:
         self._running = False
 
         for session_key, agent in list(self._running_agents.items()):
+            if agent is _AGENT_PENDING_SENTINEL:
+                continue
             try:
                 agent.interrupt("Gateway shutting down")
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
@@ -1354,8 +1356,12 @@ class GatewayRunner:
 
             running_agent = self._running_agents.get(_quick_key)
             if running_agent is _AGENT_PENDING_SENTINEL:
-                # Agent is being set up but not ready yet — queue the message
-                # so it will be picked up after the agent starts.
+                # Agent is being set up but not ready yet.
+                if event.get_command() == "stop":
+                    # Nothing to interrupt — agent hasn't started yet.
+                    return "⏳ The agent is still starting up — nothing to stop yet."
+                # Queue the message so it will be picked up after the
+                # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     adapter._pending_messages[_quick_key] = event
@@ -2326,8 +2332,10 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         
-        if session_key in self._running_agents:
-            agent = self._running_agents[session_key]
+        agent = self._running_agents.get(session_key)
+        if agent is _AGENT_PENDING_SENTINEL:
+            return "⏳ The agent is still starting up — nothing to stop yet."
+        if agent:
             agent.interrupt()
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:

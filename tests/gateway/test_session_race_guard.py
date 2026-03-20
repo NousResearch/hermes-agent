@@ -195,3 +195,73 @@ async def test_command_messages_do_not_leave_sentinel():
     assert session_key not in runner._running_agents, (
         "Command handlers must not leave sentinel in _running_agents"
     )
+
+
+# ------------------------------------------------------------------
+# Test 6: /stop during sentinel returns helpful message
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_stop_during_sentinel_returns_message():
+    """If /stop arrives while the sentinel is set (agent still starting),
+    it should return a helpful message instead of crashing or queuing."""
+    runner = _make_runner()
+    event1 = _make_event(text="hello")
+    session_key = build_session_key(event1.source)
+
+    barrier = asyncio.Event()
+
+    async def slow_inner(self_inner, ev, src, qk):
+        await barrier.wait()
+        return "ok"
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
+        task1 = asyncio.create_task(runner._handle_message(event1))
+        await asyncio.sleep(0)
+
+        # Sentinel should be set
+        assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+
+        # Send /stop — should get a message, not crash
+        stop_event = _make_event(text="/stop")
+        result = await runner._handle_message(stop_event)
+        assert result is not None, "/stop during sentinel should return a message"
+        assert "starting up" in result.lower()
+
+        # Should NOT be queued as pending
+        adapter = runner.adapters[Platform.TELEGRAM]
+        assert session_key not in adapter._pending_messages
+
+        barrier.set()
+        await task1
+
+
+# ------------------------------------------------------------------
+# Test 7: Shutdown skips sentinel entries
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_shutdown_skips_sentinel():
+    """During gateway shutdown, sentinel entries in _running_agents
+    should be skipped without raising AttributeError."""
+    runner = _make_runner()
+    session_key = "telegram:dm:99999"
+
+    # Simulate a sentinel in _running_agents
+    runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+
+    # Also add a real agent mock to verify it still gets interrupted
+    real_agent = MagicMock()
+    runner._running_agents["telegram:dm:88888"] = real_agent
+
+    runner.adapters = {}  # No adapters to disconnect
+    runner._running = True
+    runner._shutdown_event = asyncio.Event()
+    runner._exit_reason = None
+    runner._shutdown_all_gateway_honcho = lambda: None
+
+    with patch("gateway.status.remove_pid_file"), \
+         patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    # Real agent should have been interrupted
+    real_agent.interrupt.assert_called_once()
+    # Should not have raised on the sentinel

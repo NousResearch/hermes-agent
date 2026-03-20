@@ -46,4 +46,5 @@ async def test_handle_message_does_not_priority_interrupt_photo_followup():
 
     assert result is None
     running_agent.interrupt.assert_not_called()
-    assert runner.adapters[Platform.TELEGRAM]._pending_messages[session_key] is event
+    queued = runner.adapters[Platform.TELEGRAM]._pending_messages[session_key]
+    assert list(queued) == [event]

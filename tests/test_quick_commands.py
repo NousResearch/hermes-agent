@@ -1,5 +1,7 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
+import queue
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
 import pytest
@@ -108,6 +110,30 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
+    def test_queue_requires_busy_agent(self):
+        cli = self._make_cli({})
+        cli._agent_running = False
+        cli._pending_input = queue.Queue()
+
+        with patch("cli._cprint") as mock_cprint:
+            cli.process_command("/queue follow up")
+
+        mock_cprint.assert_called_once()
+        assert "only works while hermes is already busy" in str(mock_cprint.call_args[0][0]).lower()
+
+    def test_queue_enqueues_followup_while_busy(self):
+        cli = self._make_cli({})
+        cli._agent_running = True
+        cli._pending_input = queue.Queue()
+        cli._enqueue_visible_followup = MagicMock()
+
+        with patch("cli._cprint") as mock_cprint:
+            cli.process_command("/queue follow up later")
+
+        assert cli._pending_input.get_nowait() == "follow up later"
+        cli._enqueue_visible_followup.assert_called_once_with("follow up later")
+        assert "queued for the next turn" in str(mock_cprint.call_args[0][0]).lower()
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
@@ -125,6 +151,7 @@ class TestGatewayQuickCommands:
         event.source.platform.value = "telegram"
         event.source.chat_type = "dm"
         event.source.chat_id = "123"
+        event.source.thread_id = None
         return event
 
     @pytest.mark.asyncio
@@ -186,3 +213,137 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_running_agent_interrupts_for_plain_follow_up(self):
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+        from gateway.session import SessionSource, build_session_key
+
+        class StubAdapter(BasePlatformAdapter):
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True, message_id="1")
+
+            async def send_typing(self, chat_id, metadata=None):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id}
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner.hooks = SimpleNamespace(emit=AsyncMock())
+        runner.adapters = {Platform.TELEGRAM: StubAdapter()}
+
+        event = MessageEvent(
+            text="follow up later",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="123",
+                chat_type="dm",
+                user_id="test_user",
+                user_name="Test User",
+            ),
+            message_id="msg-1",
+        )
+
+        session_key = build_session_key(event.source)
+        running_agent = MagicMock()
+        runner._running_agents[session_key] = running_agent
+
+        result = await runner._handle_message(event)
+        assert result is None
+        running_agent.interrupt.assert_called_once_with()
+        queued = runner.adapters[Platform.TELEGRAM]._pending_messages[session_key]
+        assert list(queued)[0] is event
+
+    @pytest.mark.asyncio
+    async def test_running_agent_interrupts_for_stop_command(self):
+        from gateway.run import GatewayRunner
+        from gateway.session import build_session_key
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner.hooks = SimpleNamespace(emit=AsyncMock())
+
+        event = self._make_event("stop")
+        event.text = "/stop"
+
+        running_agent = MagicMock()
+        runner._running_agents[build_session_key(event.source)] = running_agent
+
+        result = await runner._handle_message(event)
+        assert result is None
+        running_agent.interrupt.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_running_agent_queue_command_defers_without_interrupt(self):
+        from gateway.run import GatewayRunner
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+        from gateway.session import SessionSource, build_session_key
+
+        class StubAdapter(BasePlatformAdapter):
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True, message_id="1")
+
+            async def send_typing(self, chat_id, metadata=None):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id}
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner.hooks = SimpleNamespace(emit=AsyncMock())
+        runner.adapters = {Platform.TELEGRAM: StubAdapter()}
+
+        event = MessageEvent(
+            text="/queue follow up later",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="123",
+                chat_type="dm",
+                user_id="test_user",
+                user_name="Test User",
+            ),
+            message_id="msg-1",
+        )
+
+        session_key = build_session_key(event.source)
+        running_agent = MagicMock()
+        runner._running_agents[session_key] = running_agent
+
+        result = await runner._handle_message(event)
+        assert result == "Queued for the next turn."
+        running_agent.interrupt.assert_not_called()
+        queued = runner.adapters[Platform.TELEGRAM]._pending_messages[session_key]
+        assert list(queued)[0].text == "follow up later"

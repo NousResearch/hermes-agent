@@ -47,7 +47,10 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from firecrawl import Firecrawl
+try:
+    from firecrawl import Firecrawl
+except ImportError:
+    Firecrawl = None  # type: ignore
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access

@@ -9,6 +9,7 @@ duplicate agent.
 """
 
 import asyncio
+from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,7 +66,7 @@ async def test_sentinel_placed_before_agent_setup():
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, **kwargs):
         nonlocal sentinel_was_set
         sentinel_was_set = runner._running_agents.get(qk) is _AGENT_PENDING_SENTINEL
         return "ok"
@@ -89,7 +90,7 @@ async def test_sentinel_cleaned_up_after_handler_returns():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, **kwargs):
         return "ok"
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -111,7 +112,7 @@ async def test_sentinel_cleaned_up_on_exception():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, **kwargs):
         raise RuntimeError("boom")
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -138,7 +139,7 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, **kwargs):
         # Simulate slow setup — wait until test tells us to proceed
         await barrier.wait()
         return "ok"
@@ -161,7 +162,8 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
         assert session_key in adapter._pending_messages, (
             "Second message should be queued as pending"
         )
-        assert adapter._pending_messages[session_key] is event2
+        assert isinstance(adapter._pending_messages[session_key], deque)
+        assert list(adapter._pending_messages[session_key]) == [event2]
 
         # Let first message complete
         barrier.set()
@@ -210,7 +212,7 @@ async def test_stop_during_sentinel_returns_message():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, **kwargs):
         await barrier.wait()
         return "ok"
 
@@ -231,6 +233,37 @@ async def test_stop_during_sentinel_returns_message():
         adapter = runner.adapters[Platform.TELEGRAM]
         assert session_key not in adapter._pending_messages
 
+        barrier.set()
+        await task1
+
+
+@pytest.mark.asyncio
+async def test_command_hook_not_emitted_for_message_queued_during_sentinel():
+    """Deferred commands should emit hooks only when replayed, not when queued."""
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+    )
+    event1 = MessageEvent(text="hello", message_type=MessageType.TEXT, source=source)
+    help_event = MessageEvent(text="/help", message_type=MessageType.TEXT, source=source)
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+
+    barrier = asyncio.Event()
+
+    async def slow_inner(self_inner, ev, src, qk, **kwargs):
+        await barrier.wait()
+        return "ok"
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", slow_inner):
+        task1 = asyncio.create_task(runner._handle_message(event1))
+        await asyncio.sleep(0)
+        result = await runner._handle_message(help_event)
+        assert result is None
+        runner.hooks.emit.assert_not_awaited()
+        adapter = runner.adapters[Platform.TELEGRAM]
+        queued = adapter._pending_messages[build_session_key(source)]
+        assert list(queued) == [help_event]
         barrier.set()
         await task1
 

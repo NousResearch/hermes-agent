@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
+from dataclasses import replace
 from typing import Dict, Optional, Any, List
 
 # ---------------------------------------------------------------------------
@@ -348,7 +350,6 @@ class GatewayRunner:
         # the primary model succeeds again or the user switches via /model.
         self._effective_model: Optional[str] = None
         self._effective_provider: Optional[str] = None
-
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -609,6 +610,25 @@ class GatewayRunner:
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
+
+    @staticmethod
+    def _normalize_queue_event(event: MessageEvent) -> MessageEvent | None:
+        """Convert `/queue ...` into a replayable follow-up event."""
+        if event.get_command() != "queue":
+            return event
+        queued_text = event.get_command_args().strip()
+        if not queued_text and not event.media_urls:
+            return None
+        return replace(event, text=queued_text)
+
+    @staticmethod
+    def _append_adapter_pending_event(adapter: BasePlatformAdapter, session_key: str, event: MessageEvent) -> None:
+        """Append an event to the adapter pending queue while respecting queue caps."""
+        queue = adapter._pending_messages.setdefault(session_key, deque())
+        max_pending = getattr(adapter, "_MAX_PENDING_MESSAGES", None)
+        if max_pending and len(queue) >= max_pending:
+            queue.popleft()
+        queue.append(event)
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -1288,10 +1308,19 @@ class GatewayRunner:
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
     
-    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+    _MAX_INTERRUPT_REPLAY_DEPTH = 5
+
+    async def _handle_message(
+        self,
+        event: MessageEvent,
+        *,
+        history_override: Optional[List[Dict[str, Any]]] = None,
+        bypass_running_agent_check: bool = False,
+        _replay_depth: int = 0,
+    ) -> Optional[str]:
         """
         Handle an incoming message from any platform.
-        
+
         This is the core message processing pipeline:
         1. Check user authorization
         2. Check for commands (/new, /reset, etc.)
@@ -1300,6 +1329,10 @@ class GatewayRunner:
         5. Build context for agent
         6. Run agent conversation
         7. Return response
+
+        _replay_depth tracks recursive calls made to replay queued events
+        after an interrupt. Guarded by _MAX_INTERRUPT_REPLAY_DEPTH to
+        prevent unbounded recursion from rapid-fire interrupts.
         """
         source = event.source
 
@@ -1332,25 +1365,27 @@ class GatewayRunner:
                         )
             return None
         
-        # PRIORITY handling when an agent is already running for this session.
-        # Default behavior is to interrupt immediately so user text/stop messages
-        # are handled with minimal latency.
-        #
-        # Special case: Telegram/photo bursts often arrive as multiple near-
-        # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
-        # let the adapter-level batching/queueing logic absorb them.
+        # Check for commands
+        command = event.get_command()
+
+        # Resolve aliases to canonical name so dispatch only checks canonicals.
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
+        _cmd_def = _resolve_cmd(command) if command else None
+        canonical = _cmd_def.name if _cmd_def else command
+
+        # Explicit stop still bypasses normal command handling so interruption
+        # reaches the running agent quickly. Plain follow-ups now interrupt by
+        # default; `/queue` is the explicit opt-in to defer them.
         _quick_key = self._session_key_for_source(source)
-        if _quick_key in self._running_agents:
-            if event.get_command() == "status":
+        if not bypass_running_agent_check and _quick_key in self._running_agents:
+            if canonical == "status":
                 return await self._handle_status_command(event)
 
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
-            # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
-            # clear the adapter's pending queue so the stale "/reset" text
-            # doesn't get re-processed as a user message after the
-            # interrupt completes.
+            # text.  Interrupt the agent first, then clear the adapter's
+            # pending queue so the stale "/reset" text doesn't get
+            # re-processed as a user message after the interrupt completes.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
@@ -1358,25 +1393,38 @@ class GatewayRunner:
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Session reset requested")
-                # Clear any pending messages so the old text doesn't replay
                 adapter = self.adapters.get(source.platform)
                 if adapter and hasattr(adapter, 'get_pending_message'):
-                    adapter.get_pending_message(_quick_key)  # consume and discard
+                    adapter.get_pending_message(_quick_key)
                 self._pending_messages.pop(_quick_key, None)
-                # Clean up the running agent entry so the reset handler
-                # doesn't think an agent is still active.
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
+            running_agent = self._running_agents.get(_quick_key)
+            if running_agent is _AGENT_PENDING_SENTINEL:
+                if canonical == "stop":
+                    return "⏳ The agent is still starting up — nothing to stop yet."
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    # Reuse adapter queue semantics so photo bursts merge cleanly.
-                    if _quick_key in adapter._pending_messages:
-                        existing = adapter._pending_messages[_quick_key]
-                        if getattr(existing, "message_type", None) == MessageType.PHOTO:
+                    queued_event = self._normalize_queue_event(event) if canonical == "queue" else event
+                    if queued_event is not None:
+                        self._append_adapter_pending_event(adapter, _quick_key, queued_event)
+                if canonical == "queue":
+                    return "Queued for the next turn." if event.get_command_args().strip() or event.media_urls else "Usage: /queue <prompt>"
+                return None
+
+            if canonical != "stop":
+                if event.message_type == MessageType.PHOTO:
+                    logger.debug(
+                        "PRIORITY photo follow-up for session %s — queueing without interrupt",
+                        _quick_key[:20],
+                    )
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        pending_queue = adapter._pending_messages.setdefault(_quick_key, deque())
+                        if pending_queue and getattr(pending_queue[-1], "message_type", None) == MessageType.PHOTO:
+                            existing = pending_queue[-1]
                             existing.media_urls.extend(event.media_urls)
                             existing.media_types.extend(event.media_types)
                             if event.text:
@@ -1385,49 +1433,43 @@ class GatewayRunner:
                                 elif event.text not in existing.text:
                                     existing.text = f"{existing.text}\n\n{event.text}".strip()
                         else:
-                            adapter._pending_messages[_quick_key] = event
-                    else:
-                        adapter._pending_messages[_quick_key] = event
-                return None
-
-            running_agent = self._running_agents.get(_quick_key)
-            if running_agent is _AGENT_PENDING_SENTINEL:
-                # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Nothing to interrupt — agent hasn't started yet.
-                    return "⏳ The agent is still starting up — nothing to stop yet."
-                # Queue the message so it will be picked up after the
-                # agent starts.
+                            self._append_adapter_pending_event(adapter, _quick_key, event)
+                    return None
+                if canonical == "queue":
+                    queued_event = self._normalize_queue_event(event)
+                    if queued_event is None:
+                        return "Usage: /queue <prompt>"
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        self._append_adapter_pending_event(adapter, _quick_key, queued_event)
+                    if hasattr(self, "hooks"):
+                        await self.hooks.emit("command:queue", {
+                            "platform": source.platform.value if source.platform else "",
+                            "user_id": source.user_id,
+                            "command": "queue",
+                            "args": event.get_command_args().strip(),
+                        })
+                    return "Queued for the next turn."
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    self._append_adapter_pending_event(adapter, _quick_key, event)
+                if hasattr(running_agent, "interrupt"):
+                    running_agent.interrupt()
                 return None
-            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
-            else:
-                self._pending_messages[_quick_key] = event.text
+
+            logger.debug("PRIORITY stop for session %s", _quick_key[:20])
+            running_agent.interrupt()
             return None
 
-        # Check for commands
-        command = event.get_command()
-        
-        # Emit command:* hook for any recognized slash command.
-        # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
-        # in hermes_cli/commands.py — no hardcoded set to maintain here.
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS:
+        # Emit command:* hook only when this turn is actually being processed now.
+        # Queued/replayed commands should emit when replayed, not when deferred.
+        if command and command in GATEWAY_KNOWN_COMMANDS and hasattr(self, "hooks"):
             await self.hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "command": command,
                 "args": event.get_command_args().strip(),
             })
-
-        # Resolve aliases to canonical name so dispatch only checks canonicals.
-        _cmd_def = _resolve_cmd(command) if command else None
-        canonical = _cmd_def.name if _cmd_def else command
 
         if canonical == "new":
             return await self._handle_reset_command(event)
@@ -1440,7 +1482,6 @@ class GatewayRunner:
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
-        
         if canonical == "model":
             return await self._handle_model_command(event)
 
@@ -1593,7 +1634,13 @@ class GatewayRunner:
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
 
         try:
-            return await self._handle_message_with_agent(event, source, _quick_key)
+            return await self._handle_message_with_agent(
+                event,
+                source,
+                _quick_key,
+                history_override=history_override,
+                _replay_depth=_replay_depth,
+            )
         finally:
             # If _run_agent replaced the sentinel with a real agent and
             # then cleaned it up, this is a no-op.  If we exited early
@@ -1602,7 +1649,15 @@ class GatewayRunner:
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str):
+    async def _handle_message_with_agent(
+        self,
+        event,
+        source,
+        _quick_key: str,
+        *,
+        history_override: Optional[List[Dict[str, Any]]] = None,
+        _replay_depth: int = 0,
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
 
         # Get or create session
@@ -1639,7 +1694,10 @@ class GatewayRunner:
             pass
 
         # Build the context prompt to inject
-        context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        try:
+            context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        except TypeError:
+            context_prompt = build_session_context_prompt(context)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -1652,7 +1710,7 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
         
         # Load conversation history from transcript
-        history = self.session_store.load_transcript(session_entry.session_id)
+        history = history_override if history_override is not None else self.session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -2230,6 +2288,22 @@ class GatewayRunner:
                 base_url=agent_result.get("base_url"),
             )
 
+            pending_event = agent_result.get("_pending_event")
+            if pending_event:
+                if _replay_depth >= self._MAX_INTERRUPT_REPLAY_DEPTH:
+                    logger.warning(
+                        "Interrupt replay depth limit (%d) reached for session %s, "
+                        "dropping queued event to prevent unbounded recursion",
+                        self._MAX_INTERRUPT_REPLAY_DEPTH, session_key,
+                    )
+                else:
+                    return await self._handle_message(
+                        pending_event,
+                        history_override=agent_result.get("_resume_history", agent_messages),
+                        bypass_running_agent_check=True,
+                        _replay_depth=_replay_depth + 1,
+                    )
+
             # Auto voice reply: send TTS audio before the text response
             if self._should_send_voice_reply(event, response, agent_messages):
                 await self._send_voice_reply(event, response)
@@ -2376,7 +2450,7 @@ class GatewayRunner:
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:
             return "No active task to stop."
-    
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         from hermes_cli.commands import gateway_help_lines
@@ -4319,13 +4393,22 @@ class GatewayRunner:
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
-        
+
         Returns the full result dict from run_conversation, including:
           - "final_response": str (the text to send back)
           - "messages": list (full conversation including tool calls)
           - "api_calls": int
           - "completed": bool
-        
+
+        When interrupted, two additional keys may be present:
+          - "_pending_event": MessageEvent | None — a queued gateway event
+            that should be replayed through _handle_message after the interrupt.
+          - "_resume_history": list — conversation history to pass as
+            history_override when replaying the pending event.
+
+        Callers should check for "_pending_event" and, if present, recurse
+        into _handle_message rather than processing the response normally.
+
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
@@ -4906,10 +4989,8 @@ class GatewayRunner:
                 if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(session_key):
                     agent = agent_holder[0]
                     if agent:
-                        pending_event = adapter.get_pending_message(session_key)
-                        pending_text = pending_event.text if pending_event else None
                         logger.debug("Interrupt detected from adapter, signaling agent...")
-                        agent.interrupt(pending_text)
+                        agent.interrupt()
                         break
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
@@ -4940,6 +5021,7 @@ class GatewayRunner:
             # Get pending message from adapter if interrupted.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
+            pending_event = None
             if result and result.get("interrupted") and adapter:
                 pending_event = adapter.get_pending_message(session_key) if session_key else None
                 if pending_event:
@@ -4974,8 +5056,13 @@ class GatewayRunner:
                 # like "Operation interrupted." They already know they sent a new
                 # message, so go straight to processing it.
                 
-                # Now process the pending message with updated history
                 updated_history = result.get("messages", history)
+                response["_pending_event"] = pending_event
+                response["_resume_history"] = updated_history
+                if pending_event:
+                    return response
+
+                # Fallback for interrupt sources that only provided plain text.
                 return await self._run_agent(
                     message=pending,
                     context_prompt=context_prompt,

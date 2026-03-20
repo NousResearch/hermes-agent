@@ -42,17 +42,24 @@ API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your 
 
 ### Can I use it offline / with local models?
 
-Yes. Point Hermes at any local OpenAI-compatible server:
+Yes. Run `hermes model`, select **Custom endpoint**, and enter your server's URL:
 
 ```bash
-hermes config set OPENAI_BASE_URL http://localhost:11434/v1  # Ollama
-hermes config set OPENAI_API_KEY ollama                       # Any non-empty value
-hermes config set HERMES_MODEL llama3.1
+hermes model
+# Select: Custom endpoint (enter URL manually)
+# API base URL: http://localhost:11434/v1
+# API key: ollama
+# Model name: qwen3.5:27b
+# Context length: 32768   ← set this to match your server's actual context window
 ```
 
-You can also save the endpoint interactively with `hermes model`. Hermes persists that custom endpoint in `config.yaml`, and auxiliary tasks configured with provider `main` follow the same saved endpoint.
+Hermes persists the endpoint in `config.yaml` and prompts for the context window size so compression triggers at the right time. If you leave context length blank, Hermes auto-detects it from the server's `/models` endpoint or [models.dev](https://models.dev).
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
+
+:::tip Ollama users
+If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 16384`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
+:::
 
 ### How much does it cost?
 
@@ -200,7 +207,7 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 
 #### Context length exceeded
 
-**Cause:** The conversation has grown too long for the model's context window.
+**Cause:** The conversation has grown too long for the model's context window, or Hermes detected the wrong context length for your model.
 
 **Solution:**
 ```bash
@@ -213,6 +220,35 @@ hermes chat
 # Use a model with a larger context window
 hermes chat --model openrouter/google/gemini-2.0-flash-001
 ```
+
+If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
+
+```bash
+# Look at the status bar — it shows the detected context length
+/context
+```
+
+To fix context detection, set it explicitly:
+
+```yaml
+# In ~/.hermes/config.yaml
+model:
+  default: your-model-name
+  context_length: 131072  # your model's actual context window
+```
+
+Or for custom endpoints, add it per-model:
+
+```yaml
+custom_providers:
+  - name: "My Server"
+    base_url: "http://localhost:11434/v1"
+    models:
+      qwen3.5:27b:
+        context_length: 32768
+```
+
+See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for how auto-detection works and all override options.
 
 ---
 

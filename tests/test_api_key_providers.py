@@ -92,8 +92,8 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
-        assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/v1"
-        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
+        assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
+        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
 
@@ -399,14 +399,14 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("minimax")
         assert creds["provider"] == "minimax"
         assert creds["api_key"] == "mm-secret-key"
-        assert creds["base_url"] == "https://api.minimax.io/v1"
+        assert creds["base_url"] == "https://api.minimax.io/anthropic"
 
     def test_resolve_minimax_cn_with_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "mmcn-secret-key")
         creds = resolve_api_key_provider_credentials("minimax-cn")
         assert creds["provider"] == "minimax-cn"
         assert creds["api_key"] == "mmcn-secret-key"
-        assert creds["base_url"] == "https://api.minimaxi.com/v1"
+        assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
 
     def test_resolve_ai_gateway_with_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-secret-key")

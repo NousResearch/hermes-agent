@@ -24,6 +24,18 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
+    """Auto-detect api_mode from the resolved base URL.
+
+    Direct api.openai.com endpoints need the Responses API for GPT-5.x
+    tool calls with reasoning (chat/completions returns 400).
+    """
+    normalized = (base_url or "").strip().lower().rstrip("/")
+    if "api.openai.com" in normalized and "openrouter" not in normalized:
+        return "codex_responses"
+    return None
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -185,7 +197,9 @@ def _resolve_named_custom_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": custom_provider.get("api_mode", "chat_completions"),
+        "api_mode": custom_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -263,7 +277,9 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions",
+        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": source,

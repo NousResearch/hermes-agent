@@ -7,6 +7,8 @@ can be active at a time.
 
 from __future__ import annotations
 
+import platform
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,6 +18,194 @@ from rich.table import Table
 from hermes_cli.config import load_config, save_config_value
 
 console = Console()
+
+
+# =============================================================================
+# Hardware Detection
+# =============================================================================
+
+def _get_hardware_info() -> dict:
+    """Detect hardware capabilities for model selection.
+
+    Returns:
+        dict with keys: os, arch, ram_gb, has_gpu, gpu_type, has_mps, recommended_format
+    """
+    info = {
+        "os": platform.system(),
+        "arch": platform.machine(),
+        "ram_gb": None,
+        "has_gpu": False,
+        "gpu_type": None,
+        "has_mps": False,
+        "recommended_format": "pytorch",
+    }
+
+    # Detect RAM
+    try:
+        if platform.system() == "Darwin":
+            import subprocess
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                info["ram_gb"] = int(result.stdout.strip()) / (1024**3)
+        else:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        kb = int(line.split()[1])
+                        info["ram_gb"] = kb / (1024**2)
+                        break
+    except Exception:
+        pass
+
+    # Detect GPU
+    try:
+        if platform.system() == "Darwin":
+            # Check for Apple Silicon
+            if platform.machine() == "arm64":
+                info["has_gpu"] = True
+                info["gpu_type"] = "apple_silicon"
+                info["recommended_format"] = "mlx"
+                # Check for MPS (Metal Performance Shaders)
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ["python3", "-c", "import torch; print(torch.backends.mps.is_available())"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    info["has_mps"] = result.returncode == 0 and "True" in result.stdout
+                except Exception:
+                    pass
+        else:
+            # Linux: check for NVIDIA CUDA
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    info["has_gpu"] = True
+                    info["gpu_type"] = "nvidia_cuda"
+                    info["recommended_format"] = "pytorch"
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+    except Exception:
+        pass
+
+    return info
+
+
+def _get_recommended_models(hw_info: dict) -> list[dict]:
+    """Get recommended embedding models based on hardware.
+
+    Args:
+        hw_info: Hardware info from _get_hardware_info()
+
+    Returns:
+        List of dicts with: id, name, size_gb, format, description
+    """
+    models = []
+
+    if hw_info["os"] == "Darwin" and hw_info["arch"] == "arm64":
+        # Apple Silicon - prefer MLX models
+        models.extend([
+            {
+                "id": "mlx-community/bge-micro-v2",
+                "name": "BGE Micro v2 (MLX)",
+                "size_gb": 0.2,
+                "format": "mlx",
+                "description": "Ultra-light, fastest on Apple Silicon",
+                "min_ram": 2,
+            },
+            {
+                "id": "mlx-community/Nomic-embed-text",
+                "name": "Nomic Embed Text (MLX)",
+                "size_gb": 0.9,
+                "format": "mlx",
+                "description": "Cross-lingual, good quality",
+                "min_ram": 4,
+            },
+            {
+                "id": "qwen3.5b:0.8b",
+                "name": "Qwen 3.5B (Ollama/MLX)",
+                "size_gb": 4.0,
+                "format": "mlx",
+                "description": "Good quality, requires Ollama or MLX",
+                "min_ram": 8,
+            },
+        ])
+    else:
+        # Linux/Other - CUDA or CPU models
+        ram = hw_info["ram_gb"] or 16
+
+        models.extend([
+            {
+                "id": "BAAI/bge-micro-v2",
+                "name": "BGE Micro v2",
+                "size_gb": 0.2,
+                "format": "pytorch",
+                "description": "Ultra-light, CPU-friendly",
+                "min_ram": 2,
+            },
+            {
+                "id": "qwen3.5b:0.8b",
+                "name": "Qwen 3.5B (Ollama)",
+                "size_gb": 4.0,
+                "format": "pytorch",
+                "description": "Good quality via Ollama",
+                "min_ram": 8,
+            },
+            {
+                "id": "nomic-embed-text",
+                "name": "Nomic Embed Text (Ollama)",
+                "size_gb": 0.9,
+                "format": "pytorch",
+                "description": "Cross-lingual via Ollama",
+                "min_ram": 4,
+            },
+        ])
+
+        # Add sentence-transformers option if enough RAM
+        if ram >= 8:
+            models.append({
+                "id": "BAAI/bge-m3",
+                "name": "BGE M3 (sentence-transformers)",
+                "size_gb": 2.5,
+                "format": "pytorch",
+                "description": "Highest quality, requires more RAM",
+                "min_ram": 8,
+            })
+
+    return models
+
+
+def _filter_models_for_hardware(models: list[dict], hw_info: dict) -> list[dict]:
+    """Filter models to only those that fit in available hardware.
+
+    Args:
+        models: List of model dicts from _get_recommended_models()
+        hw_info: Hardware info from _get_hardware_info()
+
+    Returns:
+        Filtered list of models that fit the hardware
+    """
+    ram = hw_info["ram_gb"]
+
+    # If we can't detect RAM, allow all
+    if ram is None:
+        return models
+
+    filtered = []
+    for model in models:
+        min_ram = model.get("min_ram", 4)
+        # Add 2GB buffer for QMD server overhead
+        if ram >= min_ram + 2:
+            filtered.append(model)
+
+    return filtered
 
 
 def memory_command(args):
@@ -302,38 +492,95 @@ def cmd_setup(args):
 
 
 def _setup_qmd_interactive():
-    """Interactive QMD setup."""
+    """Interactive QMD setup with hardware detection."""
     console.print("\n[bold]QMD Setup[/bold]\n")
-    console.print("QMD is a local vector-based memory system.\n")
+
+    # Detect hardware
+    console.print("[dim]Detecting hardware...[/dim]")
+    hw_info = _get_hardware_info()
+
+    # Display hardware info
+    console.print(f"\n[bold cyan]Hardware:[/bold cyan]")
+    os_name = "macOS (Apple Silicon)" if hw_info["os"] == "Darwin" and hw_info["arch"] == "arm64" else hw_info["os"]
+    console.print(f"  OS: {os_name}")
+    if hw_info["ram_gb"]:
+        console.print(f"  RAM: {hw_info['ram_gb']:.1f} GB")
+    else:
+        console.print("  RAM: unknown")
+
+    if hw_info["has_gpu"]:
+        if hw_info["gpu_type"] == "apple_silicon":
+            console.print(f"  GPU: Apple Silicon (MPS: {'yes' if hw_info['has_mps'] else 'no'})")
+        elif hw_info["gpu_type"] == "nvidia_cuda":
+            console.print("  GPU: NVIDIA CUDA")
+    else:
+        console.print("  GPU: none detected")
+
+    console.print()
+
+    # Get available models for this hardware
+    available_models = _get_recommended_models(hw_info)
+    filtered_models = _filter_models_for_hardware(available_models, hw_info)
+
+    if not filtered_models:
+        console.print("[red]No embedding models fit in available memory.[/red]")
+        console.print(f"  Your system has {hw_info['ram_gb']:.1f} GB RAM.")
+        console.print("  Minimum requirement: ~4 GB for any model.")
+        return
+
+    # Show available models
+    console.print("[bold]Available embedding models:[/bold]\n")
+    for i, model in enumerate(filtered_models, 1):
+        badge = ""
+        if model["format"] == "mlx":
+            badge = " [green](MLX)[/green]"
+        elif hw_info["has_gpu"] and model["format"] == "pytorch":
+            badge = " [yellow](GPU)[/yellow]"
+
+        size_info = f"{model['size_gb']:.1f} GB"
+        console.print(f"  [{i}] {model['name']}{badge}")
+        console.print(f"      {model['description']} (~{size_info} memory)")
+
+    # Check for Ollama
+    ollama_available = shutil.which("ollama") is None
+    if ollama_available:
+        console.print("\n  [yellow]Note: Ollama not found. MLX models require special setup.[/yellow]")
+        console.print("  Install Ollama from: https://ollama.ai")
+    console.print()
+
+    # Get model selection
+    try:
+        choice = input(f"Select model [1-{len(filtered_models)}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[yellow]Setup cancelled.[/yellow]")
+        return
+
+    if not choice:
+        choice = "1"
+
+    try:
+        idx = int(choice) - 1
+        if idx < 0 or idx >= len(filtered_models):
+            console.print(f"[red]Invalid selection. Choose 1-{len(filtered_models)}.[/red]")
+            return
+        selected = filtered_models[idx]
+    except ValueError:
+        console.print("[red]Invalid input. Enter a number.[/red]")
+        return
+
+    embed_model = selected["id"]
+    console.print(f"\n[dim]Selected: {selected['name']}[/dim]")
 
     # Get server URL
     default_host = "127.0.0.1"
     default_port = "8181"
 
     try:
-        host = input(f"QMD server host [{default_host}]: ").strip() or default_host
+        host = input(f"\nQMD server host [{default_host}]: ").strip() or default_host
         port = input(f"QMD server port [{default_port}]: ").strip() or default_port
     except (EOFError, KeyboardInterrupt):
         console.print("\n[yellow]Setup cancelled.[/yellow]")
         return
-
-    # Get embedding model
-    console.print("\nEmbedding models:")
-    console.print("  [1] qwen3.5b:0.8b (default, fast local model)")
-    console.print("  [2] nomic-embed-text (cross-lingual, larger)")
-    console.print("  [3] BAAI/bge-m3 (sentence-transformers, requires API)")
-
-    try:
-        choice = input("Select embedding model [1]: ").strip() or "1"
-    except (EOFError, KeyboardInterrupt):
-        console.print("\n[yellow]Setup cancelled.[/yellow]")
-        return
-
-    embed_model = {
-        "1": "qwen3.5b:0.8b",
-        "2": "nomic-embed-text",
-        "3": "BAAI/bge-m3",
-    }.get(choice, "qwen3.5b:0.8b")
 
     # Save config
     try:
@@ -348,10 +595,14 @@ def _setup_qmd_interactive():
 
     console.print(f"\nQMD Server: http://{host}:{port}")
     console.print(f"Embedding Model: {embed_model}")
+    console.print(f"Format: {selected['format'].upper()}")
     console.print("\nTo start the QMD server:")
-    console.print("  [cyan]qmd server[/cyan]")
-    console.print("  or")
-    console.print("  [cyan]python ~/.hermes/qmd_server/server.py[/cyan]")
+    if selected["format"] == "mlx":
+        console.print("  [cyan]ollama serve[/cyan]  # Then load model with: ollama pull {embed_model}")
+    else:
+        console.print("  [cyan]qmd server[/cyan]")
+        console.print("  or")
+        console.print(f"  [cyan]python ~/.hermes/qmd_server/server.py[/cyan]")
 
 
 def _setup_honcho_interactive():

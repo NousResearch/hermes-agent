@@ -54,10 +54,30 @@ EMBEDDING_DIMS = {
     "BAAI/bge-m3": 1024,
     "BAAI/bge-micro-v2": 256,
     "sentence-transformers/all-MiniLM-L6-v2": 384,
-    # Ollama models (use Ollama embedding models for best results)
+    # Ollama models
     "qwen3.5b:0.8b": 896,
     "qwen3:0.8b": 896,
     "nomic-embed-text": 768,
+    # MLX models (Apple Silicon)
+    "mlx-community/bge-micro-v2": 256,
+    "mlx-community/Nomic-embed-text": 768,
+    # Aliases
+    "mxbai-embed-large": 1024,
+}
+
+# Model format (pytorch vs mlx)
+MODEL_FORMATS = {
+    # Ollama
+    "qwen3.5b:0.8b": "ollama",
+    "qwen3:0.8b": "ollama",
+    "nomic-embed-text": "ollama",
+    # MLX (Apple Silicon)
+    "mlx-community/bge-micro-v2": "mlx",
+    "mlx-community/Nomic-embed-text": "mlx",
+    # HuggingFace sentence-transformers
+    "BAAI/bge-m3": "huggingface",
+    "BAAI/bge-micro-v2": "huggingface",
+    "sentence-transformers/all-MiniLM-L6-v2": "huggingface",
 }
 
 

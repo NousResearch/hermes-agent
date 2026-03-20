@@ -67,6 +67,13 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
 
+    if "kasia" in platforms:
+        seen_ids = {entry["id"] for entry in platforms["kasia"]}
+        for entry in _build_kasia_broadcast_channels():
+            if entry["id"] not in seen_ids:
+                platforms["kasia"].append(entry)
+                seen_ids.add(entry["id"])
+
     directory = {
         "updated_at": datetime.now().isoformat(),
         "platforms": platforms,
@@ -161,6 +168,47 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     return entries
 
 
+def _build_kasia_broadcast_channels() -> List[Dict[str, str]]:
+    import os
+
+    entries = []
+    seen_ids = set()
+
+    raw_subscriptions = os.getenv("KASIA_BROADCAST_SUBSCRIPTIONS", "").strip()
+    if raw_subscriptions:
+        for segment in raw_subscriptions.split(";"):
+            trimmed = segment.strip()
+            if not trimmed or "=" not in trimmed:
+                continue
+            channel_name = trimmed.split("=", 1)[0].strip().lower()
+            if not channel_name:
+                continue
+            channel_id = f"broadcast:{channel_name}"
+            if channel_id in seen_ids:
+                continue
+            seen_ids.add(channel_id)
+            entries.append({
+                "id": channel_id,
+                "name": f"#{channel_name}",
+                "type": "channel",
+            })
+
+    allowed_channels = os.getenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "").strip()
+    if allowed_channels:
+        for channel_name in [value.strip().lower() for value in allowed_channels.split(",") if value.strip()]:
+            channel_id = f"broadcast:{channel_name}"
+            if channel_id in seen_ids:
+                continue
+            seen_ids.add(channel_id)
+            entries.append({
+                "id": channel_id,
+                "name": f"#{channel_name}",
+                "type": "channel",
+            })
+
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Read / resolve
 # ---------------------------------------------------------------------------
@@ -194,7 +242,8 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     # 1. Exact name match
     for ch in channels:
-        if ch["name"].lower() == query:
+        channel_name = ch["name"].lower()
+        if channel_name == query or channel_name.lstrip("#") == query:
             return ch["id"]
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
@@ -206,7 +255,12 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
                 return ch["id"]
 
     # 3. Partial prefix match (only if unambiguous)
-    matches = [ch for ch in channels if ch["name"].lower().startswith(query)]
+    matches = [
+        ch
+        for ch in channels
+        if ch["name"].lower().startswith(query)
+        or ch["name"].lower().lstrip("#").startswith(query)
+    ]
     if len(matches) == 1:
         return matches[0]["id"]
 

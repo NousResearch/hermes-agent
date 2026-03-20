@@ -22,12 +22,17 @@ class TestKasiaConfigLoading:
         monkeypatch.setenv("KASIA_ENABLED", "true")
         monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
         monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+        monkeypatch.setenv("KASIA_INDEXER_URLS", "https://indexer-a.example.com,https://indexer-b.example.com")
         monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "ws://127.0.0.1:17110")
+        monkeypatch.setenv("KASIA_NODE_WBORSH_URLS", "ws://127.0.0.1:17110,ws://127.0.0.1:17111")
         monkeypatch.setenv("KASIA_NETWORK", "mainnet")
+        monkeypatch.setenv("KASIA_KNS_URL", "https://kns.example.com/api/v1")
         monkeypatch.setenv("KASIA_FEE_POLICY", "priority")
         monkeypatch.setenv("KASIA_BRIDGE_PORT", "3011")
         monkeypatch.setenv("KASIA_SEND_WAIT_MS", "7000")
         monkeypatch.setenv("KASIA_MAX_MULTIPARTS", "6")
+        monkeypatch.setenv("KASIA_BROADCAST_SUBSCRIPTIONS", "news=kaspa:qpub1|kaspa:qpub2")
+        monkeypatch.setenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "news,alerts")
         monkeypatch.setenv("KASIA_HOME_CHANNEL", "kaspa:qhomeaddress")
 
         from gateway.config import GatewayConfig, _apply_env_overrides
@@ -40,12 +45,23 @@ class TestKasiaConfigLoading:
         assert kasia_config.enabled is True
         assert kasia_config.extra["seed_phrase"] == "seed words go here"
         assert kasia_config.extra["indexer_url"] == "https://indexer.example.com"
+        assert kasia_config.extra["indexer_urls"] == [
+            "https://indexer-a.example.com",
+            "https://indexer-b.example.com",
+        ]
         assert kasia_config.extra["node_wborsh_url"] == "ws://127.0.0.1:17110"
+        assert kasia_config.extra["node_wborsh_urls"] == [
+            "ws://127.0.0.1:17110",
+            "ws://127.0.0.1:17111",
+        ]
         assert kasia_config.extra["network"] == "mainnet"
+        assert kasia_config.extra["kns_url"] == "https://kns.example.com/api/v1"
         assert kasia_config.extra["fee_policy"] == "priority"
         assert kasia_config.extra["bridge_port"] == 3011
         assert kasia_config.extra["send_wait_ms"] == 7000
         assert kasia_config.extra["max_multipart_parts"] == 6
+        assert kasia_config.extra["broadcast_subscriptions"] == "news=kaspa:qpub1|kaspa:qpub2"
+        assert kasia_config.extra["allowed_broadcast_channels"] == ["news", "alerts"]
         assert kasia_config.home_channel.chat_id == "kaspa:qhomeaddress"
 
     def test_connected_platforms_includes_kasia(self, monkeypatch):
@@ -159,6 +175,7 @@ class TestKasiaGatewaySetup:
                 "https://indexer.example.com",
                 "ws://127.0.0.1:17110",
                 "mainnet",
+                "",
             ]
         )
 
@@ -249,6 +266,53 @@ class TestKasiaAdapter:
             total=30,
         )
         adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_adapter_can_initiate_handshake_explicitly(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._mark_connected()
+        adapter._request_json = AsyncMock(
+            return_value={"status": "sent", "txId": "tx-init", "chatId": "kaspa:qpeeraddress"}
+        )
+
+        with patch.object(adapter, "_is_address_authorized", return_value=True):
+            result = await adapter.initiate_handshake("kaspa:qpeeraddress", display_name="Peer")
+
+        assert result["txId"] == "tx-init"
+        adapter._request_json.assert_awaited_once_with(
+            "POST",
+            "/handshakes/initiate",
+            payload={"chatId": "kaspa:qpeeraddress", "displayName": "Peer", "retry": False},
+            total=30,
+        )
+
+    @pytest.mark.asyncio
+    async def test_broadcast_event_routes_into_channel_message(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_bridge_event(
+            {
+                "eventType": "broadcast",
+                "messageId": "tx-bcast-1",
+                "chatId": "broadcast:news",
+                "channelName": "news",
+                "senderId": "kaspa:qpublisher",
+                "senderName": "kaspa:qpublisher",
+                "body": "announcement",
+                "timestampMs": 1710000000000,
+            }
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        forwarded_event = adapter.handle_message.await_args.args[0]
+        assert forwarded_event.source.chat_type == "channel"
+        assert forwarded_event.source.chat_name == "#news"
+        assert forwarded_event.text == "announcement"
 
     @pytest.mark.asyncio
     async def test_message_event_routes_into_handle_message(self):

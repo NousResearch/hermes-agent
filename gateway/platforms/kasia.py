@@ -50,8 +50,46 @@ def check_kasia_requirements(config: Optional[PlatformConfig] = None) -> bool:
     """Check whether Kasia can be launched in the current environment."""
     extra = config.extra if config else {}
     seed_phrase = extra.get("seed_phrase") or os.getenv("KASIA_SEED_PHRASE", "")
-    indexer_url = extra.get("indexer_url") or os.getenv("KASIA_INDEXER_URL", "")
-    node_url = extra.get("node_wborsh_url") or os.getenv("KASIA_NODE_WBORSH_URL", "")
+    indexer_url = (
+        extra.get("indexer_url")
+        or os.getenv("KASIA_INDEXER_URL", "")
+        or next(
+            (
+                value.strip()
+                for value in (extra.get("indexer_urls", []) or [])
+                if str(value).strip()
+            ),
+            "",
+        )
+        or next(
+            (
+                value.strip()
+                for value in os.getenv("KASIA_INDEXER_URLS", "").split(",")
+                if value.strip()
+            ),
+            "",
+        )
+    )
+    node_url = (
+        extra.get("node_wborsh_url")
+        or os.getenv("KASIA_NODE_WBORSH_URL", "")
+        or next(
+            (
+                value.strip()
+                for value in (extra.get("node_wborsh_urls", []) or [])
+                if str(value).strip()
+            ),
+            "",
+        )
+        or next(
+            (
+                value.strip()
+                for value in os.getenv("KASIA_NODE_WBORSH_URLS", "").split(",")
+                if value.strip()
+            ),
+            "",
+        )
+    )
     if not all([seed_phrase, indexer_url, node_url]):
         return False
 
@@ -84,8 +122,11 @@ class KasiaAdapter(BasePlatformAdapter):
         )
         self._seed_phrase = config.extra.get("seed_phrase", "")
         self._indexer_url = config.extra.get("indexer_url", "")
+        self._indexer_urls = config.extra.get("indexer_urls", []) or []
         self._node_url = config.extra.get("node_wborsh_url", "")
+        self._node_urls = config.extra.get("node_wborsh_urls", []) or []
         self._network = config.extra.get("network", "mainnet") or "mainnet"
+        self._kns_url = config.extra.get("kns_url", "")
         self._fee_policy = str(config.extra.get("fee_policy", "priority") or "priority")
         self._send_wait_ms = int(
             config.extra.get("send_wait_ms", self._DEFAULT_SEND_WAIT_MS)
@@ -150,9 +191,33 @@ class KasiaAdapter(BasePlatformAdapter):
             env = os.environ.copy()
             env["KASIA_SEED_PHRASE"] = self._seed_phrase
             env["KASIA_INDEXER_URL"] = self._indexer_url
+            if self._indexer_urls:
+                env["KASIA_INDEXER_URLS"] = ",".join(
+                    str(value).strip() for value in self._indexer_urls if str(value).strip()
+                )
             env["KASIA_NODE_WBORSH_URL"] = self._node_url
+            if self._node_urls:
+                env["KASIA_NODE_WBORSH_URLS"] = ",".join(
+                    str(value).strip() for value in self._node_urls if str(value).strip()
+                )
             env["KASIA_NETWORK"] = self._network
+            if self._kns_url:
+                env["KASIA_KNS_URL"] = self._kns_url
             env["KASIA_FEE_POLICY"] = self._fee_policy
+            if "broadcast_subscriptions" in self.config.extra:
+                env["KASIA_BROADCAST_SUBSCRIPTIONS"] = str(
+                    self.config.extra["broadcast_subscriptions"]
+                )
+            if "allowed_broadcast_channels" in self.config.extra:
+                env["KASIA_ALLOWED_BROADCAST_CHANNELS"] = ",".join(
+                    [
+                        str(value).strip()
+                        for value in self.config.extra["allowed_broadcast_channels"]
+                        if str(value).strip()
+                    ]
+                )
+            if self.config.extra.get("allow_all_broadcast_channels"):
+                env["KASIA_ALLOW_ALL_BROADCAST_CHANNELS"] = "true"
             if "max_multipart_parts" in self.config.extra:
                 env["KASIA_MAX_MULTIPARTS"] = str(
                     self.config.extra["max_multipart_parts"]
@@ -251,14 +316,23 @@ class KasiaAdapter(BasePlatformAdapter):
         if not self._running:
             return SendResult(success=False, error="Not connected")
         try:
-            data = await self._request_json(
-                "POST",
-                "/send",
-                payload={
-                    "chatId": chat_id,
+            endpoint = "/send"
+            payload: Dict[str, Any] = {
+                "chatId": chat_id,
+                "message": str(content or "").strip(),
+                "waitMs": self._send_wait_ms,
+            }
+            if str(chat_id).startswith("broadcast:"):
+                endpoint = "/broadcasts/send"
+                payload = {
+                    "channelName": str(chat_id).split(":", 1)[1],
                     "message": str(content or "").strip(),
                     "waitMs": self._send_wait_ms,
-                },
+                }
+            data = await self._request_json(
+                "POST",
+                endpoint,
+                payload=payload,
                 total=max(10, int(self._send_wait_ms / 1000) + 10),
             )
             if data.get("status") in {"failed", "rejected"}:
@@ -301,6 +375,28 @@ class KasiaAdapter(BasePlatformAdapter):
         except Exception as error:
             logger.debug("[%s] Could not fetch chat info for %s: %s", self.name, chat_id, error)
             return {"name": chat_id, "type": "dm"}
+
+    async def initiate_handshake(
+        self,
+        chat_id: str,
+        display_name: Optional[str] = None,
+        retry: bool = False,
+    ) -> Dict[str, Any]:
+        """Explicitly start a Kasia conversation with a new peer."""
+        if not self._running:
+            raise RuntimeError("Kasia bridge is not connected")
+        if not self._is_address_authorized(chat_id):
+            raise RuntimeError(f"Kasia initiation is not authorized for {chat_id}")
+        return await self._request_json(
+            "POST",
+            "/handshakes/initiate",
+            payload={
+                "chatId": chat_id,
+                "displayName": display_name,
+                "retry": retry,
+            },
+            total=30,
+        )
 
     async def _poll_messages(self) -> None:
         """Poll the bridge for queued Kasia events."""
@@ -345,6 +441,12 @@ class KasiaAdapter(BasePlatformAdapter):
                 )
             return
 
+        if event_type == "broadcast":
+            event = self._build_message_event(data)
+            if event:
+                await self.handle_message(event)
+            return
+
         if event_type != "message":
             logger.debug("[%s] Ignoring unsupported bridge event: %s", self.name, event_type)
             return
@@ -361,8 +463,12 @@ class KasiaAdapter(BasePlatformAdapter):
 
         source = self.build_source(
             chat_id=data.get("chatId", ""),
-            chat_name=data.get("senderName"),
-            chat_type="dm",
+            chat_name=(
+                f"#{data.get('channelName')}"
+                if data.get("eventType") == "broadcast" and data.get("channelName")
+                else data.get("senderName")
+            ),
+            chat_type="channel" if data.get("eventType") == "broadcast" else "dm",
             user_id=data.get("senderId"),
             user_name=data.get("senderName"),
         )

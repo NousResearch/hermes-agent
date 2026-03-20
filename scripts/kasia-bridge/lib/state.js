@@ -17,6 +17,13 @@ export function createEmptyState(wallet = {}) {
     },
     send_jobs: {},
     conversations: {},
+    broadcasts: {
+      channels: {},
+    },
+    kns_cache: {
+      by_name: {},
+      by_address: {},
+    },
     cursors: {
       handshakes_block_time: 0,
     },
@@ -37,7 +44,18 @@ function normalizeConversation(peerAddress, existing = {}) {
     updated_at: existing.updated_at || nowIso(),
     last_handshake_block_time: Number(existing.last_handshake_block_time || 0),
     last_context_block_time: Number(existing.last_context_block_time || 0),
+    last_live_tx_seen_ms: Number(existing.last_live_tx_seen_ms || 0),
     pending_handshake: existing.pending_handshake || null,
+    pending_outbound_handshake: existing.pending_outbound_handshake || null,
+    nickname:
+      String(existing.nickname || "").trim() || null,
+    kns_name:
+      String(existing.kns_name || "").trim() || null,
+    display_name:
+      String(existing.display_name || "").trim() || null,
+    identity_source:
+      String(existing.identity_source || "").trim() || null,
+    last_identity_refresh_ms: Number(existing.last_identity_refresh_ms || 0),
   };
 }
 
@@ -76,6 +94,10 @@ function normalizeSendJob(existing = {}) {
       existing.submitted_ms == null && existing.submittedMs == null
         ? null
         : Number(existing.submitted_ms ?? existing.submittedMs),
+    observed_live_ms:
+      existing.observed_live_ms == null && existing.observedLiveMs == null
+        ? null
+        : Number(existing.observed_live_ms ?? existing.observedLiveMs),
     indexed_ms:
       existing.indexed_ms == null && existing.indexedMs == null
         ? null
@@ -100,6 +122,81 @@ function normalizeSendJob(existing = {}) {
     message_preview:
       String(existing.message_preview || existing.messagePreview || "").trim() ||
       null,
+    job_kind:
+      String(existing.job_kind || existing.jobKind || "").trim() || "dm",
+  };
+}
+
+function normalizeKnsEntry(entry = {}, fallbackKey = "") {
+  const cacheKey = String(entry.key || fallbackKey || "").trim().toLowerCase();
+  if (!cacheKey) {
+    return null;
+  }
+  const normalized = {
+    key: cacheKey,
+    resolved_at_ms: Number(entry.resolved_at_ms || entry.resolvedAtMs || 0),
+    expires_at_ms: Number(entry.expires_at_ms || entry.expiresAtMs || 0),
+  };
+  if (entry.address != null) {
+    normalized.address = String(entry.address || "").trim() || null;
+  }
+  if (entry.name != null) {
+    normalized.name = String(entry.name || "").trim().toLowerCase() || null;
+  }
+  if (entry.error != null) {
+    normalized.error = String(entry.error || "").trim() || null;
+  }
+  return normalized;
+}
+
+function normalizeBroadcastChannel(channelName, existing = {}) {
+  const normalizedName = String(
+    existing.channel_name || existing.channelName || channelName || ""
+  )
+    .trim()
+    .toLowerCase();
+  if (!normalizedName) {
+    return null;
+  }
+
+  const publishers = Array.isArray(existing.publishers)
+    ? existing.publishers
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    : [];
+  const recentMessages = Array.isArray(existing.recent_messages || existing.recentMessages)
+    ? (existing.recent_messages || existing.recentMessages)
+        .map((message) => ({
+          tx_id: String(message?.tx_id || message?.txId || "").trim() || null,
+          sender_address:
+            String(message?.sender_address || message?.senderAddress || "").trim() ||
+            null,
+          content: String(message?.content || "").trim() || null,
+          observed_live_ms:
+            message?.observed_live_ms == null && message?.observedLiveMs == null
+              ? null
+              : Number(message?.observed_live_ms ?? message?.observedLiveMs),
+          block_time_ms:
+            message?.block_time_ms == null && message?.blockTimeMs == null
+              ? null
+              : Number(message?.block_time_ms ?? message?.blockTimeMs),
+        }))
+        .filter((message) => message.tx_id)
+    : [];
+
+  return {
+    channel_name: normalizedName,
+    channel_id:
+      String(existing.channel_id || existing.channelId || "").trim() ||
+      `broadcast:${normalizedName}`,
+    publishers,
+    allow_publish: Boolean(
+      existing.allow_publish ?? existing.allowPublish ?? false
+    ),
+    updated_at: existing.updated_at || nowIso(),
+    last_seen_block_time: Number(existing.last_seen_block_time || 0),
+    last_live_poll_ms: Number(existing.last_live_poll_ms || 0),
+    recent_messages: recentMessages.slice(-25),
   };
 }
 
@@ -119,6 +216,18 @@ function normalizeState(state, wallet = {}) {
       },
     },
     conversations: {},
+    broadcasts: {
+      channels: {},
+      ...(state?.broadcasts || {}),
+      channels: {},
+    },
+    kns_cache: {
+      by_name: {},
+      by_address: {},
+      ...(state?.kns_cache || {}),
+      by_name: {},
+      by_address: {},
+    },
     cursors: {
       ...base.cursors,
       ...(state?.cursors || {}),
@@ -137,6 +246,34 @@ function normalizeState(state, wallet = {}) {
     const normalizedConversation = normalizeConversation(peerAddress, conversation);
     normalized.conversations[normalizedConversation.peer_address] =
       normalizedConversation;
+  }
+
+  for (const [channelName, channel] of Object.entries(
+    state?.broadcasts?.channels || {}
+  )) {
+    const normalizedChannel = normalizeBroadcastChannel(channelName, channel);
+    if (normalizedChannel) {
+      normalized.broadcasts.channels[normalizedChannel.channel_name] =
+        normalizedChannel;
+    }
+  }
+
+  for (const [cacheKey, entry] of Object.entries(
+    state?.kns_cache?.by_name || {}
+  )) {
+    const normalizedEntry = normalizeKnsEntry(entry, cacheKey);
+    if (normalizedEntry) {
+      normalized.kns_cache.by_name[normalizedEntry.key] = normalizedEntry;
+    }
+  }
+
+  for (const [cacheKey, entry] of Object.entries(
+    state?.kns_cache?.by_address || {}
+  )) {
+    const normalizedEntry = normalizeKnsEntry(entry, cacheKey);
+    if (normalizedEntry) {
+      normalized.kns_cache.by_address[normalizedEntry.key] = normalizedEntry;
+    }
   }
 
   for (const [jobId, job] of Object.entries(state?.send_jobs || {})) {
@@ -185,6 +322,23 @@ export function ensureConversation(state, peerAddress) {
   return state.conversations[normalizedPeer];
 }
 
+export function ensureBroadcastChannel(state, channelName, existing = {}) {
+  const normalized = normalizeBroadcastChannel(channelName, existing);
+  if (!normalized) {
+    throw new Error("Broadcast channel name is required");
+  }
+  const current = state.broadcasts.channels[normalized.channel_name];
+  state.broadcasts.channels[normalized.channel_name] = current
+    ? normalizeBroadcastChannel(channelName, {
+        ...current,
+        channel_id: normalized.channel_id || current.channel_id,
+        publishers: normalized.publishers,
+        allow_publish: normalized.allow_publish,
+      })
+    : normalized;
+  return state.broadcasts.channels[normalized.channel_name];
+}
+
 export function hasProcessedTx(state, txId) {
   return Boolean(txId) && state.processed_tx_ids.includes(txId);
 }
@@ -208,4 +362,8 @@ export function markProcessedTx(
 
 export function touchConversation(conversation, timestamp = nowIso()) {
   conversation.updated_at = timestamp;
+}
+
+export function touchBroadcastChannel(channel, timestamp = nowIso()) {
+  channel.updated_at = timestamp;
 }

@@ -9,7 +9,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _parse_target_ref, _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import (
+    _parse_target_ref,
+    _send_kasia,
+    _send_telegram,
+    _send_to_platform,
+    send_message_tool,
+)
 
 
 def _run_async_immediately(coro):
@@ -428,6 +434,26 @@ class TestSendToPlatformKasia:
         assert thread_id is None
         assert is_explicit is True
 
+    def test_kasia_target_parser_treats_kns_name_as_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "kasia",
+            "friend.kas",
+        )
+
+        assert chat_id == "friend.kas"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_kasia_target_parser_treats_broadcast_target_as_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "kasia",
+            "broadcast:news",
+        )
+
+        assert chat_id == "broadcast:news"
+        assert thread_id is None
+        assert is_explicit is True
+
     def test_kasia_routes_via_local_bridge_sender(self):
         chat_id = "kaspa:qpeeraddress"
         async_mock = AsyncMock(
@@ -456,6 +482,119 @@ class TestSendToPlatformKasia:
         assert result["status"] == "submitted"
         assert "Waiting for indexer visibility" in result["status_message"]
         async_mock.assert_awaited_once_with({"bridge_port": 3010}, chat_id, "hello from hermes")
+
+    def test_kasia_initiate_routes_via_local_bridge_sender(self):
+        chat_id = "friend.kas"
+        async_mock = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "kasia",
+                "chat_id": "kaspa:qresolved",
+                "message_id": "tx-init",
+                "status": "sent",
+            }
+        )
+
+        with patch("tools.send_message_tool._send_kasia", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.KASIA,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3010}),
+                    chat_id,
+                    "",
+                    action="initiate",
+                    display_name="Peer",
+                )
+            )
+
+        assert result["success"] is True
+        assert result["status"] == "sent"
+        async_mock.assert_awaited_once_with(
+            {"bridge_port": 3010},
+            chat_id,
+            "",
+            action="initiate",
+            display_name="Peer",
+            retry=False,
+        )
+
+    def test_kasia_initiate_resolves_kns_before_authorization(self, monkeypatch):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status, payload):
+                self.status = status
+                self._payload = payload
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return self._payload
+
+            async def text(self):
+                return json.dumps(self._payload)
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, **kwargs):
+                calls.append(("get", url))
+                assert url.endswith("/resolve-target/friend.kas")
+                return FakeResponse(
+                    200,
+                    {
+                        "kind": "dm",
+                        "chatId": "kaspa:qresolvedfriend",
+                        "peerAddress": "kaspa:qresolvedfriend",
+                        "knsName": "friend.kas",
+                    },
+                )
+
+            def post(self, url, **kwargs):
+                calls.append(("post", url, kwargs.get("json")))
+                assert url.endswith("/handshakes/initiate")
+                return FakeResponse(
+                    200,
+                    {
+                        "status": "sent",
+                        "txId": "tx-init",
+                        "chatId": "kaspa:qresolvedfriend",
+                    },
+                )
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=lambda: FakeSession(),
+            ClientTimeout=lambda total: SimpleNamespace(total=total),
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "kaspa:qresolvedfriend")
+        monkeypatch.delenv("KASIA_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+
+        result = asyncio.run(
+            _send_kasia(
+                {"bridge_port": 3010},
+                "friend.kas",
+                "",
+                action="initiate",
+                display_name="Friend",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "kaspa:qresolvedfriend"
+        assert calls[0][0] == "get"
+        assert calls[1][0] == "post"
+        assert calls[1][2]["chatId"] == "kaspa:qresolvedfriend"
 
 
 class TestSendTelegramHtmlDetection:

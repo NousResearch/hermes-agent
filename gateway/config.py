@@ -663,11 +663,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.KASIA not in config.platforms:
             config.platforms[Platform.KASIA] = PlatformConfig()
         config.platforms[Platform.KASIA].enabled = True
+        kasia_indexer_urls = [
+            value.strip()
+            for value in os.getenv("KASIA_INDEXER_URLS", "").split(",")
+            if value.strip()
+        ]
+        kasia_node_urls = [
+            value.strip()
+            for value in os.getenv("KASIA_NODE_WBORSH_URLS", "").split(",")
+            if value.strip()
+        ]
         config.platforms[Platform.KASIA].extra.update({
             "seed_phrase": os.getenv("KASIA_SEED_PHRASE", ""),
             "indexer_url": os.getenv("KASIA_INDEXER_URL", ""),
+            "indexer_urls": kasia_indexer_urls,
             "node_wborsh_url": os.getenv("KASIA_NODE_WBORSH_URL", ""),
+            "node_wborsh_urls": kasia_node_urls,
             "network": os.getenv("KASIA_NETWORK", ""),
+            "kns_url": os.getenv("KASIA_KNS_URL", ""),
         })
         kasia_fee_policy = os.getenv("KASIA_FEE_POLICY", "").strip()
         if kasia_fee_policy:
@@ -690,6 +703,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 config.platforms[Platform.KASIA].extra["max_multipart_parts"] = int(kasia_max_multipart)
             except ValueError:
                 logger.warning("Invalid KASIA_MAX_MULTIPARTS=%r (expected integer)", kasia_max_multipart)
+        kasia_broadcast_subscriptions = os.getenv("KASIA_BROADCAST_SUBSCRIPTIONS", "").strip()
+        if kasia_broadcast_subscriptions:
+            config.platforms[Platform.KASIA].extra["broadcast_subscriptions"] = (
+                kasia_broadcast_subscriptions
+            )
+        kasia_allowed_broadcasts = os.getenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "").strip()
+        if kasia_allowed_broadcasts:
+            config.platforms[Platform.KASIA].extra["allowed_broadcast_channels"] = [
+                value.strip()
+                for value in kasia_allowed_broadcasts.split(",")
+                if value.strip()
+            ]
+        if os.getenv("KASIA_ALLOW_ALL_BROADCAST_CHANNELS", "").lower() in (
+            "true",
+            "1",
+            "yes",
+        ):
+            config.platforms[Platform.KASIA].extra["allow_all_broadcast_channels"] = True
         kasia_home = os.getenv("KASIA_HOME_CHANNEL")
         if kasia_home:
             config.platforms[Platform.KASIA].home_channel = HomeChannel(

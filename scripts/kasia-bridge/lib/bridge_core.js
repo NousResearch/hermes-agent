@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import {
+  buildBroadcastTransactionPayload,
   buildContextualMessageTransactionPayload,
   buildHandshakePayload,
   buildHandshakeTransactionPayload,
@@ -9,16 +10,23 @@ import {
   decryptSealedMessage,
   generateAlias,
   MINIMUM_MESSAGE_AMOUNT_SOMPI,
+  normalizeBroadcastChannelName,
+  parseBroadcastPayload,
+  parseContextualMessagePayload,
   parseHandshakePayload,
   shortenAddress,
 } from "./protocol.js";
+import { EndpointPool } from "./endpoint_pool.js";
+import { KnsClient, normalizeKnsName } from "./kns_client.js";
 import {
   createEmptyState,
+  ensureBroadcastChannel,
   ensureConversation,
   hasProcessedTx,
   loadState,
   markProcessedTx,
   saveState,
+  touchBroadcastChannel,
   touchConversation,
 } from "./state.js";
 import { KaspaWalletClient } from "./kaspa_wallet.js";
@@ -45,6 +53,91 @@ const DEFAULT_CONTEXTUAL_MESSAGE_MAX_PARTS = 8;
 const DEFAULT_MAX_SEND_JOBS = 100;
 const DEFAULT_SEND_JOB_PREVIEW_CHARS = 120;
 const DEFAULT_SEND_JOB_INDEXER_LOOKBACK_MS = 60_000;
+const DEFAULT_IDENTITY_REFRESH_MS = 15 * 60 * 1000;
+const DEFAULT_LIVE_LOOKBACK_MS = 10 * 60 * 1000;
+const DEFAULT_NODE_STARTUP_TIMEOUT_MS = 12_000;
+
+function parseEndpointList(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+  }
+  return [...new Set(
+    String(value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )];
+}
+
+function isRetryableNodeError(error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  return (
+    text.includes("timeout") ||
+    text.includes("connection") ||
+    text.includes("socket") ||
+    text.includes("rpc") ||
+    text.includes("offline") ||
+    text.includes("econn") ||
+    text.includes("failed to connect") ||
+    text.includes("websocket") ||
+    text.includes("network")
+  );
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeout = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function mempoolEntriesForAddress(mempoolResponse, address) {
+  const entries = Array.isArray(mempoolResponse?.entries)
+    ? mempoolResponse.entries
+    : [];
+  return entries.find((entry) => String(entry?.address || "").trim() === address) || null;
+}
+
+function senderTransactionsFromAddressEntry(addressEntry) {
+  return Array.isArray(addressEntry?.sending)
+    ? addressEntry.sending
+        .map((entry) => entry?.transaction || null)
+        .filter(Boolean)
+    : [];
+}
+
+function txIdFromTransaction(transaction) {
+  return (
+    String(transaction?.verboseData?.transactionId || "").trim() ||
+    String(transaction?.transactionId || "").trim() ||
+    String(transaction?.id || "").trim() ||
+    null
+  );
+}
+
+function txPayloadFromTransaction(transaction) {
+  return transaction?.payload || transaction?.verboseData?.payload || null;
+}
+
+function txBlockTimeFromRecord(record) {
+  return Number(record?.block_time || record?.blockTime || 0);
+}
+
+function publicDelivery(raw, updates = {}) {
+  return {
+    ...(raw?.delivery || {}),
+    ...updates,
+  };
+}
 
 function isTerminalSendJobStatus(status) {
   return (
@@ -92,7 +185,9 @@ function buildSendJobStatusMessage(job) {
         ? `Submitted ${completedParts}/${totalParts} Kasia parts to the node. Waiting for indexer visibility.`
         : "Submitted to the Kaspa node. Waiting for indexer visibility.";
     case "waiting_for_indexer":
-      return indexedParts > 0 && totalParts > 0
+      return job?.observed_live_ms && indexedParts === 0
+        ? "Visible through the live Kaspa path. Waiting for indexer visibility."
+        : indexedParts > 0 && totalParts > 0
         ? `${indexedParts}/${totalParts} Kasia part${plural} visible through the indexer.`
         : "Submitted to the Kaspa node. Waiting for indexer visibility.";
     case "processed":
@@ -123,6 +218,7 @@ function toPublicSendJob(job) {
     startedMs: job.started_ms,
     finishedMs: job.finished_ms,
     submittedMs: job.submitted_ms,
+    observedLiveMs: job.observed_live_ms,
     indexedMs: job.indexed_ms,
     indexedBlockTimeMs: job.indexed_block_time_ms,
     partCount: job.total_parts,
@@ -133,6 +229,7 @@ function toPublicSendJob(job) {
     indexedTxIds: [...(job.indexed_tx_ids || [])],
     error: job.error,
     messagePreview: job.message_preview,
+    jobKind: job.job_kind,
     statusMessage: buildSendJobStatusMessage(job),
   };
 }
@@ -250,11 +347,18 @@ export class KasiaBridgeCore {
   constructor({
     stateDir,
     indexerUrl,
+    indexerUrls,
     nodeUrl,
+    nodeUrls,
     network,
     seedPhrase,
+    knsUrl,
     feePolicy = "priority",
+    broadcastSubscriptions = {},
+    allowedBroadcastChannels = [],
+    allowAllBroadcastChannels = false,
     walletClient,
+    knsClient,
     fetchImpl,
     logger = console,
     maxQueueSize = 100,
@@ -268,10 +372,9 @@ export class KasiaBridgeCore {
   }) {
     this.stateDir = stateDir;
     this.statePath = join(stateDir, "state.json");
-    this.indexerUrl = indexerUrl;
-    this.nodeUrl = nodeUrl;
     this.network = network || "mainnet";
     this.seedPhrase = seedPhrase;
+    this.knsUrl = String(knsUrl || "").trim();
     this.feePolicy = String(feePolicy || "priority");
     this.fetchImpl = fetchImpl || fetch;
     this.logger = logger;
@@ -283,14 +386,47 @@ export class KasiaBridgeCore {
     this.maxSendJobs = maxSendJobs;
     this.randomBytesFn = randomBytesFn;
     this.nowFn = nowFn;
+    this.identityRefreshMs = DEFAULT_IDENTITY_REFRESH_MS;
+    this.allowAllBroadcastChannels = Boolean(allowAllBroadcastChannels);
+    this.allowedBroadcastChannels = new Set(
+      parseEndpointList(allowedBroadcastChannels).map((value) =>
+        normalizeBroadcastChannelName(value)
+      )
+    );
+    this.broadcastSubscriptions = Object.entries(broadcastSubscriptions || {}).reduce(
+      (acc, [channelName, publishers]) => {
+        const normalizedName = normalizeBroadcastChannelName(channelName);
+        acc[normalizedName] = parseEndpointList(publishers);
+        return acc;
+      },
+      {}
+    );
+    this.indexerPool = new EndpointPool({
+      urls: parseEndpointList(indexerUrls?.length ? indexerUrls : [indexerUrl]),
+      name: "indexer",
+      nowFn,
+    });
+    this.nodePool = new EndpointPool({
+      urls: parseEndpointList(nodeUrls?.length ? nodeUrls : [nodeUrl]),
+      name: "node",
+      nowFn,
+    });
 
     this.walletClient =
       walletClient ||
       new KaspaWalletClient({
         seedPhrase,
-        nodeUrl,
+        nodeUrl: this.nodePool.activeUrl,
         network: this.network,
         feePolicy: this.feePolicy,
+      });
+    this.knsClient =
+      knsClient ||
+      new KnsClient({
+        baseUrl: this.knsUrl,
+        network: this.network,
+        fetchImpl: this.fetchImpl,
+        nowFn: this.nowFn,
       });
 
     this.state = createEmptyState();
@@ -302,17 +438,23 @@ export class KasiaBridgeCore {
     this._closing = false;
   }
 
-  async init() {
-    this.walletInfo = await this.walletClient.init();
+  async init({ skipInitialSync = false } = {}) {
+    this.walletInfo = await this._initWalletClient();
     this.state = await loadState(this.statePath, {
       address: this.walletInfo.address,
       public_key: this.walletInfo.publicKeyHex,
       network: this.walletInfo.network,
     });
+    this._hydrateConfiguredBroadcastChannels();
     this.walletClient.loadSendState?.(this.state.wallet.send_state || {});
     await this.walletClient.hydrateSendState?.();
     this._markInterruptedSendJobs();
+    await this._refreshConversationIdentities({ force: false });
     await this._saveState();
+
+    if (skipInitialSync) {
+      return;
+    }
 
     try {
       await this.syncOnce();
@@ -338,12 +480,17 @@ export class KasiaBridgeCore {
     const waitingForIndexerCount = jobs.filter(
       (job) => job.status === "submitted" || job.status === "waiting_for_indexer"
     ).length;
+    const indexerSnapshot = this.indexerPool.snapshot();
+    const nodeSnapshot = this.nodePool.snapshot();
     return {
       status: this.walletClient.isConnected ? "connected" : "starting",
       walletAddress: this.state.wallet.address,
       network: this.state.wallet.network || this.network,
-      indexerUrl: this.indexerUrl,
-      nodeUrl: this.nodeUrl,
+      indexerUrl: indexerSnapshot.activeUrl,
+      nodeUrl: nodeSnapshot.activeUrl || this.walletClient.getNodeUrl?.() || null,
+      indexerPool: indexerSnapshot,
+      nodePool: nodeSnapshot,
+      knsUrl: this.knsClient.isEnabled() ? this.knsClient.baseUrl : null,
       feePolicy: this.walletClient.getFeePolicy?.() || this.feePolicy,
       feeRateSompiPerGram: this.walletClient.getLastResolvedFeeRate?.() || null,
       lastSyncMs: this.state.last_sync_ms,
@@ -355,6 +502,7 @@ export class KasiaBridgeCore {
         : 0,
       activeSendJobCount,
       waitingForIndexerCount,
+      broadcastChannelCount: Object.keys(this.state.broadcasts?.channels || {}).length,
     };
   }
 
@@ -363,11 +511,27 @@ export class KasiaBridgeCore {
   }
 
   getChatInfo(chatId) {
-    const conversation = this.state.conversations[String(chatId).trim()];
+    const normalizedChatId = String(chatId).trim();
+    if (normalizedChatId.startsWith("broadcast:")) {
+      const channelName = normalizedChatId.slice("broadcast:".length).trim().toLowerCase();
+      const channel = this.state.broadcasts?.channels?.[channelName];
+      return {
+        name: `#${channelName}`,
+        type: "channel",
+        chat_id: channel?.channel_id || `broadcast:${channelName}`,
+      };
+    }
+
+    const conversation = this.state.conversations[normalizedChatId];
+    const displayName =
+      conversation?.display_name ||
+      conversation?.nickname ||
+      conversation?.kns_name ||
+      shortenAddress(conversation?.peer_address || normalizedChatId);
     return {
-      name: shortenAddress(conversation?.peer_address || chatId),
+      name: displayName,
       type: "dm",
-      chat_id: String(chatId).trim(),
+      chat_id: normalizedChatId,
     };
   }
 
@@ -377,8 +541,162 @@ export class KasiaBridgeCore {
     );
   }
 
+  async resolveTarget(target) {
+    const rawTarget = String(target || "").trim();
+    if (!rawTarget) {
+      throw new Error("Kasia target is required");
+    }
+    if (rawTarget.startsWith("broadcast:")) {
+      const channelName = normalizeBroadcastChannelName(
+        rawTarget.slice("broadcast:".length)
+      );
+      const channel = ensureBroadcastChannel(this.state, channelName, {
+        publishers: this.broadcastSubscriptions[channelName] || [],
+        allow_publish:
+          this.allowAllBroadcastChannels ||
+          this.allowedBroadcastChannels.has(channelName),
+      });
+      return {
+        kind: "broadcast",
+        chatId: channel.channel_id,
+        channelName,
+      };
+    }
+    if (rawTarget.startsWith("#")) {
+      const channelName = normalizeBroadcastChannelName(rawTarget.slice(1));
+      const channel = ensureBroadcastChannel(this.state, channelName, {
+        publishers: this.broadcastSubscriptions[channelName] || [],
+        allow_publish:
+          this.allowAllBroadcastChannels ||
+          this.allowedBroadcastChannels.has(channelName),
+      });
+      return {
+        kind: "broadcast",
+        chatId: channel.channel_id,
+        channelName,
+      };
+    }
+
+    const resolvedKnsAddress = await this.knsClient.resolveTarget(
+      rawTarget,
+      this.state.kns_cache
+    );
+    const peerAddress = resolvedKnsAddress || rawTarget;
+    return {
+      kind: "dm",
+      chatId: peerAddress,
+      peerAddress,
+      knsName: resolvedKnsAddress ? normalizeKnsName(rawTarget) : null,
+    };
+  }
+
+  async initiateHandshake({ chatId, retry = false, displayName = null }) {
+    const resolved = await this.resolveTarget(chatId);
+    if (resolved.kind !== "dm") {
+      throw new Error("Handshake initiation is only supported for direct Kasia conversations");
+    }
+
+    const conversation = ensureConversation(this.state, resolved.peerAddress);
+    if (displayName) {
+      conversation.nickname = String(displayName).trim() || conversation.nickname;
+    }
+    if (resolved.knsName) {
+      conversation.kns_name = resolved.knsName;
+      conversation.display_name = conversation.nickname || resolved.knsName;
+      conversation.identity_source = conversation.nickname ? "nickname" : "kns";
+    }
+    if (!conversation.our_alias) {
+      conversation.our_alias = generateAlias(this.randomBytesFn);
+    }
+    if (
+      conversation.status === "active" &&
+      conversation.our_alias &&
+      conversation.their_alias
+    ) {
+      await this._saveState();
+      return {
+        status: "already_active",
+        chatId: conversation.peer_address,
+      };
+    }
+    if (conversation.pending_outbound_handshake && !retry) {
+      return {
+        status: "pending",
+        chatId: conversation.peer_address,
+        txId: conversation.pending_outbound_handshake.tx_id || null,
+      };
+    }
+
+    const handshakePayload = buildHandshakePayload({
+      alias: conversation.our_alias,
+      timestamp: this.nowFn(),
+    });
+    const payloadBytes = buildHandshakeTransactionPayload({
+      recipientAddress: conversation.peer_address,
+      payload: handshakePayload,
+      randomBytesFn: this.randomBytesFn,
+    });
+    const txId = await this._withWalletOperation(() =>
+      this.walletClient.sendPayloadTransaction({
+        destinationAddress: conversation.peer_address,
+        amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
+        payloadBytes,
+        strategy: "direct",
+      })
+    );
+
+    conversation.status = "initiated";
+    conversation.pending_outbound_handshake = {
+      tx_id: txId.txId || txId,
+      sent_at: new Date(this.nowFn()).toISOString(),
+      retry_count: retry
+        ? Number(conversation.pending_outbound_handshake?.retry_count || 0) + 1
+        : Number(conversation.pending_outbound_handshake?.retry_count || 0),
+    };
+    touchConversation(conversation, new Date(this.nowFn()).toISOString());
+    await this._refreshConversationIdentity(conversation, { force: false });
+    await this._saveState();
+
+    return {
+      status: "sent",
+      txId: txId.txId || txId,
+      chatId: conversation.peer_address,
+    };
+  }
+
+  async subscribeBroadcastChannel({ channelName, publishers = [] }) {
+    const normalizedName = normalizeBroadcastChannelName(channelName);
+    const channel = ensureBroadcastChannel(this.state, normalizedName, {
+      publishers:
+        parseEndpointList(publishers).length > 0
+          ? parseEndpointList(publishers)
+          : this.broadcastSubscriptions[normalizedName] || [],
+      allow_publish:
+        this.allowAllBroadcastChannels ||
+        this.allowedBroadcastChannels.has(normalizedName),
+    });
+    channel.publishers = [
+      ...new Set([
+        ...channel.publishers,
+        ...parseEndpointList(publishers),
+      ]),
+    ];
+    touchBroadcastChannel(channel, new Date(this.nowFn()).toISOString());
+    await this._saveState();
+    return {
+      status: "subscribed",
+      chatId: channel.channel_id,
+      channelName: channel.channel_name,
+      publishers: [...channel.publishers],
+    };
+  }
+
   async respondToHandshake(chatId) {
-    const conversation = this.state.conversations[String(chatId).trim()];
+    const resolved = await this.resolveTarget(chatId);
+    if (resolved.kind !== "dm") {
+      throw new Error("Handshake responses are only supported for direct Kasia conversations");
+    }
+    const conversation = this.state.conversations[String(resolved.chatId).trim()];
     if (!conversation) {
       throw new Error(`No Kasia conversation found for ${chatId}`);
     }
@@ -407,15 +725,19 @@ export class KasiaBridgeCore {
       payload: handshakePayload,
       randomBytesFn: this.randomBytesFn,
     });
-    const txId = await this.walletClient.sendPayloadTransaction({
-      destinationAddress: conversation.peer_address,
-      amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
-      payloadBytes,
-    });
+    const txId = await this._withWalletOperation(() =>
+      this.walletClient.sendPayloadTransaction({
+        destinationAddress: conversation.peer_address,
+        amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
+        payloadBytes,
+      })
+    );
 
     conversation.status = "active";
     conversation.pending_handshake = null;
+    conversation.pending_outbound_handshake = null;
     touchConversation(conversation, new Date(this.nowFn()).toISOString());
+    await this._refreshConversationIdentity(conversation, { force: false });
     await this._saveState();
 
     return {
@@ -430,13 +752,23 @@ export class KasiaBridgeCore {
       throw new Error("Message is required");
     }
 
-    const conversation = this._requireActiveConversation(chatId);
+    const resolved = await this.resolveTarget(chatId);
+    if (resolved.kind === "broadcast") {
+      return await this.sendBroadcast({
+        channelName: resolved.channelName,
+        message,
+        waitMs,
+      });
+    }
+
+    const conversation = this._requireActiveConversation(resolved.chatId);
     const text = String(message).trim();
     const plan = this._planConversationMessage(conversation, text);
     const job = await this._createSendJob({
       chatId: conversation.peer_address,
       message: text,
       totalParts: plan.partCount,
+      jobKind: "dm",
     });
 
     if (plan.status === "rejected") {
@@ -518,10 +850,49 @@ export class KasiaBridgeCore {
       !conversation.their_alias
     ) {
       throw new Error(
-        `No active Kasia conversation found for ${chatId}. Wait for an inbound handshake before sending.`
+        `No active Kasia conversation found for ${chatId}. Initiate a handshake first or wait for an inbound handshake before sending.`
       );
     }
     return conversation;
+  }
+
+  async sendBroadcast({ channelName, message, waitMs = 0 }) {
+    const normalizedChannel = normalizeBroadcastChannelName(channelName);
+    const channel = ensureBroadcastChannel(this.state, normalizedChannel, {
+      publishers: this.broadcastSubscriptions[normalizedChannel] || [],
+      allow_publish:
+        this.allowAllBroadcastChannels ||
+        this.allowedBroadcastChannels.has(normalizedChannel),
+    });
+    if (!channel.allow_publish) {
+      throw new Error(
+        `Broadcast publishing is not allowed for #${normalizedChannel}. Add it to KASIA_ALLOWED_BROADCAST_CHANNELS or enable KASIA_ALLOW_ALL_BROADCAST_CHANNELS.`
+      );
+    }
+
+    const trimmedMessage = String(message || "").trim();
+    const payloadBytes = buildBroadcastTransactionPayload({
+      channelName: normalizedChannel,
+      message: trimmedMessage,
+    });
+    if (!this.walletClient.canFitContextualPayload(payloadBytes)) {
+      throw new Error(
+        "Broadcasts must fit in one Kasia on-chain message. Please shorten the message and try again."
+      );
+    }
+
+    const job = await this._createSendJob({
+      chatId: channel.channel_id,
+      message: trimmedMessage,
+      totalParts: 1,
+      jobKind: "broadcast",
+    });
+    this._scheduleSendJob(job.job_id, channel.channel_id, [trimmedMessage]);
+
+    if (Number(waitMs) > 0) {
+      return await this.waitForSendJob(job.job_id, Number(waitMs));
+    }
+    return this.getSendJob(job.job_id);
   }
 
   _planConversationMessage(conversation, text) {
@@ -602,7 +973,7 @@ export class KasiaBridgeCore {
     }
   }
 
-  async _createSendJob({ chatId, message, totalParts }) {
+  async _createSendJob({ chatId, message, totalParts, jobKind = "dm" }) {
     const nowMs = this.nowFn();
     const job = {
       job_id: randomUUID(),
@@ -623,6 +994,7 @@ export class KasiaBridgeCore {
       last_tx_id: null,
       error: null,
       message_preview: buildSendJobPreview(message),
+      job_kind: jobKind,
     };
     this.state.send_jobs[job.job_id] = job;
     this._pruneSendJobs();
@@ -742,7 +1114,8 @@ export class KasiaBridgeCore {
   }
 
   async _runSendJob(jobId, chatId, chunks) {
-    const conversation = this._requireActiveConversation(chatId);
+    const isBroadcastJob = String(chatId || "").startsWith("broadcast:");
+    const conversation = isBroadcastJob ? null : this._requireActiveConversation(chatId);
     await this._updateSendJob(jobId, {
       status: "submitting",
       started_ms: this.nowFn(),
@@ -755,10 +1128,9 @@ export class KasiaBridgeCore {
 
     const txResults = [];
     for (let index = 0; index < chunks.length; index += 1) {
-      const result = await this._sendConversationMessageChunk(
-        conversation,
-        chunks[index]
-      );
+      const result = isBroadcastJob
+        ? await this._sendBroadcastMessageChunk(chatId, chunks[index])
+        : await this._sendConversationMessageChunk(conversation, chunks[index]);
       const txId = result?.txId || result?.messageId || result;
       txResults.push(result);
       await this._updateSendJob(jobId, {
@@ -771,7 +1143,9 @@ export class KasiaBridgeCore {
       });
     }
 
-    touchConversation(conversation, new Date(this.nowFn()).toISOString());
+    if (conversation) {
+      touchConversation(conversation, new Date(this.nowFn()).toISOString());
+    }
     await this._updateSendJob(jobId, {
       status: "submitted",
       submitted_ms: this.nowFn(),
@@ -789,18 +1163,417 @@ export class KasiaBridgeCore {
       message: String(message),
       randomBytesFn: this.randomBytesFn,
     });
-    return await this.walletClient.sendPayloadTransaction({
-      destinationAddress: this.walletInfo.address,
-      amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
-      payloadBytes,
-      strategy: "contextual",
+    return await this._withWalletOperation(() =>
+      this.walletClient.sendPayloadTransaction({
+        destinationAddress: this.walletInfo.address,
+        amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
+        payloadBytes,
+        strategy: "contextual",
+      })
+    );
+  }
+
+  async _sendBroadcastMessageChunk(chatId, message) {
+    const channelName = String(chatId || "").slice("broadcast:".length);
+    const payloadBytes = buildBroadcastTransactionPayload({
+      channelName,
+      message: String(message),
     });
+    return await this._withWalletOperation(() =>
+      this.walletClient.sendPayloadTransaction({
+        destinationAddress: this.walletInfo.address,
+        amountSompi: MINIMUM_MESSAGE_AMOUNT_SOMPI,
+        payloadBytes,
+        strategy: "contextual",
+      })
+    );
+  }
+
+  _hydrateConfiguredBroadcastChannels() {
+    for (const [channelName, publishers] of Object.entries(
+      this.broadcastSubscriptions || {}
+    )) {
+      ensureBroadcastChannel(this.state, channelName, {
+        publishers,
+        allow_publish:
+          this.allowAllBroadcastChannels ||
+          this.allowedBroadcastChannels.has(channelName),
+      });
+    }
+  }
+
+  async _initWalletClient() {
+    const candidates = this.nodePool.getCandidates();
+    let lastError = null;
+    for (const nodeUrl of candidates) {
+      try {
+        let walletInfo;
+        if (
+          this.walletClient.switchNodeUrl &&
+          this.walletClient.getNodeUrl?.() &&
+          this.walletClient.getNodeUrl() !== nodeUrl
+        ) {
+          walletInfo = await withTimeout(
+            this.walletClient.switchNodeUrl(nodeUrl),
+            DEFAULT_NODE_STARTUP_TIMEOUT_MS,
+            `Kasia wallet startup via ${nodeUrl}`
+          );
+        } else {
+          walletInfo = await withTimeout(
+            this.walletClient.init(),
+            DEFAULT_NODE_STARTUP_TIMEOUT_MS,
+            `Kasia wallet startup via ${nodeUrl}`
+          );
+        }
+        this.nodePool.markSuccess(nodeUrl);
+        return walletInfo || this.walletClient.getWalletInfo?.();
+      } catch (error) {
+        lastError = error;
+        this.nodePool.markFailure(nodeUrl, error?.message || error);
+      }
+    }
+    throw lastError || new Error("Failed to initialize the Kasia wallet client");
+  }
+
+  async _withWalletOperation(operation) {
+    const candidates = this.nodePool.getCandidates();
+    let lastError = null;
+    for (const nodeUrl of candidates) {
+      try {
+        if (
+          this.walletClient.switchNodeUrl &&
+          this.walletClient.getNodeUrl?.() &&
+          this.walletClient.getNodeUrl() !== nodeUrl
+        ) {
+          await this.walletClient.switchNodeUrl(nodeUrl);
+          this.walletInfo = this.walletClient.getWalletInfo();
+        }
+        const result = await operation(nodeUrl);
+        this.nodePool.markSuccess(nodeUrl);
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableNodeError(error) || candidates.length === 1) {
+          throw error;
+        }
+        this.nodePool.markFailure(nodeUrl, error?.message || error);
+      }
+    }
+    throw lastError || new Error("Kasia wallet operation failed");
+  }
+
+  async _refreshConversationIdentity(conversation, { force = false } = {}) {
+    if (!conversation?.peer_address) {
+      return;
+    }
+    if (!this.knsClient.isEnabled()) {
+      if (!conversation.display_name) {
+        conversation.display_name =
+          conversation.nickname || shortenAddress(conversation.peer_address);
+        conversation.identity_source = conversation.nickname ? "nickname" : "address";
+      }
+      return;
+    }
+
+    const nowMs = this.nowFn();
+    if (
+      !force &&
+      Number(conversation.last_identity_refresh_ms || 0) + this.identityRefreshMs >
+        nowMs
+    ) {
+      if (!conversation.display_name) {
+        conversation.display_name =
+          conversation.nickname ||
+          conversation.kns_name ||
+          shortenAddress(conversation.peer_address);
+      }
+      return;
+    }
+
+    const knsName = await this.knsClient.lookupPrimaryName(
+      conversation.peer_address,
+      this.state.kns_cache
+    ).catch(() => null);
+    if (knsName) {
+      conversation.kns_name = knsName;
+    }
+    conversation.display_name =
+      conversation.nickname ||
+      conversation.kns_name ||
+      shortenAddress(conversation.peer_address);
+    conversation.identity_source = conversation.nickname
+      ? "nickname"
+      : conversation.kns_name
+      ? "kns"
+      : "address";
+    conversation.last_identity_refresh_ms = nowMs;
+  }
+
+  async _refreshConversationIdentities({ force = false } = {}) {
+    for (const conversation of Object.values(this.state.conversations || {})) {
+      await this._refreshConversationIdentity(conversation, { force });
+    }
+  }
+
+  async _pollLiveContextualMessages() {
+    if (typeof this.walletClient.getAddressMempoolEntries !== "function") {
+      return;
+    }
+    const conversations = Object.values(this.state.conversations || {}).filter(
+      (conversation) =>
+        conversation.status === "active" &&
+        conversation.their_alias &&
+        conversation.peer_address
+    );
+    if (conversations.length === 0) {
+      return;
+    }
+
+    let mempool;
+    try {
+      mempool = await this._withWalletOperation(() =>
+        this.walletClient.getAddressMempoolEntries(
+          conversations.map((conversation) => conversation.peer_address)
+        )
+      );
+    } catch (error) {
+      this.logger.debug?.(
+        `[kasia-bridge] Live contextual poll skipped: ${error?.message || error}`
+      );
+      return;
+    }
+
+    for (const conversation of conversations) {
+      const addressEntry = mempoolEntriesForAddress(
+        mempool,
+        conversation.peer_address
+      );
+      for (const transaction of senderTransactionsFromAddressEntry(addressEntry)) {
+        const txId = txIdFromTransaction(transaction);
+        if (!txId || hasProcessedTx(this.state, txId)) {
+          continue;
+        }
+
+        try {
+          const parsed = parseContextualMessagePayload(txPayloadFromTransaction(transaction));
+          if (parsed.alias !== conversation.their_alias) {
+            continue;
+          }
+          const messageBody = decryptSealedMessage(
+            this.walletInfo.privateKeyHex,
+            parsed.sealedMessage
+          );
+          const liveObservedMs = this.nowFn();
+          conversation.last_live_tx_seen_ms = Math.max(
+            Number(conversation.last_live_tx_seen_ms || 0),
+            liveObservedMs
+          );
+          touchConversation(conversation, new Date(liveObservedMs).toISOString());
+          await this._refreshConversationIdentity(conversation, { force: false });
+          this._enqueueEvent({
+            eventType: "message",
+            messageId: txId,
+            chatId: conversation.peer_address,
+            senderId: conversation.peer_address,
+            senderName: conversation.display_name || shortenAddress(conversation.peer_address),
+            body: messageBody,
+            timestampMs: liveObservedMs,
+            raw: {
+              transactionId: txId,
+              delivery: publicDelivery(null, {
+                liveObservedMs,
+              }),
+            },
+          });
+          markProcessedTx(this.state, txId, this.processedTxLimit);
+        } catch (error) {
+          this.logger.debug?.(
+            `[kasia-bridge] Live contextual tx ${txId} ignored: ${error?.message || error}`
+          );
+        }
+      }
+    }
+  }
+
+  async _pollLiveBroadcastMessages() {
+    if (typeof this.walletClient.getAddressMempoolEntries !== "function") {
+      return;
+    }
+    const channels = Object.values(this.state.broadcasts?.channels || {}).filter(
+      (channel) => Array.isArray(channel.publishers) && channel.publishers.length > 0
+    );
+    if (channels.length === 0) {
+      return;
+    }
+
+    const publisherMap = new Map();
+    for (const channel of channels) {
+      for (const publisher of channel.publishers) {
+        const list = publisherMap.get(publisher) || [];
+        list.push(channel);
+        publisherMap.set(publisher, list);
+      }
+    }
+
+    let mempool;
+    try {
+      mempool = await this._withWalletOperation(() =>
+        this.walletClient.getAddressMempoolEntries([...publisherMap.keys()])
+      );
+    } catch (error) {
+      this.logger.debug?.(
+        `[kasia-bridge] Live broadcast poll skipped: ${error?.message || error}`
+      );
+      return;
+    }
+
+    for (const [publisher, subscribedChannels] of publisherMap.entries()) {
+      const addressEntry = mempoolEntriesForAddress(mempool, publisher);
+      for (const transaction of senderTransactionsFromAddressEntry(addressEntry)) {
+        const txId = txIdFromTransaction(transaction);
+        if (!txId || hasProcessedTx(this.state, txId)) {
+          continue;
+        }
+        try {
+          const parsed = parseBroadcastPayload(txPayloadFromTransaction(transaction));
+          const channel = subscribedChannels.find(
+            (entry) => entry.channel_name === parsed.channelName
+          );
+          if (!channel) {
+            continue;
+          }
+          const liveObservedMs = this.nowFn();
+          channel.last_live_poll_ms = liveObservedMs;
+          channel.recent_messages.push({
+            tx_id: txId,
+            sender_address: publisher,
+            content: parsed.message,
+            observed_live_ms: liveObservedMs,
+            block_time_ms: null,
+          });
+          channel.recent_messages = channel.recent_messages.slice(-25);
+          touchBroadcastChannel(channel, new Date(liveObservedMs).toISOString());
+          this._enqueueEvent({
+            eventType: "broadcast",
+            messageId: txId,
+            chatId: channel.channel_id,
+            senderId: publisher,
+            senderName: shortenAddress(publisher),
+            body: parsed.message,
+            timestampMs: liveObservedMs,
+            channelName: channel.channel_name,
+            raw: {
+              transactionId: txId,
+              delivery: publicDelivery(null, {
+                liveObservedMs,
+              }),
+            },
+          });
+          markProcessedTx(this.state, txId, this.processedTxLimit);
+        } catch (error) {
+          this.logger.debug?.(
+            `[kasia-bridge] Live broadcast tx ${txId} ignored: ${error?.message || error}`
+          );
+        }
+      }
+    }
+  }
+
+  async _pollOutboundHandshakeVisibility() {
+    const initiatedConversations = Object.values(this.state.conversations || {}).filter(
+      (conversation) =>
+        conversation.pending_outbound_handshake?.tx_id &&
+        conversation.peer_address
+    );
+    if (initiatedConversations.length === 0) {
+      return;
+    }
+
+    for (const conversation of initiatedConversations) {
+      const records = await this._fetchJson("/handshakes/by-sender", {
+        address: this.walletInfo.address,
+        block_time: Math.max(
+          0,
+          Number(conversation.last_handshake_block_time || 0) - DEFAULT_LIVE_LOOKBACK_MS
+        ),
+        limit: this.pollLimit,
+      });
+      const matched = Array.isArray(records)
+        ? records.find(
+            (record) =>
+              String(record?.tx_id || "").trim() ===
+              conversation.pending_outbound_handshake?.tx_id
+          )
+        : null;
+      if (matched) {
+        conversation.last_handshake_block_time = Math.max(
+          Number(conversation.last_handshake_block_time || 0),
+          txBlockTimeFromRecord(matched)
+        );
+      }
+    }
+  }
+
+  async _pollSendJobLiveVisibility() {
+    if (typeof this.walletClient.getAddressMempoolEntries !== "function") {
+      return;
+    }
+    const pendingJobs = Object.values(this.state.send_jobs || {}).filter(
+      (job) =>
+        isIndexerTrackedSendJobStatus(job.status) &&
+        Array.isArray(job.tx_ids) &&
+        job.tx_ids.length > 0 &&
+        Number(job.observed_live_ms || 0) <= 0
+    );
+    if (pendingJobs.length === 0) {
+      return;
+    }
+
+    let mempool;
+    try {
+      mempool = await this._withWalletOperation(() =>
+        this.walletClient.getAddressMempoolEntries([this.walletInfo.address])
+      );
+    } catch {
+      return;
+    }
+
+    const addressEntry = mempoolEntriesForAddress(mempool, this.walletInfo.address);
+    const liveTxIds = new Set(
+      senderTransactionsFromAddressEntry(addressEntry)
+        .map((transaction) => txIdFromTransaction(transaction))
+        .filter(Boolean)
+    );
+
+    for (const job of pendingJobs) {
+      if (job.tx_ids.some((txId) => liveTxIds.has(txId))) {
+        const liveObservedMs = job.observed_live_ms || this.nowFn();
+        await this._updateSendJob(job.job_id, {
+          observed_live_ms: liveObservedMs,
+          status:
+            job.job_kind === "broadcast" ? "processed" : "waiting_for_indexer",
+          indexed_ms: job.job_kind === "broadcast" ? liveObservedMs : job.indexed_ms,
+          finished_ms: job.job_kind === "broadcast" ? liveObservedMs : job.finished_ms,
+          indexed_parts:
+            job.job_kind === "broadcast"
+              ? job.total_parts || job.completed_parts || 1
+              : job.indexed_parts,
+          indexed_tx_ids:
+            job.job_kind === "broadcast" ? [...job.tx_ids] : job.indexed_tx_ids,
+        });
+      }
+    }
   }
 
   async syncOnce() {
+    await this._pollLiveContextualMessages();
+    await this._pollLiveBroadcastMessages();
     await this._pollHandshakes();
+    await this._pollOutboundHandshakeVisibility();
     await this._pollContextualMessages();
+    await this._pollSendJobLiveVisibility();
     await this._pollSendJobVisibility();
+    await this._refreshConversationIdentities({ force: false });
     this.state.last_sync_ms = this.nowFn();
     await this._saveState();
   }
@@ -826,6 +1599,10 @@ export class KasiaBridgeCore {
         );
         const payload = parseHandshakePayload(plaintext);
         this._handleHandshakeRecord(record, payload);
+        const conversation = this.state.conversations[String(record.sender || "").trim()];
+        if (conversation) {
+          await this._refreshConversationIdentity(conversation, { force: false });
+        }
       } catch (error) {
         this.logger.warn?.(
           `[kasia-bridge] Failed to process handshake ${record?.tx_id}: ${error?.message || error}`
@@ -862,13 +1639,15 @@ export class KasiaBridgeCore {
         conversation.status = "active";
       }
       conversation.pending_handshake = null;
+      conversation.pending_outbound_handshake = null;
       return;
     }
 
     conversation.their_alias = payload.alias;
     conversation.our_alias =
       conversation.our_alias || generateAlias(this.randomBytesFn);
-    conversation.status = "pending";
+    conversation.status =
+      conversation.pending_outbound_handshake != null ? "awaiting_response" : "pending";
     conversation.pending_handshake = {
       tx_id: record.tx_id,
       block_time: Number(record.block_time || 0),
@@ -880,12 +1659,20 @@ export class KasiaBridgeCore {
       messageId: record.tx_id,
       chatId: peerAddress,
       senderId: peerAddress,
-      senderName: shortenAddress(peerAddress),
+      senderName:
+        conversation.display_name ||
+        conversation.nickname ||
+        conversation.kns_name ||
+        shortenAddress(peerAddress),
       body: "Handshake request",
       timestampMs: Number(record.block_time || this.nowFn()),
       raw: {
         ...record,
         payload,
+        delivery: publicDelivery(record, {
+          indexedMs: this.nowFn(),
+          indexedBlockTimeMs: Number(record.block_time || 0),
+        }),
       },
     });
   }
@@ -927,10 +1714,20 @@ export class KasiaBridgeCore {
             messageId: record.tx_id,
             chatId: conversation.peer_address,
             senderId: conversation.peer_address,
-            senderName: shortenAddress(conversation.peer_address),
+            senderName:
+              conversation.display_name ||
+              conversation.nickname ||
+              conversation.kns_name ||
+              shortenAddress(conversation.peer_address),
             body: messageBody,
             timestampMs: Number(record.block_time || this.nowFn()),
-            raw: record,
+            raw: {
+              ...record,
+              delivery: publicDelivery(record, {
+                indexedMs: this.nowFn(),
+                indexedBlockTimeMs: Number(record.block_time || 0),
+              }),
+            },
           });
         } catch (error) {
           this.logger.warn?.(
@@ -947,6 +1744,7 @@ export class KasiaBridgeCore {
   async _pollSendJobVisibility() {
     const pendingJobs = Object.values(this.state.send_jobs || {}).filter(
       (job) =>
+        job.job_kind !== "broadcast" &&
         isIndexerTrackedSendJobStatus(job.status) &&
         Array.isArray(job.tx_ids) &&
         job.tx_ids.length > 0
@@ -1017,25 +1815,43 @@ export class KasiaBridgeCore {
   }
 
   async _fetchJson(path, params) {
-    const url = joinUrl(this.indexerUrl, path, params);
-    const response = await this.fetchImpl(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-    });
+    const candidates = this.indexerPool.getCandidates();
+    let lastError = null;
+    for (const indexerUrl of candidates) {
+      const url = joinUrl(indexerUrl, path, params);
+      try {
+        const response = await this.fetchImpl(url, {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        });
 
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(
-        `Indexer request failed (${response.status}) for ${url.pathname}: ${body}`
-      );
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(
+            `Indexer request failed (${response.status}) for ${url.pathname}: ${body}`
+          );
+        }
+
+        this.indexerPool.markSuccess(indexerUrl);
+        return await response.json();
+      } catch (error) {
+        lastError = error;
+        this.indexerPool.markFailure(indexerUrl, error?.message || error);
+      }
     }
 
-    return await response.json();
+    throw lastError || new Error(`No Kasia indexer endpoint could satisfy ${path}`);
   }
 
   _enqueueEvent(event) {
+    event.raw = {
+      ...(event.raw || {}),
+      delivery: publicDelivery(event.raw, {
+        deliveredToHermesMs: this.nowFn(),
+      }),
+    };
     this.messageQueue.push(event);
     if (this.messageQueue.length > this.maxQueueSize) {
       this.messageQueue.splice(0, this.messageQueue.length - this.maxQueueSize);

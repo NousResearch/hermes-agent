@@ -1571,6 +1571,7 @@ def _setup_kasia():
     print_info("    1. A Kasia seed phrase dedicated to Hermes")
     print_info("    2. A trusted Kasia indexer URL")
     print_info("    3. A Kaspa node Wborsh / RPC URL for transaction submission")
+    print_info("    4. Optional: a KNS API URL for human-readable names")
     print_info("  Hermes does not auto-discover public indexers in v1.")
 
     values = [
@@ -1601,6 +1602,13 @@ def _setup_kasia():
             False,
             "Optional network name, e.g. mainnet or testnet-10.",
             get_env_value("KASIA_NETWORK") or "mainnet",
+        ),
+        (
+            "KASIA_KNS_URL",
+            "KNS API URL",
+            False,
+            "Optional KNS API base URL used for display names and KNS target resolution.",
+            get_env_value("KASIA_KNS_URL") or "",
         ),
     ]
 
@@ -1660,6 +1668,8 @@ def _setup_kasia():
     print_info(f"  Indexer: {get_env_value('KASIA_INDEXER_URL')}")
     print_info(f"  Node: {get_env_value('KASIA_NODE_WBORSH_URL')}")
     print_info(f"  Network: {get_env_value('KASIA_NETWORK') or 'mainnet'}")
+    if get_env_value("KASIA_KNS_URL"):
+        print_info(f"  KNS API: {get_env_value('KASIA_KNS_URL')}")
     print_info(f"  Fee policy: {get_env_value('KASIA_FEE_POLICY') or 'priority'}")
 
 

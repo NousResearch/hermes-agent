@@ -7,6 +7,7 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import subprocess
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -270,8 +271,38 @@ def show_status(args):
         status = "configured" if has_token else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-        
+
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
+        if name == "Kasia" and has_token:
+            kns_url = os.getenv("KASIA_KNS_URL", "").strip()
+            if kns_url:
+                print(f"    KNS:        {kns_url}")
+            indexer_urls = [value.strip() for value in os.getenv("KASIA_INDEXER_URLS", "").split(",") if value.strip()]
+            node_urls = [value.strip() for value in os.getenv("KASIA_NODE_WBORSH_URLS", "").split(",") if value.strip()]
+            if indexer_urls:
+                print(f"    Indexers:   {len(indexer_urls)} configured")
+            if node_urls:
+                print(f"    Nodes:      {len(node_urls)} configured")
+            broadcast_channels = [value.strip() for value in os.getenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "").split(",") if value.strip()]
+            if broadcast_channels:
+                print(f"    Broadcasts: publish allowlist for {', '.join('#' + c for c in broadcast_channels)}")
+            bridge_port = os.getenv("KASIA_BRIDGE_PORT", "").strip() or "3010"
+            try:
+                from urllib.request import urlopen
+                with urlopen(f"http://127.0.0.1:{bridge_port}/health", timeout=1.5) as response:
+                    health = json.loads(response.read().decode("utf-8"))
+                active_indexer = (health.get("indexerPool") or {}).get("activeUrl") or health.get("indexerUrl")
+                active_node = (health.get("nodePool") or {}).get("activeUrl") or health.get("nodeUrl")
+                if active_indexer:
+                    print(f"    Active indexer: {active_indexer}")
+                if active_node:
+                    print(f"    Active node:    {active_node}")
+                if (health.get("indexerPool") or {}).get("degraded"):
+                    print("    Indexer pool:   degraded / failover active")
+                if (health.get("nodePool") or {}).get("degraded"):
+                    print("    Node pool:      degraded / failover active")
+            except Exception:
+                pass
     
     # =========================================================================
     # Gateway Status

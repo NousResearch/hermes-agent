@@ -11,6 +11,7 @@ import os
 import re
 import ssl
 import time
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "initiate"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'initiate' explicitly starts a new Kasia conversation with a peer."
             },
             "target": {
                 "type": "string",
@@ -46,6 +47,14 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "display_name": {
+                "type": "string",
+                "description": "Optional display label to attach when initiating a new Kasia conversation."
+            },
+            "retry": {
+                "type": "boolean",
+                "description": "When action='initiate', retry an existing pending Kasia handshake instead of returning the stored pending state."
             }
         },
         "required": []
@@ -60,7 +69,7 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
-    return _handle_send(args)
+    return _handle_send(args, action=action)
 
 
 def _handle_list():
@@ -72,11 +81,13 @@ def _handle_list():
         return json.dumps({"error": f"Failed to load channel directory: {e}"})
 
 
-def _handle_send(args):
+def _handle_send(args, action="send"):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
+    if not target:
+        return json.dumps({"error": "A 'target' is required"})
+    if action == "send" and not message:
         return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
 
     parts = target.split(":", 1)
@@ -173,6 +184,15 @@ def _handle_send(args):
                 cleaned_message,
                 thread_id=thread_id,
                 media_files=media_files,
+                **(
+                    {
+                        "action": action,
+                        "display_name": args.get("display_name"),
+                        "retry": bool(args.get("retry")),
+                    }
+                    if action != "send" or args.get("display_name") or args.get("retry")
+                    else {}
+                ),
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -203,6 +223,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         lowered = target_ref.lower()
         if lowered.startswith(("kaspa:", "kaspatest:", "kaspasim:")):
             return target_ref, None, True
+        if lowered.endswith(".kas"):
+            return target_ref, None, True
+        if lowered.startswith("broadcast:"):
+            return f"broadcast:{target_ref.split(':', 1)[1]}", None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     return None, None, False
@@ -272,7 +296,17 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    action="send",
+    display_name=None,
+    retry=False,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -286,6 +320,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.slack import SlackAdapter
 
     media_files = media_files or []
+
+    if action != "send" and platform != Platform.KASIA:
+        return {"error": f"Action '{action}' is only supported for Kasia right now"}
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
@@ -345,7 +382,17 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.KASIA:
-            result = await _send_kasia(pconfig.extra, chat_id, chunk)
+            if action == "send" and not display_name and not retry:
+                result = await _send_kasia(pconfig.extra, chat_id, chunk)
+            else:
+                result = await _send_kasia(
+                    pconfig.extra,
+                    chat_id,
+                    chunk,
+                    action=action,
+                    display_name=display_name,
+                    retry=retry,
+                )
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
@@ -591,7 +638,7 @@ async def _send_signal(extra, chat_id, message):
         return {"error": f"Signal send failed: {e}"}
 
 
-async def _send_kasia(extra, chat_id, message):
+async def _send_kasia(extra, chat_id, message, action="send", display_name=None, retry=False):
     """Send via the local Kasia bridge HTTP API."""
     try:
         import aiohttp
@@ -601,15 +648,60 @@ async def _send_kasia(extra, chat_id, message):
         bridge_port = extra.get("bridge_port", 3010)
         send_wait_ms = int(extra.get("send_wait_ms", 5000))
         async with aiohttp.ClientSession() as session:
+            resolved_chat_id = chat_id
+            if action == "initiate":
+                async with session.get(
+                    f"http://127.0.0.1:{bridge_port}/resolve-target/{quote(str(chat_id), safe='')}",
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resolve_resp:
+                    if resolve_resp.status != 200:
+                        body = await resolve_resp.text()
+                        return {
+                            "error": f"Kasia target resolution failed ({resolve_resp.status}): {body}"
+                        }
+                    resolved = await resolve_resp.json()
+                resolved_chat_id = resolved.get("chatId") or chat_id
+                if not _is_kasia_target_authorized(resolved_chat_id):
+                    return {
+                        "error": f"Kasia initiation is not authorized for {resolved_chat_id}"
+                    }
+
+            endpoint = "/send"
+            payload = {"chatId": chat_id, "message": message, "waitMs": send_wait_ms}
+            timeout_total = max(10, int(send_wait_ms / 1000) + 10)
+            if action == "initiate":
+                endpoint = "/handshakes/initiate"
+                payload = {
+                    "chatId": resolved_chat_id,
+                    "displayName": display_name,
+                    "retry": retry,
+                }
+                timeout_total = 30
+            elif str(chat_id).startswith("broadcast:"):
+                endpoint = "/broadcasts/send"
+                payload = {
+                    "channelName": str(chat_id).split(":", 1)[1],
+                    "message": message,
+                    "waitMs": send_wait_ms,
+                }
+
             async with session.post(
-                f"http://127.0.0.1:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message, "waitMs": send_wait_ms},
-                timeout=aiohttp.ClientTimeout(total=max(10, int(send_wait_ms / 1000) + 10)),
+                f"http://127.0.0.1:{bridge_port}{endpoint}",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout_total),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("status") in {"failed", "rejected"}:
                         return {"error": data.get("error") or "Kasia send failed"}
+                    if action == "initiate":
+                        return {
+                            "success": True,
+                            "platform": "kasia",
+                            "chat_id": data.get("chatId") or resolved_chat_id,
+                            "message_id": data.get("txId"),
+                            "status": data.get("status"),
+                        }
                     return {
                         "success": True,
                         "platform": "kasia",
@@ -628,6 +720,31 @@ async def _send_kasia(extra, chat_id, message):
                 return {"error": f"Kasia bridge error ({resp.status}): {body}"}
     except Exception as e:
         return {"error": f"Kasia send failed: {e}"}
+
+
+def _is_kasia_target_authorized(address: str) -> bool:
+    normalized = str(address or "").strip().lower()
+    if not normalized:
+        return False
+
+    if os.getenv("KASIA_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+        return True
+
+    platform_allowlist = os.getenv("KASIA_ALLOWED_USERS", "").strip()
+    global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+    if not platform_allowlist and not global_allowlist:
+        return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+
+    allowed_ids = {
+        item.strip().lower()
+        for value in (platform_allowlist, global_allowlist)
+        for item in value.split(",")
+        if item.strip()
+    }
+    check_ids = {normalized}
+    if normalized.startswith(("kaspa:", "kaspatest:", "kaspasim:")):
+        check_ids.add(normalized.split(":", 1)[1])
+    return bool(check_ids & allowed_ids)
 
 
 async def _send_email(extra, chat_id, message):

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 import { KasiaBridgeCore } from "./lib/bridge_core.js";
+import { readBridgeEnv, validateBridgeEnv } from "./lib/bridge_env.js";
 
 const args = process.argv.slice(2);
 
@@ -49,41 +50,51 @@ const port = Number.parseInt(getArg("port", "3010"), 10);
 const stateDir = resolveStateDir(getArg("state-dir", ""));
 const pollIntervalMs = Number.parseInt(getArg("poll-interval-ms", "4000"), 10);
 
-const seedPhrase = process.env.KASIA_SEED_PHRASE || "";
-const indexerUrl = process.env.KASIA_INDEXER_URL || "";
-const nodeUrl = process.env.KASIA_NODE_WBORSH_URL || "";
-const network = process.env.KASIA_NETWORK || "mainnet";
-const feePolicy = process.env.KASIA_FEE_POLICY || "priority";
-const maxMultipartParts = Number.parseInt(
-  process.env.KASIA_MAX_MULTIPARTS || "8",
-  10
-);
-const contextualMessageTargetChars = Number.parseInt(
-  process.env.KASIA_TARGET_MESSAGE_CHARS || "240",
-  10
-);
+const bridgeConfig = readBridgeEnv(process.env);
 
-if (!seedPhrase || !indexerUrl || !nodeUrl) {
-  console.error(
-    "KASIA_SEED_PHRASE, KASIA_INDEXER_URL, and KASIA_NODE_WBORSH_URL are required"
-  );
+try {
+  validateBridgeEnv(bridgeConfig);
+} catch (error) {
+  console.error(error?.message || String(error));
   process.exit(1);
 }
+
+const {
+  seedPhrase,
+  indexerUrl,
+  indexerUrls,
+  nodeUrl,
+  nodeUrls,
+  network,
+  knsUrl,
+  feePolicy,
+  maxMultipartParts,
+  contextualMessageTargetChars,
+  broadcastSubscriptions,
+  allowedBroadcastChannels,
+  allowAllBroadcastChannels,
+} = bridgeConfig;
 
 await mkdir(stateDir, { recursive: true });
 
 const core = new KasiaBridgeCore({
   stateDir,
   indexerUrl,
+  indexerUrls,
   nodeUrl,
+  nodeUrls,
   network,
   seedPhrase,
+  knsUrl,
   feePolicy,
+  broadcastSubscriptions,
+  allowedBroadcastChannels,
+  allowAllBroadcastChannels,
   maxMultipartParts,
   contextualMessageTargetChars,
   logger: console,
 });
-await core.init();
+await core.init({ skipInitialSync: true });
 
 let syncInFlight = null;
 async function runSync() {
@@ -120,6 +131,16 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    if (method === "POST" && url.pathname === "/handshakes/initiate") {
+      const body = await readJsonBody(req);
+      const result = await core.initiateHandshake({
+        chatId: body.chatId || body.address || body.target,
+        displayName: body.displayName || body.nickname || null,
+        retry: Boolean(body.retry),
+      });
+      return sendJson(res, 200, result);
+    }
+
     if (method === "POST" && url.pathname === "/send") {
       const body = await readJsonBody(req);
       const result = await core.send({
@@ -136,6 +157,31 @@ const server = createServer(async (req, res) => {
       if (!result) {
         return sendJson(res, 404, { error: "Send job not found" });
       }
+      return sendJson(res, 200, result);
+    }
+
+    if (method === "POST" && url.pathname === "/broadcasts/send") {
+      const body = await readJsonBody(req);
+      const result = await core.sendBroadcast({
+        channelName: body.channelName || body.chatId || body.channel,
+        message: body.message,
+        waitMs: body.waitMs,
+      });
+      return sendJson(res, 200, result);
+    }
+
+    if (method === "POST" && url.pathname === "/broadcasts/subscribe") {
+      const body = await readJsonBody(req);
+      const result = await core.subscribeBroadcastChannel({
+        channelName: body.channelName || body.chatId || body.channel,
+        publishers: body.publishers || [],
+      });
+      return sendJson(res, 200, result);
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/resolve-target/")) {
+      const target = decodeURIComponent(url.pathname.slice("/resolve-target/".length));
+      const result = await core.resolveTarget(target);
       return sendJson(res, 200, result);
     }
 
@@ -156,6 +202,7 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`[kasia-bridge] Listening on http://127.0.0.1:${port}`);
   console.log(`[kasia-bridge] State directory: ${stateDir}`);
   console.log(`[kasia-bridge] Wallet: ${core.health().walletAddress}`);
+  void runSync();
 });
 
 const syncTimer = setInterval(() => {

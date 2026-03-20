@@ -204,7 +204,8 @@ PLATFORM_HINTS = {
         "Prefer answers that fit in one brief message. If a response would be long, "
         "give the essential answer first, summarize instead of elaborating, and avoid "
         "large code blocks or long lists unless the user explicitly needs them. "
-        "Kasia delivery in Hermes v1 is direct-message only and text-only."
+        "Kasia delivery in Hermes is text-only. Direct messages and announcement-style "
+        "broadcast channels are supported, but broadcasts are not group chats."
     ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "

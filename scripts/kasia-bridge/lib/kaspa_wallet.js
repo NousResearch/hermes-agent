@@ -1026,8 +1026,30 @@ export class KaspaWalletClient {
     return this.feePolicy;
   }
 
+  getNodeUrl() {
+    return this.nodeUrl;
+  }
+
   getLastResolvedFeeRate() {
     return this._lastResolvedFeeRate;
+  }
+
+  async switchNodeUrl(nextNodeUrl) {
+    const normalizedUrl = String(nextNodeUrl || "").trim();
+    if (!normalizedUrl) {
+      throw new Error("Node URL is required");
+    }
+    if (normalizedUrl === this.nodeUrl && this.isConnected && this.rpc) {
+      return this.getWalletInfo();
+    }
+
+    await this.close();
+    this.nodeUrl = normalizedUrl;
+    this._feeEstimateCache = {
+      estimate: null,
+      fetched_at_ms: 0,
+    };
+    return await this.init();
   }
 
   async resolveFeeRate(policy = this.feePolicy) {
@@ -1060,6 +1082,28 @@ export class KaspaWalletClient {
 
     this._lastResolvedFeeRate = fallbackRate;
     return fallbackRate;
+  }
+
+  async getAddressMempoolEntries(
+    addresses,
+    { includeOrphanPool = true, filterTransactionPool = false } = {}
+  ) {
+    const normalizedAddresses = [...new Set(
+      (Array.isArray(addresses) ? addresses : [addresses])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )];
+    if (normalizedAddresses.length === 0) {
+      return { entries: [] };
+    }
+    if (!this.rpc?.getMempoolEntriesByAddresses) {
+      throw new Error("Kaspa RPC client does not support getMempoolEntriesByAddresses");
+    }
+    return await this.rpc.getMempoolEntriesByAddresses({
+      addresses: normalizedAddresses,
+      includeOrphanPool,
+      filterTransactionPool,
+    });
   }
 
   async _getFeeEstimate() {

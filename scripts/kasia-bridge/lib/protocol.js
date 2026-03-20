@@ -10,6 +10,7 @@ import {
 export const PROTOCOL_PREFIX = "ciph_msg:";
 export const HANDSHAKE_PREFIX = "ciph_msg:1:handshake:";
 export const CONTEXTUAL_PREFIX = "ciph_msg:1:comm:";
+export const BROADCAST_PREFIX = "ciph_msg:1:bcast:";
 export const ALIAS_LENGTH_BYTES = 6;
 export const MINIMUM_MESSAGE_AMOUNT_SOMPI = kaspaToSompi("0.2");
 
@@ -179,6 +180,97 @@ export function buildContextualMessageTransactionPayload({
     `${CONTEXTUAL_PREFIX}${alias}:${base64Payload}`,
     "utf8"
   );
+}
+
+export function normalizeBroadcastChannelName(channelName) {
+  const normalized = String(channelName || "").trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Broadcast channel name is required");
+  }
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/i.test(normalized)) {
+    throw new Error(
+      "Broadcast channel names must start with a letter or number and only use letters, numbers, hyphen, or underscore"
+    );
+  }
+  return normalized;
+}
+
+export function buildBroadcastTransactionPayload({ channelName, message }) {
+  const normalizedChannel = normalizeBroadcastChannelName(channelName);
+  const text = String(message || "").trim();
+  if (!text) {
+    throw new Error("Broadcast message is required");
+  }
+  return Buffer.from(
+    `${BROADCAST_PREFIX}${normalizedChannel}:${text}`,
+    "utf8"
+  );
+}
+
+function payloadBuffer(payload) {
+  if (Buffer.isBuffer(payload)) {
+    return payload;
+  }
+  if (payload instanceof Uint8Array) {
+    return Buffer.from(payload);
+  }
+  const text = String(payload || "").trim();
+  if (!text) {
+    return Buffer.alloc(0);
+  }
+  if (/^(?:[0-9a-f]{2})+$/i.test(text)) {
+    return Buffer.from(text, "hex");
+  }
+  return Buffer.from(text, "utf8");
+}
+
+function payloadString(payload) {
+  return payloadBuffer(payload).toString("utf8");
+}
+
+export function parseContextualMessagePayload(payload) {
+  const text = payloadString(payload);
+  if (!text.startsWith(CONTEXTUAL_PREFIX)) {
+    throw new Error("Unsupported contextual payload");
+  }
+  const remainder = text.slice(CONTEXTUAL_PREFIX.length);
+  const delimiterIndex = remainder.indexOf(":");
+  if (delimiterIndex <= 0) {
+    throw new Error("Contextual payload is missing an alias delimiter");
+  }
+  const alias = remainder.slice(0, delimiterIndex);
+  const base64Payload = remainder.slice(delimiterIndex + 1);
+  ensureAlias(alias);
+  if (!base64Payload) {
+    throw new Error("Contextual payload is missing encrypted content");
+  }
+  return {
+    alias,
+    sealedMessage: Buffer.from(base64Payload, "base64"),
+  };
+}
+
+export function parseBroadcastPayload(payload) {
+  const text = payloadString(payload);
+  if (!text.startsWith(BROADCAST_PREFIX)) {
+    throw new Error("Unsupported broadcast payload");
+  }
+  const remainder = text.slice(BROADCAST_PREFIX.length);
+  const delimiterIndex = remainder.indexOf(":");
+  if (delimiterIndex <= 0) {
+    throw new Error("Broadcast payload is missing a channel delimiter");
+  }
+  const channelName = normalizeBroadcastChannelName(
+    remainder.slice(0, delimiterIndex)
+  );
+  const message = remainder.slice(delimiterIndex + 1);
+  if (!message.trim()) {
+    throw new Error("Broadcast payload is missing message content");
+  }
+  return {
+    channelName,
+    message,
+  };
 }
 
 export function shortenAddress(address) {

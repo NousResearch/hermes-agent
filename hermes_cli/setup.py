@@ -2775,6 +2775,61 @@ def setup_gateway(config: dict):
             print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
             print_info("or personal self-chat) and pair via QR code.")
 
+    # ── Webhooks ──
+    existing_webhook = get_env_value("WEBHOOK_ENABLED")
+    if existing_webhook:
+        print_info("Webhooks: already configured")
+        if prompt_yes_no("Reconfigure webhooks?", False):
+            existing_webhook = None
+
+    if not existing_webhook and prompt_yes_no("Set up webhooks? (GitHub, GitLab, etc.)", False):
+        print()
+        print_warning(
+            "⚠  Webhook and SMS platforms require exposing gateway ports to the"
+        )
+        print_warning(
+            "   internet. For security, run the gateway in a sandboxed environment"
+        )
+        print_warning(
+            "   (Docker, VM, etc.) to limit blast radius from prompt injection."
+        )
+        print()
+        print_info(
+            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/"
+        )
+        print()
+
+        port = prompt("Webhook port (default 8644)")
+        if port:
+            try:
+                save_env_value("WEBHOOK_PORT", str(int(port)))
+                print_success(f"Webhook port set to {port}")
+            except ValueError:
+                print_warning("Invalid port number, using default 8644")
+
+        secret = prompt("Global HMAC secret (shared across all routes)", password=True)
+        if secret:
+            save_env_value("WEBHOOK_SECRET", secret)
+            print_success("Webhook secret saved")
+        else:
+            print_warning("No secret set — you must configure per-route secrets in config.yaml")
+
+        save_env_value("WEBHOOK_ENABLED", "true")
+        print()
+        print_success("Webhooks enabled! Next steps:")
+        print_info("   1. Define webhook routes in ~/.hermes/config.yaml")
+        print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
+        print_info("      http://your-server:8644/webhooks/<route-name>")
+        print()
+        print_info(
+            "   Route configuration guide:"
+        )
+        print_info(
+            "   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes"
+        )
+        print()
+        print_info("   Open config in your editor:  hermes config edit")
+
     # ── Gateway Service Setup ──
     any_messaging = (
         get_env_value("TELEGRAM_BOT_TOKEN")
@@ -2784,6 +2839,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("WEBHOOK_ENABLED")
     )
     if any_messaging:
         print()

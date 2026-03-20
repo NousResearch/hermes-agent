@@ -6365,7 +6365,17 @@ class AIAgent:
                     }
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
-                
+
+                # --- Text-based tool call extraction (Ollama / local models) ---
+                if not getattr(assistant_message, 'tool_calls', None) and assistant_message.content:
+                    from agent.text_tool_call_extraction import extract_text_tool_calls
+                    _parsed_content, _parsed_tcs = extract_text_tool_calls(
+                        assistant_message.content, assistant_message.tool_calls
+                    )
+                    if _parsed_tcs:
+                        assistant_message.content = _parsed_content
+                        assistant_message.tool_calls = _parsed_tcs
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:

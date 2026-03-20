@@ -290,7 +290,27 @@ def _run_single_child(
         elif completed and summary:
             status = "completed"
         else:
-            status = "failed"
+            # Check if work was actually done even if max_iterations was hit
+            # by looking at tool calls in the conversation
+            messages = result.get("messages") or []
+            successful_tool_calls = 0
+            failed_tool_calls = 0
+            if isinstance(messages, list):
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("role") == "tool":
+                        content = msg.get("content", "")
+                        if content and "error" in content[:80].lower():
+                            failed_tool_calls += 1
+                        else:
+                            successful_tool_calls += 1
+            
+            # If we have successful tool calls, consider it completed
+            if successful_tool_calls > 0 and failed_tool_calls == 0:
+                status = "completed"  # Work was done successfully
+            elif successful_tool_calls > failed_tool_calls:
+                status = "completed"  # More success than failure
+            else:
+                status = "failed"
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.

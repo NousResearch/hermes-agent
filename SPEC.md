@@ -52,7 +52,7 @@ The intended primary surfaces are:
   - later the shared or user workspace directory
 - for signed-in admins:
   - the same user experience
-  - plus a compact user-management section for creating and deleting users
+  - plus a compact user-management section for creating users, issuing signup links, and deactivating users
 
 The old development-style multi-panel control plane should not be the model for this forked product UI.
 
@@ -150,9 +150,30 @@ The intended user-lifecycle flow is:
 2. supplier setup surfaces the native `Pocket ID` setup URL for first-admin enrollment
 3. the first product admin signs into the authenticated local web app through `Pocket ID`
 4. admin creates additional users in the web UI
-5. the product service issues native `Pocket ID` signup tokens or login codes for those users
+5. the product service can issue native `Pocket ID` signup tokens for self-service onboarding
 6. each user completes passkey enrollment through `Pocket ID`
 7. the product continues to treat `Pocket ID` as the login authority and OIDC provider
+
+The first browser admin surface should implement:
+
+- listing visible product users from `Pocket ID`
+- creating regular non-admin users
+- issuing one-time signup links through native `Pocket ID` signup tokens
+- deactivating existing users rather than hard-deleting them
+
+The first browser admin surface should not implement:
+
+- browser-side promotion to product admin
+- destructive identity deletion as the default user-removal path
+- browser-side editing of broader product setup or provider configuration
+
+Pocket ID currently requires an email address for admin-created users.
+
+To preserve the intended product UX where email is optional for passkey-first local onboarding:
+
+- the browser admin form may leave email blank
+- the product backend should synthesize a deterministic `.invalid` placeholder email for provider compatibility
+- the product UI should treat those placeholder emails as effectively unset rather than showing them as meaningful user contact data
 
 The first setup flow should start the stack automatically after config generation and first-admin bootstrap.
 

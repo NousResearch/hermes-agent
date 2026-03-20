@@ -81,14 +81,50 @@ PAGE_TEMPLATE = """<!doctype html>
 </div>
 <span class="status-pill">Compact by design</span>
 </div>
-<p class="lead small">Admins will get a narrow user-management surface here for creating and deleting users without exposing broader setup controls in the browser.</p>
+<p class="lead small">Create regular users, issue a Pocket ID signup link, and deactivate accounts without exposing broader setup controls in the browser.</p>
+<div class="admin-layout">
+<form class="admin-form shell" id="adminCreateUserForm">
+<div class="admin-grid">
+<label class="field">
+<span>Username</span>
+<input id="adminUsername" type="text" placeholder="maria" required>
+</label>
+<label class="field">
+<span>Display name</span>
+<input id="adminDisplayName" type="text" placeholder="Maria Example" required>
+</label>
+<label class="field admin-email-field">
+<span>Email <em>(optional)</em></span>
+<input id="adminEmail" type="email" placeholder="maria@example.com">
+</label>
+</div>
+<div class="actions">
+<button class="button" id="adminCreateUserButton" type="submit">Create user</button>
+<button class="button secondary-button" id="adminCreateSignupLinkButton" type="button">Create signup link</button>
+</div>
+<div id="adminMessage" class="message"></div>
+</form>
+<section class="shell admin-token-shell" id="adminSignupTokenCard" hidden>
+<div class="section-head compact-head">
+<div>
+<p class="eyebrow">Signup Link</p>
+<h2>One-time link</h2>
+</div>
+</div>
+<p class="lead small">The link is valid for one signup and currently uses a seven-day lifetime.</p>
+<div class="token-row">
+<code class="token-link" id="adminSignupTokenUrl"></code>
+<button class="button secondary-button" id="adminCopySignupLinkButton" type="button">Copy</button>
+</div>
+</section>
+</div>
 <div class="table-shell">
 <table>
 <thead>
-<tr><th>User</th><th>Role</th><th>Status</th><th>Next</th></tr>
+<tr><th>User</th><th>Email</th><th>Status</th><th>Action</th></tr>
 </thead>
 <tbody id="adminUsersTable">
-<tr><td colspan="4" class="muted-cell">Pocket ID-backed user actions will be wired into this panel next.</td></tr>
+<tr><td colspan="4" class="muted-cell">No users loaded yet.</td></tr>
 </tbody>
 </table>
 </div>

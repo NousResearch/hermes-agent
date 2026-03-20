@@ -7029,11 +7029,16 @@ def main(
                     toolsets_list.append(str(t))
     else:
         # Check config for CLI toolsets, fallback to hermes-cli
-        config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
-        if config_cli_toolsets and isinstance(config_cli_toolsets, list):
-            toolsets_list = config_cli_toolsets
-        else:
-            toolsets_list = ["hermes-cli"]
+        try:
+            from hermes_cli.tools_config import get_platform_runtime_toolsets
+
+            toolsets_list = get_platform_runtime_toolsets(CLI_CONFIG, "cli")
+        except Exception:
+            config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
+            if config_cli_toolsets and isinstance(config_cli_toolsets, list):
+                toolsets_list = config_cli_toolsets
+            else:
+                toolsets_list = ["hermes-cli"]
     
     parsed_skills = _parse_skills_argument(skills)
 

@@ -3225,12 +3225,20 @@ class GatewayRunner:
                 Platform.DINGTALK: "dingtalk",
             }.get(source.platform, "telegram")
 
-            config_toolsets = platform_toolsets_config.get(platform_config_key)
-            if config_toolsets and isinstance(config_toolsets, list):
-                enabled_toolsets = config_toolsets
-            else:
-                default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
-                enabled_toolsets = [default_toolset]
+            try:
+                from hermes_cli.tools_config import get_platform_runtime_toolsets
+
+                enabled_toolsets = get_platform_runtime_toolsets(
+                    {"platform_toolsets": platform_toolsets_config},
+                    platform_config_key,
+                )
+            except Exception:
+                config_toolsets = platform_toolsets_config.get(platform_config_key)
+                if config_toolsets and isinstance(config_toolsets, list):
+                    enabled_toolsets = config_toolsets
+                else:
+                    default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+                    enabled_toolsets = [default_toolset]
 
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
 
@@ -4336,12 +4344,20 @@ class GatewayRunner:
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default
-        config_toolsets = platform_toolsets_config.get(platform_config_key)
-        if config_toolsets and isinstance(config_toolsets, list):
-            enabled_toolsets = config_toolsets
-        else:
-            default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
-            enabled_toolsets = [default_toolset]
+        try:
+            from hermes_cli.tools_config import get_platform_runtime_toolsets
+
+            enabled_toolsets = get_platform_runtime_toolsets(
+                {"platform_toolsets": platform_toolsets_config},
+                platform_config_key,
+            )
+        except Exception:
+            config_toolsets = platform_toolsets_config.get(platform_config_key)
+            if config_toolsets and isinstance(config_toolsets, list):
+                enabled_toolsets = config_toolsets
+            else:
+                default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+                enabled_toolsets = [default_toolset]
         
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility

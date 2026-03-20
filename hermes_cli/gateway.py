@@ -163,9 +163,10 @@ def _ensure_user_systemd_env() -> None:
     """
     uid = os.getuid()
     if "XDG_RUNTIME_DIR" not in os.environ:
-        runtime_dir = f"/run/user/{uid}"
-        if Path(runtime_dir).exists():
-            os.environ["XDG_RUNTIME_DIR"] = runtime_dir
+        # Set the canonical per-user runtime dir even when the path is not
+        # mounted yet. systemctl/journalctl expect this conventional location,
+        # and the bus-path existence check below remains the safety gate.
+        os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{uid}"
 
     if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
         xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}")

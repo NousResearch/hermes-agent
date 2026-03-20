@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from hermes_cli.tools_config import (
+    CORE_TOOLSET_KEYS,
     _get_platform_tools,
     _platform_toolset_summary,
     _save_platform_tools,
@@ -23,7 +24,7 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
 
     enabled = _get_platform_tools(config, "cli")
 
-    assert enabled == set()
+    assert enabled == CORE_TOOLSET_KEYS
 
 
 def test_platform_toolset_summary_uses_explicit_platform_list():
@@ -72,7 +73,7 @@ def test_save_platform_tools_preserves_mcp_server_names():
     assert "custom-mcp-server" in saved_toolsets
     assert "web" in saved_toolsets
     assert "browser" in saved_toolsets
-    assert "terminal" not in saved_toolsets
+    assert CORE_TOOLSET_KEYS.issubset(set(saved_toolsets))
 
 
 def test_save_platform_tools_handles_empty_existing_config():
@@ -84,7 +85,7 @@ def test_save_platform_tools_handles_empty_existing_config():
 
     saved_toolsets = config["platform_toolsets"]["telegram"]
     assert "web" in saved_toolsets
-    assert "terminal" in saved_toolsets
+    assert CORE_TOOLSET_KEYS.issubset(set(saved_toolsets))
 
 
 def test_save_platform_tools_handles_invalid_existing_config():
@@ -100,3 +101,4 @@ def test_save_platform_tools_handles_invalid_existing_config():
 
     saved_toolsets = config["platform_toolsets"]["cli"]
     assert "web" in saved_toolsets
+    assert CORE_TOOLSET_KEYS.issubset(set(saved_toolsets))

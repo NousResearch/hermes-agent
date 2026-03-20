@@ -2,7 +2,7 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from hermes_cli.tools_config import tools_disable_enable_command
+from hermes_cli.tools_config import CORE_TOOLSET_KEYS, tools_disable_enable_command
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────
@@ -26,7 +26,7 @@ class TestToolsDisableBuiltin:
             tools_disable_enable_command(Namespace(tools_action="disable", names=["web", "memory"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
-        assert "memory" not in saved["platform_toolsets"]["cli"]
+        assert "memory" in saved["platform_toolsets"]["cli"]
         assert "terminal" in saved["platform_toolsets"]["cli"]
 
     def test_disable_already_absent_is_idempotent(self):
@@ -36,6 +36,16 @@ class TestToolsDisableBuiltin:
             tools_disable_enable_command(Namespace(tools_action="disable", names=["web"], platform="cli"))
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
+
+    def test_disable_core_toolset_is_rejected(self, capsys):
+        config = {"platform_toolsets": {"cli": ["web", "memory", "terminal"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(Namespace(tools_action="disable", names=["terminal"], platform="cli"))
+        saved = mock_save.call_args[0][0]
+        assert "terminal" in saved["platform_toolsets"]["cli"]
+        out = capsys.readouterr().out
+        assert "always enabled" in out
 
 
 # ── Built-in toolset enable ─────────────────────────────────────────────────
@@ -147,6 +157,9 @@ class TestToolsList:
         out = capsys.readouterr().out
         assert "web" in out
         assert "memory" in out
+        assert "Core toolsets" in out
+        for core_name in CORE_TOOLSET_KEYS:
+            assert core_name in out
 
     def test_list_shows_mcp_excluded_tools(self, capsys):
         config = {

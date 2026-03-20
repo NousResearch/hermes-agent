@@ -42,16 +42,17 @@ def test_product_setup_tools_section_syncs_cli_toolsets(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     def _fake_tools_setup(config, first_install=False):
-        config["platform_toolsets"] = {"cli": ["web", "browser", "mynah-tier1"]}
+        config["platform_toolsets"] = {"cli": ["web", "browser", "memory", "missing-toolset"]}
 
     with (
         patch("hermes_cli.product_setup.is_interactive_stdin", return_value=True),
+        patch("hermes_cli.product_setup.get_available_toolsets", return_value={"web": {}, "browser": {}, "memory": {}}),
         patch("hermes_cli.product_setup.setup_tools", side_effect=_fake_tools_setup),
     ):
         run_product_setup_wizard(_make_product_args(section="tools"))
 
     product_config = load_product_config()
-    assert product_config["tools"]["hermes_toolsets"] == ["web", "browser", "mynah-tier1"]
+    assert product_config["tools"]["hermes_toolsets"] == ["web", "browser", "memory"]
 
 
 def test_product_setup_network_section_updates_public_host(tmp_path, monkeypatch):

@@ -35,6 +35,8 @@ def test_product_runtime_session_and_turn(monkeypatch, tmp_path):
     session = client.get("/runtime/session")
     assert session.status_code == 200
     assert session.json()["session_id"] == "product_admin_123"
+    assert session.json()["runtime_mode"] == "product"
+    assert session.json()["runtime_toolsets"] == ["memory", "session_search"]
 
     turn = client.post("/runtime/turn", json={"user_message": "hello"})
     assert turn.status_code == 200
@@ -59,3 +61,4 @@ def test_product_runtime_stream_emits_reasoning_and_final(monkeypatch, tmp_path)
     assert "\"delta\": \"thinking\"" in payload
     assert "event: final" in payload
     assert "\"final_response\": \"done\"" in payload
+    assert "\"runtime_toolsets\": [\"memory\", \"session_search\"]" in payload

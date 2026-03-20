@@ -25,8 +25,8 @@ def _env_or_default(name: str, default: str) -> str:
 
 def _runtime_defaults() -> dict[str, str]:
     return {
-        "runtime_profile": "tier1",
-        "runtime_toolset": "mynah-tier1",
+        "runtime_mode": "product",
+        "runtime_toolsets": "memory,session_search",
         "inference_model": "qwen3.5-9b-local",
     }
 
@@ -37,8 +37,8 @@ def _runtime_toolsets() -> list[str]:
         normalized = [item.strip() for item in raw_toolsets.split(",") if item.strip()]
         if normalized:
             return normalized
-    toolset = _env_or_default("MYNAH_RUNTIME_TOOLSET", _runtime_defaults()["runtime_toolset"])
-    return [toolset] if toolset else []
+    raw_default_toolsets = _runtime_defaults()["runtime_toolsets"]
+    return [item.strip() for item in raw_default_toolsets.split(",") if item.strip()]
 
 
 class RuntimeTurnRequest(BaseModel):
@@ -61,8 +61,8 @@ class RuntimeMessage(BaseModel):
 class RuntimeSessionResponse(BaseModel):
     session_id: str
     messages: list[RuntimeMessage]
-    runtime_profile: str
-    runtime_toolset: str
+    runtime_mode: str
+    runtime_toolsets: list[str]
 
 
 class RuntimeTurnResponse(RuntimeSessionResponse):
@@ -71,8 +71,8 @@ class RuntimeTurnResponse(RuntimeSessionResponse):
 
 class RuntimeHealthResponse(BaseModel):
     status: str = "ok"
-    runtime_profile: str
-    runtime_toolset: str
+    runtime_mode: str
+    runtime_toolsets: list[str]
     hermes_home: str
     model: str
     session_id: str
@@ -163,8 +163,8 @@ def build_runtime_agent(db: SessionDB, session_id: str, *, reasoning_callback: A
 
 def create_product_runtime_app() -> FastAPI:
     defaults = _runtime_defaults()
-    runtime_profile = _env_or_default("MYNAH_RUNTIME_PROFILE", defaults["runtime_profile"])
-    runtime_toolset = _env_or_default("MYNAH_RUNTIME_TOOLSET", defaults["runtime_toolset"])
+    runtime_mode = _env_or_default("HERMES_PRODUCT_RUNTIME_MODE", defaults["runtime_mode"])
+    runtime_toolsets = _runtime_toolsets()
     hermes_home = os.getenv("HERMES_HOME", "")
     model = _env_or_default("HERMES_PRODUCT_MODEL", defaults["inference_model"])
     session_id = _session_id()
@@ -175,8 +175,8 @@ def create_product_runtime_app() -> FastAPI:
     @app.get("/healthz", response_model=RuntimeHealthResponse)
     def healthz() -> RuntimeHealthResponse:
         return RuntimeHealthResponse(
-            runtime_profile=runtime_profile,
-            runtime_toolset=runtime_toolset,
+            runtime_mode=runtime_mode,
+            runtime_toolsets=runtime_toolsets,
             hermes_home=hermes_home,
             model=model,
             session_id=session_id,
@@ -192,8 +192,8 @@ def create_product_runtime_app() -> FastAPI:
         return RuntimeSessionResponse(
             session_id=session_id,
             messages=[RuntimeMessage(**message) for message in _visible_messages(messages)],
-            runtime_profile=runtime_profile,
-            runtime_toolset=runtime_toolset,
+            runtime_mode=runtime_mode,
+            runtime_toolsets=runtime_toolsets,
         )
 
     @app.post("/runtime/turn", response_model=RuntimeTurnResponse)
@@ -215,8 +215,8 @@ def create_product_runtime_app() -> FastAPI:
             final_response=final_response,
             session_id=session_id,
             messages=[RuntimeMessage(**message) for message in _visible_messages(updated_messages)],
-            runtime_profile=runtime_profile,
-            runtime_toolset=runtime_toolset,
+            runtime_mode=runtime_mode,
+            runtime_toolsets=runtime_toolsets,
         )
 
     @app.post("/runtime/turn/stream")
@@ -252,8 +252,8 @@ def create_product_runtime_app() -> FastAPI:
                             final_response=str(result.get("final_response") or result.get("response") or ""),
                             session_id=session_id,
                             messages=[RuntimeMessage(**message) for message in _visible_messages(updated_messages)],
-                            runtime_profile=runtime_profile,
-                            runtime_toolset=runtime_toolset,
+                            runtime_mode=runtime_mode,
+                            runtime_toolsets=runtime_toolsets,
                         ).model_dump(mode="json"),
                     )
                 )

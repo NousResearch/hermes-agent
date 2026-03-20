@@ -34,6 +34,7 @@ After installation, a guided setup CLI should configure:
 - optional Tailscale exposure
 - local identity-provider integration
 - the first admin account
+- the global Hermes runtime toolsets that should be enabled for all product chat sessions
 
 After setup, the product should start:
 
@@ -95,6 +96,11 @@ The web app and runtime launcher should derive their behavior from this product 
 The first implementation should keep Hermes' existing `config.yaml` for generic Hermes behavior and use `product.yaml` only for setup-owned product deployment behavior.
 
 If the product setup flow reuses generic Hermes setup helpers for model/provider or tool selection, that reuse should happen from the product-owned command path and the resulting product runtime settings should still be synchronized back into `product.yaml`.
+
+The product should not maintain a second MYNAH-specific tier vocabulary for runtime tools. Product setup should persist Hermes toolset names directly, with an initial safe default of:
+
+- `memory`
+- `session_search`
 
 ## Authentication Direction
 
@@ -208,6 +214,7 @@ In the first implementation:
 - per-user runtimes should remain separate isolated containers managed by the product app
 - each runtime should get its own `HERMES_HOME` under the product storage root
 - each runtime should keep its own Hermes session DB and file-backed memory state
+- runtime tools should come directly from Hermes toolset names selected in product setup rather than from a separate MYNAH tier or profile layer
 - browser chat APIs should proxy to runtime-local HTTP endpoints rather than calling `AIAgent` in-process
 - runtime control endpoints may be published only to host loopback for product-app proxying and must never be exposed on the LAN directly
 - if a configured model route points at host loopback such as `127.0.0.1` or `localhost`, the runtime launcher must rewrite that URL to a container-reachable host alias before injecting it into the runtime env

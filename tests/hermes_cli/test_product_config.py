@@ -33,7 +33,7 @@ def test_load_product_config_returns_defaults_when_missing(tmp_path, monkeypatch
 
     assert config["auth"]["provider"] == "pocket-id"
     assert config["auth"]["mode"] == "passkey"
-    assert config["runtime"]["default_toolset"] == DEFAULT_PRODUCT_CONFIG["runtime"]["default_toolset"]
+    assert config["tools"]["hermes_toolsets"] == DEFAULT_PRODUCT_CONFIG["tools"]["hermes_toolsets"]
 
 
 def test_save_product_config_roundtrip_and_merge(tmp_path, monkeypatch):
@@ -41,12 +41,12 @@ def test_save_product_config_roundtrip_and_merge(tmp_path, monkeypatch):
 
     config = load_product_config()
     config["product"]["brand"]["name"] = "Erni Agent"
-    config["runtime"]["default_profile"] = "tier2"
+    config["tools"]["hermes_toolsets"] = ["web", "memory"]
     save_product_config(config)
 
     reloaded = load_product_config()
     assert reloaded["product"]["brand"]["name"] == "Erni Agent"
-    assert reloaded["runtime"]["default_profile"] == "tier2"
+    assert reloaded["tools"]["hermes_toolsets"] == ["web", "memory"]
     assert reloaded["auth"]["provider"] == "pocket-id"
 
     saved = yaml.safe_load(get_product_config_path().read_text(encoding="utf-8"))
@@ -66,15 +66,14 @@ def test_resolve_runtime_defaults_reads_product_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     config = load_product_config()
-    config["runtime"]["default_profile"] = "tier2"
-    config["runtime"]["default_toolset"] = "mynah-tier2"
+    config["tools"]["hermes_toolsets"] = ["memory", "session_search"]
     config["models"]["default_route"]["model"] = "custom-model"
     save_product_config(config)
 
     defaults = resolve_runtime_defaults()
 
-    assert defaults == {
-        "runtime_profile": "tier2",
-        "runtime_toolset": "mynah-tier2",
-        "inference_model": "custom-model",
-    }
+    assert defaults["runtime_mode"] == "product"
+    assert defaults["runtime_toolsets"] == "memory,session_search"
+    assert defaults["runtime_profile"] == "product"
+    assert defaults["runtime_toolset"] == "memory"
+    assert defaults["inference_model"] == "custom-model"

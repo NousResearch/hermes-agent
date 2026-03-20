@@ -25,7 +25,9 @@ def test_stage_product_runtime_writes_soul_and_manifest(tmp_path, monkeypatch):
 
     soul_path = Path(record.hermes_home) / "SOUL.md"
     assert soul_path.exists()
-    assert "You are Hermes" in soul_path.read_text(encoding="utf-8")
+    soul_text = soul_path.read_text(encoding="utf-8")
+    assert "You are Hermes" in soul_text
+    assert "Your currently enabled Hermes toolsets are: memory, session_search." in soul_text
     manifest = Path(record.manifest_file)
     assert manifest.exists()
     loaded = ProductRuntimeRecord.model_validate_json(manifest.read_text(encoding="utf-8"))
@@ -46,7 +48,9 @@ def test_stage_product_runtime_uses_custom_soul_template(tmp_path, monkeypatch):
 
     record = stage_product_runtime({"preferred_username": "admin"})
     soul_path = Path(record.hermes_home) / "SOUL.md"
-    assert soul_path.read_text(encoding="utf-8") == "Custom runtime identity\n"
+    soul_text = soul_path.read_text(encoding="utf-8")
+    assert "Custom runtime identity" in soul_text
+    assert "Your currently enabled Hermes toolsets are: memory, session_search." in soul_text
 
 
 def test_get_product_runtime_session_proxies_runtime(monkeypatch):
@@ -75,8 +79,8 @@ def test_get_product_runtime_session_proxies_runtime(monkeypatch):
             return {
                 "session_id": "product_admin_123",
                 "messages": [{"role": "assistant", "content": "hello"}],
-                "runtime_profile": "admin",
-                "runtime_toolset": "mynah-tier1",
+                "runtime_mode": "product",
+                "runtime_toolsets": ["memory", "session_search"],
             }
 
     monkeypatch.setattr("hermes_cli.product_runtime.httpx.get", lambda *args, **kwargs: _Response())

@@ -46,6 +46,8 @@ Do not mark work done early.
 - Keep product-specific changes near the runtime edge and setup/config layer whenever possible.
 - Preserve upstream compatibility by preferring config, wrappers, and narrow extension points over deep Hermes-core patches.
 - For product runtimes, derive model/tool/runtime settings on the host from `product.yaml` and pass them into containers as env. Do not assume a per-user runtime container can read the host product config directly.
+- Product runtime tool access must be expressed directly as Hermes toolset names from `product.yaml`, not as a separate MYNAH tier/profile compatibility layer.
+- The default safe runtime tool selection is `memory` plus `session_search` until product setup explicitly changes it.
 - Per-user runtime containers may bind their internal control port to host loopback for product-app proxying, but must never be exposed on the LAN directly.
 - If a configured model route uses host loopback such as `127.0.0.1` or `localhost`, rewrite it to a container-reachable alias before injecting it into a runtime container.
 - Default the local container-reachable alias to `host.docker.internal`, and include an explicit Docker `host-gateway` mapping when launching the runtime.
@@ -60,6 +62,7 @@ Do not mark work done early.
 - The setup CLI should be the source of truth for product-wide settings.
 - Product setup should live in a separate product-owned command path, not inside generic `hermes setup`.
 - Generic `hermes setup` should remain upstream-compatible and should not bootstrap Pocket ID or other product-only services.
+- Product setup may reuse the Hermes tool selection UI, but the canonical saved result for product chat runtimes must be the selected Hermes toolset names in `product.yaml`.
 - The browser admin UI should remain narrow and should not become a general product-config console in the first version.
 
 ## Development environment

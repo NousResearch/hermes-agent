@@ -52,13 +52,9 @@ DEFAULT_PRODUCT_CONFIG: Dict[str, Any] = {
         },
     },
     "tools": {
-        "enabled_profiles": ["tier1"],
-        "selectable_placements": {},
-        "hermes_toolsets": [],
+        "hermes_toolsets": ["memory", "session_search"],
     },
     "runtime": {
-        "default_profile": "tier1",
-        "default_toolset": "mynah-tier1",
         "isolation_runtime": "runsc",
         "image": "ghcr.io/erniconcepts/hermes-agent-core:main",
         "internal_port": 8091,
@@ -160,11 +156,16 @@ def initialize_product_config_file() -> Dict[str, Any]:
 
 def resolve_runtime_defaults(config: Dict[str, Any] | None = None) -> Dict[str, str]:
     product_config = config or load_product_config()
-    runtime_cfg = product_config.get("runtime", {})
     model_cfg = product_config.get("models", {}).get("default_route", {})
+    toolsets = product_config.get("tools", {}).get("hermes_toolsets", [])
+    normalized_toolsets = [str(item).strip() for item in toolsets if str(item).strip()]
+    if not normalized_toolsets:
+        normalized_toolsets = ["memory", "session_search"]
     return {
-        "runtime_profile": str(runtime_cfg.get("default_profile", "tier1")),
-        "runtime_toolset": str(runtime_cfg.get("default_toolset", "mynah-tier1")),
+        "runtime_mode": "product",
+        "runtime_toolsets": ",".join(normalized_toolsets),
+        "runtime_profile": "product",
+        "runtime_toolset": normalized_toolsets[0],
         "inference_model": str(model_cfg.get("model", "qwen3.5-9b-local")),
     }
 

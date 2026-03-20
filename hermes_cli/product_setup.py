@@ -13,6 +13,8 @@ from hermes_cli.product_stack import (
     initialize_product_stack,
     resolve_product_urls,
 )
+from model_tools import get_available_toolsets
+from toolsets import validate_toolset
 from hermes_cli.setup import (
     PROJECT_ROOT,
     Colors,
@@ -42,6 +44,8 @@ PRODUCT_SETUP_SECTIONS = [
     ("tools", "Tools"),
     ("bootstrap", "Pocket ID & First Admin"),
 ]
+
+DEFAULT_PRODUCT_TOOLSETS = ["memory", "session_search"]
 
 
 def setup_product_network() -> None:
@@ -146,8 +150,18 @@ def _sync_toolsets_from_hermes_config() -> None:
         return
 
     normalized = [str(toolset).strip() for toolset in cli_toolsets if str(toolset).strip()]
+    available_toolsets = set(get_available_toolsets().keys())
+    filtered = [toolset for toolset in normalized if validate_toolset(toolset) and toolset in available_toolsets]
+    dropped = [toolset for toolset in normalized if toolset not in filtered]
+    if dropped:
+        print_warning(
+            "Ignoring unavailable or unknown toolsets in product config sync: "
+            + ", ".join(dropped)
+        )
+    if not filtered:
+        filtered = list(DEFAULT_PRODUCT_TOOLSETS)
     product_config = load_product_config()
-    product_config.setdefault("tools", {})["hermes_toolsets"] = normalized
+    product_config.setdefault("tools", {})["hermes_toolsets"] = filtered
     save_product_config(product_config)
 
 
@@ -198,9 +212,11 @@ def _run_model_section() -> None:
 
 def _run_tools_section() -> None:
     config = load_config()
-    platform_toolsets = config.get("platform_toolsets", {})
-    first_install = not (isinstance(platform_toolsets, dict) and platform_toolsets.get("cli"))
-    setup_tools(config, first_install=first_install)
+    product_config = load_product_config()
+    selected_toolsets = product_config.get("tools", {}).get("hermes_toolsets", [])
+    normalized = [str(toolset).strip() for toolset in selected_toolsets if str(toolset).strip()]
+    config.setdefault("platform_toolsets", {})["cli"] = normalized or list(DEFAULT_PRODUCT_TOOLSETS)
+    setup_tools(config, first_install=False)
     save_config(config)
     _sync_toolsets_from_hermes_config()
 

@@ -16,6 +16,7 @@ from hermes_cli.config import _secure_dir, _secure_file, ensure_hermes_home, get
 from hermes_cli.product_config import load_product_config, runtime_host_access_host
 from hermes_cli.product_identity import render_product_soul
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from toolsets import validate_toolset
 
 
 class ProductRuntimeRecord(BaseModel):
@@ -36,8 +37,8 @@ class ProductRuntimeRecord(BaseModel):
 class ProductRuntimeSession(BaseModel):
     session_id: str
     messages: list[dict[str, Any]]
-    runtime_profile: str
-    runtime_toolset: str
+    runtime_mode: str
+    runtime_toolsets: list[str]
 
 
 class ProductRuntimeTurnRequest(BaseModel):
@@ -89,20 +90,17 @@ def _env_path(config: dict[str, Any], user_id: str) -> Path:
     return _runtime_root(config, user_id) / "runtime.env"
 
 
-def _runtime_profile(config: dict[str, Any], user: dict[str, Any]) -> str:
-    if bool(user.get("is_admin")):
-        return "admin"
-    return str(config.get("runtime", {}).get("default_profile", "tier1")).strip() or "tier1"
-
-
 def _runtime_toolsets(config: dict[str, Any]) -> list[str]:
     configured = config.get("tools", {}).get("hermes_toolsets", [])
     if isinstance(configured, list):
-        normalized = [str(item).strip() for item in configured if str(item).strip()]
+        normalized = [
+            str(item).strip()
+            for item in configured
+            if str(item).strip() and validate_toolset(str(item).strip())
+        ]
         if normalized:
             return normalized
-    toolset = str(config.get("runtime", {}).get("default_toolset", "mynah-tier1")).strip()
-    return [toolset] if toolset else []
+    return ["memory", "session_search"]
 
 
 def _runtime_port_range(config: dict[str, Any]) -> tuple[int, int]:
@@ -224,8 +222,7 @@ def stage_product_runtime(user: dict[str, Any], *, config: dict[str, Any] | None
         "HERMES_HOME": "/srv/hermes",
         "OPENAI_BASE_URL": base_url,
         "OPENAI_API_KEY": api_key,
-        "MYNAH_RUNTIME_PROFILE": _runtime_profile(product_config, user),
-        "MYNAH_RUNTIME_TOOLSET": toolsets[0] if toolsets else "",
+        "HERMES_PRODUCT_RUNTIME_MODE": "product",
         "MYNAH_RUNTIME_HOST": "0.0.0.0",
         "MYNAH_RUNTIME_PORT": str(_runtime_internal_port(product_config)),
         "MYNAH_PRODUCT_SESSION_ID": session_id,

@@ -146,6 +146,31 @@ class TestFormatMessageCodeBlocks:
         # "text" between blocks should be present
         assert "text" in result
 
+    def test_inline_code_backslashes_escaped(self, adapter):
+        r"""Backslashes in inline code must be escaped for MarkdownV2."""
+        text = r"Check `C:\ProgramData\VMware\` path"
+        result = adapter.format_message(text)
+        assert r"`C:\\ProgramData\\VMware\\`" in result
+
+    def test_fenced_code_block_backslashes_escaped(self, adapter):
+        r"""Backslashes in fenced code blocks must be escaped for MarkdownV2."""
+        text = "```\npath = r'C:\\Users\\test'\n```"
+        result = adapter.format_message(text)
+        assert r"C:\\Users\\test" in result
+
+    def test_fenced_code_block_backticks_escaped(self, adapter):
+        r"""Backticks inside fenced code blocks must be escaped for MarkdownV2."""
+        text = "```\necho `hostname`\n```"
+        result = adapter.format_message(text)
+        assert r"echo \`hostname\`" in result
+
+    def test_inline_code_no_double_escape(self, adapter):
+        r"""Already-escaped backslashes should not be quadruple-escaped."""
+        text = r"Use `\\server\share`"
+        result = adapter.format_message(text)
+        # \\ in input → \\\\ in output (each \ escaped once)
+        assert r"`\\\\server\\share`" in result
+
 
 # =========================================================================
 # format_message - bold and italic

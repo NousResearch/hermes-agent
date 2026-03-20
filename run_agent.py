@@ -4345,25 +4345,6 @@ class AIAgent:
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
-        # Preserve file-read history so the model doesn't re-read files
-        # it already examined before compression.
-        try:
-            from tools.file_tools import get_read_files_summary
-            read_files = get_read_files_summary(task_id)
-            if read_files:
-                file_list = "\n".join(
-                    f"  - {f['path']} ({', '.join(f['regions'])})"
-                    for f in read_files
-                )
-                compressed.append({"role": "user", "content": (
-                    "[Files already read in this session — do NOT re-read these]\n"
-                    f"{file_list}\n"
-                    "Use the information from the context summary above. "
-                    "Proceed with writing, editing, or responding."
-                )})
-        except Exception:
-            pass  # Don't break compression if file tracking fails
-
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt

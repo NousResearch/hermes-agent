@@ -17,6 +17,13 @@ hermes-agent/
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
+#
+# SESSION STORAGE NOTE:
+# - JSONL files (~/.hermes/sessions/*.jsonl) — source of truth, append-only, complete
+# - SQLite DB (~/.hermes/sessions/sessions.db) — source of truth for session resume
+# - JSON files (~/.hermes/sessions/session_*.json) — legacy export, lossy in gateway mode
+#   JSON files are overwritten each turn and may miss prior-turn messages in gateway sessions.
+#   Always use JSONL or SQLite for auditing and analysis.
 ├── agent/                # Agent internals
 │   ├── prompt_builder.py     # System prompt assembly
 │   ├── context_compressor.py # Auto context compression

@@ -1707,7 +1707,12 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
-    
+
+    # NOTE: The JSON session log (session_*.json) is a legacy export.
+    # JSONL files and SQLite DB are the authoritative sources of truth.
+    # Do not use JSON files for session resume or auditing — they may be
+    # incomplete in gateway mode (fixed by including conversation_history above).
+
     def interrupt(self, message: str = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.

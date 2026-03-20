@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, TypedDict
 from enum import Enum
 
 import sys
@@ -28,10 +28,33 @@ from gateway.session import SessionSource, build_session_key
 from hermes_cli.config import get_hermes_home
 
 
+# ---------------------------------------------------------------------------
+# Generic controls type definitions (Phase 1 of #503)
+#
+# These TypedDicts describe the platform-agnostic "controls" dict that flows
+# from tools (clarify, send_message) through the gateway to platform adapters.
+# Telegram renders them as InlineKeyboardMarkup; other platforms get a text
+# fallback via render_controls_as_text().
+# ---------------------------------------------------------------------------
+
+class ButtonDef(TypedDict, total=False):
+    """A single interactive button."""
+    label: str
+    action: str   # callback action identifier
+    url: str      # URL button (mutually exclusive with action)
+
+
+class ControlsDef(TypedDict, total=False):
+    """Top-level controls payload attached to messages."""
+    buttons: List[List[ButtonDef]]  # rows of buttons
+
+
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
 )
+
+GATEWAY_NO_RESPONSE = "__HERMES_NO_RESPONSE__"
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +309,7 @@ class MessageEvent:
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
@@ -335,14 +359,18 @@ MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
-    
+
     Subclasses implement platform-specific logic for:
     - Connecting and authenticating
     - Receiving messages
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Maximum number of interactive buttons the platform supports natively.
+    # ``None`` means no limit.  Subclasses override as needed.
+    MAX_INTERACTIVE_BUTTONS: Optional[int] = None
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -357,6 +385,10 @@ class BasePlatformAdapter(ABC):
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        # Sessions with an active gateway-side prompt (for example clarify)
+        # should route follow-up user input directly to the gateway handler
+        # instead of interrupting the running agent thread.
+        self._passthrough_sessions: set[str] = set()
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -446,6 +478,16 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def enable_session_passthrough(self, session_key: str) -> None:
+        """Route follow-up messages for *session_key* directly to the gateway."""
+        if session_key:
+            self._passthrough_sessions.add(session_key)
+
+    def disable_session_passthrough(self, session_key: str) -> None:
+        """Restore normal interrupt behavior for *session_key*."""
+        if session_key:
+            self._passthrough_sessions.discard(session_key)
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -482,6 +524,31 @@ class BasePlatformAdapter(ABC):
             SendResult with success status and message ID
         """
         pass
+
+    async def send_interactive(
+        self,
+        chat_id: str,
+        content: str,
+        controls: Optional["ControlsDef"],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a message with interactive controls.
+
+        Default behavior is text fallback for platforms without native
+        interaction rendering: controls are appended as numbered options and
+        sent through ``send``.
+        """
+        fallback = self.render_controls_as_text(controls)
+        rendered = content or ""
+        if fallback:
+            rendered = f"{rendered.rstrip()}\n\n{fallback}" if rendered.strip() else fallback
+        return await self.send(
+            chat_id=chat_id,
+            content=rendered,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
 
     async def edit_message(
         self,
@@ -830,6 +897,13 @@ class BasePlatformAdapter(ABC):
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            if session_key in self._passthrough_sessions:
+                logger.info("[%s] ↪ Direct-routing follow-up for session %s", self.name, session_key)
+                task = asyncio.create_task(self._process_passthrough_message(event))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                return
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
@@ -865,6 +939,27 @@ class BasePlatformAdapter(ABC):
             return
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
+
+    async def _process_passthrough_message(self, event: MessageEvent) -> None:
+        """Process a follow-up without touching adapter interrupt state."""
+        if not self._message_handler:
+            return
+        try:
+            response = await self._message_handler(event)
+            if response == GATEWAY_NO_RESPONSE or not response:
+                return
+            metadata = {"thread_id": event.source.thread_id} if event.source and event.source.thread_id else None
+            result = await self.send(
+                event.source.chat_id,
+                response,
+                metadata=metadata,
+            )
+            if not result.success:
+                logger.warning("[%s] Failed to send passthrough response: %s", self.name, result.error)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            logger.exception("[%s] Passthrough message handling failed", self.name)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -902,7 +997,9 @@ class BasePlatformAdapter(ABC):
             response = await self._message_handler(event)
             
             # Send response if any
-            if not response:
+            if response == GATEWAY_NO_RESPONSE:
+                response = None
+            elif not response:
                 logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
@@ -1311,3 +1408,35 @@ class BasePlatformAdapter(ABC):
             ]
 
         return chunks
+
+    @staticmethod
+    def render_controls_as_text(controls: Optional["ControlsDef"]) -> str:
+        """Convert a controls dict to a numbered text list for platforms without native button support.
+
+        URL-only buttons (no ``action``) are skipped because they cannot be
+        selected via a numbered reply.  Returns an empty string when there are
+        no renderable buttons.
+        """
+        if not controls or not isinstance(controls, dict):
+            return ""
+        rows = controls.get("buttons")
+        if not rows:
+            return ""
+
+        labels: List[str] = []
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            for btn in row:
+                if not isinstance(btn, dict):
+                    continue
+                # Skip url-only buttons (no action to select)
+                if btn.get("url") and not btn.get("action"):
+                    continue
+                label = str(btn.get("label") or "").strip()
+                if label:
+                    labels.append(label)
+
+        if not labels:
+            return ""
+        return "\n".join(f"{i}. {label}" for i, label in enumerate(labels, start=1))

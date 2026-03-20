@@ -1328,7 +1328,7 @@ class AIAgent:
         """
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
-        self._save_session_log(messages)
+        self._save_session_log(messages, conversation_history)
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
@@ -1701,7 +1701,7 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def _save_session_log(self, messages: List[Dict[str, Any]] = None, conversation_history: List[Dict] = None):
         """
         Save the full raw session to a JSON file.
 
@@ -1718,9 +1718,10 @@ class AIAgent:
             return
 
         try:
+            all_messages = list(conversation_history or []) + list(messages)
             # Clean assistant content for session logs
             cleaned = []
-            for msg in messages:
+            for msg in all_messages:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
@@ -5742,7 +5743,7 @@ class AIAgent:
                                     }
                                     messages.append(continue_msg)
                                     self._session_messages = messages
-                                    self._save_session_log(messages)
+                                    self._save_session_log(messages, conversation_history)
                                     restart_with_length_continuation = True
                                     break
 
@@ -6383,7 +6384,7 @@ class AIAgent:
                         if not self.quiet_mode:
                             self._vprint(f"{self.log_prefix}↻ Codex response incomplete; continuing turn ({self._codex_incomplete_retries}/3)")
                         self._session_messages = messages
-                        self._save_session_log(messages)
+                        self._save_session_log(messages, conversation_history)
                         continue
 
                     self._codex_incomplete_retries = 0
@@ -6611,7 +6612,7 @@ class AIAgent:
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
-                    self._save_session_log(messages)
+                    self._save_session_log(messages, conversation_history)
                     
                     # Continue loop for next response
                     continue
@@ -6749,7 +6750,7 @@ class AIAgent:
                         }
                         messages.append(continue_msg)
                         self._session_messages = messages
-                        self._save_session_log(messages)
+                        self._save_session_log(messages, conversation_history)
                         continue
 
                     codex_ack_continuations = 0

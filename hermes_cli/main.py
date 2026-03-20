@@ -15,6 +15,10 @@ Usage:
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
+    hermes memory status              # Show current memory backend and config
+    hermes memory mode [qmd|honcho|off]  # Switch memory backend
+    hermes memory setup               # Interactive memory backend setup
+    hermes memory config              # Show/update QMD configuration
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
@@ -3749,6 +3753,73 @@ For more help on a command:
         honcho_command(args)
 
     honcho_parser.set_defaults(func=cmd_honcho)
+
+    # =========================================================================
+    # memory command -- switch between Honcho and QMD memory backends
+    # =========================================================================
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Manage memory backend (Honcho or QMD)",
+        description=(
+            "Switch between memory backends or view current configuration.\n\n"
+            "Honcho: Cloud-backed cross-session user modeling (honcho.dev)\n"
+            "QMD: Local vector-based memory with FlowState anticipatory context\n"
+            "Off: Local MEMORY.md only (no cross-session memory)\n\n"
+            "This is a strict OR relationship — only one backend active at a time."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_command")
+
+    # hermes memory status
+    memory_status = memory_subparsers.add_parser(
+        "status", help="Show current memory backend and configuration"
+    )
+
+    # hermes memory mode [honcho|qmd|off]
+    memory_mode = memory_subparsers.add_parser(
+        "mode", help="Show or set memory backend (honcho/qmd/off)"
+    )
+    memory_mode.add_argument(
+        "backend", nargs="?", metavar="BACKEND",
+        choices=("honcho", "qmd", "off"),
+        help="Memory backend to activate (honcho/qmd/off). Omit to show current."
+    )
+
+    # hermes memory setup
+    memory_setup = memory_subparsers.add_parser(
+        "setup", help="Interactive setup for memory backend"
+    )
+    memory_setup.add_argument(
+        "--backend", choices=("honcho", "qmd"),
+        help="Memory backend to set up"
+    )
+
+    # hermes memory config
+    memory_config = memory_subparsers.add_parser(
+        "config", help="Show or update memory configuration"
+    )
+    memory_config.add_argument(
+        "--show", action="store_true", help="Show current configuration"
+    )
+    memory_config.add_argument(
+        "--embedding-model", metavar="MODEL",
+        help="Set embedding model for QMD (e.g. qwen3.5b:0.8b)"
+    )
+    memory_config.add_argument(
+        "--server", metavar="URL",
+        help="Set QMD server URL (e.g. http://localhost:8181)"
+    )
+    memory_config.add_argument(
+        "--lite-mode", action="store_true",
+        help="Enable lite mode for QMD (faster, lower memory)"
+    )
+
+    def cmd_memory(args):
+        from hermes_cli.memory_config import memory_command
+        memory_command(args)
+
+    memory_parser.set_defaults(func=cmd_memory)
 
     # =========================================================================
     # tools command

@@ -5110,6 +5110,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(logging.INFO)
 
+    # Add stdout handler for Docker/systemd visibility.
+    # Without this, `docker logs` only shows the startup banner.
+    import sys
+    if not sys.stdout.isatty():
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setLevel(logging.INFO)
+        # Filter out noisy loggers that spam in non-interactive mode
+        class _QuietFilter(logging.Filter):
+            NOISY = {'evey.mqtt', 'httpx', 'httpcore', 'telegram.ext', 'discord.gateway',
+                      'discord.client', 'discord.http', 'hpack', 'h11', 'h2'}
+            def filter(self, record):
+                return record.name not in self.NOISY and not record.name.startswith('httpx.')
+        stdout_handler.addFilter(_QuietFilter())
+        stdout_handler.setFormatter(logging.Formatter('[%(name)s] %(message)s'))
+        logging.getLogger().addHandler(stdout_handler)
+
     # Separate errors-only log for easy debugging
     error_handler = RotatingFileHandler(
         log_dir / 'errors.log',

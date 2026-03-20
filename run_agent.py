@@ -6691,12 +6691,14 @@ class AIAgent:
                 
                 if not pending_handled:
                     # Error happened before tool processing (e.g. response parsing).
-                    # Choose role to avoid consecutive same-role messages.
-                    last_role = messages[-1].get("role") if messages else None
-                    err_role = "assistant" if last_role == "user" else "user"
+                    # Always use role="assistant" for system error messages — never "user".
+                    # Using "user" would misattribute system behavior to the user, confusing
+                    # the model. Consecutive assistant messages are a lesser evil and are
+                    # cleaned up by _sanitize_api_messages at API-call time.
                     sys_err_msg = {
-                        "role": err_role,
+                        "role": "assistant",
                         "content": f"[System error during processing: {error_msg}]",
+                        "system_injected": True,
                     }
                     messages.append(sys_err_msg)
                 

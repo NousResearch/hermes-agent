@@ -1,8 +1,9 @@
 """Tests for acp_adapter.session — SessionManager and SessionState."""
 
 import json
+from types import SimpleNamespace
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from acp_adapter.session import SessionManager, SessionState
 from hermes_state import SessionDB
@@ -281,3 +282,50 @@ class TestPersistence:
         assert len(restored.history) == 2
         assert restored.history[0].get("tool_calls") is not None
         assert restored.history[1].get("tool_call_id") == "tc_1"
+
+    def test_restore_preserves_persisted_provider_snapshot(self, tmp_path, monkeypatch):
+        """Restored ACP sessions should keep their original runtime provider."""
+        runtime_choice = {"provider": "anthropic"}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            provider = requested or runtime_choice["provider"]
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": runtime_choice["provider"], "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+            manager.save_session(state.session_id)
+
+            with manager._lock:
+                del manager._sessions[state.session_id]
+
+            runtime_choice["provider"] = "openrouter"
+            restored = manager.get_session(state.session_id)
+
+        assert restored is not None
+        assert restored.agent.provider == "anthropic"
+        assert restored.agent.base_url == "https://anthropic.example/v1"

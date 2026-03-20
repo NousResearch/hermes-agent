@@ -7,6 +7,9 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import Optional
+
+from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
@@ -373,24 +376,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files.
-        from hermes_constants import get_hermes_home as _get_hh
-        _hermes_home = _get_hh().resolve()
-        _blocked_dirs = [
-            _hermes_home / "skills" / ".hub" / "index-cache",
-            _hermes_home / "skills" / ".hub",
-        ]
-        for _blocked in _blocked_dirs:
-            try:
-                _resolved.relative_to(_blocked)
-                return json.dumps({
-                    "error": (
-                        f"Access denied: {path} is an internal Hermes cache file "
-                        "and cannot be read directly to prevent prompt injection. "
-                        "Use the skills_list or skill_view tools instead."
-                    )
-                })
-            except ValueError:
-                pass
+        block_error = get_read_block_error(path)
+        if block_error:
+            return json.dumps({"error": block_error})
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the

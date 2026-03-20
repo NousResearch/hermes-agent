@@ -51,8 +51,7 @@ def mirror_to_session(
         # confuses models and can cause API rejections on strict providers.
         mirror_msg = {
             "role": "user",
-            "content": f"[Cron delivery from {source_label}]
-{message_text}",
+            "content": f"[Cron delivery from {source_label}]\n{message_text}",
             "timestamp": datetime.now().isoformat(),
             "mirror": True,
             "mirror_source": source_label,

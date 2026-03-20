@@ -24,6 +24,7 @@ import json
 import asyncio
 import os
 import logging
+import threading
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -36,6 +37,25 @@ logger = logging.getLogger(__name__)
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
+_tool_loop = None          # persistent loop for the main (CLI) thread
+_tool_loop_lock = threading.Lock()
+
+
+def _get_tool_loop():
+    """Return a long-lived event loop for running async tool handlers.
+
+    Using a persistent loop (instead of asyncio.run() which creates and
+    *closes* a fresh loop every time) prevents "Event loop is closed"
+    errors that occur when cached httpx/AsyncOpenAI clients attempt to
+    close their transport on a dead loop during garbage collection.
+    """
+    global _tool_loop
+    with _tool_loop_lock:
+        if _tool_loop is None or _tool_loop.is_closed():
+            _tool_loop = asyncio.new_event_loop()
+        return _tool_loop
+
+
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
@@ -43,6 +63,10 @@ def _run_async(coro):
     the gateway's async stack or Atropos's event loop), we spin up a
     disposable thread so asyncio.run() can create its own loop without
     conflicting.
+
+    For the common CLI path (no running loop), we use a persistent event
+    loop so that cached async clients (httpx / AsyncOpenAI) remain bound
+    to a live loop and don't trigger "Event loop is closed" on GC.
 
     This is the single source of truth for sync->async bridging in tool
     handlers. The RL paths (agent_loop.py, tool_context.py) also provide
@@ -59,7 +83,9 @@ def _run_async(coro):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
-    return asyncio.run(coro)
+
+    tool_loop = _get_tool_loop()
+    return tool_loop.run_until_complete(coro)
 
 
 # =============================================================================

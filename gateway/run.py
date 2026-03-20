@@ -5120,7 +5120,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         class _QuietFilter(logging.Filter):
             NOISY = {'evey.mqtt', 'httpx', 'httpcore', 'telegram.ext', 'discord.gateway',
                       'discord.client', 'discord.http', 'hpack', 'h11', 'h2',
-                      'aiohttp.access'}
+                      'aiohttp.access', 'PIL'}
             def filter(self, record):
                 return record.name not in self.NOISY and not record.name.startswith('httpx.')
         stdout_handler.addFilter(_QuietFilter())
@@ -5136,6 +5136,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     error_handler.setLevel(logging.WARNING)
     error_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
     logging.getLogger().addHandler(error_handler)
+
+    # Suppress noisy loggers that spam gateway.log with polling/health data
+    for noisy_logger in ('httpx', 'httpcore', 'aiohttp.access', 'hpack', 'h11', 'h2'):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     runner = GatewayRunner(config)
     

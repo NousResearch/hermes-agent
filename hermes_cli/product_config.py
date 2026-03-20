@@ -53,6 +53,7 @@ DEFAULT_PRODUCT_CONFIG: Dict[str, Any] = {
     "tools": {
         "enabled_profiles": ["tier1"],
         "selectable_placements": {},
+        "hermes_toolsets": [],
     },
     "runtime": {
         "default_profile": "tier1",

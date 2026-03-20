@@ -3,7 +3,8 @@ import json
 from hermes_cli.auth import _update_config_for_provider, get_active_provider
 from hermes_cli.config import load_config, save_config
 from hermes_cli.product_config import load_product_config
-from hermes_cli.setup import setup_model_provider, setup_product_network
+from hermes_cli.product_setup import setup_product_network
+from hermes_cli.setup import setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -183,7 +184,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
 def test_setup_product_network_updates_public_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "officebox.local")
+    monkeypatch.setattr("hermes_cli.product_setup.prompt", lambda *args, **kwargs: "officebox.local")
 
     setup_product_network()
 
@@ -195,7 +196,7 @@ def test_setup_product_network_retries_after_raw_ip(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     answers = iter(["192.168.1.27", "officebox.local"])
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(answers))
+    monkeypatch.setattr("hermes_cli.product_setup.prompt", lambda *args, **kwargs: next(answers))
 
     setup_product_network()
 

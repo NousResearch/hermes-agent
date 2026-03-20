@@ -53,6 +53,8 @@ Do not mark work done early.
 - `Pocket ID` is the preferred auth direction for the product layer.
 - The preferred auth experience is passkey-first local onboarding without SMTP.
 - The setup CLI should be the source of truth for product-wide settings.
+- Product setup should live in a separate product-owned command path, not inside generic `hermes setup`.
+- Generic `hermes setup` should remain upstream-compatible and should not bootstrap Pocket ID or other product-only services.
 - The browser admin UI should remain narrow and should not become a general product-config console in the first version.
 
 ## Development environment
@@ -83,6 +85,7 @@ Do not mark work done early.
 - If the first-admin setup state is persisted locally, it should only contain non-secret enrollment metadata such as username, display name, email, setup URL, and client id.
 - Keep product login logic provider-neutral. Discovery, PKCE, authorize URL generation, and code exchange should live in a reusable OIDC helper layer rather than being hardcoded inside future app routes.
 - The first product auth app surface should stay minimal: login, callback, session, and logout only. Do not grow browser-side auth features beyond that until the real product app exists.
+- If product setup reuses generic Hermes setup helpers for model or tool selection, that reuse should happen from the product-owned command path. Do not modify generic `hermes setup` semantics to fit the product.
 
 ## Local process hygiene
 

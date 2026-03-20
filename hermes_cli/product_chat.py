@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import io
 import queue
 import threading
+from contextlib import redirect_stderr, redirect_stdout
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
-from hermes_cli.config import load_config
 from hermes_cli.product_config import load_product_config, resolve_runtime_defaults
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_state import SessionDB
@@ -22,28 +23,32 @@ def _require_username(user: dict[str, Any]) -> str:
     return username
 
 
-def _product_model_name() -> str:
-    config = load_config()
-    model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
-        model_name = str(model_cfg.get("default") or "").strip()
-        if model_name:
-            return model_name
-    elif isinstance(model_cfg, str):
-        model_name = model_cfg.strip()
-        if model_name:
-            return model_name
+def _product_model_route() -> dict[str, str]:
     product_config = load_product_config()
-    fallback_model = str(
-        product_config.get("models", {}).get("default_route", {}).get("model", "")
-    ).strip()
-    if fallback_model:
-        return fallback_model
-    raise RuntimeError("No default model configured for product chat")
+    route = product_config.get("models", {}).get("default_route", {})
+    model_name = str(route.get("model") or "").strip()
+    if not model_name:
+        raise RuntimeError("No default model configured for product chat")
+    provider = str(route.get("provider") or "custom").strip().lower() or "custom"
+    base_url = str(route.get("base_url") or "").strip()
+    api_mode = str(route.get("api_mode") or "chat_completions").strip().lower() or "chat_completions"
+    route_config = {
+        "model": model_name,
+        "provider": provider,
+        "api_mode": api_mode,
+    }
+    if base_url:
+        route_config["base_url"] = base_url
+    return route_config
 
 
 def _product_runtime_toolsets() -> list[str]:
     product_config = load_product_config()
+    configured_toolsets = product_config.get("tools", {}).get("hermes_toolsets", [])
+    if isinstance(configured_toolsets, list):
+        normalized = [str(toolset).strip() for toolset in configured_toolsets if str(toolset).strip()]
+        if normalized:
+            return normalized
     runtime_defaults = resolve_runtime_defaults(product_config)
     toolset = str(runtime_defaults.get("runtime_toolset") or "").strip()
     return [toolset] if toolset else []
@@ -110,24 +115,43 @@ def _build_agent(
 ) -> tuple["AIAgent", SessionDB]:
     from run_agent import AIAgent
 
-    runtime = resolve_runtime_provider()
-    model_name = _product_model_name()
+    route = _product_model_route()
+    runtime_kwargs: dict[str, Any]
+    if route.get("base_url"):
+        runtime_kwargs = {
+            "base_url": route["base_url"],
+            "api_key": "product-local-route",
+            "provider": route["provider"],
+            "api_mode": route["api_mode"],
+        }
+    else:
+        resolved = resolve_runtime_provider(requested=route["provider"])
+        runtime_kwargs = {
+            "base_url": str(resolved.get("base_url") or "").strip() or None,
+            "api_key": str(resolved.get("api_key") or "").strip() or None,
+            "provider": str(resolved.get("provider") or route["provider"]).strip() or route["provider"],
+            "api_mode": str(resolved.get("api_mode") or route["api_mode"]).strip() or route["api_mode"],
+            "acp_command": str(resolved.get("command") or "").strip() or None,
+            "acp_args": list(resolved.get("args") or []),
+        }
     db = SessionDB()
-    agent = AIAgent(
-        base_url=str(runtime.get("base_url") or "").strip() or None,
-        api_key=str(runtime.get("api_key") or "").strip() or None,
-        provider=str(runtime.get("provider") or "").strip() or None,
-        api_mode=str(runtime.get("api_mode") or "").strip() or None,
-        acp_command=str(runtime.get("command") or "").strip() or None,
-        acp_args=list(runtime.get("args") or []),
-        model=model_name,
-        quiet_mode=True,
-        enabled_toolsets=_product_runtime_toolsets(),
-        session_id=session_id,
-        session_db=db,
-        platform="product",
-        reasoning_callback=reasoning_callback,
-    )
+    sink = io.StringIO()
+    with redirect_stdout(sink), redirect_stderr(sink):
+        agent = AIAgent(
+            base_url=runtime_kwargs.get("base_url"),
+            api_key=runtime_kwargs.get("api_key"),
+            provider=runtime_kwargs.get("provider"),
+            api_mode=runtime_kwargs.get("api_mode"),
+            acp_command=runtime_kwargs.get("acp_command"),
+            acp_args=runtime_kwargs.get("acp_args"),
+            model=route["model"],
+            quiet_mode=True,
+            enabled_toolsets=_product_runtime_toolsets(),
+            session_id=session_id,
+            session_db=db,
+            platform="product",
+            reasoning_callback=reasoning_callback,
+        )
     return agent, db
 
 
@@ -154,12 +178,14 @@ def stream_product_chat_turn(user: dict[str, Any], user_message: str) -> Iterato
         try:
             history = _load_session_messages(db, session_id)
             _emit("start", {"session_id": session_id})
-            result = agent.run_conversation(
-                message,
-                conversation_history=_conversation_for_agent(history),
-                stream_callback=lambda delta: _emit("answer", {"delta": str(delta or "")}),
-                sync_honcho=False,
-            )
+            sink = io.StringIO()
+            with redirect_stdout(sink), redirect_stderr(sink):
+                result = agent.run_conversation(
+                    message,
+                    conversation_history=_conversation_for_agent(history),
+                    stream_callback=lambda delta: _emit("answer", {"delta": str(delta or "")}),
+                    sync_honcho=False,
+                )
             updated_messages = _load_session_messages(db, session_id)
             _emit(
                 "final",

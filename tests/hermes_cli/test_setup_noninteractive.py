@@ -44,8 +44,6 @@ class TestNonInteractiveSetup:
             patch("hermes_cli.setup.ensure_hermes_home"),
             patch("hermes_cli.setup.load_config", return_value={}),
             patch("hermes_cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
-            patch("hermes_cli.product_stack.initialize_product_stack"),
-            patch("hermes_cli.product_stack.bootstrap_first_admin_enrollment"),
             patch("hermes_cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
             patch("builtins.input", side_effect=AssertionError("input should not be called")),
         ):
@@ -64,8 +62,6 @@ class TestNonInteractiveSetup:
             patch("hermes_cli.setup.ensure_hermes_home"),
             patch("hermes_cli.setup.load_config", return_value={}),
             patch("hermes_cli.setup.get_hermes_home", return_value="/tmp/.hermes"),
-            patch("hermes_cli.product_stack.initialize_product_stack"),
-            patch("hermes_cli.product_stack.bootstrap_first_admin_enrollment"),
             patch("hermes_cli.auth.get_active_provider", side_effect=AssertionError("wizard continued")),
             patch("sys.stdin") as mock_stdin,
             patch("builtins.input", side_effect=AssertionError("input should not be called")),

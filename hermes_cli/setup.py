@@ -497,40 +497,6 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
-def setup_product_network() -> None:
-    """Configure product-level network hostnames used by the local app stack."""
-    from hermes_cli.product_config import load_product_config, save_product_config
-    from hermes_cli.product_stack import resolve_product_urls
-
-    product_config = load_product_config()
-    current_public_host = str(
-        product_config.get("network", {}).get("public_host", "localhost")
-    ).strip() or "localhost"
-
-    print_header("Product Network")
-    print_info("Choose the hostname users will use to reach this machine.")
-    print_info("This hostname is used for local app URLs and Pocket ID OIDC origins.")
-    print_info("Use a hostname like localhost, officebox.local, or a DNS name.")
-    print_info("Raw IP addresses are not supported for the Pocket ID public host.")
-
-    while True:
-        public_host = (
-            prompt("Public host", current_public_host).strip() or current_public_host
-        )
-        candidate = load_product_config()
-        candidate.setdefault("network", {})["public_host"] = public_host
-        try:
-            urls = resolve_product_urls(candidate)
-        except ValueError as exc:
-            print_warning(str(exc))
-            continue
-        product_config["network"]["public_host"] = public_host
-        save_product_config(product_config)
-        print_info(f"  App URL: {urls['app_base_url']}")
-        print_info(f"  Pocket ID issuer: {urls['issuer_url']}")
-        break
-
-
 def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
     """
     Display a multi-select checklist and return the indices of selected items.
@@ -3161,32 +3127,7 @@ def run_setup_wizard(args):
       hermes setup agent     — just agent settings
     """
     ensure_hermes_home()
-    from hermes_cli.product_config import initialize_product_config_file
-    from hermes_cli.product_stack import (
-        bootstrap_first_admin_enrollment,
-        ensure_product_stack_started,
-        initialize_product_stack,
-    )
-
-    def _start_product_stack_best_effort() -> None:
-        try:
-            ensure_product_stack_started()
-            state = bootstrap_first_admin_enrollment()
-            print_info("Bundled Pocket ID service is up.")
-            print_info(f"  First admin: {state['username']}")
-            if state["email"]:
-                print_info(f"  First admin email: {state['email']}")
-            print_info(f"  Auth mode: {state['auth_mode']}")
-            print_info(f"  First admin setup URL: {state['setup_url']}")
-            print_info(f"  OIDC client: {state['oidc_client_id']}")
-        except FileNotFoundError:
-            print_warning("Docker was not found. The bundled Pocket ID service was generated but not started.")
-        except Exception as exc:
-            print_warning(f"Could not start bundled Pocket ID automatically: {exc}")
-
     config = load_config()
-    initialize_product_config_file()
-    initialize_product_stack()
     hermes_home = get_hermes_home()
 
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
@@ -3221,7 +3162,6 @@ def run_setup_wizard(args):
                 )
                 func(config)
                 save_config(config)
-                _start_product_stack_best_effort()
                 print()
                 print_success(f"{label} configuration complete!")
                 return
@@ -3302,7 +3242,6 @@ def run_setup_wizard(args):
         if choice == 0:
             # Quick setup
             _run_quick_setup(config, hermes_home)
-            _start_product_stack_best_effort()
             return
         elif choice == 1:
             # Full setup — fall through to run all sections
@@ -3320,7 +3259,6 @@ def run_setup_wizard(args):
             _, label, func = SETUP_SECTIONS[section_idx]
             func(config)
             save_config(config)
-            _start_product_stack_best_effort()
             _print_setup_summary(config, hermes_home)
             return
     else:
@@ -3354,9 +3292,6 @@ def run_setup_wizard(args):
     print()
     print_info("You can edit these files directly or use 'hermes config edit'")
 
-    # Product network host used by local URLs and Pocket ID origins
-    setup_product_network()
-
     # Section 1: Model & Provider
     setup_model_provider(config)
 
@@ -3374,7 +3309,6 @@ def run_setup_wizard(args):
 
     # Save and show summary
     save_config(config)
-    _start_product_stack_best_effort()
     _print_setup_summary(config, hermes_home)
 
 

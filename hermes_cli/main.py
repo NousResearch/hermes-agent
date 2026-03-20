@@ -742,6 +742,16 @@ def cmd_setup(args):
     run_setup_wizard(args)
 
 
+def cmd_product(args):
+    """Product-layer CLI entrypoints."""
+    if getattr(args, "product_command", None) == "setup":
+        from hermes_cli.product_setup import run_product_setup_wizard
+
+        run_product_setup_wizard(args)
+        return
+    raise SystemExit("Unknown product subcommand")
+
+
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     from hermes_cli.auth import (
@@ -3189,6 +3199,35 @@ For more help on a command:
         help="Reset configuration to defaults"
     )
     setup_parser.set_defaults(func=cmd_setup)
+
+    # =========================================================================
+    # product command
+    # =========================================================================
+    product_parser = subparsers.add_parser(
+        "product",
+        help="Product-layer commands for the hermes-core distribution",
+        description="Supplier-curated product setup and management commands",
+    )
+    product_subparsers = product_parser.add_subparsers(dest="product_command")
+
+    product_setup = product_subparsers.add_parser(
+        "setup",
+        help="Interactive setup wizard for the hermes-core product layer",
+        description="Configure product-owned settings such as Pocket ID, public host, model route, and tools",
+    )
+    product_setup.add_argument(
+        "section",
+        nargs="?",
+        choices=["network", "model", "tools", "bootstrap"],
+        default=None,
+        help="Run a specific product setup section instead of the full product wizard",
+    )
+    product_setup.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Non-interactive mode (prints guidance instead of running prompts)",
+    )
+    product_setup.set_defaults(func=cmd_product)
 
     # =========================================================================
     # whatsapp command

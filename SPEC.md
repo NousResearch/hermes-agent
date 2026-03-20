@@ -17,6 +17,13 @@ In this model:
 
 The product should be installed through a CLI flow similar to installing Hermes itself.
 
+The product-owned setup flow should be exposed separately from generic upstream Hermes setup.
+
+The intended command shape is:
+
+- `hermes product setup` for product-layer installation and configuration
+- `hermes setup` remains generic Hermes setup and should stay upstream-compatible
+
 After installation, a guided setup CLI should configure:
 
 - visible product name and branding shown in the web app
@@ -86,6 +93,8 @@ For the product auth flow:
 The web app and runtime launcher should derive their behavior from this product config rather than becoming independent configuration authorities.
 
 The first implementation should keep Hermes' existing `config.yaml` for generic Hermes behavior and use `product.yaml` only for setup-owned product deployment behavior.
+
+If the product setup flow reuses generic Hermes setup helpers for model/provider or tool selection, that reuse should happen from the product-owned command path and the resulting product runtime settings should still be synchronized back into `product.yaml`.
 
 ## Authentication Direction
 

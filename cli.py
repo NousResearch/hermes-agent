@@ -1199,6 +1199,7 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()
         self._visible_followups: deque[str] = deque()
         self._visible_followups_lock = threading.Lock()
+        self._queue_mode = False  # When True, ENTER queues instead of interrupting
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -1310,7 +1311,7 @@ class HermesCLI:
 
         lines = ["Queued follow-up messages"]
         lines.extend(f"{idx}. {item}" for idx, item in enumerate(queued, start=1))
-        lines.append("Enter interrupts now; use /queue to keep these for the next turn.")
+        lines.append("Enter: immediate interrupt (/queue off) or graceful (/queue on). Ctrl+C: always immediate.")
         return lines
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
@@ -3734,16 +3735,26 @@ class HermesCLI:
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
-            if self._agent_running:
+            args = cmd_original.split(None, 1)[1].strip() if len(cmd_original.split(None, 1)) > 1 else ""
+            if args.lower() == "on":
+                self._queue_mode = True
+                _cprint("  🔀 Queue mode ON: ENTER will queue messages instead of interrupting. Use /stop or Esc to interrupt.")
+            elif args.lower() == "off":
+                self._queue_mode = False
+                _cprint("  ⚡ Queue mode OFF: ENTER will interrupt as usual.")
+            elif not args:
+                status = "ON" if self._queue_mode else "OFF"
+                _cprint(f"  Queue mode is currently {status}. Use /queue on or /queue off to toggle.")
+            elif self._agent_running:
                 payload = self._extract_queue_payload(cmd_original)
                 if payload is None:
-                    _cprint("  Usage: /queue <prompt>")
+                    _cprint("  Usage: /queue <prompt>  |  /queue on  |  /queue off")
                 else:
                     self._enqueue_visible_followup(payload)
                     self._pending_input.put(payload)
                     _cprint("  Queued for the next turn.")
             else:
-                _cprint("  /queue only works while Hermes is already busy.")
+                _cprint("  /queue <prompt> only works while Hermes is already busy. Use /queue on|off to toggle auto-queue mode.")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -5469,6 +5480,20 @@ class HermesCLI:
                 while agent_thread.is_alive():
                     agent_thread.join(0.1)
                     self._invalidate(min_interval=0.15)
+                    # Monitor _interrupt_queue: when /queue is on, messages typed
+                    # while agent runs go here for graceful interrupt between tool calls
+                    if hasattr(self, '_interrupt_queue') and not self._interrupt_queue.empty():
+                        if not (self._clarify_state or self._clarify_freetext):
+                            try:
+                                interrupt_msg = self._interrupt_queue.get_nowait()
+                                if interrupt_msg:
+                                    # Put it in _pending_input so process_loop picks it up next
+                                    self._pending_input.put(interrupt_msg)
+                                    if stop_event is not None:
+                                        stop_event.set()
+                                    self.agent.interrupt()
+                            except queue.Empty:
+                                pass
             finally:
                 self._tts_stop_event = None
             agent_thread.join()  # Ensure the thread is fully drained
@@ -5852,7 +5877,7 @@ class HermesCLI:
             - Approval selection: selected choice goes to approval response queue
             - Clarify freetext mode: answer goes to the clarify response queue
             - Clarify choice mode: selected choice goes to the clarify response queue
-            - Agent running: interrupts by default; `/queue` opts into follow-up queueing
+            - Agent running: immediate interrupt (/queue off) or graceful (/queue on)
             - Agent idle: goes to _pending_input (process_loop monitors this)
             """
             # --- Sudo password prompt: submit the typed password ---
@@ -5928,7 +5953,13 @@ class HermesCLI:
                     if queued_payload is not None:
                         self._enqueue_visible_followup(queued_payload)
                         self._pending_input.put(queued_payload)
+                    elif self._queue_mode:
+                        # /queue on: graceful interrupt between tool calls,
+                        # new message is integrated into the ongoing process
+                        self._interrupt_queue.put(payload)
                     else:
+                        # /queue off (default): immediate hard interrupt,
+                        # agent stops now and processes new message fresh
                         if self._tts_stop_event is not None:
                             self._tts_stop_event.set()
                         self._pending_input.put(payload)
@@ -6407,7 +6438,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "Enter interrupts, /queue saves next turn, Esc or /stop preempts, Ctrl+C cancels"
+                return "Enter: immediate (/queue off) or graceful (/queue on), Esc/stop preempts, Ctrl+C force"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""

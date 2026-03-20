@@ -501,6 +501,12 @@ class AIAgent:
         else:
             self.api_mode = "chat_completions"
 
+        # Direct OpenAI sessions use the Responses API path.  GPT-5.x tool
+        # calls with reasoning are rejected on /v1/chat/completions, and
+        # Hermes is a tool-using client by default.
+        if self.api_mode == "chat_completions" and self._is_direct_openai_url():
+            self.api_mode = "codex_responses"
+
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
@@ -1057,6 +1063,9 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.last_prompt_tokens = 0
             self.context_compressor.last_completion_tokens = 0
+            self.context_compressor.last_total_tokens = 0
+            self.context_compressor.compression_count = 0
+            self.context_compressor._context_probed = False
     
     @staticmethod
     def _safe_print(*args, **kwargs):
@@ -1085,6 +1094,11 @@ class AIAgent:
             return
         self._safe_print(*args, **kwargs)
 
+    def _is_direct_openai_url(self, base_url: str = None) -> bool:
+        """Return True when a base URL targets OpenAI's native API."""
+        url = (base_url or self._base_url_lower).lower()
+        return "api.openai.com" in url and "openrouter" not in url
+
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
         
@@ -1092,11 +1106,7 @@ class AIAgent:
         'max_completion_tokens'. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        _is_direct_openai = (
-            "api.openai.com" in self._base_url_lower
-            and "openrouter" not in self._base_url_lower
-        )
-        if _is_direct_openai:
+        if self._is_direct_openai_url():
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -3558,13 +3568,15 @@ class AIAgent:
                     fb_provider)
                 return False
 
-            # Determine api_mode from provider
+            # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
                 fb_api_mode = "codex_responses"
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
+            elif self._is_direct_openai_url(fb_base_url):
+                fb_api_mode = "codex_responses"
 
             old_model = self.model
             self.model = fb_model

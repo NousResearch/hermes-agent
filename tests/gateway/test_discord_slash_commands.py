@@ -86,6 +86,58 @@ async def test_registers_native_thread_slash_command(adapter):
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
+@pytest.mark.asyncio
+async def test_run_simple_slash_sends_returned_native_response(adapter):
+    state = {"done": False}
+
+    async def mark_deferred(*_args, **_kwargs):
+        state["done"] = True
+
+    adapter._message_handler = AsyncMock(return_value="hello from status")
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(
+            defer=AsyncMock(side_effect=mark_deferred),
+            send_message=AsyncMock(),
+            is_done=lambda: state["done"],
+        ),
+        followup=SimpleNamespace(send=AsyncMock()),
+        channel=SimpleNamespace(
+            id=123,
+            name="general",
+            guild=SimpleNamespace(name="Hermes"),
+            topic="topic",
+        ),
+        channel_id=123,
+        user=SimpleNamespace(id=42, display_name="Jezza"),
+    )
+
+    await adapter._run_simple_slash(interaction, "/status")
+
+    adapter._message_handler.assert_awaited_once()
+    event = adapter._message_handler.await_args.args[0]
+    assert event.text == "/status"
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.followup.send.assert_awaited_once_with("hello from status", ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_send_native_slash_content_chunks_long_output(adapter):
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(
+            send_message=AsyncMock(),
+            is_done=lambda: True,
+        ),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    content = "x" * (adapter.MAX_MESSAGE_LENGTH + 200)
+
+    await adapter._send_native_slash_content(interaction, content)
+
+    assert interaction.followup.send.await_count == 2
+    sent_chunks = [call.args[0] for call in interaction.followup.send.await_args_list]
+    assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent_chunks)
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
@@ -410,6 +462,32 @@ async def test_auto_thread_can_be_disabled(adapter, monkeypatch):
     adapter._auto_create_thread.assert_not_awaited()
     assert len(captured_events) == 1
     assert captured_events[0].source.chat_id == "100"  # stays in channel
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_platform_extra_overrides_env(monkeypatch):
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    config = PlatformConfig(enabled=True, token="fake-token", extra={"auto_thread": False})
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._auto_create_thread = AsyncMock()
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+
+    msg = _fake_message(_FakeTextChannel())
+
+    await adapter._handle_message(msg)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    assert len(captured_events) == 1
+    assert captured_events[0].source.chat_id == "100"
 
 
 @pytest.mark.asyncio

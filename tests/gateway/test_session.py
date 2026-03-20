@@ -54,6 +54,17 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic == "Planning and coordination for Project X"
         assert restored.chat_name == "Server / #project-planning"
 
+    def test_full_roundtrip_with_session_namespace(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="789",
+            chat_type="group",
+            user_id="42",
+            session_namespace="slash:42",
+        )
+        restored = SessionSource.from_dict(source.to_dict())
+        assert restored.session_namespace == "slash:42"
+
     def test_minimal_roundtrip(self):
         source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
         d = source.to_dict()
@@ -552,6 +563,17 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585:42"
+
+    def test_session_namespace_extends_session_key(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            session_namespace="slash:alice",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:discord:group:guild-123:alice:slash:alice"
 
 
 class TestSessionStoreEntriesAttribute:

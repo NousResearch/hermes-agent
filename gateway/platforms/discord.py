@@ -19,7 +19,8 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from pathlib import Path
+from dataclasses import asdict
+from datetime import datetime
 from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -51,23 +52,17 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
-
-
-def _clean_discord_id(entry: str) -> str:
-    """Strip common prefixes from a Discord user ID or username entry.
-
-    Users sometimes paste IDs with prefixes like ``user:123``, ``<@123>``,
-    or ``<@!123>`` from Discord's UI or other tools.  This normalises the
-    entry to just the bare ID or username.
-    """
-    entry = entry.strip()
-    # Strip Discord mention syntax: <@123> or <@!123>
-    if entry.startswith("<@") and entry.endswith(">"):
-        entry = entry.lstrip("<@!").rstrip(">")
-    # Strip "user:" prefix (seen in some Discord tools / onboarding pastes)
-    if entry.lower().startswith("user:"):
-        entry = entry[5:]
-    return entry.strip()
+from gateway.platforms.discord_impl import config as discord_config
+from gateway.platforms.discord_impl import delivery as discord_delivery
+from gateway.platforms.discord_impl import history as discord_history
+from gateway.platforms.discord_impl import intake as discord_intake
+from gateway.platforms.discord_impl import interactions as discord_interactions
+from gateway.platforms.discord_impl import messaging as discord_messaging
+from gateway.platforms.discord_impl import native_commands as discord_native_commands
+from gateway.platforms.discord_impl import permissions as discord_permissions
+from gateway.platforms.discord_impl import runtime_state as discord_runtime_state
+from gateway.platforms.discord_impl import state as discord_state
+from gateway.platforms.discord_impl import threads as discord_threads
 
 
 def check_discord_requirements() -> bool:
@@ -425,7 +420,11 @@ class DiscordAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
+        self._discord_policy: Optional[discord_config.DiscordPolicyConfig] = None
+        self._discord_policy_overrides: Dict[str, Any] = {}
+        self._component_runtime = discord_interactions.create_component_runtime()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._resolve_exec_approval: Optional[Callable[..., Any]] = None
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -439,8 +438,29 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._bot_participated_threads: set = self._load_participated_threads()
+        self._thread_bindings, self._activation_overrides = self._load_runtime_state()
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
+
+    def _get_discord_policy(self) -> discord_config.DiscordPolicyConfig:
+        """Return the adapter's cached Discord policy snapshot."""
+        if self._discord_policy is None:
+            self._discord_policy = discord_config.load_policy_config(
+                self.config,
+                overrides=self._discord_policy_overrides,
+            )
+        return self._discord_policy
+
+    def apply_runtime_policy_overrides(
+        self,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> discord_config.DiscordPolicyConfig:
+        """Apply runtime-only policy overrides for the active Discord connection."""
+        self._discord_policy_overrides = dict(overrides or {})
+        self._discord_policy = None
+        policy = self._get_discord_policy()
+        self._allowed_user_ids = set(policy.allowed_users)
+        return policy
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -493,12 +513,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             
             # Parse allowed user entries (may contain usernames or IDs)
-            allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
-            if allowed_env:
-                self._allowed_user_ids = {
-                    _clean_discord_id(uid) for uid in allowed_env.split(",")
-                    if uid.strip()
-                }
+            self._allowed_user_ids = set(self._get_discord_policy().allowed_users)
             
             adapter_self = self  # capture for closure
             
@@ -528,14 +543,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
                 #   "all"      — accept all bot messages
-                if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through to handle_message
+                is_mentioned = bool(self._client.user and self._client.user in message.mentions)
+                policy = adapter_self._get_discord_policy()
+                if discord_intake.should_filter_bot_message(
+                    is_bot=getattr(message.author, "bot", False),
+                    policy=policy.bot_filter_policy,
+                    is_mentioned=is_mentioned,
+                ):
+                    return
                 
                 await self._handle_message(message)
 
@@ -623,61 +638,37 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Get the channel
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            
+            channel = await discord_delivery.resolve_channel(self._client, chat_id)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
-            
-            # Format and split message if needed
+
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            
             message_ids = []
             reference = None
-            
+
             if reply_to:
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
                     reference = ref_msg
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
-            
+
             for i, chunk in enumerate(chunks):
                 chunk_reference = reference if i == 0 else None
-                try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
-                except Exception as e:
-                    err_text = str(e)
-                    if (
-                        chunk_reference is not None
-                        and "error code: 50035" in err_text
-                        and "Cannot reply to a system message" in err_text
-                    ):
-                        logger.warning(
-                            "[%s] Reply target %s is a Discord system message; retrying send without reply reference",
-                            self.name,
-                            reply_to,
-                        )
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
-                    else:
-                        raise
+                msg = await discord_delivery.send_text_message(
+                    channel,
+                    chunk,
+                    reference=chunk_reference,
+                )
                 message_ids.append(str(msg.id))
-            
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={"message_ids": message_ids}
             )
-            
+
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
@@ -689,21 +680,86 @@ class DiscordAdapter(BasePlatformAdapter):
         content: str,
     ) -> SendResult:
         """Edit a previously sent Discord message."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
-            formatted = self.format_message(content)
-            if len(formatted) > self.MAX_MESSAGE_LENGTH:
-                formatted = formatted[:self.MAX_MESSAGE_LENGTH - 3] + "..."
-            await msg.edit(content=formatted)
-            return SendResult(success=True, message_id=message_id)
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+        result = await discord_messaging.edit_message(
+            self._client,
+            chat_id,
+            message_id,
+            content,
+            format_message=self.format_message,
+            max_message_length=self.MAX_MESSAGE_LENGTH,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to edit Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> SendResult:
+        """Delete a Discord message."""
+        result = await discord_messaging.delete_message(
+            self._client,
+            chat_id,
+            message_id,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to delete Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: Any,
+    ) -> SendResult:
+        """Add a reaction to a Discord message."""
+        result = await discord_messaging.add_reaction(
+            self._client,
+            chat_id,
+            message_id,
+            emoji,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to add reaction to Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def remove_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: Any,
+    ) -> SendResult:
+        """Remove the connected bot's reaction from a Discord message."""
+        result = await discord_messaging.remove_reaction(
+            self._client,
+            chat_id,
+            message_id,
+            emoji,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to remove reaction from Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
 
     async def _send_file_attachment(
         self,
@@ -716,15 +772,17 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        channel = self._client.get_channel(int(chat_id))
-        if not channel:
-            channel = await self._client.fetch_channel(int(chat_id))
+        channel = await discord_delivery.resolve_channel(self._client, chat_id)
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+        discord_mod = sys.modules.get("discord", discord)
+        if discord_mod is None:  # pragma: no cover - import guard
+            return SendResult(success=False, error="discord.py not installed")
+
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
-            file = discord.File(fh, filename=filename)
+            file = discord_mod.File(fh, filename=filename)
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
@@ -1152,10 +1210,8 @@ class DiscordAdapter(BasePlatformAdapter):
         
         try:
             import aiohttp
-            
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+
+            channel = await discord_delivery.resolve_channel(self._client, chat_id)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
             
@@ -1242,7 +1298,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send typing indicator."""
         if self._client:
             try:
-                channel = self._client.get_channel(int(chat_id))
+                channel = await discord_delivery.resolve_channel(self._client, chat_id)
                 if channel:
                     await channel.typing()
             except Exception:
@@ -1286,6 +1342,184 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to get chat info for %s: %s", self.name, chat_id, e, exc_info=True)
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
+
+    async def fetch_channel_history(
+        self,
+        channel_id: str,
+        limit: int = 100,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+    ) -> list:
+        """Fetch bounded message history."""
+        if not self._client:
+            return []
+        messages = await discord_history.fetch_history(
+            self._client,
+            channel_id,
+            limit=limit,
+            before=before,
+            after=after,
+        )
+        return [asdict(message) for message in messages]
+
+    async def list_threads(
+        self,
+        channel_id: str,
+        include_archived: bool = False,
+        limit: int = 100,
+        before: Optional[Any] = None,
+        private: bool = False,
+        joined: bool = False,
+    ) -> list:
+        """List active and optionally archived threads for a channel."""
+        if not self._client:
+            return []
+        return await discord_messaging.list_threads(
+            self._client,
+            channel_id,
+            include_archived=include_archived,
+            limit=limit,
+            before=before,
+            private=private,
+            joined=joined,
+        )
+
+    async def reply_in_thread(
+        self,
+        thread_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a message to a Discord thread."""
+        result = await discord_messaging.reply_in_thread(
+            self._client,
+            thread_id,
+            content,
+            reply_to=reply_to,
+            format_message=self.format_message,
+            truncate_message=self.truncate_message,
+            max_message_length=self.MAX_MESSAGE_LENGTH,
+            send_text_message=discord_delivery.send_text_message,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to reply in Discord thread %s: %s",
+                self.name,
+                thread_id,
+                result.error,
+            )
+        return result
+
+    async def search_channel_history(
+        self,
+        channel_id: str,
+        query: str,
+        limit: int = 50,
+        author_id: Optional[str] = None,
+    ) -> list:
+        """Search channel history."""
+        if not self._client:
+            return []
+        messages = await discord_history.search_history(
+            self._client,
+            channel_id,
+            query,
+            limit=limit,
+            author_id=author_id,
+        )
+        return [asdict(message) for message in messages]
+
+    async def get_channel_permissions(self, channel_id: str) -> Optional[dict]:
+        """Get bot permissions for a channel."""
+        if not self._client:
+            return None
+        permissions = await discord_permissions.check_channel_permissions(self._client, channel_id)
+        return asdict(permissions) if permissions else None
+
+    async def list_pins(
+        self,
+        channel_id: str,
+        limit: int = 50,
+        before: Optional[Any] = None,
+        oldest_first: bool = False,
+    ) -> list:
+        """List pinned messages for a Discord channel or thread."""
+        if not self._client:
+            return []
+        return await discord_messaging.list_pins(
+            self._client,
+            channel_id,
+            limit=limit,
+            before=before,
+            oldest_first=oldest_first,
+        )
+
+    async def list_reactions(
+        self,
+        chat_id: str,
+        message_id: str,
+        limit: int = 100,
+    ) -> list:
+        """List reactions for a Discord message."""
+        if not self._client:
+            return []
+        return await discord_messaging.list_reactions(
+            self._client,
+            chat_id,
+            message_id,
+            limit=limit,
+        )
+
+    async def pin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        reason: Optional[str] = None,
+    ) -> SendResult:
+        """Pin a Discord message."""
+        result = await discord_messaging.pin_message(
+            self._client,
+            chat_id,
+            message_id,
+            reason=reason,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to pin Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def unpin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        reason: Optional[str] = None,
+    ) -> SendResult:
+        """Unpin a Discord message."""
+        result = await discord_messaging.unpin_message(
+            self._client,
+            chat_id,
+            message_id,
+            reason=reason,
+        )
+        if not result.success and result.error:
+            logger.error(
+                "[%s] Failed to unpin Discord message %s: %s",
+                self.name,
+                message_id,
+                result.error,
+            )
+        return result
+
+    async def get_accessible_channels(self, guild_id: Optional[str] = None) -> list:
+        """List accessible channels."""
+        if not self._client:
+            return []
+        channels = await discord_permissions.list_accessible_channels(self._client, guild_id=guild_id)
+        return [asdict(channel) for channel in channels]
     
     async def _resolve_allowed_usernames(self) -> None:
         """
@@ -1368,164 +1602,63 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> None:
         """Common handler for simple slash commands that dispatch a command string."""
         await interaction.response.defer(ephemeral=True)
-        event = self._build_slash_event(interaction, command_text)
-        await self.handle_message(event)
+        response = await self._invoke_native_slash_command(interaction, command_text)
+        if response:
+            await self._send_native_slash_content(interaction, response)
+            return
         if followup_msg:
             try:
                 await interaction.followup.send(followup_msg, ephemeral=True)
             except Exception as e:
                 logger.debug("Discord followup failed: %s", e)
 
+    async def _invoke_native_slash_command(
+        self,
+        interaction: discord.Interaction,
+        command_text: str,
+    ) -> str | None:
+        """Run a native slash command directly through the gateway handler."""
+        if not self._message_handler:
+            return None
+        event = self._build_slash_event(interaction, command_text)
+        return await self._message_handler(event)
+
+    async def _send_native_slash_content(
+        self,
+        interaction: discord.Interaction,
+        content: str,
+    ) -> None:
+        """Send a native slash response back through the Discord interaction."""
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        response = getattr(interaction, "response", None)
+        followup = getattr(interaction, "followup", None)
+
+        first_chunk_sent = False
+        if response is not None and hasattr(response, "send_message"):
+            is_done = getattr(response, "is_done", None)
+            if not callable(is_done) or not is_done():
+                await response.send_message(chunks[0], ephemeral=True)
+                first_chunk_sent = True
+
+        start_index = 1 if first_chunk_sent else 0
+        if followup is not None and hasattr(followup, "send"):
+            for chunk in chunks[start_index:]:
+                await followup.send(chunk, ephemeral=True)
+            return
+
+        if not first_chunk_sent and response is not None and hasattr(response, "send_message"):
+            await response.send_message(chunks[0], ephemeral=True)
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
             return
-
-        tree = self._client.tree
-
-        @tree.command(name="new", description="Start a new conversation")
-        async def slash_new(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/reset", "New conversation started~")
-
-        @tree.command(name="reset", description="Reset your Hermes session")
-        async def slash_reset(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/reset", "Session reset~")
-
-        @tree.command(name="model", description="Show or change the model")
-        @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
-        async def slash_model(interaction: discord.Interaction, name: str = ""):
-            await self._run_simple_slash(interaction, f"/model {name}".strip())
-
-        @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Reasoning effort: xhigh, high, medium, low, minimal, or none.")
-        async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/reasoning {effort}".strip())
-            await self.handle_message(event)
-
-        @tree.command(name="personality", description="Set a personality")
-        @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
-        async def slash_personality(interaction: discord.Interaction, name: str = ""):
-            await self._run_simple_slash(interaction, f"/personality {name}".strip())
-
-        @tree.command(name="retry", description="Retry your last message")
-        async def slash_retry(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/retry", "Retrying~")
-
-        @tree.command(name="undo", description="Remove the last exchange")
-        async def slash_undo(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/undo")
-
-        @tree.command(name="status", description="Show Hermes session status")
-        async def slash_status(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/status", "Status sent~")
-
-        @tree.command(name="sethome", description="Set this chat as the home channel")
-        async def slash_sethome(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/sethome")
-
-        @tree.command(name="stop", description="Stop the running Hermes agent")
-        async def slash_stop(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/stop", "Stop requested~")
-
-        @tree.command(name="compress", description="Compress conversation context")
-        async def slash_compress(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/compress")
-
-        @tree.command(name="title", description="Set or show the session title")
-        @discord.app_commands.describe(name="Session title. Leave empty to show current.")
-        async def slash_title(interaction: discord.Interaction, name: str = ""):
-            await self._run_simple_slash(interaction, f"/title {name}".strip())
-
-        @tree.command(name="resume", description="Resume a previously-named session")
-        @discord.app_commands.describe(name="Session name to resume. Leave empty to list sessions.")
-        async def slash_resume(interaction: discord.Interaction, name: str = ""):
-            await self._run_simple_slash(interaction, f"/resume {name}".strip())
-
-        @tree.command(name="usage", description="Show token usage for this session")
-        async def slash_usage(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/usage")
-
-        @tree.command(name="provider", description="Show available providers")
-        async def slash_provider(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/provider")
-
-        @tree.command(name="help", description="Show available commands")
-        async def slash_help(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/help")
-
-        @tree.command(name="insights", description="Show usage insights and analytics")
-        @discord.app_commands.describe(days="Number of days to analyze (default: 7)")
-        async def slash_insights(interaction: discord.Interaction, days: int = 7):
-            await self._run_simple_slash(interaction, f"/insights {days}")
-
-        @tree.command(name="reload-mcp", description="Reload MCP servers from config")
-        async def slash_reload_mcp(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/reload-mcp")
-
-        @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
-        @discord.app_commands.choices(mode=[
-            discord.app_commands.Choice(name="channel — join your voice channel", value="channel"),
-            discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
-            discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
-            discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
-            discord.app_commands.Choice(name="off — text only", value="off"),
-            discord.app_commands.Choice(name="status — show current mode", value="status"),
-        ])
-        async def slash_voice(interaction: discord.Interaction, mode: str = ""):
-            await interaction.response.defer(ephemeral=True)
-            event = self._build_slash_event(interaction, f"/voice {mode}".strip())
-            await self.handle_message(event)
-
-        @tree.command(name="update", description="Update Hermes Agent to the latest version")
-        async def slash_update(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/update", "Update initiated~")
-
-        @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
-        @discord.app_commands.describe(
-            name="Thread name",
-            message="Optional first message to send to Hermes in the thread",
-            auto_archive_duration="Auto-archive in minutes (60, 1440, 4320, 10080)",
-        )
-        async def slash_thread(
-            interaction: discord.Interaction,
-            name: str,
-            message: str = "",
-            auto_archive_duration: int = 1440,
-        ):
-            await interaction.response.defer(ephemeral=True)
-            await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
+        discord_interactions.register_slash_commands(self._client.tree, self)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        chat_type = "dm" if is_dm else "group"
-        chat_name = ""
-        if not is_dm and hasattr(interaction.channel, "name"):
-            chat_name = interaction.channel.name
-            if hasattr(interaction.channel, "guild") and interaction.channel.guild:
-                chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
-        
-        # Get channel topic (if available)
-        chat_topic = getattr(interaction.channel, "topic", None)
-
-        source = self.build_source(
-            chat_id=str(interaction.channel_id),
-            chat_name=chat_name,
-            chat_type=chat_type,
-            user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
-            chat_topic=chat_topic,
-        )
-
-        msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
-        return MessageEvent(
-            text=text,
-            message_type=msg_type,
-            source=source,
-            raw_message=interaction,
-        )
+        return discord_interactions.build_slash_event(self, interaction, text)
 
     # ------------------------------------------------------------------
     # Thread creation helpers
@@ -1539,33 +1672,13 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_archive_duration: int = 1440,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
-        result = await self._create_thread(
+        await discord_threads.handle_thread_create_slash(
+            self,
             interaction,
-            name=name,
-            message=message,
-            auto_archive_duration=auto_archive_duration,
+            name,
+            message,
+            auto_archive_duration,
         )
-
-        if not result.get("success"):
-            error = result.get("error", "unknown error")
-            await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
-            return
-
-        thread_id = result.get("thread_id")
-        thread_name = result.get("thread_name") or name
-
-        # Tell the user where the thread is
-        link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
-        await interaction.followup.send(f"Created thread {link}", ephemeral=True)
-
-        # Track thread participation so follow-ups don't require @mention
-        if thread_id:
-            self._track_thread(thread_id)
-
-        # If a message was provided, kick off a new Hermes session in the thread
-        starter = (message or "").strip()
-        if starter and thread_id:
-            await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
 
     async def _dispatch_thread_session(
         self,
@@ -1575,50 +1688,21 @@ class DiscordAdapter(BasePlatformAdapter):
         text: str,
     ) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
-        guild_name = ""
-        if hasattr(interaction, "guild") and interaction.guild:
-            guild_name = interaction.guild.name
-
-        chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
-
-        source = self.build_source(
-            chat_id=thread_id,
-            chat_name=chat_name,
-            chat_type="thread",
-            user_id=str(interaction.user.id),
-            user_name=interaction.user.display_name,
-            thread_id=thread_id,
+        await discord_threads.dispatch_thread_session(
+            self,
+            interaction,
+            thread_id,
+            thread_name,
+            text,
         )
-
-        event = MessageEvent(
-            text=text,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=interaction,
-        )
-        await self.handle_message(event)
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
-        return getattr(channel, "parent", None) or channel
+        return discord_threads.thread_parent_channel(channel)
 
     async def _resolve_interaction_channel(self, interaction: discord.Interaction) -> Optional[Any]:
         """Return the interaction channel, fetching it if the payload is partial."""
-        channel = getattr(interaction, "channel", None)
-        if channel is not None:
-            return channel
-        if not self._client:
-            return None
-        channel_id = getattr(interaction, "channel_id", None)
-        if channel_id is None:
-            return None
-        channel = self._client.get_channel(int(channel_id))
-        if channel is not None:
-            return channel
-        try:
-            return await self._client.fetch_channel(int(channel_id))
-        except Exception:
-            return None
+        return await discord_threads.resolve_interaction_channel(self._client, interaction)
 
     async def _create_thread(
         self,
@@ -1634,62 +1718,14 @@ class DiscordAdapter(BasePlatformAdapter):
         that (e.g. permission issues), falls back to sending a seed message
         and creating the thread from it.
         """
-        name = (name or "").strip()
-        if not name:
-            return {"error": "Thread name is required."}
-
-        if auto_archive_duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
-            allowed = ", ".join(str(v) for v in sorted(VALID_THREAD_AUTO_ARCHIVE_MINUTES))
-            return {"error": f"auto_archive_duration must be one of: {allowed}."}
-
-        channel = await self._resolve_interaction_channel(interaction)
-        if channel is None:
-            return {"error": "Could not resolve the current Discord channel."}
-        if isinstance(channel, discord.DMChannel):
-            return {"error": "Discord threads can only be created inside server text channels, not DMs."}
-
-        parent_channel = self._thread_parent_channel(channel)
-        if parent_channel is None:
-            return {"error": "Could not determine a parent text channel for the new thread."}
-
-        display_name = getattr(getattr(interaction, "user", None), "display_name", None) or "unknown user"
-        reason = f"Requested by {display_name} via /thread"
-        starter_message = (message or "").strip()
-
-        try:
-            thread = await parent_channel.create_thread(
-                name=name,
-                auto_archive_duration=auto_archive_duration,
-                reason=reason,
-            )
-            if starter_message:
-                await thread.send(starter_message)
-            return {
-                "success": True,
-                "thread_id": str(thread.id),
-                "thread_name": getattr(thread, "name", None) or name,
-            }
-        except Exception as direct_error:
-            try:
-                seed_content = starter_message or f"\U0001f9f5 Thread created by Hermes: **{name}**"
-                seed_msg = await parent_channel.send(seed_content)
-                thread = await seed_msg.create_thread(
-                    name=name,
-                    auto_archive_duration=auto_archive_duration,
-                    reason=reason,
-                )
-                return {
-                    "success": True,
-                    "thread_id": str(thread.id),
-                    "thread_name": getattr(thread, "name", None) or name,
-                }
-            except Exception as fallback_error:
-                return {
-                    "error": (
-                        "Discord rejected direct thread creation and the fallback also failed. "
-                        f"Direct error: {direct_error}. Fallback error: {fallback_error}"
-                    )
-                }
+        return await discord_threads.create_thread(
+            self._client,
+            interaction,
+            name,
+            message,
+            auto_archive_duration,
+            discord_threads.resolve_interaction_channel,
+        )
 
     # ------------------------------------------------------------------
     # Auto-thread helpers
@@ -1700,18 +1736,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Returns the created thread object, or ``None`` on failure.
         """
-        # Build a short thread name from the message
-        content = (message.content or "").strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
-
-        try:
-            thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
-            return thread
-        except Exception as e:
-            logger.warning("[%s] Auto-thread creation failed: %s", self.name, e)
-            return None
+        return await discord_threads.auto_create_thread(message)
 
     async def send_exec_approval(
         self, chat_id: str, command: str, approval_id: str
@@ -1725,9 +1750,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            channel = self._client.get_channel(int(chat_id))
+            channel = await discord_delivery.resolve_channel(self._client, chat_id)
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
 
             # Discord embed description limit is 4096; show full command up to that
             max_desc = 4088
@@ -1739,12 +1764,16 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             embed.set_footer(text=f"Approval ID: {approval_id}")
 
-            view = ExecApprovalView(
+            view = discord_interactions.create_exec_approval_view(
+                self,
                 approval_id=approval_id,
                 allowed_user_ids=self._allowed_user_ids,
+                runtime=self._component_runtime,
             )
 
             msg = await channel.send(embed=embed, view=view)
+            if hasattr(view, "bind_message"):
+                view.bind_message(str(msg.id))
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -1752,86 +1781,208 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
         """Return the parent channel ID for a Discord thread-like channel, if present."""
-        parent = getattr(channel, "parent", None)
-        if parent is not None and getattr(parent, "id", None) is not None:
-            return str(parent.id)
-        parent_id = getattr(channel, "parent_id", None)
-        if parent_id is not None:
-            return str(parent_id)
-        return None
+        return discord_intake.get_parent_channel_id(channel)
+
+    @staticmethod
+    def _runtime_state_path():
+        """Path to the persisted Discord runtime controls."""
+        return discord_runtime_state.runtime_state_path()
+
+    @classmethod
+    def _load_runtime_state(cls) -> tuple[dict[str, discord_runtime_state.DiscordThreadBinding], dict[str, str]]:
+        """Load persisted Discord runtime controls."""
+        return discord_runtime_state.load_runtime_state()
+
+    def _save_runtime_state(self) -> None:
+        """Persist Discord thread bindings and activation overrides."""
+        discord_runtime_state.save_runtime_state(
+            self._thread_bindings,
+            self._activation_overrides,
+        )
+
+    def get_thread_binding(self, thread_id: str) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Return the persisted focus binding for a thread, if any."""
+        return self._thread_bindings.get(str(thread_id))
+
+    def list_thread_bindings(self, parent_chat_id: Optional[str] = None) -> list[discord_runtime_state.DiscordThreadBinding]:
+        """Return all thread bindings, optionally scoped to one parent channel."""
+        bindings = list(self._thread_bindings.values())
+        if parent_chat_id is None:
+            return sorted(bindings, key=lambda binding: (binding.parent_chat_id or "", binding.chat_name, binding.thread_id))
+        target_parent = str(parent_chat_id)
+        return sorted(
+            [binding for binding in bindings if str(binding.parent_chat_id or "") == target_parent],
+            key=lambda binding: (binding.chat_name, binding.thread_id),
+        )
+
+    def focus_thread_binding(
+        self,
+        *,
+        thread_id: str,
+        session_key: str,
+        chat_name: str,
+        parent_chat_id: Optional[str],
+        bound_by: str,
+        idle_timeout_minutes: Optional[int] = None,
+        max_age_minutes: Optional[int] = None,
+    ) -> discord_runtime_state.DiscordThreadBinding:
+        """Create or update a persisted focus binding for a Discord thread."""
+        now = datetime.now().isoformat()
+        existing = self._thread_bindings.get(str(thread_id))
+        binding = discord_runtime_state.DiscordThreadBinding(
+            thread_id=str(thread_id),
+            session_key=session_key,
+            chat_id=str(thread_id),
+            parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            chat_name=chat_name,
+            bound_by=bound_by,
+            bound_at=existing.bound_at if existing and existing.bound_at else now,
+            last_activity_at=now,
+            idle_timeout_minutes=(
+                int(idle_timeout_minutes)
+                if idle_timeout_minutes is not None
+                else (existing.idle_timeout_minutes if existing else discord_runtime_state.DEFAULT_THREAD_BINDING_IDLE_MINUTES)
+            ),
+            max_age_minutes=(
+                int(max_age_minutes)
+                if max_age_minutes is not None
+                else (existing.max_age_minutes if existing else discord_runtime_state.DEFAULT_THREAD_BINDING_MAX_AGE_MINUTES)
+            ),
+        )
+        self._thread_bindings[binding.thread_id] = binding
+        self._track_thread(binding.thread_id)
+        self._save_runtime_state()
+        return binding
+
+    def unfocus_thread_binding(self, thread_id: str) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Remove a persisted focus binding for a thread."""
+        binding = self._thread_bindings.pop(str(thread_id), None)
+        if binding:
+            self._bot_participated_threads.discard(str(thread_id))
+            self._save_participated_threads()
+            self._save_runtime_state()
+        return binding
+
+    def update_thread_binding_limits(
+        self,
+        thread_id: str,
+        *,
+        idle_timeout_minutes: Optional[int] = None,
+        max_age_minutes: Optional[int] = None,
+    ) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Update idle/max-age settings for an existing thread binding."""
+        existing = self._thread_bindings.get(str(thread_id))
+        if existing is None:
+            return None
+        updated = discord_runtime_state.DiscordThreadBinding(
+            thread_id=existing.thread_id,
+            session_key=existing.session_key,
+            chat_id=existing.chat_id,
+            parent_chat_id=existing.parent_chat_id,
+            chat_name=existing.chat_name,
+            bound_by=existing.bound_by,
+            bound_at=existing.bound_at,
+            last_activity_at=existing.last_activity_at,
+            idle_timeout_minutes=(
+                int(idle_timeout_minutes)
+                if idle_timeout_minutes is not None
+                else existing.idle_timeout_minutes
+            ),
+            max_age_minutes=(
+                int(max_age_minutes)
+                if max_age_minutes is not None
+                else existing.max_age_minutes
+            ),
+        )
+        self._thread_bindings[updated.thread_id] = updated
+        self._save_runtime_state()
+        return updated
+
+    def touch_thread_binding(
+        self,
+        thread_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[discord_runtime_state.DiscordThreadBinding]:
+        """Refresh last-activity time for a thread binding."""
+        binding = self._thread_bindings.get(str(thread_id))
+        if binding is None:
+            return None
+        updated = discord_runtime_state.touch_binding(binding, now=now)
+        self._thread_bindings[updated.thread_id] = updated
+        self._save_runtime_state()
+        return updated
+
+    def expire_thread_binding_if_needed(
+        self,
+        thread_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[str]:
+        """Expire a focused thread binding when idle/max-age thresholds are reached."""
+        binding = self._thread_bindings.get(str(thread_id))
+        if binding is None:
+            return None
+        reason = discord_runtime_state.binding_expiration_reason(binding, now=now)
+        if reason is None:
+            return None
+        self.unfocus_thread_binding(thread_id)
+        return reason
+
+    def get_activation_mode(self, chat_id: str) -> Optional[str]:
+        """Return the Discord activation override for a chat, if any."""
+        return self._activation_overrides.get(str(chat_id))
+
+    def set_activation_mode(self, chat_id: str, mode: str) -> Optional[str]:
+        """Set or clear the Discord activation override for a chat."""
+        normalized = str(mode or "").strip().lower()
+        key = str(chat_id)
+        if normalized in {"", "inherit", "default", "reset"}:
+            previous = self._activation_overrides.pop(key, None)
+            self._save_runtime_state()
+            return previous
+        if normalized not in {"mention", "always"}:
+            raise ValueError(f"Unsupported activation mode: {mode}")
+        self._activation_overrides[key] = normalized
+        self._save_runtime_state()
+        return normalized
 
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
-        if channel is None:
-            return False
-        forum_cls = getattr(discord, "ForumChannel", None)
-        if forum_cls and isinstance(channel, forum_cls):
-            return True
-        channel_type = getattr(channel, "type", None)
-        if channel_type is not None:
-            type_value = getattr(channel_type, "value", channel_type)
-            if type_value == 15:
-                return True
-        return False
+        return discord_intake.is_forum_parent(channel)
 
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
-        thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
-        parent = getattr(thread, "parent", None)
-        guild = getattr(thread, "guild", None) or getattr(parent, "guild", None)
-        guild_name = getattr(guild, "name", None)
-        parent_name = getattr(parent, "name", None)
-
-        if self._is_forum_parent(parent) and guild_name and parent_name:
-            return f"{guild_name} / {parent_name} / {thread_name}"
-        if parent_name and guild_name:
-            return f"{guild_name} / #{parent_name} / {thread_name}"
-        if parent_name:
-            return f"{parent_name} / {thread_name}"
-        return thread_name
+        return discord_intake.format_thread_chat_name(thread, self._is_forum_parent)
 
     # ------------------------------------------------------------------
     # Thread participation persistence
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _thread_state_path() -> Path:
+    def _thread_state_path():
         """Path to the persisted thread participation set."""
-        from hermes_cli.config import get_hermes_home
-        return get_hermes_home() / "discord_threads.json"
+        return discord_state.thread_state_path()
 
     @classmethod
     def _load_participated_threads(cls) -> set:
         """Load persisted thread IDs from disk."""
-        path = cls._thread_state_path()
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return set(data)
-        except Exception as e:
-            logger.debug("Could not load discord thread state: %s", e)
-        return set()
+        return discord_state.load_participated_threads()
 
     def _save_participated_threads(self) -> None:
         """Persist the current thread set to disk (best-effort)."""
-        path = self._thread_state_path()
-        try:
-            # Trim to most recent entries if over cap
-            thread_list = list(self._bot_participated_threads)
-            if len(thread_list) > self._MAX_TRACKED_THREADS:
-                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
-                self._bot_participated_threads = set(thread_list)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(thread_list), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Could not save discord thread state: %s", e)
+        self._bot_participated_threads = discord_state.save_participated_threads(
+            self._bot_participated_threads,
+            max_threads=self._MAX_TRACKED_THREADS,
+        )
 
     def _track_thread(self, thread_id: str) -> None:
         """Add a thread to the participation set and persist."""
-        if thread_id not in self._bot_participated_threads:
-            self._bot_participated_threads.add(thread_id)
-            self._save_participated_threads()
+        self._bot_participated_threads = discord_state.track_thread(
+            self._bot_participated_threads,
+            thread_id,
+            max_threads=self._MAX_TRACKED_THREADS,
+        )
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
@@ -1846,40 +1997,66 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
+        is_thread = isinstance(message.channel, discord.Thread) or getattr(message.channel, "parent", None) is not None
+        policy = self._get_discord_policy()
+        active_binding = None
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
+            self.expire_thread_binding_if_needed(thread_id)
+            active_binding = self.get_thread_binding(thread_id)
 
         if not isinstance(message.channel, discord.DMChannel):
-            free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            free_channels = policy.free_response_channels
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
-            require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            require_mention = policy.require_mention
             is_free_channel = bool(channel_ids & free_channels)
+            for channel_id in channel_ids:
+                activation_mode = self.get_activation_mode(channel_id)
+                if activation_mode == "always":
+                    require_mention = False
+                    is_free_channel = True
+                    break
+                if activation_mode == "mention":
+                    require_mention = True
+                    is_free_channel = False
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+            in_bot_thread = bool(
+                is_thread
+                and thread_id
+                and (
+                    thread_id in self._bot_participated_threads
+                    or active_binding is not None
+                )
+            )
+            is_mentioned = bool(self._client.user and self._client.user in message.mentions)
 
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
-                    return
+            if discord_intake.should_skip_for_mention(
+                require_mention=require_mention,
+                is_free_channel=is_free_channel,
+                in_bot_thread=in_bot_thread,
+                is_mentioned=is_mentioned,
+            ):
+                return
 
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if is_mentioned and self._client.user:
+                message.content = discord_intake.strip_mention(message.content, self._client.user.id)
+
+        inline_command, remaining_text = discord_native_commands.extract_inline_shortcut(
+            message.content
+        )
 
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread:
+            if policy.auto_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True
@@ -1888,22 +2065,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._track_thread(thread_id)
 
         # Determine message type
-        msg_type = MessageType.TEXT
-        if message.content.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif message.attachments:
-            # Check attachment types
-            for att in message.attachments:
-                if att.content_type:
-                    if att.content_type.startswith("image/"):
-                        msg_type = MessageType.PHOTO
-                    elif att.content_type.startswith("video/"):
-                        msg_type = MessageType.VIDEO
-                    elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
-                    else:
-                        msg_type = MessageType.DOCUMENT
-                    break
+        msg_type = MessageType(
+            discord_intake.classify_message_type(message.content, message.attachments)
+        )
         
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
@@ -1986,100 +2150,28 @@ class DiscordAdapter(BasePlatformAdapter):
             timestamp=message.created_at,
         )
 
+        if inline_command:
+            inline_event = MessageEvent(
+                text=f"/{inline_command}",
+                message_type=MessageType.COMMAND,
+                source=source,
+                raw_message=message,
+                message_id=str(message.id),
+                reply_to_message_id=event.reply_to_message_id,
+                timestamp=message.created_at,
+                metadata={"is_inline_shortcut": True},
+            )
+            await self.handle_message(inline_event)
+            if not remaining_text and not media_urls:
+                return
+            event.text = remaining_text
+            event.message_type = MessageType.TEXT
+
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.
         if thread_id:
             self._track_thread(thread_id)
+            if active_binding is not None:
+                self.touch_thread_binding(thread_id)
 
         await self.handle_message(event)
-
-
-# ---------------------------------------------------------------------------
-# Discord UI Components (outside the adapter class)
-# ---------------------------------------------------------------------------
-
-if DISCORD_AVAILABLE:
-
-    class ExecApprovalView(discord.ui.View):
-        """
-        Interactive button view for exec approval of dangerous commands.
-
-        Shows three buttons: Allow Once (green), Always Allow (blue), Deny (red).
-        Only users in the allowed list can click. The view times out after 5 minutes.
-        """
-
-        def __init__(self, approval_id: str, allowed_user_ids: set):
-            super().__init__(timeout=300)  # 5-minute timeout
-            self.approval_id = approval_id
-            self.allowed_user_ids = allowed_user_ids
-            self.resolved = False
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            """Verify the user clicking is authorized."""
-            if not self.allowed_user_ids:
-                return True  # No allowlist = anyone can approve
-            return str(interaction.user.id) in self.allowed_user_ids
-
-        async def _resolve(
-            self, interaction: discord.Interaction, action: str, color: discord.Color
-        ):
-            """Resolve the approval and update the message."""
-            if self.resolved:
-                await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
-                )
-                return
-
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
-                )
-                return
-
-            self.resolved = True
-
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{action} by {interaction.user.display_name}")
-
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.response.edit_message(embed=embed, view=self)
-
-            # Store the approval decision
-            try:
-                from tools.approval import approve_permanent
-                if action == "allow_once":
-                    pass  # One-time approval handled by gateway
-                elif action == "allow_always":
-                    approve_permanent(self.approval_id)
-            except ImportError:
-                pass
-
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
-        async def allow_once(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await self._resolve(interaction, "allow_once", discord.Color.green())
-
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
-        async def allow_always(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await self._resolve(interaction, "allow_always", discord.Color.blue())
-
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
-        async def deny(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await self._resolve(interaction, "deny", discord.Color.red())
-
-        async def on_timeout(self):
-            """Handle view timeout -- disable buttons and mark as expired."""
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True

@@ -138,3 +138,70 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
         provider=None,
         base_url=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_commands_command_returns_gateway_catalog():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+
+    result = await runner._handle_commands_command(_make_event("/commands"))
+
+    assert "Hermes Command Catalog" in result
+    assert "/commands" in result
+    assert "/whoami" in result
+
+
+@pytest.mark.asyncio
+async def test_whoami_command_returns_sender_identity():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+
+    result = await runner._handle_whoami_command(_make_event("/whoami"))
+
+    assert "Hermes Sees You As" in result
+    assert "**Platform:** telegram" in result
+    assert "**User ID:** `u1`" in result
+    assert "**Chat ID:** `c1`" in result
+
+
+def test_session_source_override_is_used_for_command_sessions():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    command_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
+        session_namespace="slash:u1",
+    )
+    event = MessageEvent(
+        text="/status",
+        source=_make_source(),
+        message_id="m1",
+        metadata={"session_source": command_source},
+    )
+
+    assert runner._session_source_for_event(event) == command_source

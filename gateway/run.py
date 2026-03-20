@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -219,6 +220,15 @@ from gateway.session import (
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.command_catalog import (
+    build_session_export_html,
+    format_yaml_block,
+    load_raw_user_config,
+    read_config_or_env_value,
+    resolve_export_path,
+    unset_config_or_env_value,
+    write_config_or_env_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +325,7 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self._runtime_debug_overrides: Dict[str, Any] = {}
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -342,6 +353,12 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._bash_jobs: Dict[str, str] = {}
+        self._subagent_runtime: Dict[str, Dict[str, Any]] = {}
+        self._acp_session_bindings: Dict[str, str] = {}
+        self._acp_session_meta: Dict[str, Dict[str, Any]] = {}
+        self._acp_running_tasks: Dict[str, asyncio.Task] = {}
+        self._acp_session_manager = None
 
         # Track active fallback model/provider when primary is rate-limited.
         # Set after an agent run where fallback was activated; cleared when
@@ -384,6 +401,322 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        runtime_controls = self._load_runtime_controls()
+        self._session_send_policies: Dict[str, str] = runtime_controls["send_policies"]
+        self._session_docks: Dict[str, Dict[str, Any]] = runtime_controls["dock_targets"]
+
+    _DEBUG_REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    _DEBUG_BACKGROUND_NOTIFICATION_MODES = {"all", "result", "error", "off"}
+    _DEBUG_PROVIDER_DATA_COLLECTION_MODES = {"allow", "deny"}
+    _DEBUG_DISCORD_BOT_FILTER_POLICIES = {"none", "mentions", "all"}
+    _DEBUG_SUPPORTED_KEYS: Dict[str, str] = {
+        "agent.system_prompt": "Ephemeral system prompt for new turns in the running gateway process.",
+        "agent.reasoning_effort": "Runtime reasoning effort (none|minimal|low|medium|high|xhigh).",
+        "display.show_reasoning": "Show or hide model reasoning in responses.",
+        "display.background_process_notifications": "Background process watcher notifications (all|result|error|off).",
+        "provider_routing.only": "Preferred provider allowlist for OpenRouter routing.",
+        "provider_routing.ignore": "Providers to skip for OpenRouter routing.",
+        "provider_routing.order": "Explicit provider preference order for OpenRouter routing.",
+        "provider_routing.sort": "Provider routing sort strategy.",
+        "provider_routing.require_parameters": "Require providers that support all request parameters.",
+        "provider_routing.data_collection": "Provider data collection policy (allow|deny).",
+        "fallback_model.provider": "Fallback provider used when the primary route fails.",
+        "fallback_model.model": "Fallback model used when the primary route fails.",
+        "smart_model_routing.enabled": "Enable or disable cheap-vs-strong smart routing.",
+        "smart_model_routing.max_simple_chars": "Maximum message characters for cheap-route eligibility.",
+        "smart_model_routing.max_simple_words": "Maximum word count for cheap-route eligibility.",
+        "smart_model_routing.cheap_model.provider": "Cheap-route provider.",
+        "smart_model_routing.cheap_model.model": "Cheap-route model.",
+        "discord.allow_bots": "Discord bot-message policy (none|mentions|all).",
+        "discord.free_response_channels": "Discord channel IDs that bypass mention gating.",
+        "discord.require_mention": "Require @mention in Discord server channels.",
+        "discord.auto_thread": "Auto-create Discord threads on @mention.",
+    }
+
+    def _get_runtime_debug_overrides(self) -> Dict[str, Any]:
+        overrides = getattr(self, "_runtime_debug_overrides", None)
+        if overrides is None:
+            overrides = {}
+            self._runtime_debug_overrides = overrides
+        return overrides
+
+    @staticmethod
+    def _parse_debug_scalar(raw_value: str) -> Any:
+        import yaml
+
+        text = (raw_value or "").strip()
+        if not text:
+            return ""
+        try:
+            return yaml.safe_load(text)
+        except Exception:
+            return text
+
+    @classmethod
+    def _parse_debug_bool(cls, raw_value: str) -> bool:
+        parsed = cls._parse_debug_scalar(raw_value)
+        if isinstance(parsed, bool):
+            return parsed
+        if isinstance(parsed, str):
+            normalized = parsed.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        raise ValueError("expected a boolean value")
+
+    @classmethod
+    def _parse_debug_string_list(cls, raw_value: str) -> List[str]:
+        parsed = cls._parse_debug_scalar(raw_value)
+        if parsed is None:
+            return []
+        if isinstance(parsed, (list, tuple, set)):
+            items = list(parsed)
+        elif isinstance(parsed, str):
+            if "," in parsed:
+                items = [item.strip() for item in parsed.split(",")]
+            else:
+                items = [parsed.strip()]
+        else:
+            items = [str(parsed).strip()]
+        return [str(item).strip() for item in items if str(item).strip()]
+
+    @classmethod
+    def _parse_debug_optional_string(cls, raw_value: str) -> Optional[str]:
+        parsed = cls._parse_debug_scalar(raw_value)
+        if parsed is None:
+            return None
+        text = str(parsed).strip()
+        if not text:
+            return None
+        return text
+
+    @classmethod
+    def _parse_debug_int(cls, raw_value: str) -> int:
+        parsed = cls._parse_debug_scalar(raw_value)
+        try:
+            return int(parsed)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("expected an integer value") from exc
+
+    @classmethod
+    def _parse_debug_value(cls, key: str, raw_value: str) -> Any:
+        if key == "agent.system_prompt":
+            return str(raw_value)
+
+        if key == "agent.reasoning_effort":
+            normalized = str(raw_value).strip().lower()
+            if normalized == "off":
+                normalized = "none"
+            if normalized not in cls._DEBUG_REASONING_LEVELS:
+                raise ValueError(
+                    "expected one of: none, minimal, low, medium, high, xhigh"
+                )
+            return normalized
+
+        if key == "display.show_reasoning":
+            return cls._parse_debug_bool(raw_value)
+
+        if key == "display.background_process_notifications":
+            normalized = str(raw_value).strip().lower()
+            if normalized not in cls._DEBUG_BACKGROUND_NOTIFICATION_MODES:
+                raise ValueError("expected one of: all, result, error, off")
+            return normalized
+
+        if key in {
+            "provider_routing.only",
+            "provider_routing.ignore",
+            "provider_routing.order",
+            "discord.free_response_channels",
+        }:
+            return cls._parse_debug_string_list(raw_value)
+
+        if key == "provider_routing.sort":
+            return cls._parse_debug_optional_string(raw_value)
+
+        if key == "provider_routing.require_parameters":
+            return cls._parse_debug_bool(raw_value)
+
+        if key == "provider_routing.data_collection":
+            value = cls._parse_debug_optional_string(raw_value)
+            if value is None:
+                return None
+            normalized = value.lower()
+            if normalized not in cls._DEBUG_PROVIDER_DATA_COLLECTION_MODES:
+                raise ValueError("expected one of: allow, deny")
+            return normalized
+
+        if key in {"fallback_model.provider", "fallback_model.model"}:
+            return cls._parse_debug_optional_string(raw_value)
+
+        if key == "smart_model_routing.enabled":
+            return cls._parse_debug_bool(raw_value)
+
+        if key in {"smart_model_routing.max_simple_chars", "smart_model_routing.max_simple_words"}:
+            return cls._parse_debug_int(raw_value)
+
+        if key in {"smart_model_routing.cheap_model.provider", "smart_model_routing.cheap_model.model"}:
+            return cls._parse_debug_optional_string(raw_value)
+
+        if key == "discord.allow_bots":
+            normalized = str(raw_value).strip().lower()
+            if normalized not in cls._DEBUG_DISCORD_BOT_FILTER_POLICIES:
+                raise ValueError("expected one of: none, mentions, all")
+            return normalized
+
+        if key in {"discord.require_mention", "discord.auto_thread"}:
+            return cls._parse_debug_bool(raw_value)
+
+        raise KeyError(key)
+
+    @staticmethod
+    def _format_runtime_debug_value(value: Any) -> str:
+        return format_yaml_block(value)
+
+    @staticmethod
+    def _reasoning_config_to_level(reasoning_config: dict | None) -> str:
+        if reasoning_config is None:
+            return "medium"
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        return str(reasoning_config.get("effort") or "medium").strip().lower()
+
+    @classmethod
+    def _reasoning_level_to_config(cls, level: str) -> dict | None:
+        normalized = (level or "").strip().lower()
+        if not normalized or normalized == "medium":
+            return {"enabled": True, "effort": "medium"}
+        if normalized == "none":
+            return {"enabled": False}
+        if normalized in {"minimal", "low", "high", "xhigh"}:
+            return {"enabled": True, "effort": normalized}
+        return None
+
+    def _get_effective_reasoning_config(self) -> dict | None:
+        overrides = self._get_runtime_debug_overrides()
+        if "agent.reasoning_effort" not in overrides:
+            return self._load_reasoning_config()
+        return self._reasoning_level_to_config(str(overrides["agent.reasoning_effort"]))
+
+    def _get_effective_show_reasoning(self) -> bool:
+        overrides = self._get_runtime_debug_overrides()
+        if "display.show_reasoning" in overrides:
+            return bool(overrides["display.show_reasoning"])
+        return self._load_show_reasoning()
+
+    def _get_effective_background_notifications_mode(self) -> str:
+        overrides = self._get_runtime_debug_overrides()
+        if "display.background_process_notifications" in overrides:
+            return str(overrides["display.background_process_notifications"])
+        return self._load_background_notifications_mode()
+
+    def _build_effective_provider_routing(self) -> dict:
+        merged = dict(self._load_provider_routing() or {})
+        overrides = self._get_runtime_debug_overrides()
+        for suffix in ("only", "ignore", "order", "sort", "require_parameters", "data_collection"):
+            key = f"provider_routing.{suffix}"
+            if key in overrides:
+                merged[suffix] = overrides[key]
+        return merged
+
+    def _build_effective_fallback_model(self) -> dict | None:
+        merged = dict(self._load_fallback_model() or {})
+        overrides = self._get_runtime_debug_overrides()
+        for suffix in ("provider", "model"):
+            key = f"fallback_model.{suffix}"
+            if key in overrides:
+                merged[suffix] = overrides[key]
+        provider = str(merged.get("provider") or "").strip()
+        model = str(merged.get("model") or "").strip()
+        if not provider or not model:
+            return None
+        return {"provider": provider, "model": model}
+
+    def _build_effective_smart_model_routing(self) -> dict:
+        merged = dict(self._load_smart_model_routing() or {})
+        cheap_model = dict(merged.get("cheap_model") or {})
+        merged["cheap_model"] = cheap_model
+        overrides = self._get_runtime_debug_overrides()
+
+        for suffix in ("enabled", "max_simple_chars", "max_simple_words"):
+            key = f"smart_model_routing.{suffix}"
+            if key in overrides:
+                merged[suffix] = overrides[key]
+
+        for suffix in ("provider", "model"):
+            key = f"smart_model_routing.cheap_model.{suffix}"
+            if key in overrides:
+                cheap_model[suffix] = overrides[key]
+
+        return merged
+
+    def _build_effective_discord_policy_overrides(self) -> dict:
+        overrides = self._get_runtime_debug_overrides()
+        policy_overrides: Dict[str, Any] = {}
+        for source_key, target_key in (
+            ("discord.allow_bots", "allow_bots"),
+            ("discord.free_response_channels", "free_response_channels"),
+            ("discord.require_mention", "require_mention"),
+            ("discord.auto_thread", "auto_thread"),
+        ):
+            if source_key in overrides:
+                policy_overrides[target_key] = overrides[source_key]
+        return policy_overrides
+
+    def _get_effective_runtime_debug_value(self, key: str) -> Any:
+        overrides = self._get_runtime_debug_overrides()
+        if key == "agent.system_prompt":
+            return overrides[key] if key in overrides else self._load_ephemeral_system_prompt()
+        if key == "agent.reasoning_effort":
+            if key in overrides:
+                return overrides[key]
+            return self._reasoning_config_to_level(self._load_reasoning_config())
+        if key == "display.show_reasoning":
+            return self._get_effective_show_reasoning()
+        if key == "display.background_process_notifications":
+            return self._get_effective_background_notifications_mode()
+        if key.startswith("provider_routing."):
+            return self._build_effective_provider_routing().get(key.split(".", 1)[1])
+        if key.startswith("fallback_model."):
+            current = self._build_effective_fallback_model() or {}
+            return current.get(key.split(".", 1)[1])
+        if key.startswith("smart_model_routing.cheap_model."):
+            current = self._build_effective_smart_model_routing().get("cheap_model") or {}
+            return current.get(key.rsplit(".", 1)[1])
+        if key.startswith("smart_model_routing."):
+            current = self._build_effective_smart_model_routing()
+            return current.get(key.split(".", 1)[1])
+        if key.startswith("discord."):
+            from gateway.platforms.discord_impl import config as discord_config
+
+            policy = discord_config.load_policy_config(
+                getattr(self, "config", None).platforms.get(Platform.DISCORD)
+                if getattr(self, "config", None) and getattr(self.config, "platforms", None)
+                else None,
+                overrides=self._build_effective_discord_policy_overrides(),
+            )
+            mapping = {
+                "discord.allow_bots": policy.bot_filter_policy,
+                "discord.free_response_channels": sorted(policy.free_response_channels),
+                "discord.require_mention": policy.require_mention,
+                "discord.auto_thread": policy.auto_thread,
+            }
+            return mapping[key]
+        raise KeyError(key)
+
+    def _apply_runtime_debug_overrides(self) -> None:
+        self._ephemeral_system_prompt = str(self._get_effective_runtime_debug_value("agent.system_prompt") or "")
+        self._reasoning_config = self._get_effective_reasoning_config()
+        self._show_reasoning = self._get_effective_show_reasoning()
+        self._provider_routing = self._build_effective_provider_routing()
+        self._fallback_model = self._build_effective_fallback_model()
+        self._smart_model_routing = self._build_effective_smart_model_routing()
+
+        discord_adapter = getattr(self, "adapters", {}).get(Platform.DISCORD)
+        if discord_adapter and hasattr(discord_adapter, "apply_runtime_policy_overrides"):
+            discord_adapter.apply_runtime_policy_overrides(
+                self._build_effective_discord_policy_overrides()
+            )
 
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
@@ -453,6 +786,7 @@ class GatewayRunner:
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+    _RUNTIME_CONTROLS_PATH = _hermes_home / "gateway_runtime_controls.json"
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
@@ -498,6 +832,56 @@ class GatewayRunner:
         disabled_chats.update(
             chat_id for chat_id, mode in self._voice_mode.items() if mode == "off"
         )
+
+    def _load_runtime_controls(self) -> Dict[str, Dict[str, Any]]:
+        """Load persisted per-session send-policy and dock-routing controls."""
+        try:
+            payload = json.loads(self._RUNTIME_CONTROLS_PATH.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {"send_policies": {}, "dock_targets": {}}
+
+        if not isinstance(payload, dict):
+            return {"send_policies": {}, "dock_targets": {}}
+
+        raw_send_policies = payload.get("send_policies") or {}
+        send_policies = {
+            str(session_key): str(mode)
+            for session_key, mode in raw_send_policies.items()
+            if str(mode) in {"on", "off", "inherit"}
+        }
+
+        raw_dock_targets = payload.get("dock_targets") or {}
+        dock_targets: Dict[str, Dict[str, Any]] = {}
+        for session_key, target in raw_dock_targets.items():
+            if not isinstance(target, dict):
+                continue
+            platform = str(target.get("platform") or "").strip().lower()
+            chat_id = str(target.get("chat_id") or "").strip()
+            if not platform or not chat_id:
+                continue
+            dock_targets[str(session_key)] = {
+                "platform": platform,
+                "chat_id": chat_id,
+                "thread_id": str(target.get("thread_id") or "").strip() or None,
+                "name": str(target.get("name") or "").strip(),
+            }
+
+        return {
+            "send_policies": send_policies,
+            "dock_targets": dock_targets,
+        }
+
+    def _save_runtime_controls(self) -> None:
+        """Persist per-session send-policy and dock-routing controls."""
+        payload = {
+            "send_policies": getattr(self, "_session_send_policies", {}) or {},
+            "dock_targets": getattr(self, "_session_docks", {}) or {},
+        }
+        try:
+            self._RUNTIME_CONTROLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._RUNTIME_CONTROLS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        except OSError as e:
+            logger.warning("Failed to save gateway runtime controls: %s", e)
 
     # -----------------------------------------------------------------
 
@@ -609,6 +993,970 @@ class GatewayRunner:
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
+
+    def _session_source_for_event(self, event: MessageEvent) -> SessionSource:
+        """Resolve the session source for an event, honoring command-session overrides."""
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict):
+            session_source = metadata.get("session_source")
+            if isinstance(session_source, SessionSource):
+                return session_source
+        return event.source
+
+    def _command_target_source_for_event(self, event: MessageEvent) -> SessionSource:
+        """Resolve the command target source, falling back to the event source."""
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict):
+            target_source = metadata.get("command_target_source")
+            if isinstance(target_source, SessionSource):
+                return target_source
+        return event.source
+
+    @staticmethod
+    def _new_approval_id() -> str:
+        """Generate a short human-readable approval identifier."""
+        return f"appr-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _normalize_approval_decision(raw: str) -> Optional[str]:
+        value = str(raw or "").strip().lower()
+        mapping = {
+            "allow-once": "allow-once",
+            "once": "allow-once",
+            "allow_once": "allow-once",
+            "yes": "allow-once",
+            "approve": "allow-once",
+            "allow-session": "allow-session",
+            "allow_session": "allow-session",
+            "session": "allow-session",
+            "ses": "allow-session",
+            "allow-always": "allow-always",
+            "always": "allow-always",
+            "allow_always": "allow-always",
+            "deny": "deny",
+            "no": "deny",
+            "reject": "deny",
+            "cancel": "deny",
+            "show": "show",
+            "view": "show",
+            "full": "show",
+        }
+        return mapping.get(value)
+
+    def _find_pending_approval(
+        self,
+        *,
+        approval_id: Optional[str] = None,
+        source: Optional[SessionSource] = None,
+    ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+        """Find a pending approval by explicit approval ID or source session."""
+        if approval_id:
+            for session_key, pending in self._pending_approvals.items():
+                if str(pending.get("approval_id") or "") == approval_id:
+                    return session_key, pending
+            return None, None
+
+        if source is None:
+            return None, None
+
+        session_key = self._session_key_for_source(source)
+        return session_key, self._pending_approvals.get(session_key)
+
+    def _approval_usage_text(self) -> str:
+        return "`/approve`, `/approve session`, `/approve always`, or `/approve [id] <allow-once|allow-session|allow-always|deny|show>`"
+
+    def _resolve_pending_approval(
+        self,
+        *,
+        decision: str,
+        approval_id: Optional[str] = None,
+        source: Optional[SessionSource] = None,
+    ) -> str:
+        """Resolve a pending approval by ID or source session."""
+        normalized = self._normalize_approval_decision(decision)
+        if normalized is None:
+            return (
+                f"⚠️ Unknown approval decision: `{decision}`\n\n"
+                f"Use {self._approval_usage_text()}"
+            )
+
+        session_key, pending = self._find_pending_approval(approval_id=approval_id, source=source)
+        if not session_key or not pending:
+            if normalized == "deny":
+                return "No pending command to deny."
+            return "No pending command to approve."
+
+        pending_id = str(pending.get("approval_id") or "")
+        command = str(pending.get("command") or "").strip()
+        pattern_keys = list(pending.get("pattern_keys") or [])
+        if not pattern_keys:
+            pattern_key = str(pending.get("pattern_key") or "").strip()
+            if pattern_key:
+                pattern_keys = [pattern_key]
+
+        timestamp = pending.get("timestamp")
+        if isinstance(timestamp, (int, float)) and time.time() - float(timestamp) > 300:
+            self._pending_approvals.pop(session_key, None)
+            return "⚠️ Approval expired (timed out after 5 minutes). Ask the agent to try again."
+
+        if normalized == "show":
+            return (
+                f"⚠️ Pending approval `{pending_id}`\n\n"
+                f"```\n{command}\n```\n\n"
+                f"Use {self._approval_usage_text()}"
+            )
+
+        if normalized == "deny":
+            self._pending_approvals.pop(session_key, None)
+            return "❌ Command denied."
+
+        import tools.approval as approval_mod
+        from tools.terminal_tool import terminal_tool
+
+        if normalized == "allow-session":
+            for pattern_key in pattern_keys:
+                approval_mod.approve_session(session_key, pattern_key)
+        elif normalized == "allow-always":
+            for pattern_key in pattern_keys:
+                approval_mod.approve_session(session_key, pattern_key)
+                approval_mod.approve_permanent(pattern_key)
+            approval_mod.save_permanent_allowlist(approval_mod._permanent_approved)
+        else:
+            for pattern_key in pattern_keys:
+                approval_mod.approve_session(session_key, pattern_key)
+
+        self._pending_approvals.pop(session_key, None)
+        on_approve = pending.get("on_approve")
+        if callable(on_approve):
+            try:
+                return on_approve(normalized)
+            except Exception as e:
+                logger.exception("Pending approval callback failed")
+                return f"❌ Approved command failed: {e}"
+
+        result = terminal_tool(command=command, force=True)
+        if normalized == "allow-session":
+            prefix = (
+                "✅ Command approved and executed "
+                "(pattern approved for this session). Decision: approved (allow-session)."
+            )
+        elif normalized == "allow-always":
+            prefix = (
+                "✅ Command approved and executed "
+                "(pattern approved permanently). Decision: approved (allow-always)."
+            )
+        else:
+            prefix = "✅ Command approved and executed. Decision: approved (allow-once)."
+        if pending_id:
+            prefix = f"{prefix} (`{pending_id}`)"
+        return f"{prefix}\n\n```\n{result[:3500]}\n```"
+
+    @staticmethod
+    def _format_minutes_label(minutes: int) -> str:
+        if minutes <= 0:
+            return "off"
+        if minutes % 1440 == 0:
+            days = minutes // 1440
+            return f"{days}d"
+        if minutes % 60 == 0:
+            hours = minutes // 60
+            return f"{hours}h"
+        return f"{minutes}m"
+
+    @staticmethod
+    def _parse_duration_minutes(raw: str) -> Optional[int]:
+        value = str(raw or "").strip().lower()
+        if not value:
+            return None
+        if value in {"off", "none", "disable", "disabled"}:
+            return 0
+
+        from cron.jobs import parse_duration
+
+        return parse_duration(value)
+
+    def _get_discord_adapter(self):
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            return None
+        return adapter
+
+    def _session_send_policy(self, session_key: str) -> str:
+        policies = getattr(self, "_session_send_policies", None)
+        if not isinstance(policies, dict):
+            return "inherit"
+        return policies.get(session_key, "inherit")
+
+    def _dock_target_for_session(self, session_key: str) -> Optional[Dict[str, Any]]:
+        dock_targets = getattr(self, "_session_docks", None)
+        if not isinstance(dock_targets, dict):
+            return None
+        target = dock_targets.get(session_key)
+        if not isinstance(target, dict):
+            return None
+        return target
+
+    def _format_dock_target(self, target: Dict[str, Any]) -> str:
+        platform = str(target.get("platform") or "unknown")
+        name = str(target.get("name") or "").strip()
+        chat_id = str(target.get("chat_id") or "")
+        if name:
+            return f"{platform}:{name} (`{chat_id}`)"
+        return f"{platform} home channel (`{chat_id}`)"
+
+    def _get_bash_jobs(self) -> Dict[str, str]:
+        jobs = getattr(self, "_bash_jobs", None)
+        if jobs is None:
+            jobs = {}
+            self._bash_jobs = jobs
+        return jobs
+
+    @staticmethod
+    def _rewrite_bash_shortcut(raw_text: str) -> Optional[str]:
+        text = str(raw_text or "")
+        stripped = text.lstrip()
+        if not stripped.startswith("!"):
+            return None
+        payload = stripped[1:].strip()
+        if not payload:
+            return None
+        if payload.startswith("poll"):
+            args = payload[4:].strip()
+            return f"/bash poll {args}".strip()
+        if payload.startswith("stop"):
+            args = payload[4:].strip()
+            return f"/bash stop {args}".strip()
+        return f"/bash {payload}"
+
+    @staticmethod
+    def _split_command_args(raw: str, *, max_parts: int | None = None) -> list[str]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+        if max_parts is None or len(parts) <= max_parts:
+            return parts
+        head = parts[: max_parts - 1]
+        tail = " ".join(parts[max_parts - 1 :]).strip()
+        return [*head, tail]
+
+    @staticmethod
+    def _normalize_skill_name(raw: str) -> str:
+        return str(raw or "").strip().lower().replace(" ", "-").replace("_", "-").lstrip("/")
+
+    @staticmethod
+    def _parity_blocker_text(command: str, plan_id: str, detail: str) -> str:
+        return (
+            f"⚠️ `/{command}` is still blocked in Hermes parity work.\n\n"
+            f"**Blocked by:** `{plan_id}`\n"
+            f"**Reason:** {detail}"
+        )
+
+    def _get_bash_foreground_seconds(self) -> int:
+        raw_ms = os.getenv("HERMES_BASH_FOREGROUND_MS", "").strip()
+        if not raw_ms:
+            try:
+                cfg = load_raw_user_config() or {}
+                commands_cfg = cfg.get("commands", {}) if isinstance(cfg, dict) else {}
+                raw_ms = str(commands_cfg.get("bashForegroundMs", "") or "").strip()
+            except Exception:
+                raw_ms = ""
+        try:
+            ms = int(raw_ms or "2000")
+        except ValueError:
+            ms = 2000
+        if ms <= 0:
+            return 0
+        return max(1, (ms + 999) // 1000)
+
+    @staticmethod
+    def _format_bash_output(output: str, *, limit: int = 3500) -> str:
+        text = str(output or "").rstrip()
+        if not text:
+            return "_(no output)_"
+        if len(text) > limit:
+            text = text[-limit:]
+            text = f"...\n{text}"
+        return f"```\n{text}\n```"
+
+    def _resolve_bash_target_session_id(self, session_key: str, raw_target: str) -> Optional[str]:
+        from tools.process_registry import process_registry
+
+        target = str(raw_target or "").strip()
+        jobs = self._get_bash_jobs()
+        if target:
+            return target
+        session_id = jobs.get(session_key)
+        if not session_id:
+            return None
+        current = process_registry.get(session_id)
+        if current is None or current.exited:
+            jobs.pop(session_key, None)
+            return None
+        return session_id
+
+    def _store_pending_bash_approval(
+        self,
+        *,
+        session_key: str,
+        command: str,
+        approval_payload: dict[str, Any],
+        on_approve,
+    ) -> str:
+        approval_id = self._new_approval_id()
+        pending = {
+            "approval_id": approval_id,
+            "session_key": session_key,
+            "created_at": datetime.now().isoformat(),
+            "command": command,
+            "description": approval_payload.get("description", "command flagged"),
+            "pattern_key": approval_payload.get("pattern_key", ""),
+            "on_approve": on_approve,
+        }
+        self._pending_approvals[session_key] = pending
+        return approval_id
+
+    def _run_bash_process(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        command: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        from tools.terminal_tool import terminal_tool
+
+        context = build_session_context(source, self.config)
+        tracked_vars = [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_KEY",
+            "HERMES_SESSION_SEND_POLICY",
+        ]
+        previous_env = {name: os.environ.get(name) for name in tracked_vars}
+        try:
+            self._set_session_env(context)
+            os.environ["HERMES_SESSION_KEY"] = session_key
+            os.environ["HERMES_SESSION_SEND_POLICY"] = self._session_send_policy(session_key)
+            raw = terminal_tool(command=command, background=True, force=force)
+        finally:
+            self._clear_session_env()
+            for name in ("HERMES_SESSION_KEY", "HERMES_SESSION_SEND_POLICY"):
+                previous = previous_env.get(name)
+                if previous is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = previous
+            for name in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"):
+                previous = previous_env.get(name)
+                if previous is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = previous
+
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return {"status": "error", "error": raw}
+            if isinstance(parsed, dict):
+                return parsed
+        return {"status": "error", "error": "Unexpected terminal result"}
+
+    def _resume_bash_after_approval(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        command: str,
+    ) -> str:
+        result = self._run_bash_process(
+            source=source,
+            session_key=session_key,
+            command=command,
+            force=True,
+        )
+        return self._format_bash_result(
+            session_key=session_key,
+            command=command,
+            result=result,
+        )
+
+    def _format_bash_result(
+        self,
+        *,
+        session_key: str,
+        command: str,
+        result: dict[str, Any],
+    ) -> str:
+        from tools.process_registry import process_registry
+
+        status = str(result.get("status") or "").strip()
+        if status == "approval_required":
+            return str(result.get("error") or "Approval required.")
+        if status == "blocked":
+            return f"❌ {result.get('error') or 'Command blocked.'}"
+        if result.get("error") and not result.get("session_id"):
+            return f"❌ Bash command failed: {result.get('error')}"
+
+        proc_id = str(result.get("session_id") or "").strip()
+        if not proc_id:
+            return f"❌ Bash command failed: {result.get('error') or 'No process session ID returned.'}"
+
+        self._get_bash_jobs()[session_key] = proc_id
+        wait_seconds = self._get_bash_foreground_seconds()
+        wait_result = process_registry.wait(proc_id, timeout=wait_seconds) if wait_seconds > 0 else {"status": "timeout"}
+
+        if wait_result.get("status") == "exited":
+            self._get_bash_jobs().pop(session_key, None)
+            exit_code = wait_result.get("exit_code")
+            output = wait_result.get("output", "")
+            return "\n".join(
+                [
+                    "💻 **Bash Complete**",
+                    "",
+                    f"**Command:** `{command}`",
+                    f"**Exit Code:** `{exit_code}`",
+                    "",
+                    self._format_bash_output(output),
+                ]
+            )
+
+        if wait_result.get("status") == "interrupted":
+            self._get_bash_jobs().pop(session_key, None)
+            return "\n".join(
+                [
+                    "⚡ **Bash Interrupted**",
+                    "",
+                    f"**Command:** `{command}`",
+                    "",
+                    self._format_bash_output(wait_result.get("output", "")),
+                ]
+            )
+
+        process_info = process_registry.poll(proc_id)
+        pid = process_info.get("pid")
+        preview = process_info.get("output_preview", "")
+        return "\n".join(
+            [
+                "💻 **Bash Running**",
+                "",
+                f"**Command:** `{command}`",
+                f"**Session ID:** `{proc_id}`",
+                f"**PID:** `{pid}`" if pid else "**PID:** `unknown`",
+                "",
+                "Use `/bash poll` or `!poll` to check progress.",
+                "Use `/bash stop` or `!stop` to terminate it.",
+                "",
+                self._format_bash_output(preview, limit=1200),
+            ]
+        )
+
+    @staticmethod
+    def _control_commands_during_run() -> set[str]:
+        return {"status", "stop", "approve", "bash", "subagents", "kill", "steer", "tell", "acp"}
+
+    def _get_subagent_runtime(self) -> dict[str, dict[str, Any]]:
+        runtime = getattr(self, "_subagent_runtime", None)
+        if not isinstance(runtime, dict):
+            runtime = {}
+            self._subagent_runtime = runtime
+        return runtime
+
+    def _get_subagent_session_state(self, session_key: str) -> dict[str, Any]:
+        runtime = self._get_subagent_runtime()
+        state = runtime.get(session_key)
+        if not isinstance(state, dict):
+            state = {"next_ordinal": 1, "entries": {}}
+            runtime[session_key] = state
+        state.setdefault("next_ordinal", 1)
+        state.setdefault("entries", {})
+        return state
+
+    @staticmethod
+    def _subagent_now() -> str:
+        return datetime.now().isoformat(timespec="seconds")
+
+    @staticmethod
+    def _truncate_line(text: str, *, limit: int = 120) -> str:
+        value = str(text or "").strip()
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
+
+    def _append_subagent_log(self, entry: dict[str, Any], message: str) -> None:
+        logs = entry.setdefault("logs", [])
+        logs.append(f"[{self._subagent_now()}] {message}")
+        if len(logs) > 60:
+            del logs[:-60]
+        entry["updated_at"] = self._subagent_now()
+
+    def _create_subagent_entry(
+        self,
+        *,
+        session_key: str,
+        child: Any,
+        task_index: int,
+        goal: str,
+        context: Optional[str],
+        toolsets: Optional[list[str]],
+        model: Optional[str],
+        source_kind: str,
+    ) -> dict[str, Any]:
+        state = self._get_subagent_session_state(session_key)
+        ordinal = int(state.get("next_ordinal", 1))
+        state["next_ordinal"] = ordinal + 1
+        subagent_id = f"sa-{ordinal}"
+        entry = {
+            "id": subagent_id,
+            "ordinal": ordinal,
+            "task_index": task_index,
+            "goal": str(goal or "").strip(),
+            "context": str(context or "").strip(),
+            "toolsets": list(toolsets or []),
+            "model": model or "",
+            "status": "pending",
+            "source_kind": source_kind,
+            "created_at": self._subagent_now(),
+            "updated_at": self._subagent_now(),
+            "started_at": None,
+            "ended_at": None,
+            "summary": "",
+            "error": "",
+            "logs": [],
+            "restarts": 0,
+            "child": child,
+            "pending_steer": None,
+        }
+        state["entries"][subagent_id] = entry
+        self._append_subagent_log(entry, f"Registered subagent for goal: {self._truncate_line(goal)}")
+        return entry
+
+    def _find_subagent_entry(self, session_key: str, child: Any) -> Optional[dict[str, Any]]:
+        if child is None:
+            return None
+        state = self._get_subagent_session_state(session_key)
+        for entry in state["entries"].values():
+            if entry.get("child") is child:
+                return entry
+        child_id = str(getattr(child, "_gateway_subagent_id", "") or "").strip()
+        if child_id:
+            return state["entries"].get(child_id)
+        return None
+
+    def _resolve_subagent_targets(
+        self,
+        session_key: str,
+        raw_target: str,
+        *,
+        active_only: bool = False,
+        allow_all: bool = False,
+    ) -> tuple[list[dict[str, Any]], Optional[str]]:
+        state = self._get_subagent_session_state(session_key)
+        entries = list(state["entries"].values())
+        if active_only:
+            entries = [e for e in entries if e.get("status") in {"pending", "running"}]
+        target = str(raw_target or "").strip()
+        if not target:
+            if len(entries) == 1:
+                return [entries[0]], None
+            if not entries:
+                return [], "No matching subagents found for this session."
+            return [], "Multiple subagents match. Use an explicit `sa-#` or `#<n>` target."
+        if allow_all and target.lower() == "all":
+            return entries, None
+        if target.startswith("#"):
+            target = target[1:].strip()
+        if target.isdigit():
+            ordinal = int(target)
+            for entry in entries:
+                if int(entry.get("ordinal", 0)) == ordinal:
+                    return [entry], None
+            return [], f"No subagent found for `#{ordinal}`."
+        match = state["entries"].get(target)
+        if match and (not active_only or match.get("status") in {"pending", "running"}):
+            return [match], None
+        return [], f"No subagent found for `{target}`."
+
+    def _format_subagent_list(self, session_key: str) -> str:
+        state = self._get_subagent_session_state(session_key)
+        entries = list(state["entries"].values())
+        if not entries:
+            return "No subagents recorded for this session."
+        lines = ["🤖 **Subagents**", ""]
+        for entry in sorted(entries, key=lambda item: int(item.get("ordinal", 0))):
+            status = str(entry.get("status") or "unknown")
+            goal = self._truncate_line(entry.get("goal") or "(no goal)")
+            lines.append(f"- `#{entry['ordinal']}` / `{entry['id']}` — {status} — {goal}")
+            summary = str(entry.get("summary") or "").strip()
+            if summary:
+                lines.append(f"  summary: {self._truncate_line(summary, limit=140)}")
+        return "\n".join(lines)
+
+    def _format_subagent_info(self, entry: dict[str, Any]) -> str:
+        lines = [
+            "🤖 **Subagent Info**",
+            "",
+            f"**ID:** `{entry['id']}`",
+            f"**Ordinal:** `#{entry['ordinal']}`",
+            f"**Status:** `{entry.get('status')}`",
+            f"**Source:** `{entry.get('source_kind')}`",
+            f"**Model:** `{entry.get('model') or 'default'}`",
+            f"**Toolsets:** `{', '.join(entry.get('toolsets') or []) or 'default'}`",
+            f"**Goal:** {entry.get('goal') or '_(empty)_'}",
+        ]
+        if entry.get("error"):
+            lines.append(f"**Error:** `{entry['error']}`")
+        if entry.get("summary"):
+            lines.append(f"**Summary:** {entry['summary']}")
+        if entry.get("started_at"):
+            lines.append(f"**Started:** `{entry['started_at']}`")
+        if entry.get("ended_at"):
+            lines.append(f"**Ended:** `{entry['ended_at']}`")
+        return "\n".join(lines)
+
+    def _format_subagent_log(self, entry: dict[str, Any]) -> str:
+        lines = ["🤖 **Subagent Log**", "", f"**ID:** `{entry['id']}`", ""]
+        logs = entry.get("logs") or []
+        if not logs:
+            lines.append("_(no log events yet)_")
+        else:
+            lines.append("```")
+            lines.extend(logs[-25:])
+            lines.append("```")
+        return "\n".join(lines)
+
+    def _attach_subagent_runtime_hooks(self, agent: Any, session_key: str) -> None:
+        if agent is None:
+            return
+        agent._register_delegate_child = (
+            lambda **payload: self._register_delegate_child(session_key=session_key, **payload)
+        )
+        agent._start_delegate_child = (
+            lambda **payload: self._start_delegate_child(session_key=session_key, **payload)
+        )
+        agent._record_delegate_child_progress = (
+            lambda **payload: self._record_delegate_child_progress(session_key=session_key, **payload)
+        )
+        agent._complete_delegate_child = (
+            lambda **payload: self._complete_delegate_child(session_key=session_key, **payload)
+        )
+
+    def _register_delegate_child(
+        self,
+        *,
+        session_key: str,
+        child: Any,
+        task_index: int,
+        goal: str,
+        context: Optional[str],
+        toolsets: Optional[list[str]],
+        model: Optional[str],
+    ) -> str:
+        entry = self._create_subagent_entry(
+            session_key=session_key,
+            child=child,
+            task_index=task_index,
+            goal=goal,
+            context=context,
+            toolsets=toolsets,
+            model=model,
+            source_kind="delegate",
+        )
+        return entry["id"]
+
+    def _start_delegate_child(
+        self,
+        *,
+        session_key: str,
+        child: Any,
+        goal: str,
+        restarted: bool = False,
+    ) -> None:
+        entry = self._find_subagent_entry(session_key, child)
+        if not entry:
+            return
+        entry["status"] = "running"
+        entry["started_at"] = self._subagent_now()
+        entry["updated_at"] = self._subagent_now()
+        entry["goal"] = str(goal or "").strip()
+        if restarted:
+            entry["restarts"] = int(entry.get("restarts") or 0) + 1
+            self._append_subagent_log(entry, f"Restarted on steer: {self._truncate_line(goal)}")
+        else:
+            self._append_subagent_log(entry, f"Started: {self._truncate_line(goal)}")
+
+    def _record_delegate_child_progress(
+        self,
+        *,
+        session_key: str,
+        child: Any,
+        task_index: int,
+        tool_name: str,
+        preview: Optional[str],
+        args: Optional[dict[str, Any]],
+        summary: Optional[str],
+    ) -> None:
+        entry = self._find_subagent_entry(session_key, child)
+        if not entry:
+            return
+        text = summary or preview or tool_name
+        entry["last_progress"] = str(text or "").strip()
+        self._append_subagent_log(entry, f"{tool_name}: {self._truncate_line(text, limit=160)}")
+
+    def _complete_delegate_child(
+        self,
+        *,
+        session_key: str,
+        child: Any,
+        entry: dict[str, Any],
+        goal: str,
+    ) -> None:
+        stored = self._find_subagent_entry(session_key, child)
+        if not stored:
+            return
+        stored["status"] = entry.get("status", "completed")
+        stored["summary"] = str(entry.get("summary") or "").strip()
+        stored["error"] = str(entry.get("error") or "").strip()
+        stored["goal"] = str(goal or stored.get("goal") or "").strip()
+        stored["ended_at"] = self._subagent_now()
+        stored["updated_at"] = self._subagent_now()
+        stored["child"] = None
+        if stored["status"] == "completed":
+            self._append_subagent_log(stored, f"Completed: {self._truncate_line(stored.get('summary') or 'done', limit=160)}")
+        elif stored["status"] == "interrupted":
+            self._append_subagent_log(stored, "Interrupted.")
+        else:
+            detail = stored.get("error") or stored.get("summary") or "failed"
+            self._append_subagent_log(stored, f"Finished with {stored['status']}: {self._truncate_line(detail, limit=160)}")
+
+    def _build_subagent_progress_callback(self, session_key: str, child: Any):
+        def _callback(tool_name: str, preview: str = None, args: dict = None):
+            self._record_delegate_child_progress(
+                session_key=session_key,
+                child=child,
+                task_index=int(getattr(child, "_gateway_subagent_task_index", 0) or 0),
+                tool_name=tool_name,
+                preview=preview,
+                args=args,
+                summary=preview or tool_name,
+            )
+
+        return _callback
+
+    def _get_acp_session_manager(self):
+        manager = getattr(self, "_acp_session_manager", None)
+        if manager is None:
+            from acp_adapter.session import SessionManager
+
+            manager = SessionManager()
+            self._acp_session_manager = manager
+        return manager
+
+    def _get_acp_bindings(self) -> dict[str, str]:
+        bindings = getattr(self, "_acp_session_bindings", None)
+        if not isinstance(bindings, dict):
+            bindings = {}
+            self._acp_session_bindings = bindings
+        return bindings
+
+    def _get_acp_meta(self) -> dict[str, dict[str, Any]]:
+        meta = getattr(self, "_acp_session_meta", None)
+        if not isinstance(meta, dict):
+            meta = {}
+            self._acp_session_meta = meta
+        return meta
+
+    def _get_acp_tasks(self) -> dict[str, asyncio.Task]:
+        tasks = getattr(self, "_acp_running_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._acp_running_tasks = tasks
+        return tasks
+
+    def _get_acp_session_meta_entry(self, session_id: str) -> dict[str, Any]:
+        meta = self._get_acp_meta()
+        entry = meta.get(session_id)
+        if not isinstance(entry, dict):
+            entry = {"options": {}, "last_result": None, "last_prompt": "", "updated_at": self._subagent_now()}
+            meta[session_id] = entry
+        entry.setdefault("options", {})
+        entry.setdefault("updated_at", self._subagent_now())
+        return entry
+
+    def _resolve_acp_target(self, session_key: str, payload: str) -> tuple[Optional[str], str]:
+        manager = self._get_acp_session_manager()
+        text = str(payload or "").strip()
+        parts = self._split_command_args(text, max_parts=2)
+        if parts and manager.get_session(parts[0]):
+            return parts[0], parts[1] if len(parts) > 1 else ""
+        bound = self._get_acp_bindings().get(session_key)
+        return bound, text
+
+    def _format_acp_sessions(self, session_key: str) -> str:
+        manager = self._get_acp_session_manager()
+        listing = manager.list_sessions()
+        if not listing:
+            return "No ACP sessions are active."
+        bound = self._get_acp_bindings().get(session_key)
+        tasks = self._get_acp_tasks()
+        lines = ["🧩 **ACP Sessions**", ""]
+        for item in listing:
+            session_id = item.get("session_id", "")
+            busy = session_id in tasks and not tasks[session_id].done()
+            label = " (bound)" if session_id == bound else ""
+            lines.append(
+                f"- `{session_id}`{label} — cwd `{item.get('cwd')}` — model `{item.get('model') or 'default'}` — busy `{str(busy).lower()}`"
+            )
+        return "\n".join(lines)
+
+    def _format_acp_status(self, session_id: str) -> str:
+        manager = self._get_acp_session_manager()
+        state = manager.get_session(session_id)
+        if state is None:
+            return f"No ACP session found for `{session_id}`."
+        meta = self._get_acp_session_meta_entry(session_id)
+        task = self._get_acp_tasks().get(session_id)
+        busy = bool(task and not task.done())
+        lines = [
+            "🧩 **ACP Status**",
+            "",
+            f"**Session:** `{session_id}`",
+            f"**Busy:** `{str(busy).lower()}`",
+            f"**CWD:** `{state.cwd}`",
+            f"**Model:** `{state.model or getattr(state.agent, 'model', '') or 'default'}`",
+            f"**History Messages:** `{len(state.history)}`",
+        ]
+        options = meta.get("options") or {}
+        if options:
+            lines.append(f"**Options:** `{json.dumps(options, default=str, sort_keys=True)}`")
+        if meta.get("last_prompt"):
+            lines.append(f"**Last Prompt:** {self._truncate_line(meta['last_prompt'], limit=180)}")
+        last_result = meta.get("last_result") or {}
+        if isinstance(last_result, dict) and last_result.get("final_response"):
+            lines.append(f"**Last Result:** {self._truncate_line(last_result['final_response'], limit=180)}")
+        return "\n".join(lines)
+
+    def _prepare_skill_command(
+        self,
+        event: MessageEvent,
+        *,
+        task_id: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Rewrite `/skill` into the underlying skill invocation message."""
+        args_text = event.get_command_args().strip()
+        parts = self._split_command_args(args_text, max_parts=2)
+        if not parts:
+            from agent.skill_commands import get_skill_commands
+
+            skill_cmds = get_skill_commands()
+            if not skill_cmds:
+                return None, "No skill commands are installed."
+            lines = ["⚡ **Installed Skills**", ""]
+            for name, payload in sorted(skill_cmds.items()):
+                lines.append(f"`{name}` — {payload.get('description', 'Skill command')}")
+            lines.append("")
+            lines.append("Usage: `/skill <name> [input]`")
+            return None, "\n".join(lines)
+
+        from agent.skill_commands import build_skill_invocation_message
+
+        skill_name = self._normalize_skill_name(parts[0])
+        user_instruction = parts[1] if len(parts) > 1 else ""
+        cmd_key = f"/{skill_name}"
+        prepared = build_skill_invocation_message(
+            cmd_key,
+            user_instruction,
+            task_id=task_id,
+        )
+        if not prepared:
+            return None, f"Unknown skill `{skill_name}`. Use `/skill` to list installed skills."
+        event.text = prepared
+        return prepared, None
+
+    def _schedule_gateway_restart(self, delay_seconds: float = 1.5) -> None:
+        async def _restart_later():
+            await asyncio.sleep(delay_seconds)
+            hermes_cmd = _resolve_hermes_bin()
+            if not hermes_cmd:
+                logger.error("Could not locate hermes executable for gateway restart")
+                return
+            cmd = hermes_cmd + ["gateway", "restart"]
+            try:
+                import shutil
+                import subprocess
+
+                systemd_run = shutil.which("systemd-run")
+                if systemd_run:
+                    subprocess.Popen(
+                        [systemd_run, "--user", "--scope", "--unit=hermes-discord-restart", "--", *cmd],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                else:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+            except Exception:
+                logger.exception("Gateway restart scheduling failed")
+
+        asyncio.create_task(_restart_later())
+
+    async def _deliver_docked_response(
+        self,
+        *,
+        session_key: str,
+        response: str,
+        source: SessionSource,
+    ) -> Optional[str]:
+        target = self._dock_target_for_session(session_key)
+        if not target or not response.strip():
+            return response
+
+        target_platform = str(target.get("platform") or "").strip().lower()
+        if not target_platform:
+            return response
+
+        try:
+            platform = Platform(target_platform)
+        except ValueError:
+            return response
+
+        same_target = (
+            platform == source.platform
+            and str(target.get("chat_id") or "") == str(source.chat_id)
+            and str(target.get("thread_id") or "") == str(source.thread_id or "")
+        )
+        if same_target:
+            return response
+
+        dock_target = DeliveryTarget(
+            platform=platform,
+            chat_id=str(target.get("chat_id") or ""),
+            thread_id=str(target.get("thread_id") or "").strip() or None,
+        )
+        results = await self.delivery_router.deliver(
+            response,
+            [dock_target],
+            metadata={
+                "source_platform": source.platform.value if source.platform else "unknown",
+                "source_chat_id": source.chat_id,
+            },
+        )
+        result = results.get(dock_target.to_string()) or {}
+        if result.get("success"):
+            return None
+        error = result.get("error") or "unknown dock delivery failure"
+        return f"⚠️ Reply docking failed: {error}\n\n{response}"
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -901,6 +2249,8 @@ class GatewayRunner:
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            if platform == Platform.DISCORD and hasattr(adapter, "_resolve_exec_approval"):
+                adapter._resolve_exec_approval = self._resolve_pending_approval
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -1063,6 +2413,26 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+
+        for runtime in self._get_subagent_runtime().values():
+            for entry in runtime.get("entries", {}).values():
+                child = entry.get("child")
+                if child is not None and hasattr(child, "interrupt"):
+                    try:
+                        child.interrupt("Gateway shutting down")
+                    except Exception as e:
+                        logger.debug("Failed interrupting subagent during shutdown: %s", e)
+
+        for session_id, task in list(self._get_acp_tasks().items()):
+            state = self._get_acp_session_manager().get_session(session_id)
+            if state and state.cancel_event:
+                state.cancel_event.set()
+                try:
+                    state.agent.interrupt("Gateway shutting down")
+                except Exception:
+                    logger.debug("Failed interrupting ACP session during shutdown", exc_info=True)
+            if task and not task.done():
+                task.cancel()
 
         for platform, adapter in list(self.adapters.items()):
             try:
@@ -1302,6 +2672,7 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        session_source = self._session_source_for_event(event)
 
         # Check if user is authorized
         if not self._is_user_authorized(source):
@@ -1332,6 +2703,46 @@ class GatewayRunner:
                         )
             return None
         
+        # User-defined quick commands (bypass agent loop, no LLM call)
+        command = event.get_command()
+        if command:
+            if isinstance(self.config, dict):
+                quick_commands = self.config.get("quick_commands", {}) or {}
+            else:
+                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            if not isinstance(quick_commands, dict):
+                quick_commands = {}
+            if command in quick_commands:
+                qcmd = quick_commands[command]
+                if qcmd.get("type") == "exec":
+                    exec_cmd = qcmd.get("command", "")
+                    if exec_cmd:
+                        try:
+                            proc = await asyncio.create_subprocess_shell(
+                                exec_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+                    else:
+                        return f"Quick command '/{command}' has no command defined."
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        user_args = event.get_command_args().strip()
+                        event.text = f"{target} {user_args}".strip()
+                    else:
+                        return f"Quick command '/{command}' has no target defined."
+                else:
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -1339,44 +2750,44 @@ class GatewayRunner:
         # Special case: Telegram/photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
-        _quick_key = self._session_key_for_source(source)
+        _quick_key = self._session_key_for_source(session_source)
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
+            command_name = (event.get_command() or "").strip().lower()
+            running_agent = self._running_agents.get(_quick_key)
+            if command_name == "status":
                 return await self._handle_status_command(event)
-
+            if command_name == "stop" and running_agent is _AGENT_PENDING_SENTINEL:
+                return "⏳ The agent is still starting up — nothing to stop yet."
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
+            # broken history — #2170). Interrupt the agent first, then
             # clear the adapter's pending queue so the stale "/reset" text
             # doesn't get re-processed as a user message after the
             # interrupt completes.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
             if _cmd_def_inner and _cmd_def_inner.name == "new":
-                running_agent = self._running_agents.get(_quick_key)
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Session reset requested")
-                # Clear any pending messages so the old text doesn't replay
                 adapter = self.adapters.get(source.platform)
-                if adapter and hasattr(adapter, 'get_pending_message'):
-                    adapter.get_pending_message(_quick_key)  # consume and discard
+                if adapter and hasattr(adapter, "get_pending_message"):
+                    adapter.get_pending_message(_quick_key)
                 self._pending_messages.pop(_quick_key, None)
-                # Clean up the running agent entry so the reset handler
-                # doesn't think an agent is still active.
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
-            # /queue <prompt> — queue without interrupting
-            if event.get_command() in ("queue", "q"):
+            if _cmd_def_inner and _cmd_def_inner.name == "queue":
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
                     return "Usage: /queue <prompt>"
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+
                     queued_event = _ME(
                         text=queued_text,
                         message_type=_MT.TEXT,
@@ -1386,7 +2797,9 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
 
-            if event.message_type == MessageType.PHOTO:
+            if command_name in self._control_commands_during_run():
+                pass
+            elif event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -1406,26 +2819,25 @@ class GatewayRunner:
                     else:
                         adapter._pending_messages[_quick_key] = event
                 return None
-
-            running_agent = self._running_agents.get(_quick_key)
-            if running_agent is _AGENT_PENDING_SENTINEL:
-                # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Nothing to interrupt — agent hasn't started yet.
-                    return "⏳ The agent is still starting up — nothing to stop yet."
-                # Queue the message so it will be picked up after the
-                # agent starts.
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    adapter._pending_messages[_quick_key] = event
-                return None
-            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
             else:
-                self._pending_messages[_quick_key] = event.text
-            return None
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    if command_name == "stop":
+                        return "⏳ The agent is still starting up — nothing to stop yet."
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        adapter._pending_messages[_quick_key] = event
+                    return None
+                logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
+                running_agent.interrupt(event.text)
+                if _quick_key in self._pending_messages:
+                    self._pending_messages[_quick_key] += "\n" + event.text
+                else:
+                    self._pending_messages[_quick_key] = event.text
+                return None
+
+        rewritten_bash = self._rewrite_bash_shortcut(event.text)
+        if rewritten_bash:
+            event.text = rewritten_bash
 
         # Check for commands
         command = event.get_command()
@@ -1434,8 +2846,9 @@ class GatewayRunner:
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS:
-            await self.hooks.emit(f"command:{command}", {
+        hooks = getattr(self, "hooks", None)
+        if command and command in GATEWAY_KNOWN_COMMANDS and hooks is not None:
+            await hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "command": command,
@@ -1451,18 +2864,63 @@ class GatewayRunner:
         
         if canonical == "help":
             return await self._handle_help_command(event)
+
+        if canonical == "commands":
+            return await self._handle_commands_command(event)
+
+        if canonical == "context":
+            return await self._handle_context_command(event)
+
+        if canonical == "export-session":
+            return await self._handle_export_session_command(event)
+
+        if canonical == "whoami":
+            return await self._handle_whoami_command(event)
+
+        if canonical == "focus":
+            return await self._handle_focus_command(event)
+
+        if canonical == "unfocus":
+            return await self._handle_unfocus_command(event)
+
+        if canonical == "agents":
+            return await self._handle_agents_command(event)
+
+        if canonical == "session":
+            return await self._handle_session_command(event)
         
         if canonical == "status":
             return await self._handle_status_command(event)
-        
+
+        if canonical == "approve":
+            return await self._handle_approve_command(event)
+
+        if canonical == "allowlist":
+            return await self._handle_allowlist_command(event)
+
+        if canonical == "config":
+            return await self._handle_config_command(event)
+
+        if canonical == "debug":
+            return await self._handle_debug_command(event)
+
         if canonical == "stop":
             return await self._handle_stop_command(event)
-        
-        if canonical == "model":
+
+        if canonical in {"model", "models"}:
             return await self._handle_model_command(event)
 
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
+
+        if canonical == "think":
+            return await self._handle_think_command(event)
+
+        if canonical == "send":
+            return await self._handle_send_command(event)
+
+        if canonical == "activation":
+            return await self._handle_activation_command(event)
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -1501,6 +2959,9 @@ class GatewayRunner:
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
+        if canonical == "compact":
+            return await self._handle_compress_command(event)
+
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
@@ -1519,8 +2980,30 @@ class GatewayRunner:
         if canonical == "deny":
             return await self._handle_deny_command(event)
 
+        if canonical == "skill":
+            try:
+                _prepared, error = self._prepare_skill_command(event, task_id=_quick_key)
+                if error:
+                    return error
+                canonical = None
+            except Exception as e:
+                logger.exception("Failed to prepare /skill command")
+                return f"Failed to invoke skill: {e}"
+
         if canonical == "update":
             return await self._handle_update_command(event)
+
+        if canonical == "restart":
+            return await self._handle_restart_command(event)
+
+        if canonical == "dock-telegram":
+            return await self._handle_dock_command(event, Platform.TELEGRAM)
+
+        if canonical == "dock-discord":
+            return await self._handle_dock_command(event, Platform.DISCORD)
+
+        if canonical == "dock-slack":
+            return await self._handle_dock_command(event, Platform.SLACK)
 
         if canonical == "title":
             return await self._handle_title_command(event)
@@ -1537,47 +3020,20 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
-        if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
-            if command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command
-                        # Fall through to normal command dispatch below
-                    else:
-                        return f"Quick command '/{command}' has no target defined."
-                else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+        if canonical == "subagents":
+            return await self._handle_subagents_command(event)
+
+        if canonical == "kill":
+            return await self._handle_kill_command(event)
+
+        if canonical == "steer":
+            return await self._handle_steer_command(event)
+
+        if canonical == "acp":
+            return await self._handle_acp_command(event)
+
+        if canonical == "bash":
+            return await self._handle_bash_command(event)
 
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
@@ -1631,8 +3087,9 @@ class GatewayRunner:
             session_entry.created_at == session_entry.updated_at
             or getattr(session_entry, "was_auto_reset", False)
         )
-        if _is_new_session:
-            await self.hooks.emit("session:start", {
+        hooks = getattr(self, "hooks", None)
+        if _is_new_session and hooks is not None:
+            await hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
@@ -2139,19 +3596,28 @@ class GatewayRunner:
                 import time as _time
                 pending = pop_pending(session_key)
                 if pending:
-                    pending["timestamp"] = _time.time()
+                    approval_id = str(pending.get("approval_id") or self._new_approval_id())
+                    pending["approval_id"] = approval_id
+                    pending["session_key"] = session_key
+                    pending.setdefault("created_at", datetime.now().isoformat())
                     self._pending_approvals[session_key] = pending
-                    # Append structured instructions so the user knows how to respond
-                    cmd_preview = pending.get("command", "")
-                    if len(cmd_preview) > 200:
-                        cmd_preview = cmd_preview[:200] + "..."
-                    approval_hint = (
-                        f"\n\n⚠️ **Dangerous command requires approval:**\n"
-                        f"```\n{cmd_preview}\n```\n"
-                        f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                        f"for the session, or `/deny` to cancel."
+                    approval_note = (
+                        f"\n\nApproval ID: `{approval_id}`\n"
+                        f"Use {self._approval_usage_text()} or the Discord approval buttons."
                     )
-                    response = (response or "") + approval_hint
+                    response = f"{response}{approval_note}" if response else approval_note.strip()
+
+                    if source.platform == Platform.DISCORD:
+                        approval_adapter = self.adapters.get(Platform.DISCORD)
+                        if approval_adapter and hasattr(approval_adapter, "send_exec_approval"):
+                            try:
+                                await approval_adapter.send_exec_approval(
+                                    source.chat_id,
+                                    pending.get("command", ""),
+                                    approval_id,
+                                )
+                            except Exception as approval_error:
+                                logger.debug("Discord exec approval UI failed: %s", approval_error)
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
             
@@ -2247,14 +3713,24 @@ class GatewayRunner:
                 base_url=agent_result.get("base_url"),
             )
 
-            # Auto voice reply: send TTS audio before the text response
-            if self._should_send_voice_reply(event, response, agent_messages):
+            dock_target = self._dock_target_for_session(session_key)
+
+            # Auto voice reply: send TTS audio before the text response.
+            # Skip when replies for this session are docked elsewhere.
+            if dock_target is None and self._should_send_voice_reply(event, response, agent_messages):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, return None so
             # _process_message_background doesn't send it again.
             if agent_result.get("already_sent"):
                 return None
+
+            if response:
+                response = await self._deliver_docked_response(
+                    session_key=session_key,
+                    response=response,
+                    source=source,
+                )
 
             return response
             
@@ -2356,6 +3832,12 @@ class GatewayRunner:
     
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
+        if self._session_source_for_event(event).platform == Platform.DISCORD:
+            from gateway.platforms.discord_impl import runtime_views
+
+            snapshot = runtime_views.collect_discord_status_snapshot(self, event)
+            return runtime_views.render_discord_status(snapshot)
+
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         
@@ -2378,6 +3860,865 @@ class GatewayRunner:
         ]
         
         return "\n".join(lines)
+
+    async def _handle_approve_command(self, event: MessageEvent) -> str:
+        """Handle /approve command for pending exec approvals."""
+        raw_args = event.get_command_args().strip()
+        target_source = self._command_target_source_for_event(event)
+        if not raw_args:
+            return self._resolve_pending_approval(decision="allow-once", source=target_source)
+
+        tokens = raw_args.split()
+        approval_id: Optional[str] = None
+        decision: Optional[str] = None
+
+        if len(tokens) == 1:
+            maybe_decision = self._normalize_approval_decision(tokens[0])
+            if maybe_decision:
+                decision = maybe_decision
+            else:
+                approval_id = tokens[0]
+        else:
+            first_decision = self._normalize_approval_decision(tokens[0])
+            second_decision = self._normalize_approval_decision(tokens[1])
+            if first_decision and not second_decision:
+                decision = first_decision
+                approval_id = tokens[1]
+            else:
+                approval_id = tokens[0]
+                decision = second_decision or self._normalize_approval_decision(tokens[1])
+
+        if approval_id and decision is None:
+            return self._resolve_pending_approval(decision="show", approval_id=approval_id)
+        if decision is None:
+            return f"Use {self._approval_usage_text()}"
+
+        return self._resolve_pending_approval(
+            decision=decision,
+            approval_id=approval_id,
+            source=target_source,
+        )
+
+    async def _handle_allowlist_command(self, event: MessageEvent) -> str:
+        """Handle /allowlist command - inspect or edit command approval patterns."""
+        import tools.approval as approval_mod
+
+        raw_args = event.get_command_args().strip()
+        parts = self._split_command_args(raw_args, max_parts=2)
+        mode = (parts[0] if parts else "list").strip().lower()
+        entry = parts[1].strip() if len(parts) > 1 else ""
+
+        if mode not in {"list", "add", "remove"}:
+            return (
+                f"⚠️ Unknown allowlist action: `{mode}`\n\n"
+                "Use `/allowlist [list|add|remove] [entry]`"
+            )
+
+        patterns = set(approval_mod.load_permanent_allowlist())
+        if mode == "list":
+            if not patterns:
+                return "No permanently approved command patterns are stored."
+            lines = ["🛡️ **Command Allowlist**", ""]
+            for pattern in sorted(patterns):
+                lines.append(f"• `{pattern}`")
+            return "\n".join(lines)
+
+        if not entry:
+            return f"Usage: `/allowlist {mode} <entry>`"
+
+        if mode == "add":
+            patterns.add(entry)
+            approval_mod.load_permanent(patterns)
+            approval_mod.save_permanent_allowlist(patterns)
+            return f"✅ Added `{entry}` to the command allowlist."
+
+        if entry not in patterns:
+            return f"`{entry}` is not in the command allowlist."
+        patterns.remove(entry)
+        approval_mod._permanent_approved = set(patterns)
+        approval_mod.save_permanent_allowlist(patterns)
+        return f"🗑️ Removed `{entry}` from the command allowlist."
+
+    async def _handle_config_command(self, event: MessageEvent) -> str:
+        """Handle /config command - inspect or update on-disk Hermes config."""
+        raw_args = event.get_command_args().strip()
+        parts = self._split_command_args(raw_args, max_parts=3)
+        mode = (parts[0] if parts else "show").strip().lower()
+        key = parts[1].strip() if len(parts) > 1 else ""
+        value = parts[2].strip() if len(parts) > 2 else ""
+
+        if mode == "show":
+            if key:
+                try:
+                    kind, resolved = read_config_or_env_value(key)
+                except KeyError:
+                    return f"`{key}` is not set."
+                return f"📄 **Config Show** (`{kind}`)\n\n`{key}`\n{format_yaml_block(resolved)}"
+            raw_config = load_raw_user_config()
+            return (
+                "📄 **Hermes Config (raw user file)**\n\n"
+                f"{format_yaml_block(raw_config or {})}"
+            )
+
+        if mode == "get":
+            if not key:
+                return "Usage: `/config get <key>`"
+            try:
+                kind, resolved = read_config_or_env_value(key)
+            except KeyError:
+                return f"`{key}` is not set."
+            return f"📄 **Config Value** (`{kind}`)\n\n`{key}`\n{format_yaml_block(resolved)}"
+
+        if mode == "set":
+            if not key or not value:
+                return "Usage: `/config set <key> <value>`"
+            kind, stored_value, path = write_config_or_env_value(key, value)
+            return (
+                f"✅ Updated `{key}` in `{path}` (`{kind}`)\n\n"
+                f"{format_yaml_block(stored_value)}"
+            )
+
+        if mode == "unset":
+            if not key:
+                return "Usage: `/config unset <key>`"
+            kind, removed, path = unset_config_or_env_value(key)
+            if not removed:
+                return f"`{key}` is not set."
+            return f"🗑️ Removed `{key}` from `{path}` (`{kind}`)."
+
+        return (
+            f"⚠️ Unknown config action: `{mode}`\n\n"
+            "Use `/config [show|get|set|unset] [key] [value]`"
+        )
+
+    async def _handle_debug_command(self, event: MessageEvent) -> str:
+        """Handle /debug command - live runtime overrides for the current gateway process."""
+        args = event.get_command_args().strip()
+        try:
+            parts = shlex.split(args) if args else []
+        except ValueError as exc:
+            return f"⚠️ Invalid debug arguments: {exc}"
+
+        if not parts or parts[0] == "show":
+            if len(parts) > 2:
+                return "Usage: `/debug show [key]`"
+            if len(parts) == 2:
+                key = parts[1].strip()
+                if key not in self._DEBUG_SUPPORTED_KEYS:
+                    supported = "\n".join(f"- `{name}`" for name in sorted(self._DEBUG_SUPPORTED_KEYS))
+                    return (
+                        f"⚠️ Unsupported debug key: `{key}`\n\n"
+                        f"**Supported keys**\n{supported}"
+                    )
+                overrides = self._get_runtime_debug_overrides()
+                value = self._get_effective_runtime_debug_value(key)
+                override_state = "yes" if key in overrides else "no"
+                return (
+                    "🛠️ **Runtime Debug Key**\n\n"
+                    f"**Key:** `{key}`\n"
+                    f"**Override active:** {override_state}\n\n"
+                    f"{self._format_runtime_debug_value(value)}"
+                )
+
+            overrides = self._get_runtime_debug_overrides()
+            active = {
+                key: self._get_effective_runtime_debug_value(key)
+                for key in sorted(overrides)
+            }
+            supported = "\n".join(
+                f"- `{name}` — {description}"
+                for name, description in self._DEBUG_SUPPORTED_KEYS.items()
+            )
+            active_block = "None" if not active else self._format_runtime_debug_value(active)
+            return (
+                "🛠️ **Runtime Debug Overrides**\n\n"
+                "Applies only to the running Hermes gateway process and the current Discord connection.\n"
+                "Config files are unchanged.\n\n"
+                "**Active overrides**\n"
+                f"{active_block}\n\n"
+                "**Usage**\n"
+                "`/debug show [key]`\n"
+                "`/debug set <key> <value>`\n"
+                "`/debug unset <key>`\n"
+                "`/debug reset`\n\n"
+                f"**Supported keys**\n{supported}"
+            )
+
+        action = parts[0].lower()
+        if action == "reset":
+            if len(parts) != 1:
+                return "Usage: `/debug reset`"
+            cleared = len(self._get_runtime_debug_overrides())
+            self._get_runtime_debug_overrides().clear()
+            self._apply_runtime_debug_overrides()
+            return (
+                "🛠️ ✓ Runtime debug overrides cleared.\n"
+                f"Removed `{cleared}` override(s) from the running gateway process."
+            )
+
+        if action == "unset":
+            if len(parts) != 2:
+                return "Usage: `/debug unset <key>`"
+            key = parts[1].strip()
+            if key not in self._DEBUG_SUPPORTED_KEYS:
+                return f"⚠️ Unsupported debug key: `{key}`"
+            removed = self._get_runtime_debug_overrides().pop(key, None)
+            self._apply_runtime_debug_overrides()
+            if removed is None:
+                return f"`{key}` did not have a runtime override."
+            return (
+                f"🛠️ ✓ Removed runtime override for `{key}`.\n\n"
+                f"{self._format_runtime_debug_value(self._get_effective_runtime_debug_value(key))}"
+            )
+
+        if action == "set":
+            if len(parts) < 3:
+                return "Usage: `/debug set <key> <value>`"
+            key = parts[1].strip()
+            if key not in self._DEBUG_SUPPORTED_KEYS:
+                return f"⚠️ Unsupported debug key: `{key}`"
+            value_text = args.split(None, 2)[2]
+            try:
+                parsed = self._parse_debug_value(key, value_text)
+            except ValueError as exc:
+                return f"⚠️ Invalid value for `{key}`: {exc}"
+            self._get_runtime_debug_overrides()[key] = parsed
+            self._apply_runtime_debug_overrides()
+            return (
+                f"🛠️ ✓ Runtime override set for `{key}`.\n"
+                "Applies immediately to the running gateway process only.\n\n"
+                f"{self._format_runtime_debug_value(self._get_effective_runtime_debug_value(key))}"
+            )
+
+        return (
+            f"⚠️ Unknown debug action: `{action}`\n\n"
+            "Use `/debug show [key]`, `/debug set <key> <value>`, `/debug unset <key>`, or `/debug reset`."
+        )
+
+    def _build_manual_subagent_agent(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        entry: dict[str, Any],
+    ):
+        from run_agent import AIAgent
+        from tools.delegate_tool import DEFAULT_TOOLSETS
+
+        model = _resolve_gateway_model()
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        self._apply_runtime_debug_overrides()
+        turn_route = self._resolve_turn_agent_config(entry.get("goal", ""), model, runtime_kwargs)
+        platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
+        agent = AIAgent(
+            model=turn_route["model"],
+            **turn_route["runtime"],
+            max_iterations=int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+            quiet_mode=True,
+            verbose_logging=False,
+            enabled_toolsets=DEFAULT_TOOLSETS,
+            reasoning_config=self._get_effective_reasoning_config(),
+            skip_context_files=True,
+            skip_memory=True,
+            session_id=f"{session_key}:{entry['id']}",
+            platform=platform_key,
+        )
+        agent._gateway_subagent_id = entry["id"]
+        agent._gateway_subagent_task_index = entry["ordinal"]
+        agent.tool_progress_callback = self._build_subagent_progress_callback(session_key, agent)
+        self._attach_subagent_runtime_hooks(agent, session_key)
+        entry["child"] = agent
+        entry["toolsets"] = list(DEFAULT_TOOLSETS)
+        entry["model"] = turn_route["model"]
+        return agent
+
+    async def _notify_manual_subagent_completion(
+        self,
+        *,
+        source: SessionSource,
+        entry: dict[str, Any],
+    ) -> None:
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        status = str(entry.get("status") or "")
+        if status == "completed":
+            content = (
+                f"🤖 **Subagent Complete**\n\n"
+                f"**ID:** `{entry['id']}`\n"
+                f"**Goal:** {self._truncate_line(entry.get('goal') or '', limit=160)}\n\n"
+                f"{entry.get('summary') or '_(no summary)_'}"
+            )
+        else:
+            detail = entry.get("error") or entry.get("summary") or "Subagent stopped."
+            content = (
+                f"🤖 **Subagent {status.title() or 'Update'}**\n\n"
+                f"**ID:** `{entry['id']}`\n"
+                f"{self._truncate_line(detail, limit=500)}"
+            )
+        try:
+            await adapter.send(source.chat_id, content, metadata=metadata)
+        except Exception as e:
+            logger.debug("Manual subagent completion send failed: %s", e)
+
+    async def _start_manual_subagent(
+        self,
+        *,
+        source: SessionSource,
+        session_key: str,
+        goal: str,
+    ) -> dict[str, Any]:
+        entry = self._create_subagent_entry(
+            session_key=session_key,
+            child=None,
+            task_index=0,
+            goal=goal,
+            context=None,
+            toolsets=[],
+            model=None,
+            source_kind="manual",
+        )
+        try:
+            agent = self._build_manual_subagent_agent(source=source, session_key=session_key, entry=entry)
+        except Exception as exc:
+            entry["status"] = "error"
+            entry["error"] = str(exc)
+            self._append_subagent_log(entry, f"Failed to start: {exc}")
+            return entry
+
+        self._start_delegate_child(session_key=session_key, child=agent, goal=goal)
+        loop = asyncio.get_running_loop()
+
+        async def _runner():
+            current_goal = goal
+
+            def _run_sync():
+                nonlocal current_goal
+                while True:
+                    result = agent.run_conversation(
+                        user_message=current_goal,
+                        task_id=f"{session_key}:{entry['id']}",
+                    )
+                    pending_steer = str(entry.get("pending_steer") or "").strip()
+                    if result.get("interrupted") and pending_steer:
+                        entry["pending_steer"] = None
+                        current_goal = pending_steer
+                        self._start_delegate_child(
+                            session_key=session_key,
+                            child=agent,
+                            goal=current_goal,
+                            restarted=True,
+                        )
+                        continue
+                    return result, current_goal
+
+            result, final_goal = await loop.run_in_executor(None, _run_sync)
+            summary = str(result.get("final_response") or "").strip()
+            completed = bool(result.get("completed")) and bool(summary)
+            status = "interrupted" if result.get("interrupted") else "completed" if completed else "failed"
+            self._complete_delegate_child(
+                session_key=session_key,
+                child=agent,
+                entry={
+                    "status": status,
+                    "summary": summary,
+                    "error": result.get("error") or "",
+                },
+                goal=final_goal,
+            )
+            await self._notify_manual_subagent_completion(source=source, entry=entry)
+
+        entry["async_task"] = asyncio.create_task(_runner())
+        return entry
+
+    async def _handle_subagents_command(self, event: MessageEvent) -> str:
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        session_key = session_entry.session_key
+
+        raw_args = event.get_command_args().strip()
+        parts = self._split_command_args(raw_args, max_parts=2)
+        action = (parts[0].strip().lower() if parts else "list") or "list"
+        payload = parts[1] if len(parts) > 1 else ""
+
+        if action == "list":
+            return self._format_subagent_list(session_key)
+
+        if action == "info":
+            targets, error = self._resolve_subagent_targets(session_key, payload, active_only=False)
+            if error:
+                return error
+            return self._format_subagent_info(targets[0])
+
+        if action == "log":
+            targets, error = self._resolve_subagent_targets(session_key, payload, active_only=False)
+            if error:
+                return error
+            return self._format_subagent_log(targets[0])
+
+        if action == "spawn":
+            goal = str(payload or "").strip()
+            if not goal:
+                return "Usage: `/subagents spawn <goal>`"
+            entry = await self._start_manual_subagent(source=target_source, session_key=session_key, goal=goal)
+            if entry.get("status") == "error":
+                return f"❌ Failed to spawn subagent: {entry.get('error')}"
+            return (
+                f"🤖 Spawned subagent `#{entry['ordinal']}` / `{entry['id']}`.\n\n"
+                f"**Goal:** {goal}\n"
+                "Use `/subagents list`, `/subagents info <id>`, or `/subagents log <id>` to inspect it."
+            )
+
+        if action == "kill":
+            target = payload.strip()
+            return await self._handle_kill_command(
+                MessageEvent(
+                    text=f"/kill {target}".strip(),
+                    message_type=event.message_type,
+                    source=event.source,
+                    raw_message=event.raw_message,
+                    message_id=event.message_id,
+                    media_urls=event.media_urls,
+                    media_types=event.media_types,
+                    reply_to_message_id=event.reply_to_message_id,
+                    reply_to_text=event.reply_to_text,
+                    timestamp=event.timestamp,
+                    metadata=dict(event.metadata or {}),
+                )
+            )
+
+        if action in {"steer", "send"}:
+            if not payload.strip():
+                return f"Usage: `/subagents {action} <id|#> <message>`"
+            steer_parts = self._split_command_args(payload, max_parts=2)
+            if len(steer_parts) < 2:
+                return f"Usage: `/subagents {action} <id|#> <message>`"
+            target, message = steer_parts
+            steer_text = f"/steer {target} {message}"
+            return await self._handle_steer_command(
+                MessageEvent(
+                    text=steer_text,
+                    message_type=event.message_type,
+                    source=event.source,
+                    raw_message=event.raw_message,
+                    message_id=event.message_id,
+                    media_urls=event.media_urls,
+                    media_types=event.media_types,
+                    reply_to_message_id=event.reply_to_message_id,
+                    reply_to_text=event.reply_to_text,
+                    timestamp=event.timestamp,
+                    metadata=dict(event.metadata or {}),
+                )
+            )
+
+        return (
+            "Usage: `/subagents list|info|log|spawn|kill|steer|send`\n"
+            "Examples:\n"
+            "`/subagents list`\n"
+            "`/subagents spawn research the failing tests`\n"
+            "`/subagents steer #1 focus on the Discord adapter only`"
+        )
+
+    async def _handle_kill_command(self, event: MessageEvent) -> str:
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        session_key = session_entry.session_key
+        raw_target = event.get_command_args().strip()
+        targets, error = self._resolve_subagent_targets(
+            session_key,
+            raw_target,
+            active_only=True,
+            allow_all=True,
+        )
+        if error:
+            return error
+        if not targets:
+            return "No active subagents found for this session."
+        for entry in targets:
+            entry["pending_steer"] = None
+            child = entry.get("child")
+            if child is not None and hasattr(child, "interrupt"):
+                try:
+                    child.interrupt("Killed from /kill")
+                except Exception as e:
+                    logger.debug("Subagent kill failed for %s: %s", entry.get("id"), e)
+            self._append_subagent_log(entry, "Kill requested.")
+        if raw_target.strip().lower() == "all":
+            return f"🛑 Requested stop for `{len(targets)}` active subagent(s)."
+        return f"🛑 Requested stop for `{targets[0]['id']}`."
+
+    async def _handle_steer_command(self, event: MessageEvent) -> str:
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        session_key = session_entry.session_key
+        parts = self._split_command_args(event.get_command_args().strip(), max_parts=2)
+        if len(parts) < 2:
+            return "Usage: `/steer <id|#> <message>`"
+        target, message = parts
+        targets, error = self._resolve_subagent_targets(session_key, target, active_only=True)
+        if error:
+            return error
+        entry = targets[0]
+        child = entry.get("child")
+        if child is None or not hasattr(child, "interrupt"):
+            return f"Subagent `{entry['id']}` is not running."
+        entry["pending_steer"] = message
+        self._append_subagent_log(entry, f"Steer requested: {self._truncate_line(message, limit=160)}")
+        child.interrupt(message)
+        return (
+            f"↪ Steering subagent `{entry['id']}`.\n\n"
+            f"**Next goal:** {message}\n"
+            "The current run will stop and restart on the steer message."
+        )
+
+    async def _run_acp_prompt(
+        self,
+        *,
+        source: SessionSource,
+        session_id: str,
+        prompt: str,
+    ) -> str:
+        manager = self._get_acp_session_manager()
+        state = manager.get_session(session_id)
+        if state is None:
+            return f"No ACP session found for `{session_id}`."
+        tasks = self._get_acp_tasks()
+        meta = self._get_acp_session_meta_entry(session_id)
+        if session_id in tasks and not tasks[session_id].done():
+            meta["pending_steer"] = prompt
+            meta["updated_at"] = self._subagent_now()
+            try:
+                state.cancel_event.set()
+                state.agent.interrupt(prompt)
+            except Exception:
+                logger.debug("ACP steer interrupt failed", exc_info=True)
+            return f"↪ Steering ACP session `{session_id}`."
+
+        loop = asyncio.get_running_loop()
+        meta["last_prompt"] = prompt
+        meta["status"] = "running"
+        meta["updated_at"] = self._subagent_now()
+
+        async def _runner():
+            current_prompt = prompt
+            while True:
+                if state.cancel_event:
+                    state.cancel_event.clear()
+
+                def _sync_run():
+                    return state.agent.run_conversation(
+                        user_message=current_prompt,
+                        conversation_history=state.history,
+                        task_id=session_id,
+                    )
+
+                result = await loop.run_in_executor(None, _sync_run)
+                state.history = result.get("messages") or state.history
+                pending_steer = str(meta.pop("pending_steer", "") or "").strip()
+                if result.get("interrupted") and pending_steer:
+                    current_prompt = pending_steer
+                    meta["last_prompt"] = current_prompt
+                    meta["updated_at"] = self._subagent_now()
+                    continue
+                meta["last_result"] = result
+                meta["status"] = "interrupted" if result.get("interrupted") else "completed" if result.get("completed") else "failed"
+                meta["updated_at"] = self._subagent_now()
+                adapter = self.adapters.get(source.platform)
+                if adapter and result.get("final_response"):
+                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    try:
+                        await adapter.send(
+                            source.chat_id,
+                            f"🧩 **ACP Session `{session_id}`**\n\n{result.get('final_response')}",
+                            metadata=metadata,
+                        )
+                    except Exception as e:
+                        logger.debug("ACP completion send failed: %s", e)
+                break
+
+        tasks[session_id] = asyncio.create_task(_runner())
+        return f"🧩 ACP session `{session_id}` is running."
+
+    async def _handle_acp_command(self, event: MessageEvent) -> str:
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        session_key = session_entry.session_key
+        args = event.get_command_args().strip()
+        parts = self._split_command_args(args, max_parts=2)
+        action = (parts[0].strip().lower() if parts else "sessions") or "sessions"
+        payload = parts[1] if len(parts) > 1 else ""
+        manager = self._get_acp_session_manager()
+        bindings = self._get_acp_bindings()
+
+        if action == "sessions":
+            return self._format_acp_sessions(session_key)
+
+        if action == "spawn":
+            cwd = str(payload or ".").strip() or "."
+            state = manager.create_session(cwd=cwd)
+            bindings[session_key] = state.session_id
+            meta = self._get_acp_session_meta_entry(state.session_id)
+            meta["source"] = target_source
+            meta["updated_at"] = self._subagent_now()
+            return (
+                f"🧩 Created ACP session `{state.session_id}`.\n\n"
+                f"**CWD:** `{cwd}`\n"
+                "This session is now the default ACP target for this chat."
+            )
+
+        if action == "doctor":
+            try:
+                import acp as _acp  # noqa: F401
+                available = "yes"
+            except Exception:
+                available = "no"
+            bound = bindings.get(session_key) or "none"
+            running = sum(1 for task in self._get_acp_tasks().values() if not task.done())
+            return (
+                "🧩 **ACP Doctor**\n\n"
+                f"**Python ACP package:** `{available}`\n"
+                f"**Sessions:** `{len(manager.list_sessions())}`\n"
+                f"**Running:** `{running}`\n"
+                f"**Bound session for this chat:** `{bound}`"
+            )
+
+        if action == "install":
+            try:
+                import acp as _acp  # noqa: F401
+                return "ACP support is already installed in this Hermes environment."
+            except Exception as exc:
+                return f"ACP tooling is not importable in this environment: {exc}"
+
+        if action == "status":
+            target_id, remainder = self._resolve_acp_target(session_key, payload)
+            if target_id:
+                return self._format_acp_status(target_id)
+            return self._format_acp_sessions(session_key)
+
+        target_id, remainder = self._resolve_acp_target(session_key, payload)
+        if not target_id:
+            return "No ACP session is bound for this chat. Use `/acp spawn [cwd]` first or pass an explicit session ID."
+        state = manager.get_session(target_id)
+        if state is None:
+            return f"No ACP session found for `{target_id}`."
+        meta = self._get_acp_session_meta_entry(target_id)
+
+        if action == "close":
+            task = self._get_acp_tasks().get(target_id)
+            if task and not task.done():
+                return f"ACP session `{target_id}` is still running. Use `/acp cancel {target_id}` first."
+            removed = manager.remove_session(target_id)
+            if removed:
+                for key, value in list(bindings.items()):
+                    if value == target_id:
+                        bindings.pop(key, None)
+                self._get_acp_meta().pop(target_id, None)
+                return f"🧩 Closed ACP session `{target_id}`."
+            return f"No ACP session found for `{target_id}`."
+
+        if action == "cancel":
+            task = self._get_acp_tasks().get(target_id)
+            if state.cancel_event:
+                state.cancel_event.set()
+            try:
+                state.agent.interrupt()
+            except Exception:
+                logger.debug("ACP cancel interrupt failed", exc_info=True)
+            if task and not task.done():
+                return f"🛑 Cancel requested for ACP session `{target_id}`."
+            return f"ACP session `{target_id}` was idle; cancel flag set."
+
+        if action == "cwd":
+            new_cwd = str(remainder or "").strip()
+            if not new_cwd:
+                return f"🧩 ACP session `{target_id}` cwd: `{state.cwd}`"
+            manager.update_cwd(target_id, new_cwd)
+            return f"🧩 ACP session `{target_id}` cwd set to `{new_cwd}`."
+
+        if action == "model":
+            new_model = str(remainder or "").strip()
+            if not new_model:
+                return f"🧩 ACP session `{target_id}` model: `{state.model or getattr(state.agent, 'model', '') or 'default'}`"
+            state.model = new_model
+            try:
+                state.agent.model = new_model
+            except Exception:
+                logger.debug("Failed to update ACP agent model", exc_info=True)
+            meta["updated_at"] = self._subagent_now()
+            return f"🧩 ACP session `{target_id}` model set to `{new_model}`."
+
+        if action == "set-mode":
+            mode = str(remainder or "").strip()
+            if not mode:
+                return "Usage: `/acp set-mode [session_id] <mode>`"
+            meta["options"]["mode"] = mode
+            meta["updated_at"] = self._subagent_now()
+            return f"🧩 ACP session `{target_id}` mode set to `{mode}`."
+
+        if action == "permissions":
+            perms = str(remainder or "").strip()
+            if not perms:
+                current = meta["options"].get("permissions", "default")
+                return f"🧩 ACP session `{target_id}` permissions: `{current}`"
+            meta["options"]["permissions"] = perms
+            meta["updated_at"] = self._subagent_now()
+            return f"🧩 ACP session `{target_id}` permissions set to `{perms}`."
+
+        if action == "timeout":
+            raw_timeout = str(remainder or "").strip()
+            if not raw_timeout:
+                current = meta["options"].get("timeout", "default")
+                return f"🧩 ACP session `{target_id}` timeout: `{current}`"
+            try:
+                timeout_value = int(raw_timeout)
+            except ValueError:
+                return f"Invalid timeout `{raw_timeout}`. Expected an integer number of seconds."
+            meta["options"]["timeout"] = timeout_value
+            meta["updated_at"] = self._subagent_now()
+            return f"🧩 ACP session `{target_id}` timeout set to `{timeout_value}`s."
+
+        if action == "set":
+            kv = self._split_command_args(remainder, max_parts=2)
+            if len(kv) < 2:
+                return "Usage: `/acp set [session_id] <key> <value>`"
+            key, value = kv
+            meta["options"][key] = value
+            meta["updated_at"] = self._subagent_now()
+            return f"🧩 ACP session `{target_id}` option `{key}` set to `{value}`."
+
+        if action == "reset-options":
+            cleared = len(meta["options"])
+            meta["options"] = {}
+            meta["updated_at"] = self._subagent_now()
+            return f"🧩 ACP session `{target_id}` reset `{cleared}` option(s)."
+
+        if action == "steer":
+            prompt = str(remainder or "").strip()
+            if not prompt:
+                return "Usage: `/acp steer [session_id] <message>`"
+            return await self._run_acp_prompt(source=target_source, session_id=target_id, prompt=prompt)
+
+        return (
+            "Usage: `/acp sessions|spawn|status|cancel|close|steer|cwd|model|set-mode|set|permissions|timeout|reset-options|doctor|install`\n"
+            "Examples:\n"
+            "`/acp spawn /home/alan/projects/hermes-agent`\n"
+            "`/acp steer write a quick status report`\n"
+            "`/acp status`"
+        )
+
+    async def _handle_bash_command(self, event: MessageEvent) -> str:
+        """Handle /bash command and !-style shortcuts for host shell execution."""
+        from tools.process_registry import process_registry
+
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        session_key = session_entry.session_key
+
+        raw_args = event.get_command_args().strip()
+        parts = self._split_command_args(raw_args, max_parts=2)
+        if not parts:
+            return (
+                "Usage: `/bash <command>`\n"
+                "       `/bash poll [session_id]`\n"
+                "       `/bash stop [session_id]`\n\n"
+                "Shortcuts: `! <command>`, `!poll`, `!stop`"
+            )
+
+        action = parts[0].strip().lower()
+        if action == "poll":
+            target_id = self._resolve_bash_target_session_id(session_key, parts[1] if len(parts) > 1 else "")
+            if not target_id:
+                return "No active bash job found for this session."
+            poll = process_registry.poll(target_id)
+            if poll.get("status") == "not_found":
+                self._get_bash_jobs().pop(session_key, None)
+                return f"No bash job found for `{target_id}`."
+            log_payload = process_registry.read_log(target_id, limit=40)
+            if poll.get("status") == "exited":
+                self._get_bash_jobs().pop(session_key, None)
+                return "\n".join(
+                    [
+                        "💻 **Bash Complete**",
+                        "",
+                        f"**Session ID:** `{target_id}`",
+                        f"**Exit Code:** `{poll.get('exit_code')}`",
+                        "",
+                        self._format_bash_output(log_payload.get("output", "")),
+                    ]
+                )
+            return "\n".join(
+                [
+                    "💻 **Bash Status**",
+                    "",
+                    f"**Session ID:** `{target_id}`",
+                    f"**PID:** `{poll.get('pid')}`" if poll.get("pid") else "**PID:** `unknown`",
+                    f"**Uptime:** `{poll.get('uptime_seconds', 0)}s`",
+                    "",
+                    self._format_bash_output(log_payload.get("output", "")),
+                ]
+            )
+
+        if action == "stop":
+            target_id = self._resolve_bash_target_session_id(session_key, parts[1] if len(parts) > 1 else "")
+            if not target_id:
+                return "No active bash job found for this session."
+            result = process_registry.kill_process(target_id)
+            if self._get_bash_jobs().get(session_key) == target_id:
+                self._get_bash_jobs().pop(session_key, None)
+            if result.get("status") in {"killed", "already_exited"}:
+                return f"🛑 Bash job `{target_id}` stopped."
+            return f"❌ Failed to stop bash job `{target_id}`: {result.get('error') or result.get('status')}"
+
+        current_job_id = self._resolve_bash_target_session_id(session_key, "")
+        if current_job_id:
+            return (
+                "A bash job is already running for this session.\n\n"
+                f"**Session ID:** `{current_job_id}`\n"
+                "Use `/bash poll` to inspect it or `/bash stop` to terminate it first."
+            )
+
+        command = raw_args
+        result = self._run_bash_process(
+            source=target_source,
+            session_key=session_key,
+            command=command,
+            force=False,
+        )
+
+        if str(result.get("status") or "") == "approval_required":
+            approval_id = self._store_pending_bash_approval(
+                session_key=session_key,
+                command=command,
+                approval_payload=result,
+                on_approve=lambda _decision: self._resume_bash_after_approval(
+                    source=target_source,
+                    session_key=session_key,
+                    command=command,
+                ),
+            )
+            if target_source.platform == Platform.DISCORD:
+                approval_adapter = self.adapters.get(Platform.DISCORD)
+                if approval_adapter and hasattr(approval_adapter, "send_exec_approval"):
+                    try:
+                        await approval_adapter.send_exec_approval(
+                            target_source.chat_id,
+                            command,
+                            approval_id,
+                        )
+                    except Exception as approval_error:
+                        logger.debug("Discord exec approval UI failed for /bash: %s", approval_error)
+            return (
+                f"⚠️ Bash command requires approval (`{approval_id}`).\n\n"
+                f"```\n{command}\n```\n\n"
+                f"Use {self._approval_usage_text()} or the Discord approval buttons."
+            )
+
+        return self._format_bash_result(
+            session_key=session_key,
+            command=command,
+            result=result,
+        )
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent."""
@@ -2396,6 +4737,11 @@ class GatewayRunner:
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
+        if self._session_source_for_event(event).platform == Platform.DISCORD:
+            from gateway.platforms.discord_impl import runtime_views
+
+            return runtime_views.render_discord_help()
+
         from hermes_cli.commands import gateway_help_lines
         lines = [
             "📖 **Hermes Commands**\n",
@@ -2411,124 +4757,569 @@ class GatewayRunner:
         except Exception:
             pass
         return "\n".join(lines)
-    
-    async def _handle_model_command(self, event: MessageEvent) -> str:
-        """Handle /model command - show or change the current model."""
-        import yaml
-        from hermes_cli.models import (
-            parse_model_input,
-            validate_requested_model,
-            curated_models_for_provider,
-            normalize_provider,
-            _PROVIDER_LABELS,
+
+    async def _handle_commands_command(self, event: MessageEvent) -> str:
+        """Handle /commands command - show the full gateway command catalog."""
+        if self._session_source_for_event(event).platform == Platform.DISCORD:
+            from gateway.platforms.discord_impl import runtime_views
+
+            return runtime_views.render_discord_commands()
+
+        from hermes_cli.commands import gateway_help_lines
+
+        return "\n".join([
+            "🧭 **Hermes Command Catalog**",
+            "",
+            *gateway_help_lines(),
+        ])
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context command - inspect the current transcript and prompt context."""
+        mode = (event.get_command_args().strip() or "list").lower()
+        if mode not in {"list", "detail", "json"}:
+            return (
+                f"⚠️ Unknown context mode: `{mode}`\n\n"
+                "Use `/context [list|detail|json]`"
+            )
+
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        if self._session_source_for_event(event).platform == Platform.DISCORD:
+            from gateway.platforms.discord_impl import runtime_views
+
+            snapshot = runtime_views.collect_discord_context_snapshot(self, event)
+            return runtime_views.render_discord_context(snapshot, mode)
+
+        role_counts: dict[str, int] = {}
+        for item in history:
+            role = str(item.get("role") or "unknown")
+            role_counts[role] = role_counts.get(role, 0) + 1
+        lines = [
+            "🧠 **Hermes Context**",
+            "",
+            f"• Session ID: `{session_entry.session_id}`",
+            f"• Session Key: `{session_entry.session_key}`",
+            f"• Messages: {len(history)}",
+            f"• Roles: {', '.join(f'{k}={v}' for k, v in sorted(role_counts.items())) or 'none'}",
+        ]
+        if mode == "detail":
+            preview = history[-5:]
+            lines.extend(["", "```json", json.dumps(preview, indent=2, ensure_ascii=False), "```"])
+        elif mode == "json":
+            payload = {
+                "session_id": session_entry.session_id,
+                "session_key": session_entry.session_key,
+                "message_count": len(history),
+                "role_counts": role_counts,
+            }
+            return f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```"
+        return "\n".join(lines)
+
+    async def _handle_export_session_command(self, event: MessageEvent) -> str:
+        """Handle /export-session command - write a session export to disk."""
+        target_source = self._command_target_source_for_event(event)
+        session_entry = self.session_store.get_or_create_session(target_source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        from gateway.platforms.discord_impl import runtime_views
+
+        snapshot = runtime_views.collect_discord_context_snapshot(self, event)
+        export_payload = {
+            "session": {
+                "session_id": session_entry.session_id,
+                "session_key": session_entry.session_key,
+                "source": target_source.to_dict(),
+                "current_model": snapshot.current_model,
+                "current_provider": snapshot.current_provider,
+                "connected_platforms": list(snapshot.connected_platforms),
+            },
+            "context_prompt": snapshot.context_prompt,
+            "messages": history,
+        }
+        cwd = os.environ.get("TERMINAL_CWD") or os.environ.get("MESSAGING_CWD") or os.getcwd()
+        raw_path = event.get_command_args().strip()
+        export_path = resolve_export_path(raw_path, cwd, session_id=session_entry.session_id)
+        if export_path.suffix.lower() == ".json":
+            export_path.write_text(json.dumps(export_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            mode = "JSON"
+        else:
+            export_path.write_text(build_session_export_html(export_payload), encoding="utf-8")
+            mode = "HTML"
+        return (
+            f"📦 Exported the current session to `{export_path}`\n\n"
+            f"• Format: {mode}\n"
+            f"• Messages: {len(history)}\n"
+            f"• Session ID: `{session_entry.session_id}`"
         )
 
-        args = event.get_command_args().strip()
-        config_path = _hermes_home / 'config.yaml'
+    async def _handle_whoami_command(self, event: MessageEvent) -> str:
+        """Handle /whoami command - show the sender and routing identity Hermes sees."""
+        if self._session_source_for_event(event).platform == Platform.DISCORD:
+            from gateway.platforms.discord_impl import runtime_views
 
-        # Resolve current model and provider from config
-        current = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+            snapshot = runtime_views.collect_discord_whoami_snapshot(self, event)
+            return runtime_views.render_discord_whoami(snapshot)
+
+        source = event.source
+        lines = [
+            "👤 **Hermes Sees You As**",
+            "",
+            f"**Platform:** {source.platform.value if source.platform else 'unknown'}",
+            f"**User ID:** `{source.user_id or 'unknown'}`",
+            f"**User Name:** {source.user_name or 'unknown'}",
+            f"**Chat ID:** `{source.chat_id}`",
+            f"**Chat Type:** {source.chat_type}",
+        ]
+        if source.chat_name:
+            lines.append(f"**Chat Name:** {source.chat_name}")
+        if source.thread_id:
+            lines.append(f"**Thread ID:** `{source.thread_id}`")
+        if source.chat_topic:
+            lines.append(f"**Chat Topic:** {source.chat_topic}")
+        return "\n".join(lines)
+
+    def _resolve_discord_thread_target(
+        self,
+        event: MessageEvent,
+    ) -> tuple[Optional[Any], Optional[SessionSource], Optional[str], Optional[str]]:
+        """Return Discord adapter, target source, thread id, and parent channel id."""
+        target_source = self._command_target_source_for_event(event)
+        if target_source.platform != Platform.DISCORD:
+            return None, None, None, None
+
+        adapter = self._get_discord_adapter()
+        if adapter is None:
+            return None, None, None, None
+
+        thread_id = str(target_source.thread_id or "").strip()
+        if not thread_id:
+            return adapter, target_source, None, None
+
+        raw = getattr(event, "raw_message", None)
+        channel = getattr(raw, "channel", None)
+        parent_chat_id = None
+        if channel is not None and hasattr(adapter, "_get_parent_channel_id"):
+            parent_chat_id = adapter._get_parent_channel_id(channel)
+        return adapter, target_source, thread_id, parent_chat_id
+
+    def _render_thread_binding_status(self, binding: Any) -> str:
+        idle_label = self._format_minutes_label(int(binding.idle_timeout_minutes or 0))
+        max_age_label = self._format_minutes_label(int(binding.max_age_minutes or 0))
+        lines = [
+            "🧵 **Focused Thread**",
+            "",
+            f"• Thread: `{binding.thread_id}`",
+            f"• Session: `{binding.session_key}`",
+            f"• Label: {binding.chat_name or binding.thread_id}",
+            f"• Bound By: {binding.bound_by or 'unknown'}",
+            f"• Idle Auto-Unfocus: `{idle_label}`",
+            f"• Max Age: `{max_age_label}`",
+        ]
+        if binding.parent_chat_id:
+            lines.append(f"• Parent Channel: `{binding.parent_chat_id}`")
+        return "\n".join(lines)
+
+    async def _handle_focus_command(self, event: MessageEvent) -> str:
+        """Handle /focus for Discord thread binding."""
+        adapter, target_source, thread_id, parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None or target_source is None:
+            return "This command is only available on Discord."
+        if not thread_id:
+            return "Use `/focus` inside a Discord thread."
+
+        session_key = self._session_key_for_source(target_source)
+        label = event.get_command_args().strip() or (target_source.chat_name or thread_id)
+        binding = adapter.focus_thread_binding(
+            thread_id=thread_id,
+            session_key=session_key,
+            chat_name=label,
+            parent_chat_id=parent_chat_id,
+            bound_by=target_source.user_name or target_source.user_id or "unknown",
+        )
+        return (
+            "🧵 Thread focused.\n\n"
+            f"{self._render_thread_binding_status(binding)}"
+        )
+
+    async def _handle_unfocus_command(self, event: MessageEvent) -> str:
+        """Handle /unfocus for Discord thread binding removal."""
+        adapter, _target_source, thread_id, _parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None:
+            return "This command is only available on Discord."
+        if not thread_id:
+            return "Use `/unfocus` inside a focused Discord thread."
+
+        binding = adapter.unfocus_thread_binding(thread_id)
+        if binding is None:
+            return "No focused thread binding exists here."
+        return "🧵 Thread unfocused. Messages here now require normal Discord activation again."
+
+    async def _handle_agents_command(self, event: MessageEvent) -> str:
+        """Handle /agents for Discord thread-binding inspection."""
+        adapter, target_source, thread_id, parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None or target_source is None:
+            return "This command is only available on Discord."
+
+        if thread_id:
+            binding = adapter.get_thread_binding(thread_id)
+            if binding is None:
+                return "No focused thread binding exists for this thread."
+            is_running = binding.session_key in getattr(self, "_running_agents", {})
+            return "\n".join(
+                [
+                    "🧵 **Thread-Bound Hermes Sessions**",
+                    "",
+                    f"• Target: `{binding.session_key}`",
+                    f"• Label: {binding.chat_name or binding.thread_id}",
+                    f"• Running: {'yes' if is_running else 'no'}",
+                    f"• Idle Auto-Unfocus: `{self._format_minutes_label(int(binding.idle_timeout_minutes or 0))}`",
+                    f"• Max Age: `{self._format_minutes_label(int(binding.max_age_minutes or 0))}`",
+                ]
+            )
+
+        bindings = adapter.list_thread_bindings(parent_chat_id=parent_chat_id or target_source.chat_id)
+        if not bindings:
+            return "No focused Discord thread bindings were found for this chat."
+        lines = ["🧵 **Focused Discord Threads**", ""]
+        for binding in bindings:
+            running = "yes" if binding.session_key in getattr(self, "_running_agents", {}) else "no"
+            lines.append(
+                f"• `{binding.thread_id}` — {binding.chat_name or binding.thread_id} "
+                f"(running: {running}, idle: {self._format_minutes_label(int(binding.idle_timeout_minutes or 0))}, "
+                f"max-age: {self._format_minutes_label(int(binding.max_age_minutes or 0))})"
+            )
+        return "\n".join(lines)
+
+    async def _handle_session_command(self, event: MessageEvent) -> str:
+        """Handle /session idle|max-age controls for focused Discord threads."""
+        adapter, _target_source, thread_id, _parent_chat_id = self._resolve_discord_thread_target(event)
+        if adapter is None:
+            return "This command is only available on Discord."
+        if not thread_id:
+            return "Use `/session` inside a focused Discord thread."
+
+        binding = adapter.get_thread_binding(thread_id)
+        if binding is None:
+            return "No focused thread binding exists here. Use `/focus` first."
+
+        tokens = [token for token in event.get_command_args().strip().split() if token]
+        if not tokens or tokens[0].lower() == "status":
+            return self._render_thread_binding_status(binding)
+        if len(tokens) < 2:
+            return "Use `/session idle <duration|off>` or `/session max-age <duration|off>`."
+
+        mode = tokens[0].strip().lower()
+        try:
+            minutes = self._parse_duration_minutes(tokens[1])
+        except ValueError as exc:
+            return f"⚠️ {exc}"
+        if minutes is None:
+            return "Use `/session idle <duration|off>` or `/session max-age <duration|off>`."
+
+        if mode == "idle":
+            binding = adapter.update_thread_binding_limits(thread_id, idle_timeout_minutes=minutes)
+        elif mode in {"max-age", "max_age", "maxage"}:
+            binding = adapter.update_thread_binding_limits(thread_id, max_age_minutes=minutes)
+            mode = "max-age"
+        else:
+            return "Use `/session idle <duration|off>` or `/session max-age <duration|off>`."
+
+        if binding is None:
+            return "No focused thread binding exists here. Use `/focus` first."
+        return (
+            f"🧵 Updated thread session `{mode}` to `{self._format_minutes_label(minutes)}`.\n\n"
+            f"{self._render_thread_binding_status(binding)}"
+        )
+
+    async def _handle_send_command(self, event: MessageEvent) -> str:
+        """Handle /send on|off|inherit for the current session."""
+        target_source = self._command_target_source_for_event(event)
+        session_key = self._session_key_for_source(target_source)
+        args = event.get_command_args().strip().lower()
+        current = self._session_send_policy(session_key)
+        if not args:
+            return f"📮 Current send policy for this session: `{current}`"
+        if args not in {"on", "off", "inherit"}:
+            return "Use `/send on`, `/send off`, or `/send inherit`."
+
+        if not isinstance(getattr(self, "_session_send_policies", None), dict):
+            self._session_send_policies = {}
+        self._session_send_policies[session_key] = args
+        if args == "inherit":
+            self._session_send_policies.pop(session_key, None)
+        self._save_runtime_controls()
+        return f"📮 Send policy for this session is now `{args}`."
+
+    async def _handle_activation_command(self, event: MessageEvent) -> str:
+        """Handle /activation mention|always for Discord chats."""
+        target_source = self._command_target_source_for_event(event)
+        if target_source.platform != Platform.DISCORD or target_source.chat_type == "dm":
+            return "This command only works in Discord servers and threads."
+
+        adapter = self._get_discord_adapter()
+        if adapter is None:
+            return "Discord is not connected."
+
+        args = event.get_command_args().strip().lower()
+        current = adapter.get_activation_mode(target_source.chat_id) or (
+            "mention" if adapter._get_discord_policy().require_mention else "always"
+        )
+        if not args:
+            return f"🎛️ Current activation mode for this chat: `{current}`"
+        if args not in {"mention", "always"}:
+            return "Use `/activation mention` or `/activation always`."
+
+        adapter.set_activation_mode(target_source.chat_id, args)
+        return f"🎛️ Activation mode for this chat is now `{args}`."
+
+    async def _handle_restart_command(self, event: MessageEvent) -> str:
+        """Handle /restart by scheduling a delayed gateway restart."""
+        del event
+        self._schedule_gateway_restart()
+        return "♻️ Gateway restart scheduled. Hermes will reconnect shortly."
+
+    async def _handle_dock_command(self, event: MessageEvent, platform: Platform) -> str:
+        """Handle /dock-* by routing future replies for this session to a home channel."""
+        target_source = self._command_target_source_for_event(event)
+        session_key = self._session_key_for_source(target_source)
+        home = self.config.get_home_channel(platform)
+        if home is None:
+            return f"No home channel is configured for `{platform.value}`."
+
+        if not isinstance(getattr(self, "_session_docks", None), dict):
+            self._session_docks = {}
+        self._session_docks[session_key] = {
+            "platform": platform.value,
+            "chat_id": home.chat_id,
+            "thread_id": None,
+            "name": home.name,
+        }
+        self._save_runtime_controls()
+        return f"📮 Replies for this session are now docked to {platform.value} home channel **{home.name}** (`{home.chat_id}`)."
+
+    def _load_current_model_selection(self) -> dict[str, Any]:
+        """Resolve the configured model/provider from config plus runtime env."""
+        import yaml
+        from hermes_cli.models import normalize_provider
+
+        config_path = _hermes_home / "config.yaml"
+        current_model = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
         current_provider = "openrouter"
+
         try:
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, str):
-                    current = model_cfg
+                    current_model = model_cfg
                 elif isinstance(model_cfg, dict):
-                    current = model_cfg.get("default", current)
+                    current_model = model_cfg.get("default", current_model)
                     current_provider = model_cfg.get("provider", current_provider)
         except Exception:
             pass
 
-        # Resolve "auto" to the actual provider using credential detection
         current_provider = normalize_provider(current_provider)
         if current_provider == "auto":
             try:
                 from hermes_cli.auth import resolve_provider as _resolve_provider
+
                 current_provider = _resolve_provider(current_provider)
             except Exception:
                 current_provider = "openrouter"
 
-        # Detect custom endpoint: provider resolved to openrouter but a custom
-        # base URL is configured — the user set up a custom endpoint.
         if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
             current_provider = "custom"
 
-        if not args:
-            # If a fallback model is active, show it instead of config
-            if self._effective_model:
-                eff_provider = self._effective_provider or 'unknown'
-                eff_label = _PROVIDER_LABELS.get(eff_provider, eff_provider)
-                cfg_label = _PROVIDER_LABELS.get(current_provider, current_provider)
-                lines = [
-                    f"🤖 **Active model:** `{self._effective_model}` (fallback)",
-                    f"**Provider:** {eff_label}",
-                    f"**Primary model** (`{current}` via {cfg_label}) is rate-limited.",
+        return {
+            "config_path": config_path,
+            "current_model": current_model,
+            "current_provider": current_provider,
+        }
+
+    def _resolve_model_runtime_details(self, requested_provider: str) -> tuple[dict[str, Any], Optional[str]]:
+        """Return runtime provider details for the active model selection."""
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(requested=requested_provider)
+            return runtime, None
+        except Exception as exc:
+            return {}, str(exc)
+
+    async def _respond_to_native_slash(
+        self,
+        event: MessageEvent,
+        content: str,
+    ) -> bool:
+        """Send an ephemeral response for Discord native slash commands."""
+        interaction = getattr(event, "raw_message", None)
+        if interaction is None:
+            return False
+
+        response = getattr(interaction, "response", None)
+        if response is not None and hasattr(response, "send_message"):
+            is_done = getattr(response, "is_done", None)
+            if not callable(is_done) or not is_done():
+                await response.send_message(content, ephemeral=True)
+                return True
+
+        followup = getattr(interaction, "followup", None)
+        if followup is not None and hasattr(followup, "send"):
+            await followup.send(content, ephemeral=True)
+            return True
+        return False
+
+    def _is_native_discord_slash(self, event: MessageEvent) -> bool:
+        metadata = getattr(event, "metadata", None) or {}
+        return bool(
+            event.source.platform == Platform.DISCORD
+            and isinstance(metadata, dict)
+            and metadata.get("is_native_slash")
+        )
+
+    def _render_model_catalog_response(self) -> str:
+        """Render the current model plus numbered catalog for the active provider."""
+        from hermes_cli.models import curated_models_for_provider, provider_label
+
+        state = self._load_current_model_selection()
+        current_model = state["current_model"]
+        current_provider = state["current_provider"]
+        provider_name = provider_label(current_provider)
+        lines = [
+            "🤖 **Model Catalog**",
+            "",
+            f"**Current model:** `{current_model}`",
+            f"**Provider:** {provider_name} (`{current_provider}`)",
+        ]
+        if self._effective_model:
+            lines.extend(
+                [
+                    f"**Active fallback:** `{self._effective_model}`",
+                    f"**Fallback provider:** {provider_label(self._effective_provider or 'unknown')}",
+                ]
+            )
+        lines.append("")
+
+        curated = curated_models_for_provider(current_provider)
+        if curated:
+            lines.append(f"**Available models ({provider_name}):**")
+            for index, (model_id, desc) in enumerate(curated, start=1):
+                marker = " ← current" if model_id == current_model else ""
+                detail = f" — {desc}" if desc else ""
+                lines.append(f"{index}. `{model_id}`{detail}{marker}")
+            lines.append("")
+        else:
+            lines.extend(
+                [
+                    f"No curated model list is available for `{current_provider}` right now.",
                     "",
                 ]
-                lines.append("To change: `/model model-name`")
-                lines.append("Switch provider: `/model provider:model-name`")
-                return "\n".join(lines)
+            )
 
-            provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
-            lines = [
-                f"🤖 **Current model:** `{current}`",
-                f"**Provider:** {provider_label}",
+        lines.extend(
+            [
+                "Use `/model <number>` to choose by index.",
+                "Use `/models` on Discord to open the interactive picker.",
+                "Use `/model provider:model-name` to switch providers.",
+                "Use `/model status` for runtime endpoint and auth details.",
             ]
-            # Show custom endpoint URL when using a custom provider
-            if current_provider == "custom":
-                from hermes_cli.models import _get_custom_base_url
-                custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
-                if custom_url:
-                    lines.append(f"**Endpoint:** `{custom_url}`")
-            lines.append("")
-            curated = curated_models_for_provider(current_provider)
-            if curated:
-                lines.append(f"**Available models ({provider_label}):**")
-                for mid, desc in curated:
-                    marker = " ←" if mid == current else ""
-                    label = f"  _{desc}_" if desc else ""
-                    lines.append(f"• `{mid}`{label}{marker}")
-                lines.append("")
-            lines.append("To change: `/model model-name`")
-            lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
+        )
+        return "\n".join(lines)
+
+    def _render_model_status_response(self) -> str:
+        """Render detailed model/provider/runtime status."""
+        from hermes_cli.models import provider_label
+
+        state = self._load_current_model_selection()
+        current_model = state["current_model"]
+        current_provider = state["current_provider"]
+        runtime, runtime_error = self._resolve_model_runtime_details(current_provider)
+        runtime_provider = str(runtime.get("provider") or current_provider)
+        runtime_label = provider_label(runtime_provider)
+        api_key = str(runtime.get("api_key") or "").strip()
+        command = runtime.get("command")
+        lines = [
+            "🤖 **Model Status**",
+            "",
+            f"**Configured model:** `{current_model}`",
+            f"**Configured provider:** {provider_label(current_provider)} (`{current_provider}`)",
+        ]
+        if self._effective_model:
+            effective_provider = self._effective_provider or current_provider
+            lines.extend(
+                [
+                    f"**Active model:** `{self._effective_model}` (fallback)",
+                    f"**Active provider:** {provider_label(effective_provider)} (`{effective_provider}`)",
+                    f"**Primary model:** `{current_model}`",
+                ]
+            )
+        else:
+            lines.append(f"**Active model:** `{current_model}`")
+
+        if runtime_error:
+            lines.extend(
+                [
+                    "",
+                    f"⚠️ Runtime provider resolution failed: {runtime_error}",
+                ]
+            )
             return "\n".join(lines)
 
-        # Parse provider:model syntax
-        target_provider, new_model = parse_model_input(args, current_provider)
-        # Auto-detect provider when no explicit provider:model syntax was used
-        if target_provider == current_provider:
-            from hermes_cli.models import detect_provider_for_model
-            detected = detect_provider_for_model(new_model, current_provider)
-            if detected:
-                target_provider, new_model = detected
+        lines.extend(
+            [
+                f"**Runtime provider:** {runtime_label} (`{runtime_provider}`)",
+                f"**API mode:** `{runtime.get('api_mode') or 'unknown'}`",
+                f"**Base URL:** `{runtime.get('base_url') or 'unknown'}`",
+                f"**Credentials:** {'configured ✓' if api_key or command else 'missing ⚠️'}",
+            ]
+        )
+        if command:
+            lines.append(f"**Transport command:** `{command}`")
+        source = runtime.get("source")
+        if source:
+            lines.append(f"**Credential source:** `{source}`")
+        return "\n".join(lines)
+
+    def _resolve_numbered_model(self, raw_index: str, current_provider: str) -> Optional[str]:
+        """Resolve `/model <number>` against the current provider catalog."""
+        from hermes_cli.models import curated_models_for_provider
+
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return None
+        if index < 1:
+            return None
+        curated = curated_models_for_provider(current_provider)
+        if index > len(curated):
+            return None
+        return curated[index - 1][0]
+
+    async def _apply_model_selection(
+        self,
+        target_provider: str,
+        new_model: str,
+        user_id: Optional[str] = None,
+    ) -> str:
+        """Validate, persist, and activate a model/provider choice."""
+        import yaml
+        from hermes_cli.models import validate_requested_model, provider_label
+
+        state = self._load_current_model_selection()
+        current_provider = state["current_provider"]
+        config_path = state["config_path"]
         provider_changed = target_provider != current_provider
+        runtime, runtime_error = self._resolve_model_runtime_details(
+            target_provider if provider_changed else current_provider
+        )
+        if provider_changed and runtime_error:
+            return f"⚠️ Could not resolve credentials for provider '{provider_label(target_provider)}': {runtime_error}"
 
-        # Resolve credentials for the target provider (for API probe)
-        api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
-        base_url = "https://openrouter.ai/api/v1"
-        if provider_changed:
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                runtime = resolve_runtime_provider(requested=target_provider)
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-            except Exception as e:
-                provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                return f"⚠️ Could not resolve credentials for provider '{provider_label}': {e}"
-        else:
-            # Use current provider's base_url from config or registry
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                runtime = resolve_runtime_provider(requested=current_provider)
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url", "")
-            except Exception:
-                pass
+        api_key = str(runtime.get("api_key") or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or "")
+        base_url = str(runtime.get("base_url") or "https://openrouter.ai/api/v1")
 
-        # Validate the model against the live API
         try:
             validation = validate_requested_model(
                 new_model,
@@ -2540,11 +5331,10 @@ class GatewayRunner:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
 
         if not validation.get("accepted"):
-            msg = validation.get("message", "Invalid model")
-            tip = "\n\nUse `/model` to see available models, `/provider` to see providers" if "Did you mean" not in msg else ""
-            return f"⚠️ {msg}{tip}"
+            message = validation.get("message", "Invalid model")
+            tip = "\n\nUse `/model list` to see numbered models, `/provider` to see providers." if "Did you mean" not in message else ""
+            return f"⚠️ {message}{tip}"
 
-        # Persist to config only if validation approves
         if validation.get("persist"):
             try:
                 user_config = {}
@@ -2554,33 +5344,110 @@ class GatewayRunner:
                 if "model" not in user_config or not isinstance(user_config["model"], dict):
                     user_config["model"] = {}
                 user_config["model"]["default"] = new_model
-                if provider_changed:
-                    user_config["model"]["provider"] = target_provider
-                with open(config_path, 'w', encoding="utf-8") as f:
+                user_config["model"]["provider"] = target_provider
+                with open(config_path, "w", encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
-            except Exception as e:
-                return f"⚠️ Failed to save model change: {e}"
+            except Exception as exc:
+                return f"⚠️ Failed to save model change: {exc}"
 
-        # Set env vars so the next agent run picks up the change
         os.environ["HERMES_MODEL"] = new_model
-        if provider_changed:
-            os.environ["HERMES_INFERENCE_PROVIDER"] = target_provider
+        os.environ["HERMES_INFERENCE_PROVIDER"] = target_provider
 
-        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-        provider_note = f"\n**Provider:** {provider_label}" if provider_changed else ""
+        try:
+            from gateway.platforms.discord_impl import model_picker as discord_model_picker
 
-        warning = ""
-        if validation.get("message"):
-            warning = f"\n⚠️ {validation['message']}"
+            discord_model_picker.record_recent_model(user_id, target_provider, new_model)
+        except Exception:
+            pass
 
-        if validation.get("persist"):
-            persist_note = "saved to config"
-        else:
-            persist_note = "this session only — will revert on restart"
-        # Clear fallback state since user explicitly chose a model
         self._effective_model = None
         self._effective_provider = None
-        return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
+
+        warning = f"\n⚠️ {validation['message']}" if validation.get("message") else ""
+        persist_note = "saved to config" if validation.get("persist") else "this session only — will revert on restart"
+        return (
+            f"🤖 Model changed to `{new_model}` ({persist_note})\n"
+            f"**Provider:** {provider_label(target_provider)} (`{target_provider}`){warning}\n"
+            "_(takes effect on next message)_"
+        )
+
+    async def _open_discord_model_picker(self, event: MessageEvent, command_name: str) -> str | None:
+        """Open the Discord-native interactive model picker."""
+        if not self._is_native_discord_slash(event):
+            return self._render_model_catalog_response()
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        interaction = getattr(event, "raw_message", None)
+        if adapter is None or interaction is None:
+            return self._render_model_catalog_response()
+
+        state = self._load_current_model_selection()
+        try:
+            from gateway.platforms.discord_impl import model_picker as discord_model_picker
+
+            await discord_model_picker.open_model_picker(
+                adapter=adapter,
+                interaction=interaction,
+                command_name=command_name,
+                user_id=str(event.source.user_id or ""),
+                current_provider=state["current_provider"],
+                current_model=state["current_model"],
+                apply_selection=self._apply_model_selection,
+            )
+        except Exception as exc:
+            logger.warning("Discord model picker failed; falling back to text response: %s", exc, exc_info=True)
+            return self._render_model_catalog_response()
+        return None
+
+    async def _handle_model_command(self, event: MessageEvent) -> str | None:
+        """Handle /model and /models commands."""
+        from hermes_cli.models import parse_model_input, detect_provider_for_model
+
+        command_name = (event.get_command() or "model").lower()
+        args = event.get_command_args().strip()
+        is_native_slash = self._is_native_discord_slash(event)
+        state = self._load_current_model_selection()
+        current_provider = state["current_provider"]
+
+        response: Optional[str]
+
+        lowered = args.lower()
+        if command_name == "models":
+            if is_native_slash:
+                return await self._open_discord_model_picker(event, command_name="models")
+            response = self._render_model_catalog_response()
+        elif not args:
+            if is_native_slash:
+                return await self._open_discord_model_picker(event, command_name="model")
+            response = self._render_model_catalog_response()
+        elif lowered == "status":
+            response = self._render_model_status_response()
+        elif lowered == "list":
+            response = self._render_model_catalog_response()
+        else:
+            numbered_model = self._resolve_numbered_model(args, current_provider)
+            if numbered_model:
+                response = await self._apply_model_selection(
+                    current_provider,
+                    numbered_model,
+                    user_id=event.source.user_id,
+                )
+            else:
+                target_provider, new_model = parse_model_input(args, current_provider)
+                if target_provider == current_provider:
+                    detected = detect_provider_for_model(new_model, current_provider)
+                    if detected:
+                        target_provider, new_model = detected
+                response = await self._apply_model_selection(
+                    target_provider,
+                    new_model,
+                    user_id=event.source.user_id,
+                )
+
+        if is_native_slash and response:
+            await self._respond_to_native_slash(event, response)
+            return None
+        return response
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
@@ -3242,6 +6109,7 @@ class GatewayRunner:
 
             # Read model from config via shared helper
             model = _resolve_gateway_model()
+            self._apply_runtime_debug_overrides()
 
             # Determine toolset (same logic as _run_agent)
             default_toolset_map = {
@@ -3289,7 +6157,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._get_effective_reasoning_config()
             self._reasoning_config = reasoning_config
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
@@ -3399,8 +6267,7 @@ class GatewayRunner:
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
-        self._reasoning_config = self._load_reasoning_config()
-        self._show_reasoning = self._load_show_reasoning()
+        self._apply_runtime_debug_overrides()
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -3444,11 +6311,13 @@ class GatewayRunner:
         if args in ("show", "on"):
             self._show_reasoning = True
             _save_config_key("display.show_reasoning", True)
+            self._apply_runtime_debug_overrides()
             return "🧠 ✓ Reasoning display: **ON**\nModel thinking will be shown before each response."
 
         if args in ("hide", "off"):
             self._show_reasoning = False
             _save_config_key("display.show_reasoning", False)
+            self._apply_runtime_debug_overrides()
             return "🧠 ✓ Reasoning display: **OFF**"
 
         # Effort level change
@@ -3466,15 +6335,58 @@ class GatewayRunner:
 
         self._reasoning_config = parsed
         if _save_config_key("agent.reasoning_effort", effort):
+            self._apply_runtime_debug_overrides()
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
+            self._apply_runtime_debug_overrides()
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    async def _handle_think_command(self, event: MessageEvent) -> str:
+        """Handle /think command — reasoning effort only, without display toggles."""
+        args = event.get_command_args().strip().lower()
+        self._apply_runtime_debug_overrides()
+
+        if not args:
+            rc = self._reasoning_config
+            if rc is None:
+                level = "medium (default)"
+            elif rc.get("enabled") is False:
+                level = "off"
+            else:
+                level = rc.get("effort", "medium")
+            return (
+                "🧠 **Thinking Effort**\n\n"
+                f"**Current:** `{level}`\n\n"
+                "_Usage:_ `/think <off|minimal|low|medium|high|xhigh>`"
+            )
+
+        effort = "none" if args == "off" else args
+        if effort not in ("none", "minimal", "low", "medium", "high", "xhigh"):
+            return (
+                f"⚠️ Unknown thinking level: `{args}`\n\n"
+                "**Valid levels:** off, minimal, low, medium, high, xhigh"
+            )
+
+        think_event = MessageEvent(
+            text=f"/reasoning {effort}",
+            source=event.source,
+            message_type=event.message_type,
+            raw_message=event.raw_message,
+            message_id=event.message_id,
+            media_urls=list(event.media_urls),
+            media_types=list(event.media_types),
+            reply_to_message_id=event.reply_to_message_id,
+            reply_to_text=event.reply_to_text,
+            metadata=event.metadata,
+        )
+        return await self._handle_reasoning_command(think_event)
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
-        source = event.source
+        source = self._command_target_source_for_event(event)
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
+        instructions = event.get_command_args().strip()
 
         if not history or len(history) < 4:
             return "Not enough conversation to compress (need at least 4 messages)."
@@ -3510,7 +6422,7 @@ class GatewayRunner:
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
+                lambda: tmp_agent._compress_context(msgs, instructions, approx_tokens=approx_tokens),
             )
 
             self.session_store.rewrite_transcript(session_entry.session_id, compressed)
@@ -3521,10 +6433,13 @@ class GatewayRunner:
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
 
-            return (
+            result = (
                 f"🗜️ Compressed: {original_count} → {new_count} messages\n"
                 f"~{approx_tokens:,} → ~{new_tokens:,} tokens"
             )
+            if instructions:
+                result += f"\nPreserved guidance: `{instructions[:160]}`"
+            return result
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
@@ -3794,77 +6709,14 @@ class GatewayRunner:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
 
-    # ------------------------------------------------------------------
-    # /approve & /deny — explicit dangerous-command approval
-    # ------------------------------------------------------------------
-
-    _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
-
-    async def _handle_approve_command(self, event: MessageEvent) -> str:
-        """Handle /approve command — execute a pending dangerous command.
-
-        Usage:
-            /approve          — approve and execute the pending command
-            /approve session  — approve and remember for this session
-            /approve always   — approve this pattern permanently
-        """
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        if session_key not in self._pending_approvals:
-            return "No pending command to approve."
-
-        import time as _time
-        approval = self._pending_approvals[session_key]
-
-        # Check for timeout
-        ts = approval.get("timestamp", 0)
-        if _time.time() - ts > self._APPROVAL_TIMEOUT_SECONDS:
-            self._pending_approvals.pop(session_key, None)
-            return "⚠️ Approval expired (timed out after 5 minutes). Ask the agent to try again."
-
-        self._pending_approvals.pop(session_key)
-        cmd = approval["command"]
-        pattern_keys = approval.get("pattern_keys", [])
-        if not pattern_keys:
-            pk = approval.get("pattern_key", "")
-            pattern_keys = [pk] if pk else []
-
-        # Determine approval scope from args
-        args = event.get_command_args().strip().lower()
-        from tools.approval import approve_session, approve_permanent
-
-        if args in ("always", "permanent", "permanently"):
-            for pk in pattern_keys:
-                approve_permanent(pk)
-            scope_msg = " (pattern approved permanently)"
-        elif args in ("session", "ses"):
-            for pk in pattern_keys:
-                approve_session(session_key, pk)
-            scope_msg = " (pattern approved for this session)"
-        else:
-            # One-time approval — just approve for session so the immediate
-            # replay works, but don't advertise it as session-wide
-            for pk in pattern_keys:
-                approve_session(session_key, pk)
-            scope_msg = ""
-
-        logger.info("User approved dangerous command via /approve: %s...%s", cmd[:60], scope_msg)
-        from tools.terminal_tool import terminal_tool
-        result = terminal_tool(command=cmd, force=True)
-        return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
-
     async def _handle_deny_command(self, event: MessageEvent) -> str:
-        """Handle /deny command — reject a pending dangerous command."""
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        if session_key not in self._pending_approvals:
-            return "No pending command to deny."
-
-        self._pending_approvals.pop(session_key)
-        logger.info("User denied dangerous command via /deny")
-        return "❌ Command denied."
+        """Handle /deny command for pending exec approvals."""
+        approval_id = event.get_command_args().strip() or None
+        return self._resolve_pending_approval(
+            decision="deny",
+            approval_id=approval_id,
+            source=self._command_target_source_for_event(event),
+        )
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.
@@ -4072,7 +6924,13 @@ class GatewayRunner:
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_SEND_POLICY",
+        ]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -4248,7 +7106,7 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
-        notify_mode = self._load_background_notifications_mode()
+        notify_mode = self._get_effective_background_notifications_mode()
 
         logger.debug("Process watcher started: %s (every %ss, notify=%s)",
                       session_id, interval, notify_mode)
@@ -4605,6 +7463,7 @@ class GatewayRunner:
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
+            os.environ["HERMES_SESSION_SEND_POLICY"] = self._session_send_policy(session_key)
 
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -4639,9 +7498,10 @@ class GatewayRunner:
                     "tools": [],
                 }
 
+            self._apply_runtime_debug_overrides()
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._get_effective_reasoning_config()
             self._reasoning_config = reasoning_config
             # Set up streaming consumer if enabled
             _stream_consumer = None
@@ -4701,6 +7561,7 @@ class GatewayRunner:
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )
+            self._attach_subagent_runtime_hooks(agent, session_key)
             
             # Store agent reference for interrupt support
             agent_holder[0] = agent

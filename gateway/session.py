@@ -84,6 +84,7 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    session_namespace: Optional[str] = None  # Isolated command/session namespace
     
     @property
     def description(self) -> str:
@@ -116,6 +117,7 @@ class SessionSource:
             "user_name": self.user_name,
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
+            "session_namespace": self.session_namespace,
         }
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
@@ -136,6 +138,7 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            session_namespace=data.get("session_namespace"),
         )
     
     @classmethod
@@ -435,11 +438,23 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                parts = ["agent:main", platform, "dm", source.chat_id, source.thread_id]
+                if source.session_namespace:
+                    parts.append(source.session_namespace)
+                return ":".join(parts)
+            parts = ["agent:main", platform, "dm", source.chat_id]
+            if source.session_namespace:
+                parts.append(source.session_namespace)
+            return ":".join(parts)
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            parts = ["agent:main", platform, "dm", source.thread_id]
+            if source.session_namespace:
+                parts.append(source.session_namespace)
+            return ":".join(parts)
+        parts = ["agent:main", platform, "dm"]
+        if source.session_namespace:
+            parts.append(source.session_namespace)
+        return ":".join(parts)
 
     participant_id = source.user_id_alt or source.user_id
     key_parts = ["agent:main", platform, source.chat_type]
@@ -450,6 +465,8 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
         key_parts.append(source.thread_id)
     if group_sessions_per_user and participant_id:
         key_parts.append(str(participant_id))
+    if source.session_namespace:
+        key_parts.append(source.session_namespace)
 
     return ":".join(key_parts)
 

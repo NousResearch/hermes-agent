@@ -877,5 +877,84 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
 
+class TestGatewaySubagentHooks(unittest.TestCase):
+    def test_build_child_agent_registers_gateway_subagent_id(self):
+        from tools.delegate_tool import _build_child_agent
+
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+        parent.max_tokens = None
+        parent.reasoning_config = None
+        parent.prefill_messages = None
+        parent.tool_progress_callback = None
+        parent._delegate_spinner = None
+        parent.iteration_budget = None
+        parent._register_delegate_child = MagicMock(return_value="sa-9")
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            child = _build_child_agent(
+                task_index=0,
+                goal="Inspect Discord UX parity",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+        self.assertIs(child, mock_child)
+        self.assertEqual(child._gateway_subagent_id, "sa-9")
+        parent._register_delegate_child.assert_called_once()
+
+    def test_run_single_child_restarts_on_pending_steer(self):
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent(depth=0)
+        parent._start_delegate_child = MagicMock()
+        parent._record_delegate_child_progress = MagicMock()
+        parent._complete_delegate_child = MagicMock()
+
+        child = MagicMock()
+        child._delegate_saved_tool_names = []
+        child._gateway_pending_steer = "Refocus on Discord slash commands"
+        child.run_conversation.side_effect = [
+            {
+                "final_response": "Interrupted for steer",
+                "messages": [],
+                "api_calls": 1,
+                "completed": False,
+                "interrupted": True,
+            },
+            {
+                "final_response": "Done after steer",
+                "messages": [],
+                "api_calls": 2,
+                "completed": True,
+                "interrupted": False,
+            },
+        ]
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Original goal",
+            child=child,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(child.run_conversation.call_count, 2)
+        self.assertEqual(child.run_conversation.call_args_list[0].kwargs["user_message"], "Original goal")
+        self.assertEqual(
+            child.run_conversation.call_args_list[1].kwargs["user_message"],
+            "Refocus on Discord slash commands",
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["summary"], "Done after steer")
+        self.assertGreaterEqual(parent._start_delegate_child.call_count, 2)
+        parent._complete_delegate_child.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

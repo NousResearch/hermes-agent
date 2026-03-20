@@ -74,6 +74,15 @@ def _handle_list():
 
 def _handle_send(args):
     """Send a message to a platform target."""
+    session_send_policy = os.getenv("HERMES_SESSION_SEND_POLICY", "inherit").strip().lower()
+    if session_send_policy == "off":
+        return json.dumps({
+            "error": (
+                "send_message is disabled for this session. "
+                "Use /send on or /send inherit to re-enable it."
+            )
+        })
+
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:

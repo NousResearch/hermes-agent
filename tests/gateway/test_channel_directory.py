@@ -80,6 +80,16 @@ class TestResolveChannelName:
             assert resolve_channel_name("discord", "ServerA/general") == "111"
             assert resolve_channel_name("discord", "ServerB/general") == "222"
 
+    def test_discord_channel_mention_and_channel_prefix_resolve_directly(self, tmp_path):
+        platforms = {
+            "discord": [
+                {"id": "111", "name": "general", "guild": "ServerA", "type": "channel"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("discord", "<#111>") == "111"
+            assert resolve_channel_name("discord", "channel:111") == "111"
+
     def test_prefix_match_unambiguous(self, tmp_path):
         platforms = {
             "slack": [

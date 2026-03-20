@@ -36,6 +36,7 @@ def test_clear_session_env_removes_thread_id(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "-1001")
     monkeypatch.setenv("HERMES_SESSION_CHAT_NAME", "Group")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "17585")
+    monkeypatch.setenv("HERMES_SESSION_SEND_POLICY", "off")
 
     runner._clear_session_env()
 
@@ -43,3 +44,4 @@ def test_clear_session_env_removes_thread_id(monkeypatch):
     assert os.getenv("HERMES_SESSION_CHAT_ID") is None
     assert os.getenv("HERMES_SESSION_CHAT_NAME") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
+    assert os.getenv("HERMES_SESSION_SEND_POLICY") is None

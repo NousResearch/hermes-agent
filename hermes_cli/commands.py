@@ -61,26 +61,59 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
-    CommandDef("approve", "Approve a pending dangerous command", "Session",
-               gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg",), args_hint="<prompt>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
+    CommandDef("compact", "Compress conversation context with optional instructions", "Session",
+               gateway_only=True, args_hint="[instructions]"),
     CommandDef("status", "Show session info", "Session",
                gateway_only=True),
+    CommandDef("approve", "Resolve a pending exec approval", "Session",
+               gateway_only=True, args_hint="[id] [allow-once|allow-always|deny]"),
+    CommandDef("commands", "Show the full gateway command catalog", "Session",
+               gateway_only=True),
+    CommandDef("context", "Show current conversation context details", "Session",
+               gateway_only=True, args_hint="[list|detail|json]",
+               subcommands=("list", "detail", "json")),
+    CommandDef("export-session", "Export the current session snapshot", "Session",
+               gateway_only=True, aliases=("export",), args_hint="[path]"),
+    CommandDef("whoami", "Show the sender identity Hermes sees", "Session",
+               gateway_only=True, aliases=("id",)),
+    CommandDef("focus", "Bind the current Discord thread to this Hermes session", "Session",
+               gateway_only=True, args_hint="[label]"),
+    CommandDef("unfocus", "Remove the current Discord thread binding", "Session",
+               gateway_only=True),
+    CommandDef("agents", "Show Discord thread bindings for this session", "Session",
+               gateway_only=True),
+    CommandDef("session", "Manage Discord thread binding idle/max-age controls", "Session",
+               gateway_only=True, args_hint="[idle|max-age] [duration|off]",
+               subcommands=("idle", "max-age", "status")),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("subagents", "Inspect or control sub-agent runs for this session", "Session",
+               gateway_only=True, args_hint="[list|kill|log|info|send|steer|spawn] [args...]",
+               subcommands=("list", "kill", "log", "info", "send", "steer", "spawn")),
+    CommandDef("kill", "Abort a running sub-agent for this session", "Session",
+               gateway_only=True, args_hint="<id|#|all>"),
+    CommandDef("steer", "Steer a running sub-agent immediately", "Session",
+               gateway_only=True, aliases=("tell",), args_hint="<id|#> <message>"),
 
     # Configuration
-    CommandDef("config", "Show current configuration", "Configuration",
-               cli_only=True),
+    CommandDef("config", "Show or update Hermes configuration", "Configuration",
+               args_hint="[show|get|set|unset] [key] [value]",
+               subcommands=("show", "get", "set", "unset")),
+    CommandDef("allowlist", "Inspect or edit the command allowlist", "Configuration",
+               gateway_only=True, args_hint="[list|add|remove] [entry]",
+               subcommands=("list", "add", "remove")),
     CommandDef("model", "Show or change the current model", "Configuration",
                args_hint="[name]"),
+    CommandDef("models", "Open the Discord model picker or list models", "Configuration",
+               gateway_only=True),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
@@ -94,10 +127,21 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
+    CommandDef("think", "Set reasoning effort quickly", "Configuration",
+               gateway_only=True, aliases=("thinking", "t"),
+               args_hint="[off|minimal|low|medium|high|xhigh]"),
+    CommandDef("send", "Control whether this session may use send_message", "Configuration",
+               gateway_only=True, args_hint="[on|off|inherit]"),
+    CommandDef("activation", "Control Discord mention-vs-always activation for this chat", "Configuration",
+               gateway_only=True, args_hint="[mention|always]"),
+    CommandDef("debug", "Manage runtime-only configuration overrides", "Configuration",
+               gateway_only=True, args_hint="[show|set|unset|reset] [key] [value]",
+               subcommands=("show", "set", "unset", "reset")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
-               args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+               aliases=("vc",), args_hint="[on|off|tts|channel|join|leave|status]",
+               subcommands=("on", "off", "tts", "channel", "join", "leave", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
@@ -107,11 +151,17 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
+    CommandDef("skill", "Run a skill by name from messaging platforms", "Tools & Skills",
+               gateway_only=True, args_hint="<name> [input]"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
+    CommandDef("acp", "Inspect or control ACP runtime sessions", "Tools & Skills",
+               gateway_only=True, args_hint="[spawn|cancel|steer|close|status|set-mode|set|cwd|permissions|timeout|model|reset-options|doctor|install|sessions] [args...]"),
+    CommandDef("bash", "Run a host shell command through gateway control", "Tools & Skills",
+               gateway_only=True, args_hint="<command>"),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
@@ -129,6 +179,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+    CommandDef("restart", "Restart the Hermes gateway", "Info",
+               gateway_only=True),
+    CommandDef("dock-telegram", "Dock replies for this session to the Telegram home channel", "Info",
+               gateway_only=True, aliases=("dock_telegram",)),
+    CommandDef("dock-discord", "Dock replies for this session to the Discord home channel", "Info",
+               gateway_only=True, aliases=("dock_discord",)),
+    CommandDef("dock-slack", "Dock replies for this session to the Slack home channel", "Info",
+               gateway_only=True, aliases=("dock_slack",)),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
@@ -235,6 +293,29 @@ def gateway_help_lines() -> list[str]:
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
     return lines
+
+
+def gateway_command_defs() -> list[CommandDef]:
+    """Return gateway-available command definitions in registry order."""
+    return [cmd for cmd in COMMAND_REGISTRY if not cmd.cli_only]
+
+
+def gateway_commands_by_category() -> list[tuple[str, tuple[CommandDef, ...]]]:
+    """Return gateway commands grouped by category in registry order."""
+    grouped: dict[str, list[CommandDef]] = {}
+    category_order: list[str] = []
+    for cmd in gateway_command_defs():
+        if cmd.category not in grouped:
+            grouped[cmd.category] = []
+            category_order.append(cmd.category)
+        grouped[cmd.category].append(cmd)
+    return [(category, tuple(grouped[category])) for category in category_order]
+
+
+def format_gateway_command_signature(cmd: CommandDef) -> str:
+    """Return a formatted gateway command signature."""
+    args = f" {cmd.args_hint}" if cmd.args_hint else ""
+    return f"/{cmd.name}{args}"
 
 
 def telegram_bot_commands() -> list[tuple[str, str]]:

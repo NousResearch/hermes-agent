@@ -3529,7 +3529,7 @@ class GatewayRunner:
             # Run each step as a message through the agent
             for i, step in enumerate(wf.steps):
                 if adapter:
-                    await adapter.send(source.chat_id, f"Step {i+1}/{len(wf.steps)}: {step.prompt[:80]}")
+                    await adapter.send(source.chat_id, f"Step {i+1}/{len(wf.steps)}: {step.prompt}")
                 # Create a synthetic message event for each step
                 from gateway.platforms.base import MessageEvent, MessageType
                 step_event = MessageEvent(

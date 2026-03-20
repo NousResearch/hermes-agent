@@ -4326,7 +4326,7 @@ class HermesCLI:
             runner = WorkflowRunner(wf)
 
             def on_start(i, step):
-                _cprint(f"  Step {i + 1}/{len(wf.steps)}: {step.prompt[:80]}")
+                _cprint(f"  Step {i + 1}/{len(wf.steps)}: {step.prompt}")
 
             def on_done(i, step, response):
                 preview = (response or "")[:120].replace("\n", " ")

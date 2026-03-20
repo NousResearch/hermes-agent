@@ -5,12 +5,17 @@ When qmd.enabled=true in config.yaml, this takes precedence over honcho settings
 
 Supported embedding models:
   - BAAI/bge-m3 (default, 1024 dimensions)
-  - NousResearch/... (when available — integration point for NousResearch embeddings)
+  - Qwen/Qwen3-Embedding-4B-GGUF via QMD server (4096 dimensions, highest quality)
+  - Qwen/Qwen3-Embedding-0.6B-GGUF via QMD server (1024 dimensions, faster)
   - sentence-transformers/all-MiniLM-L6-v2 (fallback, 384 dimensions)
 
 Lite mode models (for resource-constrained environments):
   - BAAI/bge-micro-v2 (256 dimensions)
   - jinaai/jina-reranker-tiny (reranker)
+
+Note: QMD server manages its own embedding models independently. The models listed
+above are for sentence-transformers compatibility. QMD server uses GGUF-format
+models (Qwen3-Embedding-4B, Qwen3-Reranker-4B) via llama.cpp on Metal/CPU.
 """
 
 from __future__ import annotations
@@ -215,8 +220,8 @@ class QMDClientConfig:
             enabled=enabled,
             lite_mode=lite_mode,
             write_frequency=write_frequency,
-            anticipulatory_enabled=config.get("anticipatory_enabled", True),
-            anticipulatory_max_results=config.get("anticipatory_max_results", 3),
+            anticipatory_enabled=config.get("anticipatory_enabled", True),
+            anticipatory_max_results=config.get("anticipatory_max_results", 3),
             session_strategy=config.get("session_strategy", "per-session"),
             raw=config,
         )

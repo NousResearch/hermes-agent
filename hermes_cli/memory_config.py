@@ -108,10 +108,13 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
         List of dicts with: id, name, size_gb, format, description
 
     Note on embedding models:
-        NousResearch does not currently have text embedding models on HuggingFace.
-        They specialize in text generation models (Hermes series). For embedding,
-        we recommend BAAI/bge-m3 (highest quality, out-of-box) or nomic-embed-text
-        (cross-lingual, via Ollama).
+        Qwen embedding models (Qwen/Qwen3-Embedding-*) are available on HuggingFace
+        and work through the QMD server with GGUF support. The QMD server manages
+        its own embedding/reranking models independently (Qwen3-Embedding-4B-GGUF,
+        Qwen3-Reranker-4B-GGUF). For sentence-transformers based embeddings used
+        directly by Hermes, we recommend BAAI/bge-m3 (highest quality, out-of-box)
+        or nomic-embed-text (cross-lingual, via Ollama). NousResearch specializes
+        in text generation models (Hermes series), not embeddings.
     """
     models = []
 
@@ -138,8 +141,8 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
                 "id": "qwen3.5b:0.8b",
                 "name": "Qwen 3.5B (Ollama/MLX)",
                 "size_gb": 4.0,
-                "format": "mlx",
-                "description": "Good quality, requires Ollama or MLX",
+                "format": "ollama",
+                "description": "Text gen model used for embeddings via Ollama API",
                 "min_ram": 8,
             },
         ])
@@ -180,8 +183,8 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
                 "id": "qwen3.5b:0.8b",
                 "name": "Qwen 3.5B (Ollama)",
                 "size_gb": 4.0,
-                "format": "pytorch",
-                "description": "Good quality via Ollama",
+                "format": "ollama",
+                "description": "Text gen model used for embeddings via Ollama API",
                 "min_ram": 8,
             },
         ])

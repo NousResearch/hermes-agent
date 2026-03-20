@@ -864,6 +864,8 @@ def convert_messages_to_anthropic(
                 else:
                     blocks.append({"type": "text", "text": str(content)})
             for tc in m.get("tool_calls", []):
+                if not tc or not isinstance(tc, dict):
+                    continue
                 fn = tc.get("function", {})
                 args = fn.get("arguments", "{}")
                 try:

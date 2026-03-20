@@ -812,6 +812,27 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "WEBHOOK_ENABLED": {
+        "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
+        "prompt": "Enable webhooks (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "WEBHOOK_PORT": {
+        "description": "Port for the webhook HTTP server (default: 8644).",
+        "prompt": "Webhook port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "WEBHOOK_SECRET": {
+        "description": "Global HMAC secret for webhook signature validation (overridable per route in config.yaml).",
+        "prompt": "Webhook secret",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
 
     # ── Agent settings ──
     "MESSAGING_CWD": {

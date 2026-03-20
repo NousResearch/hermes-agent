@@ -31,6 +31,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
+    detect_local_server_type,
     _MODEL_CACHE_TTL,
 )
 
@@ -633,3 +634,130 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# detect_local_server_type — synthetic probe response tests
+# =========================================================================
+
+class TestDetectLocalServerType:
+    """detect_local_server_type with mocked httpx.Client responses."""
+
+    def _make_resp(self, status_code, body):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.text = str(body)
+        resp.json.return_value = body
+        return resp
+
+    def _make_client(self, url_to_response):
+        """Return a mock httpx.Client whose .get() dispatches by URL suffix."""
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+
+        def get_side_effect(url, **kwargs):
+            for suffix, resp in url_to_response.items():
+                if url.endswith(suffix):
+                    return resp
+            raise Exception(f"Unexpected URL: {url}")
+
+        client_mock.get.side_effect = get_side_effect
+        return client_mock
+
+    def test_lm_studio_detected_before_ollama(self):
+        """LM Studio's /api/v1/models is checked first; returns 'lm-studio'."""
+        client_mock = self._make_client({
+            "/api/v1/models": self._make_resp(200, {"data": []}),
+        })
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://172.26.16.1:1234/v1")
+        assert result == "lm-studio"
+
+    def test_ollama_requires_models_key_in_response(self):
+        """Ollama probe must find 'models' key; plain 200 is not enough."""
+        client_mock = self._make_client({
+            "/api/v1/models": self._make_resp(404, {}),
+            "/api/tags": self._make_resp(200, {"models": []}),
+        })
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:11434")
+        assert result == "ollama"
+
+    def test_lm_studio_error_response_not_misidentified_as_ollama(self):
+        """LM Studio returns 200 + {'error': ...} on /api/tags — must NOT return 'ollama'."""
+        def get_side_effect(url, **kwargs):
+            if url.endswith("/api/v1/models"):
+                raise Exception("Connection refused")
+            if url.endswith("/api/tags"):
+                # LM Studio answers /api/tags with 200 + error body
+                return self._make_resp(200, {"error": "Unexpected endpoint"})
+            raise Exception(f"Unexpected URL: {url}")
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = get_side_effect
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://172.26.16.1:1234/v1")
+        assert result != "ollama"
+
+    def test_ollama_200_without_models_key_not_identified(self):
+        """200 on /api/tags without 'models' key is not enough to identify Ollama."""
+        client_mock = self._make_client({
+            "/api/v1/models": self._make_resp(404, {}),
+            "/api/tags": self._make_resp(200, {"error": "Unexpected endpoint"}),
+        })
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://172.26.16.1:1234")
+        assert result != "ollama"
+
+    def test_lm_studio_detected_when_v1_suffix_in_url(self):
+        """/v1 suffix is stripped before probing; LM Studio still detected."""
+        client_mock = self._make_client({
+            "/api/v1/models": self._make_resp(200, {"data": []}),
+        })
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://172.26.16.1:1234/v1")
+        assert result == "lm-studio"
+
+    def test_llamacpp_detected(self):
+        """llama.cpp identified via /props with 'default_generation_settings' in body."""
+        client_mock = self._make_client({
+            "/api/v1/models": self._make_resp(404, {}),
+            "/api/tags": self._make_resp(404, {}),
+            "/props": self._make_resp(200, {"default_generation_settings": {"n_ctx": 4096}}),
+        })
+        # Override text for /props to include the key
+        props_resp = self._make_resp(200, {})
+        props_resp.text = '{"default_generation_settings": {"n_ctx": 4096}}'
+
+        def get_side_effect(url, **kwargs):
+            if url.endswith("/api/v1/models"):
+                return self._make_resp(404, {})
+            if url.endswith("/api/tags"):
+                return self._make_resp(404, {})
+            if url.endswith("/props"):
+                return props_resp
+            raise Exception(f"Unexpected URL: {url}")
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = get_side_effect
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:8080")
+        assert result == "llamacpp"
+
+    def test_all_probes_fail_returns_none(self):
+        """When no probe succeeds, None is returned."""
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = Exception("Connection refused")
+
+        with patch("httpx.Client", return_value=client_mock):
+            result = detect_local_server_type("http://localhost:9999")
+        assert result is None

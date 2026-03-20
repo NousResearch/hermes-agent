@@ -70,6 +70,44 @@ class TestQueryLocalContextLengthOllama:
 
         assert result == 32768
 
+    def test_ollama_ps_context_overrides_model_info(self):
+        """When Ollama /api/ps reports a loaded model, use its context_length
+        instead of the theoretical max from /api/show model_info."""
+        from agent.model_metadata import _query_local_context_length
+
+        # /api/ps returns the ACTUAL loaded context (65536)
+        ps_resp = self._make_resp(200, {
+            "models": [{
+                "name": "nemotron-3-nano:latest",
+                "model": "nemotron-3-nano:latest",
+                "context_length": 65536,
+                "size_vram": 23925873408,
+            }]
+        })
+
+        # /api/show returns theoretical max from model weights (1048576)
+        show_resp = self._make_resp(200, {
+            "model_info": {
+                "nemotron_h_moe.context_length": 1048576,
+            },
+            "parameters": "temperature                    1\ntop_p                          1",
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = ps_resp
+        client_mock.post.return_value = show_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("nemotron-3-nano:latest", "http://192.168.1.22:11434")
+
+        assert result == 65536, (
+            f"Expected loaded context (65536) from /api/ps but got {result}. "
+            "model_info theoretical max (1048576) must not win over actual loaded context."
+        )
+
     def test_ollama_show_404_falls_through(self):
         """When /api/show returns 404, falls through to /v1/models/{model}."""
         from agent.model_metadata import _query_local_context_length

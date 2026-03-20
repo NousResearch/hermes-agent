@@ -555,6 +555,9 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
+    # Keep original for Ollama tag matching (e.g. "model:latest") before
+    # stripping provider prefixes.
+    original_model = model
     # Strip recognised provider prefix (e.g., "local:model-name" → "model-name").
     # Ollama "model:tag" colons (e.g. "qwen3.5:27b") are intentionally preserved.
     model = _strip_provider_prefix(model)
@@ -573,6 +576,22 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
         with httpx.Client(timeout=3.0) as client:
             # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
+                # Prefer /api/ps for actual loaded context over theoretical max
+                try:
+                    ps_resp = client.get(f"{server_url}/api/ps")
+                    if ps_resp.status_code == 200:
+                        ps_data = ps_resp.json()
+                        for m in ps_data.get("models", []):
+                            m_name = m.get("name", "") or m.get("model", "")
+                            if (m_name == original_model or
+                                    m_name == model or
+                                    m_name.split(":")[0] == original_model.split(":")[0]):
+                                ctx = m.get("context_length")
+                                if isinstance(ctx, (int, float)) and ctx > 0:
+                                    return int(ctx)
+                except Exception:
+                    pass
+
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
                 if resp.status_code == 200:
                     data = resp.json()

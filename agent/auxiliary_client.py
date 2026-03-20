@@ -1191,8 +1191,18 @@ def _get_cached_client(
     cache_key = (provider, async_mode, base_url or "", api_key or "")
     with _client_cache_lock:
         if cache_key in _client_cache:
-            cached_client, cached_default = _client_cache[cache_key]
-            return cached_client, model or cached_default
+            cached_client, cached_default, cached_loop = _client_cache[cache_key]
+            if async_mode:
+                # Async clients are bound to the event loop that created them.
+                # A cached async client whose loop has been closed will raise
+                # "Event loop is closed" when httpx tries to clean up its
+                # transport.  Discard the stale client and create a fresh one.
+                if cached_loop is not None and cached_loop.is_closed():
+                    del _client_cache[cache_key]
+                else:
+                    return cached_client, model or cached_default
+            else:
+                return cached_client, model or cached_default
     # Build outside the lock
     client, default_model = resolve_provider_client(
         provider,
@@ -1202,11 +1212,20 @@ def _get_cached_client(
         explicit_api_key=api_key,
     )
     if client is not None:
+        # For async clients, remember which loop they were created on so we
+        # can detect stale entries later.
+        bound_loop = None
+        if async_mode:
+            try:
+                import asyncio as _aio
+                bound_loop = _aio.get_event_loop()
+            except RuntimeError:
+                pass
         with _client_cache_lock:
             if cache_key not in _client_cache:
-                _client_cache[cache_key] = (client, default_model)
+                _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
-                client, default_model = _client_cache[cache_key]
+                client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model
 
 

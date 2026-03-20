@@ -159,6 +159,11 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
+    # Prepend source tag so users can identify cron output vs agent responses
+    job_name = job.get("name", "")
+    if job_name:
+        content = f"[Cron: {job_name}]\n{content}"
+
     # Run the async send in a fresh event loop (safe from any thread)
     try:
         result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))

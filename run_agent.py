@@ -878,9 +878,9 @@ class AIAgent:
         self._memory_flush_min_turns = 6
 
         # Context anchors: persistent project memory that survives compression
-        self._context_anchors = parse_anchor_config(self.config)
-        self._anchors_max_total = get_anchors_max_total(self.config)
-        self._anchors_auto_save = anchors_auto_save_enabled(self.config)
+        self._context_anchors = parse_anchor_config(_agent_cfg)
+        self._anchors_max_total = get_anchors_max_total(_agent_cfg)
+        self._anchors_auto_save = anchors_auto_save_enabled(_agent_cfg)
         self._anchor_pre_flush_sent = False  # one nudge per session
         self._anchor_hashes_at_nudge = {}  # snapshot taken when nudge is sent
         self._turns_since_memory = 0

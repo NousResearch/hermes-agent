@@ -49,6 +49,17 @@ That product config should be the deployment source of truth for:
 - identity-provider integration settings
 - first-admin bootstrap metadata
 
+The first implementation should distinguish:
+
+- `network.bind_host` for local service binding
+- `network.public_host` for generated local URLs and OIDC-facing origins
+
+For the `Kanidm`-backed product flow:
+
+- `network.public_host` must be a hostname or domain, not a raw IP address
+- the default local value should be `localhost`
+- setup must ask for the user-facing hostname separately from the bind address
+
 The web app and runtime launcher should derive their behavior from this product config rather than becoming independent configuration authorities.
 
 The first implementation should keep Hermes' existing `config.yaml` for generic Hermes behavior and use `product.yaml` only for setup-owned product deployment behavior.
@@ -73,6 +84,23 @@ The intended identity model is:
 - the supplier creates the first admin during setup
 - later users are created by an admin in the web UI
 - user recovery should use `Kanidm` native recovery actions rather than a product-owned password reset flow
+
+The bundled `Kanidm` service files should be generated under:
+
+- `HERMES_HOME/product/services/kanidm`
+
+The first implementation should generate:
+
+- a Docker Compose file for the bundled `Kanidm` service
+- a local `server.toml` for the service
+- a local OIDC client secret reference stored outside `product.yaml`
+- local TLS material generated before service startup
+
+The first implementation should also treat these startup details as part of the contract:
+
+- `Kanidm` certificate generation must happen before `compose up`
+- the generated service should run `kanidmd` directly, not through a shell wrapper
+- the bundled container should run with the host uid/gid when available so the bind-mounted service directory remains accessible without loosening permissions
 
 The intended user-lifecycle flow is:
 

@@ -3128,9 +3128,23 @@ def run_setup_wizard(args):
     """
     ensure_hermes_home()
     from hermes_cli.product_config import initialize_product_config_file
+    from hermes_cli.product_stack import (
+        ensure_product_stack_started,
+        initialize_product_stack,
+    )
+
+    def _start_product_stack_best_effort() -> None:
+        try:
+            ensure_product_stack_started()
+            print_info("Bundled Kanidm service is up.")
+        except FileNotFoundError:
+            print_warning("Docker was not found. The bundled Kanidm service was generated but not started.")
+        except Exception as exc:
+            print_warning(f"Could not start bundled Kanidm automatically: {exc}")
 
     config = load_config()
     initialize_product_config_file()
+    initialize_product_stack()
     hermes_home = get_hermes_home()
 
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
@@ -3165,6 +3179,7 @@ def run_setup_wizard(args):
                 )
                 func(config)
                 save_config(config)
+                _start_product_stack_best_effort()
                 print()
                 print_success(f"{label} configuration complete!")
                 return
@@ -3245,6 +3260,7 @@ def run_setup_wizard(args):
         if choice == 0:
             # Quick setup
             _run_quick_setup(config, hermes_home)
+            _start_product_stack_best_effort()
             return
         elif choice == 1:
             # Full setup — fall through to run all sections
@@ -3262,6 +3278,7 @@ def run_setup_wizard(args):
             _, label, func = SETUP_SECTIONS[section_idx]
             func(config)
             save_config(config)
+            _start_product_stack_best_effort()
             _print_setup_summary(config, hermes_home)
             return
     else:
@@ -3312,6 +3329,7 @@ def run_setup_wizard(args):
 
     # Save and show summary
     save_config(config)
+    _start_product_stack_best_effort()
     _print_setup_summary(config, hermes_home)
 
 

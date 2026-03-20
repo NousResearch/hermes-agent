@@ -36,6 +36,7 @@ DEFAULT_PRODUCT_CONFIG: Dict[str, Any] = {
     },
     "network": {
         "bind_host": "0.0.0.0",
+        "public_host": "localhost",
         "app_port": 8086,
         "kanidm_port": 8443,
         "tailscale": {
@@ -153,4 +154,3 @@ def resolve_runtime_defaults(config: Dict[str, Any] | None = None) -> Dict[str, 
         "runtime_toolset": str(runtime_cfg.get("default_toolset", "mynah-tier1")),
         "inference_model": str(model_cfg.get("model", "qwen3.5-9b-local")),
     }
-

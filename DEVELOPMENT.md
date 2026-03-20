@@ -60,6 +60,17 @@ Do not mark work done early.
 - Local development assumptions must be written down when they matter to implementation or verification.
 - Linux and WSL validation remain the reference environment for runtime isolation and deployment behavior.
 - If a local workflow depends on hostname-specific auth or container-network assumptions, document the reliable localhost path and all prerequisites clearly.
+- SSH validation on the separate Linux laptop is part of the normal closed-loop workflow when auth, Docker stack generation, runtime isolation, or filesystem-mount behavior changes.
+- Temporary SSH validation workspaces, helper scripts, containers, and logs must be cleaned up after testing.
+
+## Kanidm-specific rules
+
+- `network.public_host` must be a hostname or domain, not a raw IP address.
+- Default local `public_host` is `localhost`.
+- Treat `bind_host` and `public_host` as separate concerns in setup and implementation.
+- For the bundled `Kanidm` stack, generate certificates before starting the compose service.
+- The generated `Kanidm` service should run `kanidmd` directly, not through a shell entrypoint assumption.
+- When bind-mounting the service data directory, run the container with the host uid/gid when available so secure local permissions still work on Linux.
 
 ## Local process hygiene
 

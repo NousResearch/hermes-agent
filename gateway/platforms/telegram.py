@@ -206,7 +206,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
-            
+
+            # Inline keyboard callback handler
+            try:
+                from telegram.ext import CallbackQueryHandler
+                self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            except ImportError:
+                pass
+
             # Start polling — retry initialize() for transient TLS resets
             try:
                 from telegram.error import NetworkError, TimedOut
@@ -328,6 +335,24 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         
         try:
+            # Build inline keyboard from metadata if provided
+            reply_markup = None
+            if metadata and metadata.get("inline_keyboard"):
+                try:
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    keyboard = []
+                    for row in metadata["inline_keyboard"]:
+                        keyboard.append([
+                            InlineKeyboardButton(
+                                btn.get("text", btn) if isinstance(btn, dict) else str(btn),
+                                callback_data=btn.get("callback_data", btn.get("text", str(btn))) if isinstance(btn, dict) else str(btn),
+                            )
+                            for btn in (row if isinstance(row, list) else [row])
+                        ])
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                except Exception as kb_err:
+                    logger.warning("[%s] Failed to build inline keyboard: %s", self.name, kb_err)
+
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -360,6 +385,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                                 message_thread_id=int(thread_id) if thread_id else None,
+                                reply_markup=reply_markup if i == len(chunks) - 1 else None,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -372,6 +398,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                                     message_thread_id=int(thread_id) if thread_id else None,
+                                    reply_markup=reply_markup if i == len(chunks) - 1 else None,
                                 )
                             else:
                                 raise
@@ -842,6 +869,30 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return text
     
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline keyboard button presses."""
+        query = update.callback_query
+        if not query:
+            return
+        await query.answer()  # Acknowledge the callback
+
+        # Route callback data as a text message from the user
+        event = MessageEvent(
+            platform=self.platform,
+            chat_id=str(query.message.chat_id),
+            user_id=str(query.from_user.id),
+            username=query.from_user.username or "",
+            content=query.data or "",
+            message_type=MessageType.TEXT,
+            message_id=str(query.message.message_id),
+            metadata={
+                "callback_query": True,
+                "original_message_id": str(query.message.message_id),
+            },
+        )
+        if self._message_handler:
+            await self._message_handler(event)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 

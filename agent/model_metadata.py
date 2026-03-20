@@ -29,8 +29,8 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "custom", "local",
     # Common aliases
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "claude", "deep-seek",
-    "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "github-models", "github-model", "kimi", "moonshot", "claude", "claude-code",
+    "deep-seek", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "alibaba-cloud", "qwen",
 })
 
 

@@ -776,12 +776,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
-        if discord is None:  # pragma: no cover - import guard
+        discord_mod = sys.modules.get("discord", discord)
+        if discord_mod is None:  # pragma: no cover - import guard
             return SendResult(success=False, error="discord.py not installed")
 
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
-            file = discord.File(fh, filename=filename)
+            file = discord_mod.File(fh, filename=filename)
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
 
@@ -1996,7 +1997,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
+        is_thread = isinstance(message.channel, discord.Thread) or getattr(message.channel, "parent", None) is not None
         policy = self._get_discord_policy()
         active_binding = None
         if is_thread:

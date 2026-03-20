@@ -1026,6 +1026,10 @@ class GatewayRunner:
             "allow_once": "allow-once",
             "yes": "allow-once",
             "approve": "allow-once",
+            "allow-session": "allow-session",
+            "allow_session": "allow-session",
+            "session": "allow-session",
+            "ses": "allow-session",
             "allow-always": "allow-always",
             "always": "allow-always",
             "allow_always": "allow-always",
@@ -1059,7 +1063,7 @@ class GatewayRunner:
         return session_key, self._pending_approvals.get(session_key)
 
     def _approval_usage_text(self) -> str:
-        return "`/approve [id] <allow-once|allow-always|deny>`"
+        return "`/approve`, `/approve session`, `/approve always`, or `/approve [id] <allow-once|allow-session|allow-always|deny|show>`"
 
     def _resolve_pending_approval(
         self,
@@ -1078,8 +1082,9 @@ class GatewayRunner:
 
         session_key, pending = self._find_pending_approval(approval_id=approval_id, source=source)
         if not session_key or not pending:
-            target = f"`{approval_id}`" if approval_id else "this chat"
-            return f"No pending approval found for {target}."
+            if normalized == "deny":
+                return "No pending command to deny."
+            return "No pending command to approve."
 
         pending_id = str(pending.get("approval_id") or "")
         command = str(pending.get("command") or "").strip()
@@ -1088,6 +1093,11 @@ class GatewayRunner:
             pattern_key = str(pending.get("pattern_key") or "").strip()
             if pattern_key:
                 pattern_keys = [pattern_key]
+
+        timestamp = pending.get("timestamp")
+        if isinstance(timestamp, (int, float)) and time.time() - float(timestamp) > 300:
+            self._pending_approvals.pop(session_key, None)
+            return "⚠️ Approval expired (timed out after 5 minutes). Ask the agent to try again."
 
         if normalized == "show":
             return (
@@ -1098,18 +1108,22 @@ class GatewayRunner:
 
         if normalized == "deny":
             self._pending_approvals.pop(session_key, None)
-            return f"❌ Command denied (`{pending_id}`)."
+            return "❌ Command denied."
 
         import tools.approval as approval_mod
         from tools.terminal_tool import terminal_tool
 
-        for pattern_key in pattern_keys:
-            approval_mod.approve_session(session_key, pattern_key)
-
-        if normalized == "allow-always":
+        if normalized == "allow-session":
             for pattern_key in pattern_keys:
+                approval_mod.approve_session(session_key, pattern_key)
+        elif normalized == "allow-always":
+            for pattern_key in pattern_keys:
+                approval_mod.approve_session(session_key, pattern_key)
                 approval_mod.approve_permanent(pattern_key)
             approval_mod.save_permanent_allowlist(approval_mod._permanent_approved)
+        else:
+            for pattern_key in pattern_keys:
+                approval_mod.approve_session(session_key, pattern_key)
 
         self._pending_approvals.pop(session_key, None)
         on_approve = pending.get("on_approve")
@@ -1121,11 +1135,21 @@ class GatewayRunner:
                 return f"❌ Approved command failed: {e}"
 
         result = terminal_tool(command=command, force=True)
-        decision_label = "allow-always" if normalized == "allow-always" else "allow-once"
-        return (
-            f"✅ Command approved ({decision_label}) and executed (`{pending_id}`).\n\n"
-            f"```\n{result[:3500]}\n```"
-        )
+        if normalized == "allow-session":
+            prefix = (
+                "✅ Command approved and executed "
+                "(pattern approved for this session). Decision: approved (allow-session)."
+            )
+        elif normalized == "allow-always":
+            prefix = (
+                "✅ Command approved and executed "
+                "(pattern approved permanently). Decision: approved (allow-always)."
+            )
+        else:
+            prefix = "✅ Command approved and executed. Decision: approved (allow-once)."
+        if pending_id:
+            prefix = f"{prefix} (`{pending_id}`)"
+        return f"{prefix}\n\n```\n{result[:3500]}\n```"
 
     @staticmethod
     def _format_minutes_label(minutes: int) -> str:
@@ -2679,6 +2703,46 @@ class GatewayRunner:
                         )
             return None
         
+        # User-defined quick commands (bypass agent loop, no LLM call)
+        command = event.get_command()
+        if command:
+            if isinstance(self.config, dict):
+                quick_commands = self.config.get("quick_commands", {}) or {}
+            else:
+                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+            if not isinstance(quick_commands, dict):
+                quick_commands = {}
+            if command in quick_commands:
+                qcmd = quick_commands[command]
+                if qcmd.get("type") == "exec":
+                    exec_cmd = qcmd.get("command", "")
+                    if exec_cmd:
+                        try:
+                            proc = await asyncio.create_subprocess_shell(
+                                exec_cmd,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                            )
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                            output = (stdout or stderr).decode().strip()
+                            return output if output else "Command returned no output."
+                        except asyncio.TimeoutError:
+                            return "Quick command timed out (30s)."
+                        except Exception as e:
+                            return f"Quick command error: {e}"
+                    else:
+                        return f"Quick command '/{command}' has no command defined."
+                elif qcmd.get("type") == "alias":
+                    target = qcmd.get("target", "").strip()
+                    if target:
+                        target = target if target.startswith("/") else f"/{target}"
+                        user_args = event.get_command_args().strip()
+                        event.text = f"{target} {user_args}".strip()
+                    else:
+                        return f"Quick command '/{command}' has no target defined."
+                else:
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -2689,8 +2753,11 @@ class GatewayRunner:
         _quick_key = self._session_key_for_source(session_source)
         if _quick_key in self._running_agents:
             command_name = (event.get_command() or "").strip().lower()
+            running_agent = self._running_agents.get(_quick_key)
             if command_name == "status":
                 return await self._handle_status_command(event)
+            if command_name == "stop" and running_agent is _AGENT_PENDING_SENTINEL:
+                return "⏳ The agent is still starting up — nothing to stop yet."
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
@@ -2703,7 +2770,6 @@ class GatewayRunner:
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
             if _cmd_def_inner and _cmd_def_inner.name == "new":
-                running_agent = self._running_agents.get(_quick_key)
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Session reset requested")
                 adapter = self.adapters.get(source.platform)
@@ -2754,7 +2820,6 @@ class GatewayRunner:
                         adapter._pending_messages[_quick_key] = event
                 return None
             else:
-                running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     if command_name == "stop":
                         return "⏳ The agent is still starting up — nothing to stop yet."
@@ -2781,8 +2846,9 @@ class GatewayRunner:
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS:
-            await self.hooks.emit(f"command:{command}", {
+        hooks = getattr(self, "hooks", None)
+        if command and command in GATEWAY_KNOWN_COMMANDS and hooks is not None:
+            await hooks.emit(f"command:{command}", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "command": command,
@@ -2969,48 +3035,6 @@ class GatewayRunner:
         if canonical == "bash":
             return await self._handle_bash_command(event)
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
-        if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
-            if command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command
-                        # Fall through to normal command dispatch below
-                    else:
-                        return f"Quick command '/{command}' has no target defined."
-                else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
-
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
             try:
@@ -3055,7 +3079,7 @@ class GatewayRunner:
         """Inner handler that runs under the _running_agents sentinel guard."""
 
         # Get or create session
-        session_entry = self.session_store.get_or_create_session(session_source)
+        session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         
         # Emit session:start for new or auto-reset sessions
@@ -3063,8 +3087,9 @@ class GatewayRunner:
             session_entry.created_at == session_entry.updated_at
             or getattr(session_entry, "was_auto_reset", False)
         )
-        if _is_new_session:
-            await self.hooks.emit("session:start", {
+        hooks = getattr(self, "hooks", None)
+        if _is_new_session and hooks is not None:
+            await hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
@@ -3839,18 +3864,9 @@ class GatewayRunner:
     async def _handle_approve_command(self, event: MessageEvent) -> str:
         """Handle /approve command for pending exec approvals."""
         raw_args = event.get_command_args().strip()
+        target_source = self._command_target_source_for_event(event)
         if not raw_args:
-            target_source = self._command_target_source_for_event(event)
-            _session_key, pending = self._find_pending_approval(source=target_source)
-            if not pending:
-                return "No pending approval found for this chat."
-            approval_id = str(pending.get("approval_id") or "unknown")
-            command = str(pending.get("command") or "").strip()
-            return (
-                f"⚠️ Pending approval `{approval_id}`\n\n"
-                f"```\n{command}\n```\n\n"
-                f"Use {self._approval_usage_text()}"
-            )
+            return self._resolve_pending_approval(decision="allow-once", source=target_source)
 
         tokens = raw_args.split()
         approval_id: Optional[str] = None
@@ -3880,7 +3896,7 @@ class GatewayRunner:
         return self._resolve_pending_approval(
             decision=decision,
             approval_id=approval_id,
-            source=self._command_target_source_for_event(event),
+            source=target_source,
         )
 
     async def _handle_allowlist_command(self, event: MessageEvent) -> str:

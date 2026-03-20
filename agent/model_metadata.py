@@ -19,6 +19,34 @@ from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
 
+# Provider names that can appear as a "provider:" prefix before a model ID.
+# Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
+# are preserved so the full model name reaches cache lookups and server queries.
+_PROVIDER_PREFIXES: frozenset[str] = frozenset({
+    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+    "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "custom", "local",
+    # Common aliases
+    "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
+    "github-models", "kimi", "moonshot", "claude", "deep-seek",
+    "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+})
+
+
+def _strip_provider_prefix(model: str) -> str:
+    """Strip a recognised provider prefix from a model string.
+
+    ``"local:my-model"`` → ``"my-model"``
+    ``"qwen3.5:27b"``   → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
+    """
+    if ":" not in model or model.startswith("http"):
+        return model
+    prefix = model.split(":", 1)[0].strip().lower()
+    if prefix in _PROVIDER_PREFIXES:
+        return model.split(":", 1)[1]
+    return model
+
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
@@ -579,10 +607,9 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
 
-    # Strip provider prefix (e.g., "local:model-name" → "model-name").
-    # LM Studio and Ollama don't use provider prefixes in their model IDs.
-    if ":" in model and not model.startswith("http"):
-        model = model.split(":", 1)[1]
+    # Strip recognised provider prefix (e.g., "local:model-name" → "model-name").
+    # Ollama "model:tag" colons (e.g. "qwen3.5:27b") are intentionally preserved.
+    model = _strip_provider_prefix(model)
 
     # Strip /v1 suffix to get the server root
     server_url = base_url.rstrip("/")
@@ -689,9 +716,8 @@ def get_model_context_length(
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
-    # local servers actually know about.
-    if ":" in model and not model.startswith("http"):
-        model = model.split(":", 1)[1]
+    # local servers actually know about.  Ollama "model:tag" colons are preserved.
+    model = _strip_provider_prefix(model)
 
     # 1. Check persistent cache (model+provider)
     if base_url:

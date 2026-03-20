@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
@@ -290,6 +291,49 @@ class TestGetModelContextLength:
         )
 
         assert result == 200000
+
+
+# =========================================================================
+# _strip_provider_prefix — Ollama model:tag vs provider:model
+# =========================================================================
+
+class TestStripProviderPrefix:
+    def test_known_provider_prefix_is_stripped(self):
+        assert _strip_provider_prefix("local:my-model") == "my-model"
+        assert _strip_provider_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+        assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
+
+    def test_ollama_model_tag_preserved(self):
+        """Ollama model:tag format must NOT be stripped."""
+        assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"
+        assert _strip_provider_prefix("llama3.3:70b") == "llama3.3:70b"
+        assert _strip_provider_prefix("gemma2:9b") == "gemma2:9b"
+        assert _strip_provider_prefix("codellama:13b-instruct-q4_0") == "codellama:13b-instruct-q4_0"
+
+    def test_http_urls_preserved(self):
+        assert _strip_provider_prefix("http://example.com") == "http://example.com"
+        assert _strip_provider_prefix("https://example.com") == "https://example.com"
+
+    def test_no_colon_returns_unchanged(self):
+        assert _strip_provider_prefix("gpt-4o") == "gpt-4o"
+        assert _strip_provider_prefix("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_ollama_model_tag_not_mangled_in_context_lookup(self, mock_fetch):
+        """Ensure 'qwen3.5:27b' is NOT reduced to '27b' during context length lookup.
+
+        We mock a custom endpoint that knows 'qwen3.5:27b' — the full name
+        must reach the endpoint metadata lookup intact.
+        """
+        mock_fetch.return_value = {}
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata") as mock_ep, \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=True):
+            mock_ep.return_value = {"qwen3.5:27b": {"context_length": 32768}}
+            result = get_model_context_length(
+                "qwen3.5:27b",
+                base_url="http://localhost:11434/v1",
+            )
+        assert result == 32768
 
 
 # =========================================================================

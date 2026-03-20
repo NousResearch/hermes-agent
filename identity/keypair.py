@@ -92,9 +92,12 @@ def _create_identity(
     signing_key = SigningKey.generate()
     verify_key = signing_key.verify_key
 
-    # Write private key with restrictive permissions (owner read-only)
-    private_key_path.write_bytes(bytes(signing_key.encode()))
-    os.chmod(private_key_path, stat.S_IRUSR)
+    # Write private key atomically with restrictive permissions
+    fd = os.open(str(private_key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR)
+    try:
+        os.write(fd, bytes(signing_key.encode()))
+    finally:
+        os.close(fd)
 
     # Write public key as hex (human-readable)
     public_key_path.write_text(verify_key.encode().hex() + "\n")

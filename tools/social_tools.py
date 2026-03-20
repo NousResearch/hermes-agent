@@ -167,6 +167,7 @@ def _check_rate_limit(action: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 _spend_log: List[Dict[str, float]] = []  # [{"time": timestamp, "amount": usdc}, ...]
+_spend_lock = threading.Lock()
 
 
 def _get_spend_log_path() -> Path:
@@ -175,28 +176,30 @@ def _get_spend_log_path() -> Path:
 
 def _load_spend_log():
     """Load spend log from disk into memory."""
-    if _spend_log:
-        return  # already loaded
-    path = _get_spend_log_path()
-    if path.is_file():
-        try:
-            import json as _json
-            data = _json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                now = time.time()
-                _spend_log[:] = [e for e in data if isinstance(e, dict) and now - e.get("time", 0) < 3600]
-        except Exception:
-            pass
+    with _spend_lock:
+        if _spend_log:
+            return  # already loaded
+        path = _get_spend_log_path()
+        if path.is_file():
+            try:
+                import json as _json
+                data = _json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    now = time.time()
+                    _spend_log[:] = [e for e in data if isinstance(e, dict) and now - e.get("time", 0) < 3600]
+            except Exception:
+                pass
 
 
 def _save_spend_log():
     """Persist spend log to disk."""
-    path = _get_spend_log_path()
-    try:
-        import json as _json
-        path.write_text(_json.dumps(_spend_log), encoding="utf-8")
-    except Exception:
-        pass
+    with _spend_lock:
+        path = _get_spend_log_path()
+        try:
+            import json as _json
+            path.write_text(_json.dumps(_spend_log), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def _check_spend_limit(amount: float = 0) -> Optional[str]:
@@ -206,18 +209,20 @@ def _check_spend_limit(amount: float = 0) -> Optional[str]:
     payments = config.get("payments", {})
     max_spend = payments.get("max_spend_per_hour", 0.01)
 
-    now = time.time()
-    _spend_log[:] = [e for e in _spend_log if now - e["time"] < 3600]
+    with _spend_lock:
+        now = time.time()
+        _spend_log[:] = [e for e in _spend_log if now - e["time"] < 3600]
 
-    total_spent = sum(e["amount"] for e in _spend_log)
-    if total_spent + amount >= max_spend:
-        return f"Hourly spend limit (${max_spend}) reached. ${total_spent:.6f} spent this hour."
+        total_spent = sum(e["amount"] for e in _spend_log)
+        if total_spent + amount >= max_spend:
+            return f"Hourly spend limit (${max_spend}) reached. ${total_spent:.6f} spent this hour."
 
-    return None
+        return None
 
 
 def _record_spend(amount: float = 0.0001):
-    _spend_log.append({"time": time.time(), "amount": amount})
+    with _spend_lock:
+        _spend_log.append({"time": time.time(), "amount": amount})
     _save_spend_log()
 
 
@@ -435,7 +440,7 @@ def social_tool(
 
     # Spend limit check for paid actions
     if action in ("post", "reply", "update_profile", "tip", "like"):
-        spend_error = _check_spend_limit()
+        spend_error = _check_spend_limit(0.0001)
         if spend_error:
             return json.dumps({"error": spend_error})
 
@@ -663,8 +668,7 @@ def _action_reply(content: str, reply_to: str, hashtags_str: str) -> str:
     if original.get("ok") and original.get("data", {}).get("pubkey"):
         mentions = [original.get("data", {}).get("pubkey", "")]
     else:
-        warning = "Original post not found; replying without mention."
-        logger.warning("Reply target %s not found, proceeding without mention", reply_to)
+        return json.dumps({"error": "Original post not found. Cannot reply to a non-existent post."})
 
     event = create_post_event(ident, content, hashtags=tags or None, mentions=mentions, reply_to=reply_to)
     result = _relay_post("/api/events", event)
@@ -746,8 +750,9 @@ def _action_like(event_id: str) -> str:
     if author_pubkey == ident.pubkey_hex:
         return json.dumps({"error": "Cannot like your own post"})
 
-    # Built-in creator economy: try tip BEFORE posting like
-    # If tip fails, don't post like (atomic: both succeed or neither)
+    # Built-in creator economy: try tip BEFORE posting like.
+    # NOTE: Not truly atomic — if tip succeeds but like event fails,
+    # the tip is not rolled back. Tip-first is best-effort.
     config = _load_social_config()
     payments = config.get("payments", {})
     tip_result = None
@@ -789,6 +794,10 @@ def _action_repost(event_id: str) -> str:
 
     ident = get_identity()
     author = original.get("data", {}).get("pubkey", "")
+
+    if author == ident.pubkey_hex:
+        return json.dumps({"error": "Cannot repost your own post"})
+
     event = create_repost_event(ident, event_id, author)
     result = _relay_post("/api/events", event)
 
@@ -802,6 +811,9 @@ def _action_follow(pubkey: str) -> str:
         return json.dumps({"error": "Agent pubkey to follow is required"})
 
     ident = get_identity()
+
+    if pubkey == ident.pubkey_hex:
+        return json.dumps({"error": "Cannot follow yourself"})
 
     # Get current follow list
     current = _relay_get("/api/events", {

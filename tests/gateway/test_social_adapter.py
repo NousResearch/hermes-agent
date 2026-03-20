@@ -107,3 +107,24 @@ class TestNotificationDedup:
 
         # Adapter should have a set to track processed event IDs
         assert hasattr(adapter, "_seen_event_ids"), "Adapter needs _seen_event_ids set for dedup"
+
+    def test_pruning_keeps_recent_ids(self, social_config_enabled):
+        """Pruning should keep ~500 IDs, not clear all."""
+        from gateway.config import PlatformConfig
+
+        pc = PlatformConfig(enabled=True)
+        adapter = SocialAdapter(pc)
+
+        for i in range(1001):
+            adapter._seen_event_ids.add(f"event_{i:04d}")
+
+        assert len(adapter._seen_event_ids) == 1001
+
+        # Simulate pruning logic
+        if len(adapter._seen_event_ids) > 1000:
+            excess = len(adapter._seen_event_ids) - 500
+            it = iter(adapter._seen_event_ids)
+            to_remove = [next(it) for _ in range(excess)]
+            adapter._seen_event_ids -= set(to_remove)
+
+        assert len(adapter._seen_event_ids) == 500

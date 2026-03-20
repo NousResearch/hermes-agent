@@ -153,3 +153,31 @@ social:
             mod._config_cache = None
             assert _check_permission("post") is not None
             assert _check_permission("like") is None
+
+
+class TestSpendLogThreadSafety:
+    def test_concurrent_record_spend(self, tmp_path):
+        config = "social:\n  enabled: true\n  relay: http://localhost\n  payments:\n    enabled: true\n    max_spend_per_hour: 1.0\n"
+        (tmp_path / "config.yaml").write_text(config)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            import tools.social_tools as mod
+            mod._config_cache = None
+            from tools.social_tools import _record_spend, _spend_log
+            _spend_log.clear()
+            errors = []
+
+            def record():
+                try:
+                    for _ in range(20):
+                        _record_spend(0.0001)
+                except Exception as e:
+                    errors.append(str(e))
+
+            threads = [threading.Thread(target=record) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert len(errors) == 0
+            assert len(_spend_log) == 100

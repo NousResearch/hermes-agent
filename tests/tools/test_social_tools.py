@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -12,7 +13,9 @@ from tools.social_tools import (
     _load_social_config,
     _check_permission,
     _check_rate_limit,
+    _check_spend_limit,
     _rate_counters,
+    _spend_log,
 )
 
 
@@ -221,3 +224,49 @@ class TestSocialToolWriteActions:
 
         # Expected: like should NOT go through if tip fails
         assert result.get("liked") is not True, "Like should not post if micro-tip fails"
+
+
+class TestSelfActionBlocked:
+    @patch("tools.social_tools.identity_exists", return_value=True)
+    @patch("tools.social_tools.get_identity")
+    def test_cannot_follow_yourself(self, mock_ident, mock_exists, social_config):
+        mock_ident.return_value = MagicMock(pubkey_hex="aa" * 32)
+        result = json.loads(social_tool(action="follow", target="aa" * 32))
+        assert "error" in result
+        assert "yourself" in result["error"].lower()
+
+    @patch("tools.social_tools._relay_get")
+    @patch("tools.social_tools.identity_exists", return_value=True)
+    @patch("tools.social_tools.get_identity")
+    def test_cannot_repost_own_post(self, mock_ident, mock_exists, mock_get, social_config):
+        mock_ident.return_value = MagicMock(pubkey_hex="aa" * 32)
+        mock_get.return_value = {"ok": True, "data": {"pubkey": "aa" * 32}}
+        result = json.loads(social_tool(action="repost", target="ee" * 32))
+        assert "error" in result
+        assert "own post" in result["error"].lower()
+
+
+class TestOrphanReply:
+    @patch("tools.social_tools._relay_get")
+    @patch("tools.social_tools.identity_exists", return_value=True)
+    @patch("tools.social_tools.get_identity")
+    def test_reply_to_nonexistent_post_blocked(self, mock_ident, mock_exists, mock_get, social_config):
+        mock_ident.return_value = MagicMock(pubkey_hex="aa" * 32)
+        mock_get.return_value = {"ok": False}
+        result = json.loads(social_tool(action="reply", content="test", target="00" * 32))
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+
+
+class TestSpendLimitAmount:
+    def test_spend_limit_accounts_for_pending_amount(self, social_config):
+        import tools.social_tools as mod
+        mod._config_cache = None
+        now = time.time()
+        for _ in range(90):
+            _spend_log.append({"time": now, "amount": 0.0001})
+        # 0.009 + 0.0001 = 0.0091 < 0.01
+        assert _check_spend_limit(0.0001) is None
+        # 0.009 + 0.002 = 0.011 >= 0.01
+        result = _check_spend_limit(0.002)
+        assert result is not None

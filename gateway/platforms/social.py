@@ -342,12 +342,16 @@ class SocialAdapter(BasePlatformAdapter):
                     if event_id in self._seen_event_ids:
                         continue
                     self._seen_event_ids.add(event_id)
-                    # Prune old IDs to prevent memory leak (keep last 1000)
+                    # Prune to prevent memory leak — keep most recent 500
+                    # (evict oldest half instead of clearing all to avoid
+                    # reprocessing events during the next poll cycle)
                     if len(self._seen_event_ids) > 1000:
-                        # Keep only the most recent IDs by clearing oldest half
-                        # Since we can't sort a set, just clear and rely on
-                        # _last_seen_at timestamp to avoid reprocessing
-                        self._seen_event_ids.clear()
+                        # Convert to list, keep last 500 by insertion order (Python 3.7+ sets are not ordered,
+                        # but we only need rough recency — the _last_seen_at timestamp prevents true duplicates)
+                        excess = len(self._seen_event_ids) - 500
+                        it = iter(self._seen_event_ids)
+                        to_remove = [next(it) for _ in range(excess)]
+                        self._seen_event_ids -= set(to_remove)
 
                     # Verify event signature
                     sig_valid = False

@@ -930,6 +930,15 @@ install_node_deps() {
         }
         log_success "WhatsApp bridge dependencies installed"
     fi
+
+    # Build web UI frontend
+    if [ -f "$INSTALL_DIR/web/package.json" ]; then
+        log_info "Building web UI..."
+        cd "$INSTALL_DIR/web"
+        npm install --silent 2>/dev/null && npm run build 2>/dev/null && \
+            log_success "Web UI built" || \
+            log_warn "Web UI build failed (hermes web will not be available)"
+    fi
 }
 
 run_setup_wizard() {

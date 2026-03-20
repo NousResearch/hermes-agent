@@ -1540,6 +1540,51 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
     }
 
 
+def delete_env_value(key: str) -> bool:
+    """Remove a key from ~/.hermes/.env. Returns True if the key was found and removed."""
+    env_path = get_env_path()
+    if not env_path.exists():
+        return False
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        lines = f.readlines()
+
+    new_lines = [l for l in lines if not l.strip().startswith(f"{key}=")]
+    if len(new_lines) == len(lines):
+        return False
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    try:
+        with os.fdopen(fd, 'w', **write_kw) as f:
+            f.writelines(new_lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _secure_file(env_path)
+
+    os.environ.pop(key, None)
+    return True
+
+
+def reload_env() -> int:
+    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated."""
+    env_vars = load_env()
+    count = 0
+    for key, value in env_vars.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            count += 1
+    return count
+
 
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""

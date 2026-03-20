@@ -23,6 +23,7 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import os
+import time
 import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
@@ -369,6 +370,32 @@ def get_tool_definitions(
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
+# Auto-reload .env: check file mtime at most every 5 seconds so new API keys
+# take effect without manual /reload or session restart.
+_env_last_check: float = 0.0
+_env_last_mtime: float = 0.0
+_ENV_CHECK_INTERVAL = 5.0
+
+
+def _maybe_reload_env() -> None:
+    """Stat ~/.hermes/.env and reload into os.environ if it changed."""
+    global _env_last_check, _env_last_mtime
+    now = time.monotonic()
+    if now - _env_last_check < _ENV_CHECK_INTERVAL:
+        return
+    _env_last_check = now
+    try:
+        env_path = os.path.join(os.path.expanduser("~"), ".hermes", ".env")
+        mtime = os.path.getmtime(env_path)
+        if mtime != _env_last_mtime:
+            _env_last_mtime = mtime
+            from hermes_cli.config import reload_env
+            reload_env()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
 
 def handle_function_call(
     function_name: str,
@@ -395,6 +422,8 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    _maybe_reload_env()
+
     # Notify the read-loop tracker when a non-read/search tool runs,
     # so the *consecutive* counter resets (reads after other work are fine).
     if function_name not in _READ_SEARCH_TOOLS:

@@ -5119,7 +5119,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # Filter out noisy loggers that spam in non-interactive mode
         class _QuietFilter(logging.Filter):
             NOISY = {'evey.mqtt', 'httpx', 'httpcore', 'telegram.ext', 'discord.gateway',
-                      'discord.client', 'discord.http', 'hpack', 'h11', 'h2'}
+                      'discord.client', 'discord.http', 'hpack', 'h11', 'h2',
+                      'aiohttp.access'}
             def filter(self, record):
                 return record.name not in self.NOISY and not record.name.startswith('httpx.')
         stdout_handler.addFilter(_QuietFilter())

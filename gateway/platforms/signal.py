@@ -353,10 +353,21 @@ class SignalAdapter(BasePlatformAdapter):
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
 
-        # Filter syncMessage envelopes (sent transcripts, read receipts, etc.)
-        # signal-cli may set syncMessage to null vs omitting it, so check key existence
+        # Handle syncMessage: extract "Note to Self" messages (sent to own account)
+        # while still filtering other sync events (read receipts, typing, etc.)
+        is_note_to_self = False
         if "syncMessage" in envelope_data:
-            return
+            sync_msg = envelope_data.get("syncMessage")
+            if sync_msg and isinstance(sync_msg, dict):
+                sent_msg = sync_msg.get("sentMessage")
+                if sent_msg and isinstance(sent_msg, dict):
+                    dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
+                    if dest == self._account_normalized:
+                        # Note to Self — treat sentMessage as the dataMessage
+                        is_note_to_self = True
+                        envelope_data = {**envelope_data, "dataMessage": sent_msg}
+            if not is_note_to_self:
+                return
 
         # Extract sender info
         sender = (
@@ -371,8 +382,8 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: ignoring envelope with no sender")
             return
 
-        # Self-message filtering — prevent reply loops
-        if self._account_normalized and sender == self._account_normalized:
+        # Self-message filtering — prevent reply loops (but allow Note to Self)
+        if self._account_normalized and sender == self._account_normalized and not is_note_to_self:
             return
 
         # Filter stories

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
@@ -22,6 +24,7 @@ from tools.skills_hub import (
     append_audit_log,
     _skill_meta_to_dict,
     quarantine_bundle,
+    install_from_quarantine,
 )
 
 
@@ -891,3 +894,77 @@ class TestQuarantineBundleBinaryAssets:
 
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
+
+    def test_quarantine_bundle_rejects_absolute_and_traversal_paths(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        abs_target = tmp_path / "abs-write.txt"
+        escaped_target = tmp_path / "skills" / "escaped.txt"
+
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="evil-skill",
+                files={
+                    str(abs_target): "ABS",
+                    "../../../escaped.txt": "TRAVERSAL",
+                    "SKILL.md": "---\nname: evil-skill\n---\n",
+                },
+                source="community",
+                identifier="evil/skill",
+                trust_level="community",
+            )
+
+            with pytest.raises(ValueError, match="relative|escapes"):
+                quarantine_bundle(bundle)
+
+        assert not abs_target.exists()
+        assert not escaped_target.exists()
+
+
+class TestInstallFromQuarantinePathValidation:
+    def test_rejects_traversal_in_install_target(self, tmp_path):
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        quarantine_path = hub_dir / "quarantine" / "demo"
+        quarantine_path.mkdir(parents=True)
+        (quarantine_path / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
+
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={"SKILL.md": "---\nname: demo\n---\n"},
+                source="community",
+                identifier="evil/skill",
+                trust_level="community",
+            )
+            scan_result = ScanResult(
+                skill_name="demo",
+                source="community",
+                trust_level="community",
+                verdict="safe",
+                findings=[],
+            )
+
+            with pytest.raises(ValueError, match="escapes|single path segment"):
+                install_from_quarantine(
+                    quarantine_path,
+                    "../escaped",
+                    "",
+                    bundle,
+                    scan_result,
+                )

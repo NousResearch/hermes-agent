@@ -308,7 +308,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     """Fetch, quarantine, scan, confirm, and install a skill."""
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
-        quarantine_bundle, install_from_quarantine, HubLockFile,
+        quarantine_bundle, install_from_quarantine, HubLockFile, append_audit_log,
     )
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
@@ -352,7 +352,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
 
     # Quarantine the bundle
-    q_path = quarantine_bundle(bundle)
+    try:
+        q_path = quarantine_bundle(bundle)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_bundle_path", str(exc))
+        return
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     # Scan
@@ -411,7 +417,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             return
 
     # Install
-    install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    try:
+        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    except ValueError as exc:
+        shutil.rmtree(q_path, ignore_errors=True)
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_install_path", str(exc))
+        return
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")

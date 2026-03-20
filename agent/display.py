@@ -253,12 +253,30 @@ class KawaiiSpinner:
         except (ValueError, OSError):
             pass
 
+    @staticmethod
+    def _clean_message(msg):
+        """Strip kawaii faces, emojis, and verbs from spinner message for clean logging."""
+        import re
+        # Remove kawaii face patterns like (◕‿◕✿), ♪(´ε` ), etc.
+        msg = re.sub(r'[♪٩ヾ]?\([^)]{1,20}\)[☆۶っ]?\s*', '', msg)
+        # Remove common emoji
+        msg = re.sub(r'[⚡🐍✍️🧠💬💭💡✨💫🌟]+\s*', '', msg)
+        # Remove thinking verbs with trailing ...
+        verbs = ('pondering', 'contemplating', 'musing', 'cogitating', 'ruminating',
+                 'deliberating', 'mulling', 'reflecting', 'processing', 'reasoning',
+                 'analyzing', 'computing', 'synthesizing', 'formulating', 'brainstorming')
+        for v in verbs:
+            msg = msg.replace(f'{v}...', '').replace(v, '')
+        return msg.strip() or msg
+
     def _animate(self):
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
         # skip the animation entirely — it creates massive log bloat.
-        # Just log the start once and let stop() log the completion.
+        # Log a single clean line and wait.
         if not hasattr(self._out, 'isatty') or not self._out.isatty():
-            self._write(f"  [tool] {self.message}", flush=True)
+            clean = self._clean_message(self.message)
+            if clean and clean != '...':
+                self._write(f"  [tool] {clean}", flush=True)
             while self.running:
                 time.sleep(0.5)
             return
@@ -336,11 +354,13 @@ class KawaiiSpinner:
             blanks = ' ' * max(self.last_line_len + 5, 40)
             self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
-            elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
             if is_tty:
                 self._write(f"  {final_message}", flush=True)
             else:
-                self._write(f"  [done] {final_message}{elapsed}", flush=True)
+                elapsed = f" {time.time() - self.start_time:.1f}s" if self.start_time else ""
+                clean = self._clean_message(final_message)
+                if clean:
+                    self._write(f"  [done] {clean} ({elapsed})", flush=True)
 
     def __enter__(self):
         self.start()

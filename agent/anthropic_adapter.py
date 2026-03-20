@@ -935,6 +935,26 @@ def convert_messages_to_anthropic(
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
+    # Strip orphaned tool_result blocks (no matching tool_use precedes them).
+    # This is the mirror of the above: context compression or session truncation
+    # can remove an assistant message containing a tool_use while leaving the
+    # subsequent tool_result intact.  Anthropic rejects these with a 400.
+    tool_use_ids = set()
+    for m in result:
+        if m["role"] == "assistant" and isinstance(m["content"], list):
+            for block in m["content"]:
+                if block.get("type") == "tool_use":
+                    tool_use_ids.add(block.get("id"))
+    for m in result:
+        if m["role"] == "user" and isinstance(m["content"], list):
+            m["content"] = [
+                b
+                for b in m["content"]
+                if b.get("type") != "tool_result" or b.get("tool_use_id") in tool_use_ids
+            ]
+            if not m["content"]:
+                m["content"] = [{"type": "text", "text": "(tool result removed)"}]
+
     # Enforce strict role alternation (Anthropic rejects consecutive same-role messages)
     fixed = []
     for m in result:

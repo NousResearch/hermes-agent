@@ -4339,13 +4339,18 @@ class HermesCLI:
                 result = self.agent.run_conversation(
                     prompt,
                     conversation_history=self.conversation_history,
-                    session_id=self.session_id,
                 )
                 # Append to conversation history
                 self.conversation_history.append({"role": "user", "content": prompt})
-                if result:
-                    self.conversation_history.append({"role": "assistant", "content": result})
-                return result or ""
+                if isinstance(result, dict):
+                    content = result.get("content") or result.get("response") or str(result)
+                elif isinstance(result, str):
+                    content = result
+                else:
+                    content = str(result) if result else ""
+                if content:
+                    self.conversation_history.append({"role": "assistant", "content": content})
+                return content
 
             results = runner.run(send_prompt, on_step_start=on_start, on_step_done=on_done)
 

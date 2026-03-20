@@ -8,18 +8,21 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import html as _html
 import logging
 import os
 import re
+import time
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
         CommandHandler,
+        CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -125,6 +128,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
+        self._models_cache: dict = {}  # chat_id -> (timestamp, list of (provider, model_id))
+        self._models_cache_ttl = 300  # seconds
+        self._models_cache_max = 50
+        self._session_epoch = str(int(time.time()) % 1000000)
 
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
@@ -190,6 +197,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            self._app.add_handler(CommandHandler("models", self._handle_models_command))
+            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -198,6 +207,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.COMMAND,
                 self._handle_command
             ))
+
             self._app.add_handler(TelegramMessageHandler(
                 filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
                 self._handle_location_message
@@ -862,7 +872,401 @@ class TelegramAdapter(BasePlatformAdapter):
         
         event = self._build_message_event(update.message, MessageType.COMMAND)
         await self.handle_message(event)
-    
+
+    _MODELS_PAGE_SIZE = 8
+
+    def _collect_all_models(self) -> list:
+        """Collect models from all configured providers.
+
+        Returns list of (provider, model_id). Includes:
+        - All explicitly configured models (primary + fallbacks) first
+        - Live API models for providers that support it
+        - Local endpoint models via /v1/models for base_url providers
+        """
+        import yaml as _y
+        from pathlib import Path as _P
+        from hermes_cli.models import provider_model_ids
+
+        providers = []
+        configured_models = []
+        _cfg_path = _P.home() / ".hermes" / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+            model_cfg = cfg.get("model") or {}
+            primary_provider = model_cfg.get("provider", "")
+            primary_model = model_cfg.get("default", "")
+            if primary_provider:
+                providers.append(primary_provider)
+            if primary_provider and primary_model:
+                configured_models.append((primary_provider, primary_model, ""))
+            for fb in cfg.get("fallback_models", []):
+                p = fb.get("provider", "")
+                m = fb.get("model", "")
+                bu = fb.get("base_url", "")
+                if p and p not in providers:
+                    providers.append(p)
+                if p and m:
+                    configured_models.append((p, m, bu))
+
+        # Also include any provider with valid credentials, even if not
+        # currently configured as primary or fallback
+        try:
+            from hermes_cli.models import list_available_providers
+            for p_info in list_available_providers():
+                if p_info.get("authenticated") and p_info["id"] not in providers:
+                    providers.append(p_info["id"])
+        except Exception:
+            pass
+
+        all_models = []
+        seen = set()
+
+        # Configured models always first
+        for provider, model_id, base_url in configured_models:
+            if model_id not in seen:
+                all_models.append((provider, model_id))
+                seen.add(model_id)
+
+        # Build custom provider lookup for base_url and api_key
+        custom_provider_map: dict = {}
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                _cfg2 = _y.safe_load(_f) or {}
+            for cp in _cfg2.get("custom_providers", []):
+                if isinstance(cp, dict) and cp.get("name"):
+                    cp_name = cp["name"].lower()
+                    cp_base = cp.get("base_url", "")
+                    cp_key_env = cp.get("api_key_env_var", "")
+                    cp_key = os.getenv(cp_key_env, "") if cp_key_env else ""
+                    custom_provider_map[cp_name] = {"base_url": cp_base, "api_key": cp_key}
+
+        for provider in providers:
+            # Check for base_url: first from custom_providers, then from configured fallbacks
+            base_url = ""
+            api_key = ""
+            cp_info = custom_provider_map.get(provider.lower())
+            if cp_info:
+                base_url = cp_info["base_url"]
+                api_key = cp_info["api_key"]
+            else:
+                # Fallback: check configured models for a base_url matching this provider
+                for cfg_p, _, bu in configured_models:
+                    if bu and cfg_p.lower() == provider.lower():
+                        base_url = bu
+                        break
+
+            if base_url:
+                try:
+                    import urllib.request, json
+                    url = base_url.rstrip("/")
+                    if not url.endswith("/models"):
+                        url = url + "/models"
+                    headers = {}
+                    if api_key:
+                        headers["Authorization"] = f"Bearer {api_key}"
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=1) as resp:
+                        data = json.loads(resp.read())
+                        for m in data.get("data", []):
+                            mid = m.get("id", "")
+                            if mid and mid not in seen:
+                                all_models.append((provider, mid))
+                                seen.add(mid)
+                except Exception:
+                    pass
+                continue
+
+            if provider == "openrouter":
+                try:
+                    import urllib.request, json, os
+                    api_key = os.getenv("OPENROUTER_API_KEY", "")
+                    req = urllib.request.Request(
+                        "https://openrouter.ai/api/v1/models",
+                        headers={"Authorization": f"Bearer {api_key}"} if api_key else {}
+                    )
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        data = json.loads(resp.read())
+                        for m in data.get("data", []):
+                            mid = m.get("id", "")
+                            if mid and mid not in seen:
+                                all_models.append((provider, mid))
+                                seen.add(mid)
+                    continue
+                except Exception:
+                    pass
+
+            try:
+                models = provider_model_ids(provider)
+                for model_id in models:
+                    if model_id not in seen:
+                        all_models.append((provider, model_id))
+                        seen.add(model_id)
+            except Exception:
+                continue
+        # Sort: configured models stay on top, rest sorted by provider then model name
+        n_configured = len(configured_models)
+        pinned = all_models[:n_configured]
+        rest = all_models[n_configured:]
+        rest.sort(key=lambda x: (x[0].lower(), x[1].lower()))
+        return pinned + rest
+
+    def _build_models_keyboard(self, chat_id: str, page: int) -> "InlineKeyboardMarkup":
+        """Build paginated inline keyboard using cached model list."""
+        cache_entry = self._models_cache.get(chat_id)
+        all_models = cache_entry[1] if cache_entry else []
+        ps = self._MODELS_PAGE_SIZE
+        total_pages = max(1, (len(all_models) + ps - 1) // ps)
+        page = max(0, min(page, total_pages - 1))
+        start_idx = page * ps
+        page_models = all_models[start_idx : start_idx + ps]
+
+        ep = self._session_epoch
+        keyboard = []
+        for idx, (provider, model_id) in enumerate(page_models):
+            label = f"{model_id} [{provider}]"
+            # Use short numeric index as callback_data to avoid 64-byte limit
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"sm:{ep}:{start_idx + idx}")])
+
+        nav = []
+        if total_pages > 5 and page > 0:
+            nav.append(InlineKeyboardButton("\u23ea", callback_data=f"mp:{ep}:0"))
+        if page > 0:
+            nav.append(InlineKeyboardButton("\u25c0", callback_data=f"mp:{ep}:{page - 1}"))
+        nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data=f"mn:{ep}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("\u25b6", callback_data=f"mp:{ep}:{page + 1}"))
+        if total_pages > 5 and page < total_pages - 1:
+            nav.append(InlineKeyboardButton("\u23e9", callback_data=f"mp:{ep}:{total_pages - 1}"))
+        keyboard.append(nav)
+        # Skip row: jump by 10 pages when there are many pages
+        if total_pages > 10:
+            skip = []
+            if page >= 10:
+                skip.append(InlineKeyboardButton("-10", callback_data=f"mp:{ep}:{page - 10}"))
+            if page >= 5 and page < 10:
+                skip.append(InlineKeyboardButton(f"-{page}", callback_data=f"mp:{ep}:0"))
+            if page + 10 < total_pages:
+                skip.append(InlineKeyboardButton("+10", callback_data=f"mp:{ep}:{page + 10}"))
+            elif page + 5 < total_pages:
+                skip.append(InlineKeyboardButton(f"+{total_pages - 1 - page}", callback_data=f"mp:{ep}:{total_pages - 1}"))
+            if skip:
+                keyboard.append(skip)
+
+        return InlineKeyboardMarkup(keyboard)
+
+    async def _handle_models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /models command by showing a paginated inline keyboard of available models.
+
+        Supports search: /models <query> filters models by name.
+        """
+        if not update.message:
+            return
+
+        try:
+            all_models = await asyncio.to_thread(self._collect_all_models)
+            if not all_models:
+                await update.message.reply_text("<i>No models available.</i>", parse_mode=ParseMode.HTML)
+                return
+
+            # Extract search query from /models <query>
+            text = (update.message.text or "").strip()
+            query = ""
+            if " " in text:
+                query = text.split(None, 1)[1].strip().lower()
+
+            if query:
+                escaped_q = _html.escape(query)
+                filtered = [(p, m) for p, m in all_models if query in m.lower() or query in p.lower()]
+                if not filtered:
+                    await update.message.reply_text(
+                        f"No models matching <b>{escaped_q}</b>. Try a different search.",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return
+                display = filtered
+                header = f"<b>{len(filtered)} models matching</b> <code>{escaped_q}</code>:"
+            else:
+                display = all_models
+                header = f"<b>Select a model \u2014 {len(display)} available:</b>"
+
+            chat_id = str(update.message.chat_id)
+            # Evict oldest entries if cache is full
+            if len(self._models_cache) >= self._models_cache_max:
+                oldest = min(self._models_cache, key=lambda k: self._models_cache[k][0])
+                del self._models_cache[oldest]
+            self._models_cache[chat_id] = (time.time(), display)
+
+            reply_markup = self._build_models_keyboard(chat_id, 0)
+            await update.message.reply_text(
+                header,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Error in /models command: {e}", exc_info=True)
+            await update.message.reply_text("\u274c Failed to fetch models. Try /model manually.")
+
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle button clicks from the /models interactive menu."""
+        query = update.callback_query
+        if not query or not query.message:
+            return
+
+        await query.answer()
+
+        # Reject callbacks from stale keyboards via session epoch
+        data = query.data or ""
+        parts = data.split(":", 2) if data else []
+        if len(parts) >= 2:
+            if parts[1] != self._session_epoch:
+                try:
+                    await query.edit_message_text(
+                        "\u26a0\ufe0f This menu has expired. Use /models for a fresh list."
+                    )
+                except Exception:
+                    pass
+                return
+        else:
+            # Legacy callback without epoch — reject
+            try:
+                await query.edit_message_text(
+                    "\u26a0\ufe0f This menu has expired. Use /models for a fresh list."
+                )
+            except Exception:
+                pass
+            return
+
+        # Pagination
+        if data.startswith("mp:"):
+            try:
+                page = int(data.split(":", 2)[2])
+                chat_id = str(query.message.chat_id)
+                cache_entry = self._models_cache.get(chat_id)
+                if not cache_entry or (time.time() - cache_entry[0]) > self._models_cache_ttl:
+                    models = await asyncio.to_thread(self._collect_all_models)
+                    self._models_cache[chat_id] = (time.time(), models)
+                reply_markup = self._build_models_keyboard(chat_id, page)
+                await query.edit_message_reply_markup(reply_markup=reply_markup)
+            except Exception as e:
+                logger.error(f"Error paginating /models: {e}")
+            return
+
+        # No-op (page counter button)
+        if data.startswith("mn:"):
+            return
+
+        # Model selection — show confirmation with session/persist/cancel options
+        if data.startswith("sm:"):
+            try:
+                idx = int(data.split(":", 2)[2])
+                chat_id = str(query.message.chat_id)
+                ep = self._session_epoch
+                # Re-fetch model list if cache is expired or missing
+                cache_entry = self._models_cache.get(chat_id)
+                if not cache_entry or (time.time() - cache_entry[0]) > self._models_cache_ttl:
+                    models = await asyncio.to_thread(self._collect_all_models)
+                    self._models_cache[chat_id] = (time.time(), models)
+                    cache_entry = self._models_cache[chat_id]
+                all_models = cache_entry[1]
+                if idx < 0 or idx >= len(all_models):
+                    return
+                provider, model_name = all_models[idx]
+
+                keyboard = [
+                    [InlineKeyboardButton("\u2705 Switch", callback_data=f"sv:{ep}:{idx}")],
+                    [InlineKeyboardButton("\u274c Cancel", callback_data=f"mc:{ep}")],
+                ]
+                await query.edit_message_text(
+                    text=(
+                        f"Switch to <code>{_html.escape(model_name)}</code> via <b>{_html.escape(provider)}</b>?"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Error selecting model: {e}")
+            return
+
+        # Cancel model selection
+        if data.startswith("mc:"):
+            chat_id = str(query.message.chat_id)
+            if self._models_cache.get(chat_id):
+                # Go back to the model list page 0
+                reply_markup = self._build_models_keyboard(chat_id, 0)
+                await query.edit_message_text(
+                    text="<b>Select a model:</b>",
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await query.edit_message_text(text="Cancelled.")
+            return
+
+        # Persistent model switch (save as default)
+        if data.startswith("sv:"):
+            try:
+                idx = int(data.split(":", 2)[2])
+                chat_id = str(query.message.chat_id)
+                cache_entry = self._models_cache.get(chat_id)
+                all_models = cache_entry[1] if cache_entry else []
+                if idx < 0 or idx >= len(all_models):
+                    return
+                provider, model_name = all_models[idx]
+
+                import yaml as _y
+                from pathlib import Path as _P
+                _cfg_path = _P.home() / ".hermes" / "config.yaml"
+
+                # Determine effective provider for runtime resolution
+                effective_provider = provider
+                if _cfg_path.exists():
+                    with open(_cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    for cp in cfg.get("custom_providers", []):
+                        if isinstance(cp, dict) and cp.get("name", "").lower() == provider.lower():
+                            effective_provider = f"custom:{provider}"
+                            break
+
+                # Set env vars for immediate effect
+                os.environ["HERMES_MODEL"] = model_name
+                os.environ["HERMES_INFERENCE_PROVIDER"] = effective_provider
+
+                # YAML-safe quoting: values containing : # or leading/trailing
+                # whitespace need single quotes to avoid corruption
+                def _yaml_quote(v: str) -> str:
+                    if any(c in v for c in (':', '#', '{', '}', '[', ']', ',', '&', '*', '?', '|', '-', '<', '>', '=', '!', '%', '@', '`')) or v != v.strip() or not v:
+                        return f"'{v}'"
+                    return v
+
+                # Write to config.yaml — targeted line replacement, not yaml.dump
+                if _cfg_path.exists():
+                    text = _cfg_path.read_text(encoding="utf-8")
+                    lines = text.split('\n')
+                    in_model = False
+                    for i, line in enumerate(lines):
+                        if line.rstrip() == 'model:':
+                            in_model = True
+                            continue
+                        if in_model:
+                            if line.strip() and not line[0].isspace():
+                                break
+                            stripped = line.lstrip()
+                            indent = len(line) - len(line.lstrip())
+                            if stripped.startswith('default:'):
+                                lines[i] = ' ' * indent + f'default: {_yaml_quote(model_name)}'
+                            elif stripped.startswith('provider:'):
+                                lines[i] = ' ' * indent + f'provider: {_yaml_quote(effective_provider)}'
+                    _cfg_path.write_text('\n'.join(lines), encoding="utf-8")
+
+                await query.edit_message_text(
+                    text=f"\U0001f4be Saved <code>{_html.escape(model_name)}</code> via {_html.escape(provider)} as default",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Error persisting model: {e}")
+            return
+
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         if not update.message:

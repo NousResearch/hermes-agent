@@ -400,6 +400,7 @@ class AIAgent:
         clarify_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
+        status_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
@@ -522,6 +523,7 @@ class AIAgent:
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
+        self.status_callback = status_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Tool execution state — allows _vprint during tool execution
@@ -570,6 +572,12 @@ class AIAgent:
         self._budget_caution_threshold = 0.7   # 70% — nudge to start wrapping up
         self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
         self._budget_pressure_enabled = True
+
+        # Context pressure warnings: notify the USER (not the LLM) as context
+        # fills up.  Purely informational — displayed in CLI output and sent via
+        # status_callback for gateway platforms.  Does NOT inject into messages.
+        self._context_50_warned = False
+        self._context_70_warned = False
 
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
@@ -4385,6 +4393,10 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
 
+        # Reset context pressure warnings — usage drops after compaction
+        self._context_50_warned = False
+        self._context_70_warned = False
+
         return compressed, new_system_prompt
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -4964,6 +4976,45 @@ class AIAgent:
                 f"{remaining} iterations left. Start consolidating your work.]"
             )
         return None
+
+    def _emit_context_pressure(self, compaction_progress: float, compressor) -> None:
+        """Notify the user that context is approaching the compaction threshold.
+
+        Args:
+            compaction_progress: How close to compaction (0.0–1.0, where 1.0 = fires).
+            compressor: The ContextCompressor instance (for threshold/context info).
+
+        Purely user-facing — does NOT modify the message stream.
+        For CLI: prints a formatted line with a progress bar.
+        For gateway: fires status_callback so the platform can send a chat message.
+        """
+        from agent.display import format_context_pressure, format_context_pressure_gateway
+
+        threshold_pct = compressor.threshold_tokens / compressor.context_length if compressor.context_length else 0.5
+
+        # CLI output — always shown (these are user-facing status notifications,
+        # not verbose debug output, so they bypass quiet_mode).
+        # Gateway users also get the callback below.
+        if self.platform in (None, "cli"):
+            line = format_context_pressure(
+                compaction_progress=compaction_progress,
+                threshold_tokens=compressor.threshold_tokens,
+                threshold_percent=threshold_pct,
+                compression_enabled=self.compression_enabled,
+            )
+            self._safe_print(line)
+
+        # Gateway / external consumers
+        if self.status_callback:
+            try:
+                msg = format_context_pressure_gateway(
+                    compaction_progress=compaction_progress,
+                    threshold_percent=threshold_pct,
+                    compression_enabled=self.compression_enabled,
+                )
+                self.status_callback("context_pressure", msg)
+            except Exception:
+                logger.debug("status_callback error in context pressure", exc_info=True)
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
         """Request a summary when max iterations are reached. Returns the final response text."""
@@ -6540,6 +6591,23 @@ class AIAgent:
                         + _compressor.last_completion_tokens
                         + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
+
+                    # ── Context pressure warnings (user-facing only) ──────────
+                    # Notify the user (NOT the LLM) as context approaches the
+                    # compaction threshold.  Thresholds are relative to where
+                    # compaction fires, not the raw context window.
+                    # Does not inject into messages — just prints to CLI output
+                    # and fires status_callback for gateway platforms.
+                    if _compressor.threshold_tokens > 0:
+                        _compaction_progress = _estimated_next_prompt / _compressor.threshold_tokens
+                        if _compaction_progress >= 0.85 and not self._context_70_warned:
+                            self._context_70_warned = True
+                            self._context_50_warned = True  # skip first tier if we jumped past it
+                            self._emit_context_pressure(_compaction_progress, _compressor)
+                        elif _compaction_progress >= 0.60 and not self._context_50_warned:
+                            self._context_50_warned = True
+                            self._emit_context_pressure(_compaction_progress, _compressor)
+
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,

@@ -68,6 +68,10 @@ def _run_async(coro):
     loop so that cached async clients (httpx / AsyncOpenAI) remain bound
     to a live loop and don't trigger "Event loop is closed" on GC.
 
+    When called from a worker thread (parallel tool execution), we detect
+    that we're NOT on the main thread and use asyncio.run() with a fresh
+    loop to avoid contention on the shared persistent loop.
+
     This is the single source of truth for sync->async bridging in tool
     handlers. The RL paths (agent_loop.py, tool_context.py) also provide
     outer thread-pool wrapping as defense-in-depth, but each handler is
@@ -79,10 +83,17 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
+        # Inside an async context (gateway, RL env) — run in a fresh thread.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
+
+    # If we're on a worker thread (e.g., parallel tool execution),
+    # use asyncio.run() with its own loop to avoid contending with the
+    # shared persistent loop from another parallel worker.
+    if threading.current_thread() is not threading.main_thread():
+        return asyncio.run(coro)
 
     tool_loop = _get_tool_loop()
     return tool_loop.run_until_complete(coro)

@@ -222,6 +222,12 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 
 logger = logging.getLogger(__name__)
 
+# Sentinel placed into _running_agents immediately when a session starts
+# processing, *before* any await.  Prevents a second message for the same
+# session from bypassing the "already running" guard during the async gap
+# between the guard check and actual agent creation.
+_AGENT_PENDING_SENTINEL = object()
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
@@ -1050,6 +1056,8 @@ class GatewayRunner:
         self._running = False
 
         for session_key, agent in list(self._running_agents.items()):
+            if agent is _AGENT_PENDING_SENTINEL:
+                continue
             try:
                 agent.interrupt("Gateway shutting down")
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
@@ -1346,7 +1354,18 @@ class GatewayRunner:
                         adapter._pending_messages[_quick_key] = event
                 return None
 
-            running_agent = self._running_agents[_quick_key]
+            running_agent = self._running_agents.get(_quick_key)
+            if running_agent is _AGENT_PENDING_SENTINEL:
+                # Agent is being set up but not ready yet.
+                if event.get_command() == "stop":
+                    # Nothing to interrupt — agent hasn't started yet.
+                    return "⏳ The agent is still starting up — nothing to stop yet."
+                # Queue the message so it will be picked up after the
+                # agent starts.
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    adapter._pending_messages[_quick_key] = event
+                return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:
@@ -1354,7 +1373,7 @@ class GatewayRunner:
             else:
                 self._pending_messages[_quick_key] = event.text
             return None
-        
+
         # Check for commands
         command = event.get_command()
         
@@ -1527,7 +1546,29 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
-        
+
+        # ── Claim this session before any await ───────────────────────
+        # Between here and _run_agent registering the real AIAgent, there
+        # are numerous await points (hooks, vision enrichment, STT,
+        # session hygiene compression).  Without this sentinel a second
+        # message arriving during any of those yields would pass the
+        # "already running" guard and spin up a duplicate agent for the
+        # same session — corrupting the transcript.
+        self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+
+        try:
+            return await self._handle_message_with_agent(event, source, _quick_key)
+        finally:
+            # If _run_agent replaced the sentinel with a real agent and
+            # then cleaned it up, this is a no-op.  If we exited early
+            # (exception, command fallthrough, etc.) the sentinel must
+            # not linger or the session would be permanently locked out.
+            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
+                del self._running_agents[_quick_key]
+
+    async def _handle_message_with_agent(self, event, source, _quick_key: str):
+        """Inner handler that runs under the _running_agents sentinel guard."""
+
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -2291,8 +2332,10 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         
-        if session_key in self._running_agents:
-            agent = self._running_agents[session_key]
+        agent = self._running_agents.get(session_key)
+        if agent is _AGENT_PENDING_SENTINEL:
+            return "⏳ The agent is still starting up — nothing to stop yet."
+        if agent:
             agent.interrupt()
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:

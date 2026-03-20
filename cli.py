@@ -1524,9 +1524,11 @@ class HermesCLI:
         # Track whether we're inside a reasoning/thinking block.
         # These tags are model-generated (system prompt tells the model
         # to use them) and get stripped from final_response. We must
-        # suppress them during streaming too.
-        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>")
-        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>")
+        # suppress them during streaming too — unless show_reasoning is
+        # enabled, in which case we route the inner content to the
+        # reasoning display box instead of discarding it.
+        _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>")
+        _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>")
 
         # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text
@@ -1566,6 +1568,12 @@ class HermesCLI:
                 idx = self._stream_prefilt.find(tag)
                 if idx != -1:
                     self._in_reasoning_block = False
+                    # When show_reasoning is on, route inner content to
+                    # the reasoning display box instead of discarding.
+                    if self.show_reasoning:
+                        inner = self._stream_prefilt[:idx]
+                        if inner:
+                            self._stream_reasoning_delta(inner)
                     after = self._stream_prefilt[idx + len(tag):]
                     self._stream_prefilt = ""
                     # Process remaining text after close tag through full
@@ -1573,10 +1581,15 @@ class HermesCLI:
                     if after:
                         self._stream_delta(after)
                     return
-            # Still inside reasoning block — keep only the tail that could
-            # be a partial close tag prefix (save memory on long blocks).
+            # When show_reasoning is on, stream reasoning content live
+            # instead of silently accumulating. Keep only the tail that
+            # could be a partial close tag prefix.
             max_tag_len = max(len(t) for t in _CLOSE_TAGS)
             if len(self._stream_prefilt) > max_tag_len:
+                if self.show_reasoning:
+                    # Route the safe prefix to reasoning display
+                    safe_reasoning = self._stream_prefilt[:-max_tag_len]
+                    self._stream_reasoning_delta(safe_reasoning)
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
             return
 

@@ -323,11 +323,14 @@ class TestMarkJobRun:
 
 class TestGetDueJobs:
     def test_past_due_within_window_returned(self, tmp_cron_dir):
-        """Jobs less than 2 minutes late are still considered due (not stale)."""
+        """Jobs within the dynamic grace window are still considered due (not stale).
+
+        For an hourly job, grace = 30 min (half the period, clamped to [120s, 2h]).
+        """
         job = create_job(prompt="Due now", schedule="every 1h")
-        # Force next_run_at to just 1 minute ago (within the 2-min window)
+        # Force next_run_at to 10 minutes ago (within the 30-min grace for hourly)
         jobs = load_jobs()
-        jobs[0]["next_run_at"] = (datetime.now() - timedelta(seconds=60)).isoformat()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=10)).isoformat()
         save_jobs(jobs)
 
         due = get_due_jobs()
@@ -335,11 +338,14 @@ class TestGetDueJobs:
         assert due[0]["id"] == job["id"]
 
     def test_stale_past_due_skipped(self, tmp_cron_dir):
-        """Recurring jobs more than 2 minutes late are fast-forwarded, not fired."""
+        """Recurring jobs past their dynamic grace window are fast-forwarded, not fired.
+
+        For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
+        """
         job = create_job(prompt="Stale", schedule="every 1h")
-        # Force next_run_at to 5 minutes ago (beyond the 2-min window)
+        # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
         jobs = load_jobs()
-        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
         save_jobs(jobs)
 
         due = get_due_jobs()

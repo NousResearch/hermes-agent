@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
@@ -105,9 +106,14 @@ class TestEstimateMessagesTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
-    def test_claude_models_200k(self):
+    def test_claude_models_context_lengths(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "claude" in key:
+            if "claude" not in key:
+                continue
+            # Claude 4.6 models have 1M context
+            if "4.6" in key or "4-6" in key:
+                assert value == 1000000, f"{key} should be 1000000"
+            else:
                 assert value == 200000, f"{key} should be 200000"
 
     def test_gpt4_models_128k_or_1m(self):
@@ -293,6 +299,49 @@ class TestGetModelContextLength:
 
 
 # =========================================================================
+# _strip_provider_prefix — Ollama model:tag vs provider:model
+# =========================================================================
+
+class TestStripProviderPrefix:
+    def test_known_provider_prefix_is_stripped(self):
+        assert _strip_provider_prefix("local:my-model") == "my-model"
+        assert _strip_provider_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+        assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
+
+    def test_ollama_model_tag_preserved(self):
+        """Ollama model:tag format must NOT be stripped."""
+        assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"
+        assert _strip_provider_prefix("llama3.3:70b") == "llama3.3:70b"
+        assert _strip_provider_prefix("gemma2:9b") == "gemma2:9b"
+        assert _strip_provider_prefix("codellama:13b-instruct-q4_0") == "codellama:13b-instruct-q4_0"
+
+    def test_http_urls_preserved(self):
+        assert _strip_provider_prefix("http://example.com") == "http://example.com"
+        assert _strip_provider_prefix("https://example.com") == "https://example.com"
+
+    def test_no_colon_returns_unchanged(self):
+        assert _strip_provider_prefix("gpt-4o") == "gpt-4o"
+        assert _strip_provider_prefix("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_ollama_model_tag_not_mangled_in_context_lookup(self, mock_fetch):
+        """Ensure 'qwen3.5:27b' is NOT reduced to '27b' during context length lookup.
+
+        We mock a custom endpoint that knows 'qwen3.5:27b' — the full name
+        must reach the endpoint metadata lookup intact.
+        """
+        mock_fetch.return_value = {}
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata") as mock_ep, \
+             patch("agent.model_metadata._is_custom_endpoint", return_value=True):
+            mock_ep.return_value = {"qwen3.5:27b": {"context_length": 32768}}
+            result = get_model_context_length(
+                "qwen3.5:27b",
+                base_url="http://localhost:11434/v1",
+            )
+        assert result == 32768
+
+
+# =========================================================================
 # fetch_model_metadata — caching, TTL, slugs, failures
 # =========================================================================
 
@@ -423,35 +472,35 @@ class TestContextProbeTiers:
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
 
-    def test_first_tier_is_2m(self):
-        assert CONTEXT_PROBE_TIERS[0] == 2_000_000
+    def test_first_tier_is_128k(self):
+        assert CONTEXT_PROBE_TIERS[0] == 128_000
 
-    def test_last_tier_is_32k(self):
-        assert CONTEXT_PROBE_TIERS[-1] == 32_000
+    def test_last_tier_is_8k(self):
+        assert CONTEXT_PROBE_TIERS[-1] == 8_000
 
 
 class TestGetNextProbeTier:
-    def test_from_2m(self):
-        assert get_next_probe_tier(2_000_000) == 1_000_000
-
-    def test_from_1m(self):
-        assert get_next_probe_tier(1_000_000) == 512_000
-
     def test_from_128k(self):
         assert get_next_probe_tier(128_000) == 64_000
 
-    def test_from_32k_returns_none(self):
-        assert get_next_probe_tier(32_000) is None
+    def test_from_64k(self):
+        assert get_next_probe_tier(64_000) == 32_000
+
+    def test_from_32k(self):
+        assert get_next_probe_tier(32_000) == 16_000
+
+    def test_from_8k_returns_none(self):
+        assert get_next_probe_tier(8_000) is None
 
     def test_from_below_min_returns_none(self):
-        assert get_next_probe_tier(16_000) is None
+        assert get_next_probe_tier(4_000) is None
 
     def test_from_arbitrary_value(self):
-        assert get_next_probe_tier(300_000) == 200_000
+        assert get_next_probe_tier(100_000) == 64_000
 
     def test_above_max_tier(self):
-        """Value above 2M should return 2M."""
-        assert get_next_probe_tier(5_000_000) == 2_000_000
+        """Value above 128K should return 128K."""
+        assert get_next_probe_tier(500_000) == 128_000
 
     def test_zero_returns_none(self):
         assert get_next_probe_tier(0) is None

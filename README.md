@@ -146,8 +146,8 @@ git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 git submodule update --init mini-swe-agent   # required terminal backend
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
+uv venv venv --python 3.11
+source venv/bin/activate
 uv pip install -e ".[all,dev]"
 uv pip install -e "./mini-swe-agent"
 python -m pytest tests/ -q

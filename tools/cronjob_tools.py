@@ -336,11 +336,9 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
-NOTE: The agent's final response is auto-delivered to the target — do NOT use
-send_message in the prompt for that same destination. Same-target send_message
-calls are skipped to avoid duplicate cron deliveries. Put the primary
-user-facing content in the final response, and use send_message only for
-additional or different targets.
+NOTE: The agent's final response is auto-delivered to the target. Put the primary
+user-facing content in the final response. Cron jobs run autonomously with no user
+present — they cannot ask questions or request clarification.
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {

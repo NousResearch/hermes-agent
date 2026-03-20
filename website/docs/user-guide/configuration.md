@@ -416,7 +416,19 @@ LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
 
 ### Context Length Detection
 
-Hermes automatically detects your model's context length by querying the endpoint's `/v1/models` response. For most setups this works out of the box. If detection fails (the model name doesn't match, the endpoint doesn't expose `/v1/models`, etc.), Hermes falls back to a high default and probes downward on context-length errors.
+Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
+
+1. **Config override** — `model.context_length` in config.yaml (highest priority)
+2. **Custom provider per-model** — `custom_providers[].models.<id>.context_length`
+3. **Persistent cache** — previously discovered values (survives restarts)
+4. **Endpoint `/models`** — queries your server's API (local/custom endpoints)
+5. **Anthropic `/v1/models`** — queries Anthropic's API for `max_input_tokens` (API-key users only)
+6. **OpenRouter API** — live model metadata from OpenRouter
+7. **Nous Portal** — suffix-matches Nous model IDs against OpenRouter metadata
+8. **[models.dev](https://models.dev)** — community-maintained registry with provider-specific context lengths for 3800+ models across 100+ providers
+9. **Fallback defaults** — broad model family patterns (128K default)
+
+For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
 
 To set the context length explicitly, add `context_length` to your model config:
 
@@ -427,10 +439,23 @@ model:
   context_length: 131072  # tokens
 ```
 
-This takes highest priority — it overrides auto-detection, cached values, and hardcoded defaults.
+For custom endpoints, you can also set context length per model:
+
+```yaml
+custom_providers:
+  - name: "My Local LLM"
+    base_url: "http://localhost:11434/v1"
+    models:
+      qwen3.5:27b:
+        context_length: 32768
+      deepseek-r1:70b:
+        context_length: 65536
+```
+
+`hermes model` will prompt for context length when configuring a custom endpoint. Leave it blank for auto-detection.
 
 :::tip When to set this manually
-- Your model shows "2M context" in the status bar (detection failed)
+- You're using Ollama with a custom `num_ctx` that's lower than the model's maximum
 - You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
 - You're running behind a proxy that doesn't expose `/v1/models`
 :::

@@ -459,7 +459,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     )
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
 
-    answers = iter(["http://localhost:8000", "local-key", "llm"])
+    answers = iter(["http://localhost:8000", "local-key", "llm", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
     hermes_main._model_flow_custom({})

@@ -160,6 +160,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.kimi.com": "kimi-coding",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
+    "dashscope-intl.aliyuncs.com": "alibaba",
     "openrouter.ai": "openrouter",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",

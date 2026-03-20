@@ -855,23 +855,25 @@ class SessionDB:
 
     def session_count(self, source: str = None) -> int:
         """Count sessions, optionally filtered by source."""
-        if source:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-            )
-        else:
-            cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
-        return cursor.fetchone()[0]
+        with self._lock:
+            if source:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
+                )
+            else:
+                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
-        if session_id:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-            )
-        else:
-            cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
-        return cursor.fetchone()[0]
+        with self._lock:
+            if session_id:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+                )
+            else:
+                cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
+            return cursor.fetchone()[0]
 
     # =========================================================================
     # Export and cleanup

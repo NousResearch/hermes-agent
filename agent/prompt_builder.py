@@ -560,6 +560,23 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
         if soul_content:
             sections.append(soul_content)
 
+    # ~/.hermes/context/*.md — persistent project context files
+    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    hermes_context_dir = Path(hermes_home) / "context"
+    if hermes_context_dir.exists() and hermes_context_dir.is_dir():
+        context_parts = []
+        for ctx_file in sorted(hermes_context_dir.glob("*.md")):
+            try:
+                content = ctx_file.read_text(encoding="utf-8").strip()
+                if content:
+                    context_parts.append(f"## {ctx_file.name}\n\n{content}")
+            except Exception as e:
+                logger.debug("Could not read %s: %s", ctx_file, e)
+        if context_parts:
+            combined = "\n\n".join(context_parts)
+            combined = _truncate_content(combined, "hermes/context")
+            sections.append(combined)
+
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)

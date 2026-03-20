@@ -71,6 +71,19 @@ from tools.browser_tool import cleanup_browser
 import requests
 
 from hermes_constants import OPENROUTER_BASE_URL, OPENROUTER_MODELS_URL
+from agent.context_anchors import (
+    parse_anchor_config,
+    get_max_total_chars as get_anchors_max_total,
+    is_auto_save_enabled as anchors_auto_save_enabled,
+    load_all_anchors,
+    get_anchor_paths_for_summary,
+    detect_active_anchors,
+    build_batch_anchor_save_prompt,
+    should_pre_flush,
+    build_pre_flush_nudge,
+    snapshot_anchor_hashes,
+    anchors_changed_since,
+)
 
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
@@ -867,6 +880,14 @@ class AIAgent:
         self._user_profile_enabled = False
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
+
+        # Context anchors: persistent project memory that survives compression
+        self._context_anchors = parse_anchor_config(_agent_cfg)
+        self._anchors_max_total = get_anchors_max_total(_agent_cfg)
+        self._anchors_auto_save = anchors_auto_save_enabled(_agent_cfg)
+        self._active_anchors = None  # set by _flush_anchor_state
+        self._anchor_pre_flush_sent = False  # one nudge per session
+        self._anchor_hashes_at_nudge = {}  # snapshot taken when nudge is sent
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -973,6 +994,7 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+        self._anchor_flush_model = compression_summary_model  # reuse cheap model for anchor flush
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -989,7 +1011,7 @@ class AIAgent:
         self.context_compressor = ContextCompressor(
             model=self.model,
             threshold_percent=compression_threshold,
-            protect_first_n=3,
+            protect_first_n=1,
             protect_last_n=4,
             summary_target_tokens=500,
             summary_model_override=compression_summary_model,
@@ -997,6 +1019,7 @@ class AIAgent:
             base_url=self.base_url,
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
+            anchor_paths=get_anchor_paths_for_summary(self._context_anchors),
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -4287,6 +4310,154 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _flush_anchor_state(self, messages: list):
+        """Auto-save project state to relevant anchor files before compression.
+
+        Batch + multi-round design:
+        - ONE prompt for ALL active anchors (not one per anchor)
+        - Round 1: model emits read_file calls -> we execute -> feed results back
+        - Round 2: model emits patch calls -> we execute
+        - Max 3 rounds to be safe
+        """
+        if not self._context_anchors:
+            return
+
+        self._active_anchors = detect_active_anchors(self._context_anchors, messages)
+        if not self._active_anchors:
+            return
+
+        # Skip flush if pre-flush nudge already caused the model to save
+        _old_hashes = getattr(self, "_anchor_hashes_at_nudge", {})
+        if _old_hashes and anchors_changed_since(self._active_anchors, _old_hashes):
+            if not self.quiet_mode:
+                logger.info("Context anchors: skipping flush, files already updated by pre-flush")
+            self._anchor_hashes_at_nudge = {}
+            return
+
+        from agent.auxiliary_client import call_llm as _call_llm
+
+        # Build minimal tool set: read_file + patch only
+        anchor_tools = []
+        for t in (self.tools or []):
+            fname = t.get("function", {}).get("name", "")
+            if fname in ("read_file", "patch"):
+                anchor_tools.append(t)
+
+        if not anchor_tools:
+            return
+
+        # Allowed paths: only the anchor files themselves
+        allowed_paths = {a["path"] for a in self._active_anchors}
+
+        # Single prompt for all active anchors
+        flush_content = build_batch_anchor_save_prompt(self._active_anchors)
+
+        # Build MINIMAL context for the flush LLM (not the full conversation)
+        # Only need: recent user/assistant messages (no tool results) for context
+        _slim_messages = []
+        for msg in messages[-20:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                # Truncate long messages
+                if len(content) > 1500:
+                    content = content[:750] + "\n...[truncated]...\n" + content[-250:]
+                _slim_messages.append({"role": role, "content": content})
+        _slim_messages.append({"role": "user", "content": flush_content})
+
+        # Resolve flush model: prefer cheap model (same as compression summary)
+        _flush_model = getattr(self, "_anchor_flush_model", None)
+        _flush_kwargs = {}
+        if _flush_model:
+            _flush_kwargs["model"] = _flush_model
+
+        flush_start_idx = len(messages)
+
+        try:
+            # Multi-round loop: read -> patch -> done
+            max_rounds = 3
+            flush_messages = []  # local conversation for the flush
+
+            for round_num in range(max_rounds):
+                # Build API messages: slim context + flush-local messages
+                api_messages = list(_slim_messages) + flush_messages
+
+                try:
+                    response = _call_llm(
+                        task="anchor_flush",
+                        messages=api_messages,
+                        tools=anchor_tools,
+                        temperature=0.3,
+                        max_tokens=4096,
+                        timeout=30.0,
+                        **_flush_kwargs,
+                    )
+                except Exception as e:
+                    logger.debug("Anchor flush LLM call failed (round %d): %s", round_num, e)
+                    break
+
+                # Extract tool calls
+                tool_calls = []
+                if hasattr(response, "choices") and response.choices:
+                    assistant_msg = response.choices[0].message
+                    if assistant_msg.tool_calls:
+                        tool_calls = assistant_msg.tool_calls
+                        # Add assistant message to flush conversation
+                        flush_messages.append({
+                            "role": "assistant",
+                            "content": assistant_msg.content or "",
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for tc in tool_calls
+                            ],
+                        })
+
+                if not tool_calls:
+                    # Model is done (no more tool calls)
+                    break
+
+                # Execute tool calls and collect results
+                for tc in tool_calls:
+                    fname = tc.function.name
+                    if fname not in ("read_file", "patch"):
+                        flush_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": "Error: only read_file and patch are allowed.",
+                        })
+                        continue
+
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        # Security: only allow operations on anchor files
+                        target_path = args.get("path", "")
+                        resolved = str(Path(target_path).resolve()) if target_path else ""
+                        if resolved not in allowed_paths:
+                            result = f"Error: access denied. Only anchor files can be modified: {', '.join(allowed_paths)}"
+                        else:
+                            result = handle_function_call(fname, args)
+                            if not self.quiet_mode:
+                                print(f"  📌 Anchor flush: {fname} on {target_path}")
+                    except Exception as e:
+                        result = f"Error: {e}"
+                        logger.debug("Anchor flush tool call failed: %s", e)
+
+                    flush_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": str(result) if result else "OK",
+                    })
+
+        except Exception as e:
+            logger.debug("Anchor flush failed: %s", e)
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -4295,6 +4466,10 @@ class AIAgent:
         """
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
+
+        # Pre-compression anchor save: update project context files before they're lost
+        if self._context_anchors and self._anchors_auto_save:
+            self._flush_anchor_state(messages)
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
@@ -4320,6 +4495,25 @@ class AIAgent:
                 )})
         except Exception:
             pass  # Don't break compression if file tracking fails
+
+        # Re-inject context anchors: only those relevant to the conversation
+        if self._context_anchors:
+            try:
+                active = getattr(self, "_active_anchors", None) or None
+                anchor_content = load_all_anchors(
+                    self._context_anchors,
+                    max_total=self._anchors_max_total,
+                    only_anchors=active,
+                )
+                if anchor_content:
+                    compressed.append({"role": "user", "content": anchor_content})
+                    if not self.quiet_mode:
+                        n = len(active) if active else len(self._context_anchors)
+                        logger.info(
+                            "Context anchors: injected %d anchor(s) after compression", n,
+                        )
+            except Exception as e:
+                logger.debug("Context anchor injection failed: %s", e)
 
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
@@ -6506,7 +6700,26 @@ class AIAgent:
                         + _compressor.last_completion_tokens
                         + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
+                    # Pre-flush nudge: if approaching compression, tell the model
+                    # to save anchor files proactively (in its normal flow, no extra LLM call)
+                    if (self.compression_enabled
+                            and self._context_anchors
+                            and not self._anchor_pre_flush_sent
+                            and should_pre_flush(_compressor.threshold_tokens, _estimated_next_prompt)):
+                        _pre_active = detect_active_anchors(self._context_anchors, messages)
+                        if _pre_active:
+                            messages.append({
+                                "role": "user",
+                                "content": build_pre_flush_nudge(_pre_active),
+                            })
+                            self._anchor_pre_flush_sent = True
+                            self._anchor_hashes_at_nudge = snapshot_anchor_hashes(_pre_active)
+                            if not self.quiet_mode:
+                                logger.info("Context anchors: pre-flush nudge injected at %d%% capacity",
+                                    int(_estimated_next_prompt / _compressor.threshold_tokens * 100))
+
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
+                        self._anchor_pre_flush_sent = False  # reset for next compression cycle
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,

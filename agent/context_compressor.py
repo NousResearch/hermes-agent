@@ -47,6 +47,7 @@ class ContextCompressor:
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
+        anchor_paths: list = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -70,6 +71,7 @@ class ContextCompressor:
         self.last_total_tokens = 0
 
         self.summary_model = summary_model_override or ""
+        self._anchor_paths = anchor_paths or []
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -118,6 +120,19 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
+        # Build anchor-awareness clause if anchor paths are provided
+        anchor_clause = ""
+        if self._anchor_paths:
+            paths_list = "\n".join(f"  - {p}" for p in self._anchor_paths)
+            anchor_clause = (
+                f"\n\nIMPORTANT: The following project context files will be automatically "
+                f"re-injected after compression. Do NOT duplicate their content in your "
+                f"summary. Reference them instead (e.g. 'See <path> for current state.'):\n"
+                f"{paths_list}\n"
+                f"Focus on: actions taken, user preferences expressed, decisions made, "
+                f"and task progress NOT already captured in those files.\n"
+            )
+
         prompt = f"""Create a concise handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
 
 Describe:
@@ -125,7 +140,7 @@ Describe:
 2. Key information or results obtained
 3. Important decisions, constraints, or user preferences
 4. Relevant data, file names, outputs, or next steps needed to continue
-
+{anchor_clause}
 Keep it factual, concise, and focused on helping the next assistant resume without repeating work. Target ~{self.summary_target_tokens} tokens.
 
 ---

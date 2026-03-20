@@ -1094,23 +1094,30 @@ class AIAgent:
 
     def _has_content_after_think_block(self, content: str) -> bool:
         """
-        Check if content has actual text after any <think></think> blocks.
-        
+        Check if content has actual text after any reasoning/thinking blocks.
+
         This detects cases where the model only outputs reasoning but no actual
         response, which indicates an incomplete generation that should be retried.
-        
+
+        Uses the same tag variants as _strip_think_blocks so that models using
+        <thinking>, <reasoning>, or <REASONING_SCRATCHPAD> (e.g. Qwen, local
+        models) are handled consistently — not just <think> (DeepSeek-R1).
+
         Args:
             content: The assistant message content to check
-            
+
         Returns:
             True if there's meaningful content after think blocks, False otherwise
         """
         if not content:
             return False
-        
-        # Remove all <think>...</think> blocks (including nested ones, non-greedy)
+
+        # Remove all reasoning tag variants (must match _strip_think_blocks)
         cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-        
+        cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r'<reasoning>.*?</reasoning>', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', cleaned, flags=re.DOTALL)
+
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
     

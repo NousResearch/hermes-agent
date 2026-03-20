@@ -23,6 +23,7 @@ hermes-agent/
 │   ├── prompt_caching.py     # Anthropic prompt caching
 │   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
 │   ├── model_metadata.py     # Model context lengths, token estimation
+│   ├── models_dev.py         # models.dev registry integration (provider-aware context)
 │   ├── display.py            # KawaiiSpinner, tool preview formatting
 │   ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
 │   └── trajectory.py         # Trajectory saving helpers

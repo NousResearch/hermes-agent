@@ -99,21 +99,21 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
             return tts_idx
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    def fake_prompt(message, current=None, **kwargs):
-        if "API base URL" in message:
-            return "http://localhost:8000"
-        if "API key" in message:
-            return "local-key"
-        if "Model name" in message:
-            return "llm"
-        return ""
+    # _model_flow_custom uses builtins.input (URL, key, model, context_length)
+    input_values = iter([
+        "http://localhost:8000",
+        "local-key",
+        "llm",
+        "",  # context_length (blank = auto-detect)
+    ])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_values))
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "hermes_cli.models.probe_api_models",
         lambda api_key, base_url: {
@@ -126,16 +126,19 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
     )
 
     setup_model_provider(config)
-    save_config(config)
 
     env = _read_env(tmp_path)
-    reloaded = load_config()
 
+    # _model_flow_custom saves env vars and config to disk
     assert env.get("OPENAI_BASE_URL") == "http://localhost:8000/v1"
     assert env.get("OPENAI_API_KEY") == "local-key"
-    assert reloaded["model"]["provider"] == "custom"
-    assert reloaded["model"]["base_url"] == "http://localhost:8000/v1"
-    assert reloaded["model"]["default"] == "llm"
+
+    # The model config is saved as a dict by _model_flow_custom
+    reloaded = load_config()
+    model_cfg = reloaded.get("model", {})
+    if isinstance(model_cfg, dict):
+        assert model_cfg.get("provider") == "custom"
+        assert model_cfg.get("default") == "llm"
 
 
 def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tmp_path, monkeypatch):

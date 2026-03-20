@@ -1137,9 +1137,20 @@ def _model_flow_custom(config):
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
         api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
         model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
 
     if not base_url and not current_url:
         print("No URL provided. Cancelled.")
@@ -1203,14 +1214,14 @@ def _model_flow_custom(config):
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
-    _save_custom_provider(effective_url, effective_key, model_name or "")
+    _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length)
 
 
-def _save_custom_provider(base_url, api_key="", model=""):
+def _save_custom_provider(base_url, api_key="", model="", context_length=None):
     """Save a custom endpoint to custom_providers in config.yaml.
 
     Deduplicates by base_url — if the URL already exists, updates the
-    model name but doesn't add a duplicate entry.
+    model name and context_length but doesn't add a duplicate entry.
     Auto-generates a display name from the URL hostname.
     """
     from hermes_cli.config import load_config, save_config
@@ -1220,14 +1231,24 @@ def _save_custom_provider(base_url, api_key="", model=""):
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model if so
+    # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/"):
+            changed = False
             if model and entry.get("model") != model:
                 entry["model"] = model
+                changed = True
+            if model and context_length:
+                models_cfg = entry.get("models", {})
+                if not isinstance(models_cfg, dict):
+                    models_cfg = {}
+                models_cfg[model] = {"context_length": context_length}
+                entry["models"] = models_cfg
+                changed = True
+            if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
-            return  # already saved, updated model if needed
+            return  # already saved, updated if needed
 
     # Auto-generate a name from the URL
     import re
@@ -1249,6 +1270,8 @@ def _save_custom_provider(base_url, api_key="", model=""):
         entry["api_key"] = api_key
     if model:
         entry["model"] = model
+    if model and context_length:
+        entry["models"] = {model: {"context_length": context_length}}
 
     providers.append(entry)
     cfg["custom_providers"] = providers

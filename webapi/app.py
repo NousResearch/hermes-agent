@@ -7,6 +7,7 @@ from webapi.errors import register_error_handlers
 from webapi.routes.chat import router as chat_router
 from webapi.routes.config import router as config_router
 from webapi.routes.health import router as health_router
+from webapi.routes.jobs import router as jobs_router
 from webapi.routes.memory import router as memory_router
 from webapi.routes.models import router as models_router
 from webapi.routes.sessions import router as sessions_router
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(memory_router)
     app.include_router(skills_router)
     app.include_router(config_router)
+    app.include_router(jobs_router)
 
     return app
 

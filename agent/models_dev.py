@@ -107,11 +107,12 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("Failed to fetch models.dev: %s", e)
 
-    # Fall back to disk cache
+    # Fall back to disk cache — use a short TTL (5 min) so we retry
+    # the network fetch soon instead of serving stale data for a full hour.
     if not _models_dev_cache:
         _models_dev_cache = _load_disk_cache()
         if _models_dev_cache:
-            _models_dev_cache_time = time.time()
+            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
             logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
 
     return _models_dev_cache

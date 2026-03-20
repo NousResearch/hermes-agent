@@ -410,6 +410,8 @@ class AIAgent:
         honcho_session_key: str = None,
         honcho_manager=None,
         honcho_config=None,
+        qmd_manager=None,
+        qmd_config=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         checkpoints_enabled: bool = False,
@@ -458,6 +460,9 @@ class AIAgent:
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
             honcho_manager: Optional shared HonchoSessionManager owned by the caller.
             honcho_config: Optional HonchoClientConfig corresponding to honcho_manager.
+            qmd_manager: Optional QMDSessionManager for QMD integration (strict alternative to Honcho).
+                When provided, QMD is used instead of Honcho for memory management.
+            qmd_config: Optional QMDClientConfig corresponding to qmd_manager.
         """
         _install_safe_stdio()
 
@@ -931,6 +936,48 @@ class AIAgent:
                 print(f"  Honcho init failed: {e}")
                 print("  Run 'hermes honcho setup' to reconfigure.")
                 self._honcho = None
+
+        # QMD Integration — native anticipatory memory (strict alternative to Honcho)
+        # When qmd_manager is provided, QMD takes precedence over Honcho.
+        # This is a strict OR relationship — both cannot be active simultaneously.
+        self._qmd = None  # QMDSessionManager | None
+        self._qmd_config = None  # QMDClientConfig | None
+        if not skip_memory:
+            try:
+                if qmd_manager is not None:
+                    # Gateway-provided QMD manager takes priority
+                    self._qmd = qmd_manager
+                    self._qmd_config = qmd_config
+                    if self._qmd.is_ready:
+                        logger.info("QMD integration active (server: %s)", qmd_config.server_url if qmd_config else "unknown")
+                elif self._honcho is None:
+                    # Only init QMD if Honcho is not active (strict OR)
+                    # Check if QMD is enabled in config
+                    try:
+                        from qmd_integration.config import QMDClientConfig
+                        from qmd_integration.session import QMDSessionManager
+                        from qmd_integration.client import get_qmd_client
+
+                        qcfg = QMDClientConfig.from_config_dict(_agent_cfg.get("qmd", {}))
+                        if qcfg.enabled:
+                            self._qmd_config = qcfg
+                            client = get_qmd_client(qcfg)
+                            self._qmd = QMDSessionManager(
+                                client=client,
+                                config=qcfg,
+                            )
+                            if self._qmd.is_ready:
+                                logger.info("QMD integration active (server: %s)", qcfg.server_url)
+                            else:
+                                logger.warning("QMD server not available at %s", qcfg.server_url)
+                                self._qmd = None
+                    except ImportError:
+                        logger.debug("QMD integration not available (qmd_integration not installed)")
+                    except Exception as e:
+                        logger.debug("QMD init failed: %s", e)
+            except Exception as e:
+                logger.warning("QMD init failed — memory disabled: %s", e)
+                self._qmd = None
 
         # Tools are initially discovered before Honcho activation. If Honcho
         # stays inactive, remove any stale honcho_* tools from prior process state.
@@ -5171,17 +5218,36 @@ class AIAgent:
         # to consume background prefetch results from turn N-1.
         self._honcho_context = ""
         self._honcho_turn_context = ""
-        _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
-        if self._honcho and self._honcho_session_key and _recall_mode != "tools":
-            try:
-                prefetched_context = self._honcho_prefetch(original_user_message)
-                if prefetched_context:
-                    if not conversation_history:
-                        self._honcho_context = prefetched_context
-                    else:
-                        self._honcho_turn_context = prefetched_context
-            except Exception as e:
-                logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+        self._qmd_context = ""
+        self._qmd_turn_context = ""
+        # QMD takes priority over Honcho — if QMD server is reachable, skip Honcho entirely
+        _use_qmd = False
+        try:
+            import sys
+            sys.path.insert(0, str(Path.home() / ".hermes" / "qmd_server"))
+            from qmd_client import fetch_qmd_context
+            qmd_result = fetch_qmd_context(original_user_message or "What were we working on?")
+            if qmd_result:
+                if not conversation_history:
+                    self._qmd_context = qmd_result
+                else:
+                    self._qmd_turn_context = qmd_result
+                _use_qmd = True
+        except Exception as e:
+            logger.debug("QMD prefetch failed (non-fatal): %s", e)
+
+        if not _use_qmd:
+            _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
+            if self._honcho and self._honcho_session_key and _recall_mode != "tools":
+                try:
+                    prefetched_context = self._honcho_prefetch(original_user_message)
+                    if prefetched_context:
+                        if not conversation_history:
+                            self._honcho_context = prefetched_context
+                        else:
+                            self._honcho_turn_context = prefetched_context
+                except Exception as e:
+                    logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -5221,8 +5287,18 @@ class AIAgent:
                 # First turn of a new session — build from scratch.
                 self._cached_system_prompt = self._build_system_prompt(system_message)
                 # Bake Honcho context into the prompt so it's stable for
-                # the entire session (not re-fetched per turn).
-                if self._honcho_context:
+                # QMD context baked into system prompt for first turn
+                if self._qmd_context:
+                    qmd_header = (
+                        "# Anticipatory Memory (QMD — persistent semantic memory)\n"
+                        "The following memories were retrieved based on this session's topic. "
+                        "Use them to maintain continuity. Do not re-fetch information already present.\n"
+                    )
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + qmd_header + self._qmd_context
+                    ).strip()
+                # Honcho context only used when QMD is unavailable
+                elif self._honcho_context:
                     self._cached_system_prompt = (
                         self._cached_system_prompt + "\n\n" + self._honcho_context
                     ).strip()
@@ -5341,10 +5417,21 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                # QMD turn context injected per-turn (overrides Honcho if both somehow set)
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    if self._qmd_turn_context:
+                        note = (
+                            "[System note: The following anticipatory memories were retrieved "
+                            "from prior sessions. It is continuity context for this turn only, "
+                            "not new user input.]\n\n"
+                            f"{self._qmd_turn_context}"
+                        )
+                        content = api_msg.get("content", "") or ""
+                        api_msg["content"] = f"{content}\n\n{note}" if content else note
+                    elif self._honcho_turn_context:
+                        api_msg["content"] = _inject_honcho_turn_context(
+                            api_msg.get("content", ""), self._honcho_turn_context
+                        )
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

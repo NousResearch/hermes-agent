@@ -15,6 +15,10 @@ Usage:
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
+    hermes memory status              # Show current memory backend and config
+    hermes memory mode [qmd|honcho|off]  # Switch memory backend
+    hermes memory setup               # Interactive memory backend setup
+    hermes memory config              # Show/update QMD configuration
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
@@ -896,8 +900,12 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+    elif selected_provider == "minimax":
+        _model_flow_minimax(config, current_model)
+    elif selected_provider == "minimax-cn":
+        _model_flow_minimax_cn(config, current_model)
 
 
 def _prompt_provider_choice(choices):
@@ -1061,6 +1069,154 @@ def _model_flow_nous(config, current_model=""):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
+    else:
+        print("No change.")
+
+
+def _model_flow_minimax(config, current_model=""):
+    """MiniMax provider (global): ensure logged in via OAuth, then pick model."""
+    from hermes_cli.auth import (
+        get_minimax_auth_status, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, resolve_minimax_runtime_credentials,
+        AuthError, format_auth_error, _login_minimax, PROVIDER_REGISTRY,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+    import argparse
+
+    state = get_minimax_auth_status("minimax")
+    if not state or not state.get("access_token"):
+        print("Not logged into MiniMax. Starting OAuth login...")
+        print()
+        try:
+            mock_args = argparse.Namespace(
+                portal_url=None, inference_url=None, client_id=None,
+                scope=None, no_browser=False, timeout=15.0,
+                ca_bundle=None, insecure=False,
+            )
+            _login_minimax(mock_args, PROVIDER_REGISTRY["minimax"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+        # _login_minimax already handles model selection + config update
+        return
+
+    # Already logged in — resolve credentials
+    print("Fetching MiniMax credentials...")
+    try:
+        creds = resolve_minimax_runtime_credentials(provider="minimax")
+    except Exception as exc:
+        relogin = isinstance(exc, AuthError) and exc.relogin_required
+        msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+        if relogin:
+            print(f"Session expired: {msg}")
+            print("Re-authenticating with MiniMax...\n")
+            try:
+                mock_args = argparse.Namespace(
+                    portal_url=None, inference_url=None, client_id=None,
+                    scope=None, no_browser=False, timeout=15.0,
+                    ca_bundle=None, insecure=False,
+                )
+                _login_minimax(mock_args, PROVIDER_REGISTRY["minimax"])
+            except Exception as login_exc:
+                print(f"Re-login failed: {login_exc}")
+            return
+        print(f"Could not resolve credentials: {msg}")
+        return
+
+    inference_url = creds.get("base_url", "")
+    print(f"Using MiniMax at: {inference_url}")
+
+    model_ids = [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ]
+    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("minimax", inference_url)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        print(f"Default model set to: {selected} (via MiniMax)")
+    else:
+        print("No change.")
+
+
+def _model_flow_minimax_cn(config, current_model=""):
+    """MiniMax provider (China): ensure logged in via OAuth, then pick model."""
+    from hermes_cli.auth import (
+        get_minimax_auth_status, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, resolve_minimax_runtime_credentials,
+        AuthError, format_auth_error, _login_minimax, PROVIDER_REGISTRY,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+    import argparse
+
+    state = get_minimax_auth_status("minimax-cn")
+    if not state or not state.get("access_token"):
+        print("Not logged into MiniMax (China). Starting OAuth login...")
+        print()
+        try:
+            mock_args = argparse.Namespace(
+                portal_url=None, inference_url=None, client_id=None,
+                scope=None, no_browser=False, timeout=15.0,
+                ca_bundle=None, insecure=False,
+            )
+            _login_minimax(mock_args, PROVIDER_REGISTRY["minimax-cn"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+        return
+
+    print("Fetching MiniMax (China) credentials...")
+    try:
+        creds = resolve_minimax_runtime_credentials(provider="minimax-cn")
+    except Exception as exc:
+        relogin = isinstance(exc, AuthError) and exc.relogin_required
+        msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+        if relogin:
+            print(f"Session expired: {msg}")
+            print("Re-authenticating with MiniMax (China)...\n")
+            try:
+                mock_args = argparse.Namespace(
+                    portal_url=None, inference_url=None, client_id=None,
+                    scope=None, no_browser=False, timeout=15.0,
+                    ca_bundle=None, insecure=False,
+                )
+                _login_minimax(mock_args, PROVIDER_REGISTRY["minimax-cn"])
+            except Exception as login_exc:
+                print(f"Re-login failed: {login_exc}")
+            return
+        print(f"Could not resolve credentials: {msg}")
+        return
+
+    inference_url = creds.get("base_url", "")
+    print(f"Using MiniMax (China) at: {inference_url}")
+
+    model_ids = [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ]
+    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("minimax-cn", inference_url)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        print(f"Default model set to: {selected} (via MiniMax China)")
     else:
         print("No change.")
 
@@ -1466,11 +1622,15 @@ _PROVIDER_MODELS = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
@@ -3593,6 +3753,120 @@ For more help on a command:
         honcho_command(args)
 
     honcho_parser.set_defaults(func=cmd_honcho)
+
+    # =========================================================================
+    # memory command -- switch between Honcho and QMD memory backends
+    # =========================================================================
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Manage memory backend (Honcho or QMD)",
+        description=(
+            "Switch between memory backends or view current configuration.\n\n"
+            "Honcho: Cloud-backed cross-session user modeling (honcho.dev)\n"
+            "QMD: Local vector-based memory with FlowState anticipatory context\n"
+            "Off: Local MEMORY.md only (no cross-session memory)\n\n"
+            "This is a strict OR relationship — only one backend active at a time."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_command")
+
+    # hermes memory status
+    memory_status = memory_subparsers.add_parser(
+        "status", help="Show current memory backend and configuration"
+    )
+
+    # hermes memory mode [honcho|qmd|off]
+    memory_mode = memory_subparsers.add_parser(
+        "mode", help="Show or set memory backend (honcho/qmd/off)"
+    )
+    memory_mode.add_argument(
+        "backend", nargs="?", metavar="BACKEND",
+        choices=("honcho", "qmd", "off"),
+        help="Memory backend to activate (honcho/qmd/off). Omit to show current."
+    )
+
+    # hermes memory setup
+    memory_setup = memory_subparsers.add_parser(
+        "setup", help="Interactive setup for memory backend"
+    )
+    memory_setup.add_argument(
+        "--backend", choices=("honcho", "qmd"),
+        help="Memory backend to set up"
+    )
+
+    # hermes memory config
+    memory_config = memory_subparsers.add_parser(
+        "config", help="Show or update memory configuration"
+    )
+    memory_config.add_argument(
+        "--show", action="store_true", help="Show current configuration"
+    )
+    memory_config.add_argument(
+        "--embedding-model", metavar="MODEL",
+        help="Set embedding model for QMD (e.g. qwen3.5b:0.8b)"
+    )
+    memory_config.add_argument(
+        "--server", metavar="URL",
+        help="Set QMD server URL (e.g. http://localhost:8181)"
+    )
+    memory_config.add_argument(
+        "--lite-mode", action="store_true",
+        help="Enable lite mode for QMD (faster, lower memory)"
+    )
+
+    # hermes memory switch-model [model]
+    memory_switch = memory_subparsers.add_parser(
+        "switch-model", help="Switch embedding model, restart server, prompt to re-ingest if dimension changed",
+        description=(
+            "Switch the QMD embedding model to a new one. The server will be restarted\n"
+            "and you'll be asked whether to re-ingest memories if the embedding\n"
+            "dimension changed (FAISS indexes are fixed-dimension).\n\n"
+            "Examples:\n"
+            "  hermes memory switch-model mlx-community/Nomic-embed-text\n"
+            "  hermes memory switch-model BAAI/bge-m3\n"
+            "  hermes memory switch-model --auto  # auto-detect best for your hardware"
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    memory_switch.add_argument(
+        "model", nargs="?", metavar="MODEL",
+        help="Model ID (e.g. mlx-community/Nomic-embed-text, BAAI/bge-m3). Use --auto for hardware detection."
+    )
+    memory_switch.add_argument(
+        "--auto", action="store_true",
+        help="Auto-detect the best model for your hardware"
+    )
+
+    # hermes memory ingest
+    memory_ingest = memory_subparsers.add_parser(
+        "ingest", help="Scan and ingest Hermes memory files into QMD",
+        description=(
+            "Scans for memory files and ingests them into QMD for persistent memory.\n\n"
+            "Files ingested:\n"
+            "  - ~/.hermes/SOUL.md (agent persona)\n"
+            "  - ~/.hermes/USER.md, memory.md (user memory)\n"
+            "  - ~/.agents/skills/*/SKILL.md (user skills)\n"
+            "  - ~/.hermes/hermes-agent/skills/*/SKILL.md\n"
+            "  - Documentation files\n\n"
+            "Files are chunked if too large and tagged for easy retrieval."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    memory_ingest.add_argument(
+        "--dry-run", action="store_true",
+        help="Show files that would be ingested without ingesting them"
+    )
+    memory_ingest.add_argument(
+        "--force", "-y", action="store_true",
+        help="Skip confirmation prompt"
+    )
+
+    def cmd_memory(args):
+        from hermes_cli.memory_config import memory_command
+        memory_command(args)
+
+    memory_parser.set_defaults(func=cmd_memory)
 
     # =========================================================================
     # tools command

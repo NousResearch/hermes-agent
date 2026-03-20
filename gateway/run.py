@@ -359,6 +359,18 @@ class GatewayRunner:
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
 
+        # QMD configuration (loaded once at startup)
+        # When enabled, this completely bypasses Honcho (strict OR relationship)
+        self._qmd_config = None  # QMDClientConfig | None
+        try:
+            from qmd_integration.config import QMDClientConfig
+            qcfg = QMDClientConfig.from_config_dict(self.config.get("qmd", {}))
+            if qcfg.enabled:
+                self._qmd_config = qcfg
+                logger.info("QMD enabled in config (server: %s)", qcfg.server_url)
+        except Exception:
+            pass
+
         # Ensure tirith security scanner is available (downloads if needed)
         try:
             from tools.tirith_security import ensure_installed
@@ -386,7 +398,17 @@ class GatewayRunner:
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
 
     def _get_or_create_gateway_honcho(self, session_key: str):
-        """Return a persistent Honcho manager/config pair for this gateway session."""
+        """Return a persistent Honcho manager/config pair for this gateway session.
+
+        NOTE: When QMD is enabled in config, this returns (None, None) since
+        QMD is a strict alternative to Honcho. The gateway will use QMD instead.
+        """
+        # Check if QMD is enabled first (strict OR relationship)
+        qmd_cfg = getattr(self, "_qmd_config", None)
+        if qmd_cfg and qmd_cfg.enabled:
+            logger.debug("QMD enabled — bypassing Honcho for session %s", session_key)
+            return None, None
+
         if not hasattr(self, "_honcho_managers"):
             self._honcho_managers = {}
         if not hasattr(self, "_honcho_configs"):
@@ -416,6 +438,52 @@ class GatewayRunner:
             logger.debug("Gateway Honcho init failed for %s: %s", session_key, e)
             return None, None
 
+    def _get_or_create_gateway_qmd(self, session_key: str):
+        """Return a persistent QMD manager/config pair for this gateway session.
+
+        This is the QMD equivalent of _get_or_create_gateway_honcho.
+        QMD is a strict alternative — when enabled, Honcho is completely bypassed.
+        """
+        # Check if QMD is enabled
+        try:
+            from qmd_integration.config import QMDClientConfig
+            from qmd_integration.session import QMDSessionManager
+            from qmd_integration.client import get_qmd_client
+
+            # Get QMD config from agent config
+            qcfg = QMDClientConfig.from_config_dict(self.config.get("qmd", {}))
+            if not qcfg.enabled:
+                return None, None
+
+            if not hasattr(self, "_qmd_managers"):
+                self._qmd_managers = {}
+            if not hasattr(self, "_qmd_configs"):
+                self._qmd_configs = {}
+
+            if session_key in self._qmd_managers:
+                return self._qmd_managers[session_key], self._qmd_configs.get(session_key)
+
+            client = get_qmd_client(qcfg)
+            manager = QMDSessionManager(
+                client=client,
+                config=qcfg,
+            )
+
+            if manager.is_ready:
+                self._qmd_managers[session_key] = manager
+                self._qmd_configs[session_key] = qcfg
+                return manager, qcfg
+            else:
+                logger.warning("QMD server not available at %s", qcfg.server_url)
+                return None, None
+
+        except ImportError:
+            logger.debug("QMD integration not available")
+            return None, None
+        except Exception as e:
+            logger.debug("Gateway QMD init failed for %s: %s", session_key, e)
+            return None, None
+
     def _shutdown_gateway_honcho(self, session_key: str) -> None:
         """Flush and close the persistent Honcho manager for a gateway session."""
         managers = getattr(self, "_honcho_managers", None)
@@ -439,7 +507,31 @@ class GatewayRunner:
             return
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
-    
+
+    def _shutdown_gateway_qmd(self, session_key: str) -> None:
+        """Flush and close the persistent QMD manager for a gateway session."""
+        managers = getattr(self, "_qmd_managers", None)
+        configs = getattr(self, "_qmd_configs", None)
+        if managers is None or configs is None:
+            return
+
+        manager = managers.pop(session_key, None)
+        configs.pop(session_key, None)
+        if not manager:
+            return
+        try:
+            manager.shutdown()
+        except Exception as e:
+            logger.debug("Gateway QMD shutdown failed for %s: %s", session_key, e)
+
+    def _shutdown_all_gateway_qmd(self) -> None:
+        """Flush and close all persistent QMD managers."""
+        managers = getattr(self, "_qmd_managers", None)
+        if not managers:
+            return
+        for session_key in list(managers.keys()):
+            self._shutdown_gateway_qmd(session_key)
+
     # -- Setup skill availability ----------------------------------------
 
     def _has_setup_skill(self) -> bool:
@@ -1080,6 +1172,7 @@ class GatewayRunner:
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_all_gateway_honcho()
+        self._shutdown_all_gateway_qmd()
         self._shutdown_event.set()
         
         from gateway.status import remove_pid_file, write_runtime_status
@@ -4568,6 +4661,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
+            qmd_manager, qmd_config = self._get_or_create_gateway_qmd(session_key)
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             # Set up streaming consumer if enabled
@@ -4624,6 +4718,8 @@ class GatewayRunner:
                 honcho_session_key=session_key,
                 honcho_manager=honcho_manager,
                 honcho_config=honcho_config,
+                qmd_manager=qmd_manager,
+                qmd_config=qmd_config,
                 session_db=self._session_db,
                 fallback_model=self._fallback_model,
             )

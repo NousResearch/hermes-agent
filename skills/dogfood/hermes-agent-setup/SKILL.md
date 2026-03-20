@@ -16,7 +16,7 @@ Use this skill when a user asks about configuring Hermes, enabling features, set
 - API keys: `~/.hermes/.env`
 - Skills: `~/.hermes/skills/`
 - Hermes install: `~/.hermes/hermes-agent/`
-- Venv: `~/.hermes/hermes-agent/.venv/` (or `venv/`)
+- Venv: `~/.hermes/hermes-agent/venv/`
 
 ## CLI Overview
 
@@ -98,7 +98,7 @@ The interactive setup wizard walks through:
 Run it from terminal:
 ```bash
 cd ~/.hermes/hermes-agent
-source .venv/bin/activate
+source venv/bin/activate
 python -m hermes_cli.main setup
 ```
 
@@ -140,7 +140,7 @@ Voice messages from Telegram/Discord/WhatsApp/Slack/Signal are auto-transcribed 
 
 ```bash
 cd ~/.hermes/hermes-agent
-source .venv/bin/activate  # or: source venv/bin/activate
+source venv/bin/activate
 pip install faster-whisper
 ```
 
@@ -189,7 +189,7 @@ Hermes can reply with voice when users send voice messages.
 
 ```bash
 cd ~/.hermes/hermes-agent
-source .venv/bin/activate
+source venv/bin/activate
 python -m hermes_cli.main tools
 ```
 
@@ -217,7 +217,7 @@ Use `/reset` in the chat to start a fresh session with the new toolset. Tool cha
 Some tools need extra packages:
 
 ```bash
-cd ~/.hermes/hermes-agent && source .venv/bin/activate
+cd ~/.hermes/hermes-agent && source venv/bin/activate
 
 pip install faster-whisper    # Local STT (voice transcription)
 pip install browserbase       # Browser automation

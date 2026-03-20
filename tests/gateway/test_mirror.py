@@ -161,8 +161,8 @@ class TestMirrorToSession:
         transcript = sessions_dir / "sess_abc.jsonl"
         assert transcript.exists()
         msg = json.loads(transcript.read_text().strip())
-        assert msg["content"] == "Hello!"
-        assert msg["role"] == "assistant"
+        assert msg["content"] == "[Cron delivery from cli]\nHello!"
+        assert msg["role"] == "user"
         assert msg["mirror"] is True
         assert msg["mirror_source"] == "cli"
 

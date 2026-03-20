@@ -298,12 +298,15 @@ async def vision_analyze_tool(
         
         logger.info("Processing image with vision model...")
         
-        # Call the vision API via centralized router
+        # Determine timeout for vision auxiliary calls. The default (30s) is often too short
+        # for local models due to image encoding latency. Allow override via env var.
+        vision_timeout = float(os.getenv("HERMES_VISION_TIMEOUT_SECONDS", "180"))
         call_kwargs = {
             "task": "vision",
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 2000,
+            "timeout": vision_timeout,
         }
         if model:
             call_kwargs["model"] = model

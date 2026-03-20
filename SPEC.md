@@ -34,6 +34,29 @@ After setup, the product should start:
 - optional tailnet exposure when enabled
 - isolated per-user Hermes runtimes
 
+The first authenticated web app should stay intentionally minimal.
+
+The intended primary surfaces are:
+
+- for signed-out users:
+  - one lightweight landing/auth card
+- for signed-in normal users:
+  - chat
+  - later the shared or user workspace directory
+- for signed-in admins:
+  - the same user experience
+  - plus a compact user-management section for creating and deleting users
+
+The old development-style multi-panel control plane should not be the model for this forked product UI.
+
+The product should reuse the existing MYNAH visual language where it helps:
+
+- the styling system
+- the dark-mode light-mode sun and moon toggle
+- the card-based single-page layout
+
+But it should not carry over cluttered control-plane sections that are not part of the user-facing product.
+
 The setup CLI should write a single product-owned configuration file at:
 
 - `HERMES_HOME/product.yaml`
@@ -190,6 +213,14 @@ The browser admin UI should remain narrow in the first version and only manage:
 - users
 - activation and reset actions
 - runtime visibility and status
+
+The browser UI should also preserve the live-chat feel of the MYNAH prototype where it adds real value:
+
+- reasoning should stream live
+- answer text should stream live
+- streamed reasoning should visually fade or soften compared with the final answer
+
+This behavior is part of the intended product UX and should be preserved when the authenticated chat surface is rebuilt in the fork.
 
 Branding, auth mode, tool placement, and model route settings should remain setup-managed product config rather than browser-managed settings.
 

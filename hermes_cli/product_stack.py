@@ -254,7 +254,7 @@ def ensure_product_stack_started(config: Dict[str, Any] | None = None) -> subpro
 
 
 def _wait_for_pocket_id_ready(config: Dict[str, Any], timeout_seconds: float = _READY_TIMEOUT_SECONDS) -> None:
-    health_url = resolve_product_urls(config)["issuer_url"] + "/api/healthz"
+    health_url = resolve_product_urls(config)["issuer_url"] + "/.well-known/openid-configuration"
     deadline = time.time() + timeout_seconds
     last_error: Exception | None = None
     while time.time() < deadline:

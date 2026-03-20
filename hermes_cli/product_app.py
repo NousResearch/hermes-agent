@@ -6,10 +6,11 @@ import hashlib
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
+from hermes_cli.product_chat import get_product_chat_session, stream_product_chat_turn
 from hermes_cli.product_config import load_product_config
 from hermes_cli.product_oidc import (
     create_oidc_login_request,
@@ -19,6 +20,7 @@ from hermes_cli.product_oidc import (
     load_product_oidc_client_settings,
 )
 from hermes_cli.product_stack import resolve_product_urls
+from hermes_cli.product_web import build_product_index_html
 
 
 class ProductHealthResponse(BaseModel):
@@ -33,6 +35,20 @@ class ProductSessionResponse(BaseModel):
     user: dict[str, Any] | None = None
 
 
+class ProductChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ProductChatSessionResponse(BaseModel):
+    session_id: str
+    messages: list[ProductChatMessage]
+
+
+class ProductChatTurnRequest(BaseModel):
+    user_message: str
+
+
 def _session_secret() -> str:
     settings = load_product_oidc_client_settings()
     digest = hashlib.sha256(settings.client_secret.encode("utf-8")).hexdigest()
@@ -40,13 +56,27 @@ def _session_secret() -> str:
 
 
 def _session_user_payload(userinfo: dict[str, Any]) -> dict[str, Any]:
+    product_config = load_product_config()
+    bootstrap = product_config.get("bootstrap", {})
+    first_admin_username = (
+        str(bootstrap.get("first_admin_username", "admin")).strip() or "admin"
+    )
+    preferred_username = str(userinfo.get("preferred_username") or "").strip()
     return {
         "sub": userinfo.get("sub", ""),
         "email": userinfo.get("email"),
         "name": userinfo.get("name") or userinfo.get("preferred_username") or userinfo.get("sub", ""),
         "preferred_username": userinfo.get("preferred_username"),
         "email_verified": userinfo.get("email_verified"),
+        "is_admin": preferred_username == first_admin_username,
     }
+
+
+def _require_product_user(request: Request) -> dict[str, Any]:
+    user = request.session.get("user")
+    if not isinstance(user, dict):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 
 def create_product_app() -> FastAPI:
@@ -63,6 +93,14 @@ def create_product_app() -> FastAPI:
         same_site="lax",
         https_only=False,
     )
+
+    @app.get("/", response_class=HTMLResponse)
+    def index() -> HTMLResponse:
+        product_name = (
+            str(product_config.get("product", {}).get("brand", {}).get("name", "Hermes Core")).strip()
+            or "Hermes Core"
+        )
+        return HTMLResponse(build_product_index_html(product_name=product_name))
 
     @app.get("/healthz", response_model=ProductHealthResponse)
     def healthz() -> ProductHealthResponse:
@@ -84,7 +122,7 @@ def create_product_app() -> FastAPI:
         }
         return RedirectResponse(login_request["authorization_url"], status_code=307)
 
-    @app.get("/api/auth/callback")
+    @app.get("/api/auth/oidc/callback")
     def auth_callback(request: Request, code: str, state: str) -> RedirectResponse:
         pending = request.session.get("oidc_pending")
         if not isinstance(pending, dict):
@@ -119,5 +157,27 @@ def create_product_app() -> FastAPI:
     def auth_logout(request: Request) -> ProductSessionResponse:
         request.session.clear()
         return ProductSessionResponse(authenticated=False)
+
+    @app.get("/api/chat/session", response_model=ProductChatSessionResponse)
+    def chat_session(request: Request) -> ProductChatSessionResponse:
+        user = _require_product_user(request)
+        payload = get_product_chat_session(user)
+        return ProductChatSessionResponse(**payload)
+
+    @app.post("/api/chat/turn/stream")
+    def chat_turn_stream(request: Request, payload: ProductChatTurnRequest) -> StreamingResponse:
+        user = _require_product_user(request)
+        try:
+            event_stream = stream_product_chat_turn(user, payload.user_message)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return StreamingResponse(
+            event_stream,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     return app

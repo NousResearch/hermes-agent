@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -77,6 +78,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
+# UUID action map for inline keyboard callbacks (chat_id, user_id, action_id) -> action dict
+_keyboard_actions: Dict[tuple[str, str, str], Dict] = {}
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -275,6 +279,82 @@ def _resolve_gateway_model() -> str:
     except Exception:
         pass
     return model
+
+
+_MODELS_PER_PAGE = 8
+_KEYBOARD_ACTION_TTL = 900  # 15 minutes
+
+
+def _prune_keyboard_actions() -> None:
+    """Remove expired keyboard action entries."""
+    cutoff = time.time() - _KEYBOARD_ACTION_TTL
+    expired = [k for k, v in _keyboard_actions.items() if v.get("_ts", 0) < cutoff]
+    for k in expired:
+        del _keyboard_actions[k]
+
+
+def _model_providers_keyboard(chat_id: str, user_id: str, current_model: str) -> tuple[str, List[List[Dict]]]:
+    """Build provider selection keyboard."""
+    from hermes_cli.models import providers
+    ts = time.time()
+    rows: List[List[Dict]] = []
+    pair: List[Dict] = []
+    for prov in providers():
+        action_id = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, user_id, action_id)] = {
+            "type": "model_provider", "provider": prov, "current_model": current_model, "_ts": ts,
+        }
+        btn_label = f"* {prov}" if prov in current_model else prov
+        pair.append({"text": btn_label, "callback_data": action_id})
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    cancel_id = uuid.uuid4().hex[:16]
+    _keyboard_actions[(chat_id, user_id, cancel_id)] = {"type": "model_cancel", "_ts": ts}
+    rows.append([{"text": "Cancel", "callback_data": cancel_id}])
+    return f"Current: {current_model}\n\nSelect provider:", rows
+
+
+def _model_list_keyboard(chat_id: str, user_id: str, provider: str, current_model: str, page: int = 0) -> tuple[str, List[List[Dict]]]:
+    """Build paginated model list keyboard."""
+    from hermes_cli.models import models_for_provider
+    ts = time.time()
+    all_models = models_for_provider(provider)
+    if not all_models:
+        return f"No models for {provider}", []
+    total = len(all_models)
+    page_models = all_models[page * _MODELS_PER_PAGE:(page + 1) * _MODELS_PER_PAGE]
+    rows: List[List[Dict]] = []
+    pair: List[Dict] = []
+    for mid in page_models:
+        action_id = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, user_id, action_id)] = {"type": "model_select", "model_id": mid, "_ts": ts}
+        label = f"* {mid}" if mid == current_model else mid
+        display = label[:30] + "…" if len(label) > 30 else label
+        pair.append({"text": display, "callback_data": action_id})
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    nav: List[Dict] = []
+    if page > 0:
+        pid = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, user_id, pid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page - 1, "_ts": ts}
+        nav.append({"text": "< Prev", "callback_data": pid})
+    if (page + 1) * _MODELS_PER_PAGE < total:
+        nid = uuid.uuid4().hex[:16]
+        _keyboard_actions[(chat_id, user_id, nid)] = {"type": "model_page", "provider": provider, "current_model": current_model, "page": page + 1, "_ts": ts}
+        nav.append({"text": "Next >", "callback_data": nid})
+    if nav:
+        rows.append(nav)
+    back_id = uuid.uuid4().hex[:16]
+    _keyboard_actions[(chat_id, user_id, back_id)] = {"type": "model_back", "current_model": current_model, "_ts": ts}
+    rows.append([{"text": "<< Providers", "callback_data": back_id}])
+    total_pages = max(1, (total + _MODELS_PER_PAGE - 1) // _MODELS_PER_PAGE)
+    return f"Provider: {provider} ({total} models) — page {page+1}/{total_pages}\nCurrent: {current_model}", rows
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -1376,7 +1456,11 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
-        
+
+        # Inline keyboard callback — text is a uuid hex with no "/" prefix
+        if not command and event.text and (event.source.chat_id, event.source.user_id or "", event.text.strip()) in _keyboard_actions:
+            return await self._handle_model_callback(event)
+
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
@@ -2419,6 +2503,16 @@ class GatewayRunner:
                 lines.append("Switch provider: `/model provider:model-name`")
                 return "\n".join(lines)
 
+            # Try to show interactive keyboard if adapter supports it
+            source = event.source
+            adapter = self.adapters.get(source.platform) if source.platform else None
+            if adapter and hasattr(adapter, "send_keyboard"):
+                try:
+                    text, rows = _model_providers_keyboard(source.chat_id, source.user_id or "", current)
+                    await adapter.send_keyboard(source.chat_id, text, rows)
+                    return None
+                except Exception:
+                    pass  # Fall back to text response
             provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
             lines = [
                 f"🤖 **Current model:** `{current}`",
@@ -2503,8 +2597,10 @@ class GatewayRunner:
                 user_config["model"]["default"] = new_model
                 if provider_changed:
                     user_config["model"]["provider"] = target_provider
-                with open(config_path, 'w', encoding="utf-8") as f:
+                tmp = config_path.with_suffix(".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                os.replace(tmp, config_path)
             except Exception as e:
                 return f"⚠️ Failed to save model change: {e}"
 
@@ -2528,6 +2624,65 @@ class GatewayRunner:
         self._effective_model = None
         self._effective_provider = None
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
+
+    async def _handle_model_callback(self, event: MessageEvent) -> None:
+        """Handle inline keyboard callbacks for model selection."""
+        import yaml
+        _prune_keyboard_actions()
+        chat_id = event.source.chat_id
+        user_id = event.source.user_id or ""
+        action = _keyboard_actions.pop((chat_id, user_id, event.text.strip()), None)
+        if not action:
+            return
+        adapter = self.adapters.get(event.source.platform) if event.source.platform else None
+        msg_id = event.message_id
+
+        t = action.get("type")
+        if t == "model_provider":
+            text, rows = _model_list_keyboard(chat_id, user_id, action["provider"], action["current_model"])
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "model_page":
+            text, rows = _model_list_keyboard(chat_id, user_id, action["provider"], action["current_model"], action["page"])
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "model_back":
+            text, rows = _model_providers_keyboard(chat_id, user_id, action["current_model"])
+            if adapter:
+                await adapter.send_keyboard(chat_id, text, rows, message_id=msg_id)
+        elif t == "model_select":
+            new_model = action["model_id"]
+            from hermes_cli.models import OPENROUTER_MODELS
+            known = {mid for mid, _ in OPENROUTER_MODELS}
+            if new_model not in known:
+                logger.warning("[keyboard] Rejected unknown model_id from action dict: %s", new_model)
+                if adapter:
+                    await adapter.send_keyboard(chat_id, "Unknown model — selection rejected.", [], message_id=msg_id)
+                return
+            config_path = _hermes_home / "config.yaml"
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if not isinstance(user_config.get("model"), dict):
+                    user_config["model"] = {}
+                user_config["model"]["default"] = new_model
+                tmp = config_path.with_suffix(".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                os.replace(tmp, config_path)
+                os.environ["HERMES_MODEL"] = new_model
+                confirm = f"✓ Switched to: {new_model}\n(takes effect on next message)"
+                if adapter:
+                    await adapter.send_keyboard(chat_id, confirm, [], message_id=msg_id)
+            except Exception as e:
+                logger.warning("[keyboard] Failed to write model config: %s", e)
+                if adapter:
+                    await adapter.send_keyboard(chat_id, "Failed to save model choice.", [], message_id=msg_id)
+        elif t == "model_cancel":
+            if adapter:
+                await adapter.send_keyboard(chat_id, "Cancelled.", [], message_id=msg_id)
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""

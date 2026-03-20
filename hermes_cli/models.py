@@ -267,6 +267,23 @@ def menu_labels() -> list[str]:
     return labels
 
 
+def providers() -> list[str]:
+    """Return unique provider prefixes in definition order. Models without '/' → 'local'."""
+    seen: list[str] = []
+    for mid, _ in OPENROUTER_MODELS:
+        prefix = mid.split("/")[0] if "/" in mid else "local"
+        if prefix not in seen:
+            seen.append(prefix)
+    return seen
+
+
+def models_for_provider(provider: str) -> list[str]:
+    """Return model ids belonging to provider. 'local' = all ids without '/'."""
+    if provider == "local":
+        return [mid for mid, _ in OPENROUTER_MODELS if "/" not in mid]
+    return [mid for mid, _ in OPENROUTER_MODELS if mid.startswith(f"{provider}/")]
+
+
 # All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
     set(_PROVIDER_LABELS.keys())

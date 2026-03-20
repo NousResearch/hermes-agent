@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.platforms.base import GATEWAY_NO_RESPONSE, MessageEvent, MessageType, SessionSource
 
 
 def _make_adapter():
@@ -20,15 +20,18 @@ def _make_adapter():
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)
-    adapter._platform = Platform.TELEGRAM
+    adapter.platform = Platform.TELEGRAM
     adapter.config = config
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
     adapter._active_sessions = {}
     adapter._pending_messages = {}
+    adapter._passthrough_sessions = set()
+    adapter._background_tasks = set()
     adapter._message_handler = AsyncMock()
     adapter.handle_message = AsyncMock()
+    adapter.send = AsyncMock()
     return adapter
 
 
@@ -119,3 +122,25 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_active_session_passthrough_bypasses_interrupt_queue(self):
+        """Prompt follow-ups should bypass adapter interrupt queueing."""
+        from gateway.platforms.telegram import TelegramAdapter
+
+        adapter = _make_adapter()
+        adapter.handle_message = TelegramAdapter.handle_message.__get__(adapter, TelegramAdapter)
+        adapter._message_handler = AsyncMock(return_value=GATEWAY_NO_RESPONSE)
+
+        event = _make_event("button tap")
+        session_key = "agent:main:telegram:dm:12345"
+        active_event = asyncio.Event()
+        adapter._active_sessions[session_key] = active_event
+        adapter._passthrough_sessions.add(session_key)
+
+        await adapter.handle_message(event)
+        await asyncio.sleep(0)
+
+        adapter._message_handler.assert_awaited_once()
+        assert adapter._pending_messages == {}
+        assert active_event.is_set() is False

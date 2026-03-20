@@ -19,6 +19,8 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
+    telegram_mod.InlineKeyboardButton = lambda **kwargs: SimpleNamespace(**kwargs)
+    telegram_mod.InlineKeyboardMarkup = lambda keyboard: SimpleNamespace(inline_keyboard=keyboard)
 
     for name in ("telegram", "telegram.ext", "telegram.constants"):
         sys.modules.setdefault(name, telegram_mod)
@@ -155,3 +157,104 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_callback_query_is_routed_as_structured_interaction_event():
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.handle_message = AsyncMock()
+
+    button = SimpleNamespace(text="Approve", callback_data="hermes:approve")
+    query = SimpleNamespace(
+        data="hermes:approve",
+        from_user=SimpleNamespace(id=42, full_name="Alice"),
+        answer=AsyncMock(),
+        message=SimpleNamespace(
+            message_id=99,
+            text="Choose one",
+            caption=None,
+            message_thread_id=None,
+            date=None,
+            chat=SimpleNamespace(id=123, type="private", title=None, full_name="Alice"),
+            reply_markup=SimpleNamespace(inline_keyboard=[[button]]),
+        ),
+    )
+    update = SimpleNamespace(callback_query=query)
+
+    await adapter._handle_callback_query(update, None)
+
+    query.answer.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "Approve"
+    assert event.reply_to_message_id == "99"
+    assert event.reply_to_text == "Choose one"
+    assert event.metadata["interaction"]["kind"] == "button"
+    assert event.metadata["interaction"]["action"] == "approve"
+    assert event.metadata["interaction"]["label"] == "Approve"
+
+
+@pytest.mark.asyncio
+async def test_callback_query_ignores_non_hermes_data():
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.handle_message = AsyncMock()
+
+    query = SimpleNamespace(
+        data="foreign:approve",
+        from_user=SimpleNamespace(id=42, full_name="Alice"),
+        answer=AsyncMock(),
+        message=SimpleNamespace(
+            message_id=99,
+            text="Choose one",
+            caption=None,
+            message_thread_id=None,
+            date=None,
+            chat=SimpleNamespace(id=123, type="private", title=None, full_name="Alice"),
+            reply_markup=SimpleNamespace(inline_keyboard=[]),
+        ),
+    )
+    update = SimpleNamespace(callback_query=query)
+
+    await adapter._handle_callback_query(update, None)
+
+    query.answer.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_skips_empty_formatted_chunks():
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = SimpleNamespace(send_message=AsyncMock())
+
+    result = await adapter.send("123", "")
+
+    assert result.success is True
+    assert result.raw_response == {"message_ids": []}
+    adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_renders_controls_from_metadata(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = SimpleNamespace(
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)),
+    )
+    fake_markup = SimpleNamespace(inline_keyboard=[[SimpleNamespace(callback_data="hermes:approve")]])
+    monkeypatch.setattr("gateway.platforms.telegram.build_telegram_reply_markup", lambda _controls: fake_markup)
+
+    result = await adapter.send(
+        "123",
+        "Choose one",
+        metadata={
+            "controls": {
+                "buttons": [
+                    [{"label": "Approve", "action": "approve"}],
+                    [{"label": "Docs", "url": "https://example.com"}],
+                ]
+            }
+        },
+    )
+
+    assert result.success is True
+    reply_markup = adapter._bot.send_message.await_args.kwargs["reply_markup"]
+    assert reply_markup is fake_markup

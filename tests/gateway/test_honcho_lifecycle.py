@@ -19,6 +19,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._pending_clarifications = {}
     runner.adapters = {}
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()

@@ -400,8 +400,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Show Heurist-specific risk warnings when applicable
     if bundle.source == "heurist" and extra_metadata:
-        from tools.skills_guard import format_heurist_risk_warnings
-        risk_warnings = format_heurist_risk_warnings(extra_metadata)
+        from tools.skills_hub import HeuristSource
+        risk_warnings = HeuristSource.format_risk_warnings(extra_metadata)
         if risk_warnings:
             c.print(Panel(
                 "\n".join(f"[yellow]  {w}[/]" for w in risk_warnings),

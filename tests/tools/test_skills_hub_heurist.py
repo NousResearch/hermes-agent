@@ -95,7 +95,7 @@ SKILL_DETAIL_SINGLE = {
         "uses_leverage": False,
         "accesses_user_portfolio": True,
     },
-    "approved_sha256": "abc123hash",
+    "approved_sha256": "90de4de8540870e62bcb216b727f819c2ca502eaeb898871f9aa2a67710bd8ca",
     "source_url": "https://github.com/coinbase/skills",
     "is_folder": False,
     "folder_manifest": None,
@@ -122,7 +122,7 @@ SKILL_DETAIL_FOLDER = {
         "uses_leverage": False,
         "accesses_user_portfolio": False,
     },
-    "approved_sha256": "508a77bb",
+    "approved_sha256": "f0ffbbdd7305e679b0cff2c430a1da44286ff8cf96c84639668159cadd228ed2",
     "source_url": "https://github.com/heurist-network/heurist-mesh-skill",
     "is_folder": True,
     "folder_manifest": {
@@ -259,7 +259,7 @@ class TestHeuristInspect(unittest.TestCase):
         self.assertIsNotNone(meta)
         self.assertEqual(meta.name, "pay-for-service")
         self.assertEqual(meta.identifier, "heurist:pay-for-service")
-        self.assertEqual(meta.extra["approved_sha256"], "abc123hash")
+        self.assertEqual(meta.extra["approved_sha256"], "90de4de8540870e62bcb216b727f819c2ca502eaeb898871f9aa2a67710bd8ca")
         self.assertEqual(meta.extra["source_url"], "https://github.com/coinbase/skills")
         self.assertFalse(meta.extra["is_folder"])
 
@@ -302,7 +302,7 @@ class TestHeuristFetchSingleFile(unittest.TestCase):
         self.assertEqual(bundle.source, "heurist")
         self.assertEqual(bundle.identifier, "heurist:pay-for-service")
         self.assertIn("SKILL.md", bundle.files)
-        self.assertEqual(bundle.metadata["approved_sha256"], "abc123hash")
+        self.assertEqual(bundle.metadata["approved_sha256"], "90de4de8540870e62bcb216b727f819c2ca502eaeb898871f9aa2a67710bd8ca")
         self.assertEqual(bundle.metadata["risk_tier"], "high")
         self.assertTrue(bundle.metadata["capabilities"]["can_sign_transactions"])
 
@@ -340,7 +340,7 @@ class TestHeuristFetchFolder(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertIn("README.md", bundle.files)
         self.assertEqual(len(bundle.files), 2)
-        self.assertEqual(bundle.metadata["approved_sha256"], "508a77bb")
+        self.assertEqual(bundle.metadata["approved_sha256"], "f0ffbbdd7305e679b0cff2c430a1da44286ff8cf96c84639668159cadd228ed2")
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_folder_no_skill_md(self, mock_get):
@@ -401,7 +401,7 @@ class TestHeuristSecurityMetadata(unittest.TestCase):
 
         self.assertEqual(meta.extra["risk_tier"], "high")
         self.assertTrue(meta.extra["capabilities"]["can_sign_transactions"])
-        self.assertEqual(meta.extra["approved_sha256"], "abc123hash")
+        self.assertEqual(meta.extra["approved_sha256"], "90de4de8540870e62bcb216b727f819c2ca502eaeb898871f9aa2a67710bd8ca")
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_includes_security_in_metadata(self, mock_get):
@@ -409,7 +409,7 @@ class TestHeuristSecurityMetadata(unittest.TestCase):
             if url.endswith("/skills/pay-for-service"):
                 return _MockResponse(200, SKILL_DETAIL_SINGLE)
             if "gateway.autonomys.xyz" in url:
-                return _MockResponse(200, text="---\nname: test\n---\n# Test\n")
+                return _MockResponse(200, text="---\nname: pay-for-service\n---\n# Instructions\n")
             return _MockResponse(404)
 
         mock_get.side_effect = side_effect
@@ -417,6 +417,75 @@ class TestHeuristSecurityMetadata(unittest.TestCase):
         bundle = self.src.fetch("heurist:pay-for-service")
         self.assertEqual(bundle.metadata["risk_tier"], "high")
         self.assertTrue(bundle.metadata["capabilities"]["can_sign_transactions"])
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_rejects_tampered_content(self, mock_get):
+        """If downloaded content doesn't match approved_sha256, fetch returns None."""
+        def side_effect(url, **kwargs):
+            if url.endswith("/skills/pay-for-service"):
+                return _MockResponse(200, SKILL_DETAIL_SINGLE)
+            if "gateway.autonomys.xyz" in url:
+                return _MockResponse(200, text="TAMPERED CONTENT")
+            return _MockResponse(404)
+
+        mock_get.side_effect = side_effect
+
+        bundle = self.src.fetch("heurist:pay-for-service")
+        self.assertIsNone(bundle)
+
+
+class TestHeuristRiskWarnings(unittest.TestCase):
+    """Verify format_risk_warnings works correctly."""
+
+    def test_high_risk_with_capabilities(self):
+        metadata = {
+            "risk_tier": "high",
+            "capabilities": {
+                "can_sign_transactions": True,
+                "requires_private_keys": True,
+                "accesses_user_portfolio": False,
+            },
+        }
+        warnings = HeuristSource.format_risk_warnings(metadata)
+        self.assertIn("Risk tier: HIGH", warnings)
+        self.assertTrue(any("sign blockchain" in w for w in warnings))
+        self.assertTrue(any("private keys" in w for w in warnings))
+        self.assertFalse(any("portfolio" in w for w in warnings))
+
+    def test_low_risk_no_capabilities(self):
+        metadata = {"risk_tier": "low", "capabilities": {}}
+        warnings = HeuristSource.format_risk_warnings(metadata)
+        self.assertEqual(warnings, [])
+
+    def test_no_metadata(self):
+        warnings = HeuristSource.format_risk_warnings({})
+        self.assertEqual(warnings, [])
+
+
+class TestHeuristFetchWithDetail(unittest.TestCase):
+    """Verify _detail param avoids duplicate HTTP call."""
+
+    def setUp(self):
+        self.src = HeuristSource()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_with_preloaded_detail(self, mock_get):
+        """When _detail is passed, fetch() should NOT call GET /skills/{slug}."""
+        def side_effect(url, **kwargs):
+            if "gateway.autonomys.xyz" in url:
+                return _MockResponse(200, text="---\nname: pay-for-service\n---\n# Instructions\n")
+            return _MockResponse(404)
+
+        mock_get.side_effect = side_effect
+
+        bundle = self.src.fetch("heurist:pay-for-service", _detail=SKILL_DETAIL_SINGLE)
+
+        self.assertIsNotNone(bundle)
+        self.assertIn("SKILL.md", bundle.files)
+        # Verify no call to /skills/pay-for-service (only gateway call)
+        for call in mock_get.call_args_list:
+            url = call[0][0] if call[0] else call[1].get("url", "")
+            self.assertNotIn("/skills/pay-for-service", url)
 
 
 class TestHeuristRouterRegistration(unittest.TestCase):

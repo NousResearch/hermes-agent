@@ -1731,6 +1731,16 @@ class HeuristSource(SkillSource):
 
     BASE_URL = os.getenv("HEURIST_MARKETPLACE_API", "https://mesh.heurist.xyz")
 
+    # Maps Heurist capability flags to human-readable risk warnings.
+    CAPABILITY_WARNINGS = {
+        "requires_private_keys": ("critical", "This skill requires access to crypto private keys"),
+        "can_sign_transactions": ("high", "This skill can sign blockchain transactions"),
+        "uses_leverage": ("high", "This skill involves leveraged trading positions"),
+        "requires_exchange_api_keys": ("high", "This skill requires exchange API credentials"),
+        "accesses_user_portfolio": ("medium", "This skill accesses your portfolio/wallet data"),
+        "requires_secrets": ("medium", "This skill requires API keys or secrets"),
+    }
+
     def source_id(self) -> str:
         return "heurist"
 
@@ -1775,34 +1785,25 @@ class HeuristSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         slug = self._strip_prefix(identifier)
-        try:
-            resp = httpx.get(f"{self.BASE_URL}/skills/{slug}", timeout=15)
-            if resp.status_code != 200:
-                return None
-            item = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        detail = self._fetch_detail(slug)
+        if not detail:
             return None
 
-        meta = self._item_to_meta(item)
+        meta = self._item_to_meta(detail)
         # Enrich with detail-only fields
-        meta.extra["approved_sha256"] = item.get("approved_sha256")
-        meta.extra["source_url"] = item.get("source_url")
-        meta.extra["is_folder"] = item.get("is_folder", False)
-        meta.extra["approved_at"] = item.get("approved_at")
+        meta.extra["approved_sha256"] = detail.get("approved_sha256")
+        meta.extra["source_url"] = detail.get("source_url")
+        meta.extra["is_folder"] = detail.get("is_folder", False)
+        meta.extra["approved_at"] = detail.get("approved_at")
         return meta
 
     # -- fetch ------------------------------------------------------------
 
-    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+    def fetch(self, identifier: str, *, _detail: Optional[dict] = None) -> Optional[SkillBundle]:
         slug = self._strip_prefix(identifier)
 
-        # Get skill detail first to check if it's a folder skill
-        try:
-            resp = httpx.get(f"{self.BASE_URL}/skills/{slug}", timeout=15)
-            if resp.status_code != 200:
-                return None
-            detail = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        detail = _detail or self._fetch_detail(slug)
+        if not detail:
             return None
 
         is_folder = detail.get("is_folder", False)
@@ -1819,7 +1820,7 @@ class HeuristSource(SkillSource):
             logger.warning("Heurist fetch for %s: no SKILL.md found", slug)
             return None
 
-        return SkillBundle(
+        bundle = SkillBundle(
             name=slug,
             files=files,
             source="heurist",
@@ -1832,6 +1833,36 @@ class HeuristSource(SkillSource):
             },
         )
 
+        # Verify content integrity against approved_sha256
+        approved_hash = detail.get("approved_sha256")
+        if approved_hash:
+            actual_hash = self._compute_bundle_sha256(bundle)
+            if actual_hash != approved_hash:
+                logger.warning(
+                    "Heurist integrity check failed for %s: expected %s, got %s",
+                    slug, approved_hash[:16], actual_hash[:16],
+                )
+                return None
+
+        return bundle
+
+    # -- risk warnings ----------------------------------------------------
+
+    @classmethod
+    def format_risk_warnings(cls, metadata: dict) -> list[str]:
+        """Generate human-readable risk warnings from Heurist skill metadata."""
+        warnings: list[str] = []
+        risk_tier = metadata.get("risk_tier")
+        if risk_tier and risk_tier != "low":
+            warnings.append(f"Risk tier: {risk_tier.upper()}")
+
+        capabilities = metadata.get("capabilities", {})
+        for cap, (severity, message) in cls.CAPABILITY_WARNINGS.items():
+            if capabilities.get(cap):
+                warnings.append(f"[{severity}] {message}")
+
+        return warnings
+
     # -- helpers ----------------------------------------------------------
 
     @staticmethod
@@ -1839,6 +1870,16 @@ class HeuristSource(SkillSource):
         if identifier.startswith("heurist:"):
             return identifier[len("heurist:"):]
         return identifier
+
+    def _fetch_detail(self, slug: str) -> Optional[dict]:
+        """Fetch skill detail from GET /skills/{slug}."""
+        try:
+            resp = httpx.get(f"{self.BASE_URL}/skills/{slug}", timeout=15)
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
 
     def _item_to_meta(self, item: dict) -> SkillMeta:
         slug = item.get("slug", "")
@@ -1895,6 +1936,20 @@ class HeuristSource(SkillSource):
         except httpx.HTTPError as e:
             logger.debug("Heurist file download failed: %s", e)
         return None
+
+    @staticmethod
+    def _compute_bundle_sha256(bundle: SkillBundle) -> str:
+        """Compute SHA-256 hash of SKILL.md to verify against approved_sha256.
+
+        The Heurist Marketplace tracks approved_sha256 as the hash of SKILL.md
+        only (not auxiliary files), even for folder skills.
+        """
+        content = bundle.files.get("SKILL.md", "")
+        if isinstance(content, str):
+            data = content.encode("utf-8")
+        else:
+            data = content
+        return hashlib.sha256(data).hexdigest()
 
 
 # ---------------------------------------------------------------------------

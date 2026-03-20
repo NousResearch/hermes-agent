@@ -5,7 +5,7 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 ## Development Environment
 
 ```bash
-source .venv/bin/activate  # ALWAYS activate before running Python
+source venv/bin/activate  # ALWAYS activate before running Python
 ```
 
 ## Project Structure
@@ -377,7 +377,7 @@ The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HER
 ## Testing
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading

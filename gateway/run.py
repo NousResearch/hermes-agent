@@ -1369,6 +1369,23 @@ class GatewayRunner:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
+            # /queue <prompt> — queue without interrupting
+            if event.get_command() in ("queue", "q"):
+                queued_text = event.get_command_args().strip()
+                if not queued_text:
+                    return "Usage: /queue <prompt>"
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                    queued_event = _ME(
+                        text=queued_text,
+                        message_type=_MT.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                    )
+                    adapter._pending_messages[_quick_key] = queued_event
+                return "Queued for the next turn."
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)

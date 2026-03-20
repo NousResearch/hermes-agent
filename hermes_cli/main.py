@@ -3721,20 +3721,20 @@ For more help on a command:
                 return
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
-                print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 100)
+                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 110)
             else:
                 print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 90)
+                print("─" * 95)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
                 if has_titles:
-                    title = (s.get("title") or "—")[:20]
-                    sid = s["id"][:20]
-                    print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                    title = (s.get("title") or "—")[:30]
+                    sid = s["id"]
+                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
                 else:
-                    sid = s["id"][:20]
+                    sid = s["id"]
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":

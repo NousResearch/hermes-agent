@@ -738,6 +738,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
     api_server_key = os.getenv("API_SERVER_KEY", "")
+    api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")
     if api_server_enabled or api_server_key:
@@ -746,6 +747,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.API_SERVER].enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+        if api_server_cors_origins:
+            origins = [origin.strip() for origin in api_server_cors_origins.split(",") if origin.strip()]
+            if origins:
+                config.platforms[Platform.API_SERVER].extra["cors_origins"] = origins
         if api_server_port:
             try:
                 config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
@@ -784,6 +789,5 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 
 

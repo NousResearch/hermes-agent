@@ -1191,6 +1191,15 @@ class GatewayRunner:
                 return None
             return APIServerAdapter(config)
 
+        elif platform == Platform.WEBHOOK:
+            from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
+            if not check_webhook_requirements():
+                logger.warning("Webhook: aiohttp not installed")
+                return None
+            adapter = WebhookAdapter(config)
+            adapter.gateway_runner = self  # For cross-platform delivery
+            return adapter
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1207,7 +1216,9 @@ class GatewayRunner:
         # Home Assistant events are system-generated (state changes), not
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
-        if source.platform == Platform.HOMEASSISTANT:
+        # Webhook events are authenticated via HMAC signature validation in
+        # the adapter itself — no user allowlist applies.
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
             return True
 
         user_id = source.user_id

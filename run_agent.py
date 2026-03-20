@@ -518,6 +518,10 @@ class AIAgent:
         self.stream_delta_callback = stream_delta_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
+        # Tool execution state — allows _vprint during tool execution
+        # even when stream consumers are registered (no tokens streaming then)
+        self._executing_tools = False
+
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
@@ -1068,12 +1072,16 @@ class AIAgent:
             pass
 
     def _vprint(self, *args, force: bool = False, **kwargs):
-        """Verbose print — suppressed when streaming TTS is active.
+        """Verbose print — suppressed when actively streaming tokens.
 
         Pass ``force=True`` for error/warning messages that should always be
         shown even during streaming playback (TTS or display).
+
+        During tool execution (``_executing_tools`` is True), printing is
+        allowed even with stream consumers registered because no tokens
+        are being streamed at that point.
         """
-        if not force and self._has_stream_consumers():
+        if not force and self._has_stream_consumers() and not self._executing_tools:
             return
         self._safe_print(*args, **kwargs)
 
@@ -4354,14 +4362,19 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
-        if not _should_parallelize_tool_batch(tool_calls):
-            return self._execute_tool_calls_sequential(
+        # Allow _vprint during tool execution even with stream consumers
+        self._executing_tools = True
+        try:
+            if not _should_parallelize_tool_batch(tool_calls):
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
+
+            return self._execute_tool_calls_concurrent(
                 assistant_message, messages, effective_task_id, api_call_count
             )
-
-        return self._execute_tool_calls_concurrent(
-            assistant_message, messages, effective_task_id, api_call_count
-        )
+        finally:
+            self._executing_tools = False
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -5418,14 +5431,17 @@ class AIAgent:
                 self._vprint(f"\n{self.log_prefix}🔄 Making API call #{api_call_count}/{self.max_iterations}...")
                 self._vprint(f"{self.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
                 self._vprint(f"{self.log_prefix}   🔧 Available tools: {len(self.tools) if self.tools else 0}")
-            elif not self._has_stream_consumers():
-                # Animated thinking spinner in quiet mode (skip during streaming)
+            else:
+                # Animated thinking spinner in quiet mode
                 face = random.choice(KawaiiSpinner.KAWAII_THINKING)
                 verb = random.choice(KawaiiSpinner.THINKING_VERBS)
                 if self.thinking_callback:
                     # CLI TUI mode: use prompt_toolkit widget instead of raw spinner
+                    # (works in both streaming and non-streaming modes)
                     self.thinking_callback(f"{face} {verb}...")
-                else:
+                elif not self._has_stream_consumers():
+                    # Raw KawaiiSpinner only when no streaming consumers
+                    # (would conflict with streamed token output)
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
                     thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
                     thinking_spinner.start()

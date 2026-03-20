@@ -181,7 +181,11 @@ class SessionDB:
                 ]
                 for name, column_type in new_columns:
                     try:
-                        cursor.execute(f"ALTER TABLE sessions ADD COLUMN {name} {column_type}")
+                        # name and column_type come from the hardcoded tuple above,
+                        # not user input. Double-quote identifier escaping is applied
+                        # as defense-in-depth; SQLite DDL cannot be parameterized.
+                        safe_name = name.replace('"', '""')
+                        cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")

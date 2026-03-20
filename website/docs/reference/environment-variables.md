@@ -92,6 +92,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
+| `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
@@ -207,6 +208,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `MATRIX_ENCRYPTION` | Enable end-to-end encryption (`true`/`false`, default: `false`) |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
+| `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |
+| `WEBHOOK_PORT` | HTTP server port for receiving webhooks (default: `8644`) |
+| `WEBHOOK_SECRET` | Global HMAC secret for webhook signature validation (used as fallback when routes don't specify their own) |
 | `API_SERVER_ENABLED` | Enable the OpenAI-compatible API server (`true`/`false`). Runs alongside other platforms. |
 | `API_SERVER_KEY` | Bearer token for API server authentication. If empty, all requests are allowed (local-only use). |
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |

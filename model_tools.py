@@ -24,6 +24,7 @@ import json
 import asyncio
 import os
 import logging
+import threading
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -36,6 +37,25 @@ logger = logging.getLogger(__name__)
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
 
+_tool_loop = None          # persistent loop for the main (CLI) thread
+_tool_loop_lock = threading.Lock()
+
+
+def _get_tool_loop():
+    """Return a long-lived event loop for running async tool handlers.
+
+    Using a persistent loop (instead of asyncio.run() which creates and
+    *closes* a fresh loop every time) prevents "Event loop is closed"
+    errors that occur when cached httpx/AsyncOpenAI clients attempt to
+    close their transport on a dead loop during garbage collection.
+    """
+    global _tool_loop
+    with _tool_loop_lock:
+        if _tool_loop is None or _tool_loop.is_closed():
+            _tool_loop = asyncio.new_event_loop()
+        return _tool_loop
+
+
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
@@ -43,6 +63,10 @@ def _run_async(coro):
     the gateway's async stack or Atropos's event loop), we spin up a
     disposable thread so asyncio.run() can create its own loop without
     conflicting.
+
+    For the common CLI path (no running loop), we use a persistent event
+    loop so that cached async clients (httpx / AsyncOpenAI) remain bound
+    to a live loop and don't trigger "Event loop is closed" on GC.
 
     This is the single source of truth for sync->async bridging in tool
     handlers. The RL paths (agent_loop.py, tool_context.py) also provide
@@ -59,7 +83,9 @@ def _run_async(coro):
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
-    return asyncio.run(coro)
+
+    tool_loop = _get_tool_loop()
+    return tool_loop.run_until_complete(coro)
 
 
 # =============================================================================
@@ -242,17 +268,44 @@ def get_tool_definitions(
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
+    # The set of tool names that actually passed check_fn filtering.
+    # Use this (not tools_to_include) for any downstream schema that references
+    # other tools by name — otherwise the model sees tools mentioned in
+    # descriptions that don't actually exist, and hallucinates calls to them.
+    available_tool_names = {t["function"]["name"] for t in filtered_tools}
+
     # Rebuild execute_code schema to only list sandbox tools that are actually
-    # enabled.  Without this, the model sees "web_search is available in
-    # execute_code" even when the user disabled the web toolset (#560-discord).
-    if "execute_code" in tools_to_include:
+    # available.  Without this, the model sees "web_search is available in
+    # execute_code" even when the API key isn't configured or the toolset is
+    # disabled (#560-discord).
+    if "execute_code" in available_tool_names:
         from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
+        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
         dynamic_schema = build_execute_code_schema(sandbox_enabled)
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Strip web tool cross-references from browser_navigate description when
+    # web_search / web_extract are not available.  The static schema says
+    # "prefer web_search or web_extract" which causes the model to hallucinate
+    # those tools when they're missing.
+    if "browser_navigate" in available_tool_names:
+        web_tools_available = {"web_search", "web_extract"} & available_tool_names
+        if not web_tools_available:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "browser_navigate":
+                    desc = td["function"].get("description", "")
+                    desc = desc.replace(
+                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+                        "",
+                    )
+                    filtered_tools[i] = {
+                        "type": "function",
+                        "function": {**td["function"], "description": desc},
+                    }
+                    break
 
     if not quiet_mode:
         if filtered_tools:

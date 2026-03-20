@@ -304,6 +304,8 @@ class HermesACPAgent(acp.Agent):
 
         if result.get("messages"):
             state.history = result["messages"]
+            # Persist updated history so sessions survive process restarts.
+            self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
         if final_response and conn:
@@ -400,6 +402,7 @@ class HermesACPAgent(acp.Agent):
             cwd=state.cwd,
             model=new_model,
         )
+        self.session_manager.save_session(state.session_id)
         provider_label = target_provider or getattr(state.agent, "provider", "auto")
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
@@ -444,6 +447,7 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
         state.history.clear()
+        self.session_manager.save_session(state.session_id)
         return "Conversation history cleared."
 
     def _cmd_compact(self, args: str, state: SessionState) -> str:
@@ -453,6 +457,7 @@ class HermesACPAgent(acp.Agent):
             agent = state.agent
             if hasattr(agent, "compress_context"):
                 agent.compress_context(state.history)
+                self.session_manager.save_session(state.session_id)
                 return f"Context compressed. Messages: {len(state.history)}"
             return "Context compression not available for this agent."
         except Exception as e:
@@ -475,5 +480,6 @@ class HermesACPAgent(acp.Agent):
                 cwd=state.cwd,
                 model=model_id,
             )
+            self.session_manager.save_session(session_id)
             logger.info("Session %s: model switched to %s", session_id, model_id)
         return None

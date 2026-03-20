@@ -106,14 +106,63 @@ def _get_extraction_model() -> Optional[str]:
     return os.getenv("AUXILIARY_WEB_EXTRACT_MODEL", "").strip() or None
 
 
+def _resolve_cdp_override(cdp_url: str) -> str:
+    """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
+
+    Accepts:
+    - full websocket endpoints: ws://host:port/devtools/browser/...
+    - HTTP discovery endpoints: http://host:port or http://host:port/json/version
+    - bare websocket host:port values like ws://host:port
+
+    For discovery-style endpoints we fetch /json/version and return the
+    webSocketDebuggerUrl so downstream tools always receive a concrete browser
+    websocket instead of an ambiguous host:port URL.
+    """
+    raw = (cdp_url or "").strip()
+    if not raw:
+        return ""
+
+    lowered = raw.lower()
+    if "/devtools/browser/" in lowered:
+        return raw
+
+    discovery_url = raw
+    if lowered.startswith("ws://") or lowered.startswith("wss://"):
+        if raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]:
+            discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
+        else:
+            return raw
+
+    if discovery_url.lower().endswith("/json/version"):
+        version_url = discovery_url
+    else:
+        version_url = discovery_url.rstrip("/") + "/json/version"
+
+    try:
+        response = requests.get(version_url, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
+        return raw
+
+    ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+    if ws_url:
+        logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
+        return ws_url
+
+    logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
+    return raw
+
+
 def _get_cdp_override() -> str:
-    """Return a user-supplied CDP URL override, or empty string.
+    """Return a normalized user-supplied CDP URL override, or empty string.
 
     When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
     both Browserbase and the local headless launcher and connect directly to
     the supplied Chrome DevTools Protocol endpoint.
     """
-    return os.environ.get("BROWSER_CDP_URL", "").strip()
+    return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
 
 
 # ============================================================================

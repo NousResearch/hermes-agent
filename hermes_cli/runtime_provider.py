@@ -24,11 +24,53 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
+    """Auto-detect api_mode from the resolved base URL.
+
+    Direct api.openai.com endpoints need the Responses API for GPT-5.x
+    tool calls with reasoning (chat/completions returns 400).
+    """
+    normalized = (base_url or "").strip().lower().rstrip("/")
+    if "api.openai.com" in normalized and "openrouter" not in normalized:
+        return "codex_responses"
+    return None
+
+
+def _auto_detect_local_model(base_url: str) -> str:
+    """Query a local server for its model name when only one model is loaded."""
+    if not base_url:
+        return ""
+    try:
+        import requests
+        url = base_url.rstrip("/")
+        if not url.endswith("/v1"):
+            url += "/v1"
+        resp = requests.get(url + "/models", timeout=5)
+        if resp.ok:
+            models = resp.json().get("data", [])
+            if len(models) == 1:
+                model_id = models[0].get("id", "")
+                if model_id:
+                    return model_id
+    except Exception:
+        pass
+    return ""
+
+
 def _get_model_config() -> Dict[str, Any]:
     config = load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
-        return dict(model_cfg)
+        cfg = dict(model_cfg)
+        default = cfg.get("default", "").strip()
+        base_url = cfg.get("base_url", "").strip()
+        is_local = "localhost" in base_url or "127.0.0.1" in base_url
+        is_fallback = not default or default == "anthropic/claude-opus-4.6"
+        if is_local and is_fallback and base_url:
+            detected = _auto_detect_local_model(base_url)
+            if detected:
+                cfg["default"] = detected
+        return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
     return {}
@@ -155,7 +197,9 @@ def _resolve_named_custom_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": custom_provider.get("api_mode", "chat_completions"),
+        "api_mode": custom_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -233,7 +277,9 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": "openrouter",
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions",
+        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions",
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -357,6 +403,12 @@ def resolve_runtime_provider(
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
+            # MiniMax providers always use Anthropic Messages API.
+            # Auto-correct stale /v1 URLs (from old .env or config) to /anthropic.
+            elif provider in ("minimax", "minimax-cn"):
+                api_mode = "anthropic_messages"
+                if base_url.rstrip("/").endswith("/v1"):
+                    base_url = base_url.rstrip("/")[:-3] + "/anthropic"
         return {
             "provider": provider,
             "api_mode": api_mode,

@@ -136,6 +136,10 @@ def _deliver_result(job: dict, content: str) -> None:
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "matrix": Platform.MATRIX,
+        "mattermost": Platform.MATTERMOST,
+        "homeassistant": Platform.HOMEASSISTANT,
+        "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -207,11 +211,14 @@ def _build_job_prompt(job: dict) -> str:
     from tools.skills_tool import skill_view
 
     parts = []
+    skipped: list[str] = []
     for skill_name in skill_names:
         loaded = json.loads(skill_view(skill_name))
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            raise RuntimeError(error)
+            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+            skipped.append(skill_name)
+            continue
 
         content = str(loaded.get("content") or "").strip()
         if parts:
@@ -223,6 +230,15 @@ def _build_job_prompt(job: dict) -> str:
                 content,
             ]
         )
+
+    if skipped:
+        notice = (
+            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"and were skipped: {', '.join(skipped)}. "
+            f"Start your response with a brief notice so the user is aware, e.g.: "
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+        )
+        parts.insert(0, notice)
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
@@ -379,7 +395,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
-            disabled_toolsets=["cronjob"],
+            disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             platform="cron",
             session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",

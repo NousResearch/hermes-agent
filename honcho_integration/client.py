@@ -117,11 +117,13 @@ class HonchoClientConfig:
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         api_key = os.environ.get("HONCHO_API_KEY")
+        base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         return cls(
             workspace_id=workspace_id,
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
-            enabled=bool(api_key),
+            base_url=base_url,
+            enabled=bool(api_key or base_url),
         )
 
     @classmethod
@@ -171,8 +173,14 @@ class HonchoClientConfig:
             or raw.get("environment", "production")
         )
 
-        # Auto-enable when API key is present (unless explicitly disabled)
-        # Host-level enabled wins, then root-level, then auto-enable if key exists.
+        base_url = (
+            raw.get("baseUrl")
+            or os.environ.get("HONCHO_BASE_URL", "").strip()
+            or None
+        )
+
+        # Auto-enable when API key or base_url is present (unless explicitly disabled)
+        # Host-level enabled wins, then root-level, then auto-enable if key/url exists.
         host_enabled = host_block.get("enabled")
         root_enabled = raw.get("enabled")
         if host_enabled is not None:
@@ -180,8 +188,8 @@ class HonchoClientConfig:
         elif root_enabled is not None:
             enabled = root_enabled
         else:
-            # Not explicitly set anywhere -> auto-enable if API key exists
-            enabled = bool(api_key)
+            # Not explicitly set anywhere -> auto-enable if API key or base_url exists
+            enabled = bool(api_key or base_url)
 
         # write_frequency: accept int or string
         raw_wf = (
@@ -214,6 +222,7 @@ class HonchoClientConfig:
             workspace_id=workspace,
             api_key=api_key,
             environment=environment,
+            base_url=base_url,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             linked_hosts=linked_hosts,
@@ -348,11 +357,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     if config is None:
         config = HonchoClientConfig.from_global_config()
 
-    if not config.api_key:
+    if not config.api_key and not config.base_url:
         raise ValueError(
             "Honcho API key not found. "
             "Get your API key at https://app.honcho.dev, "
-            "then run 'hermes honcho setup' or set HONCHO_API_KEY."
+            "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
+            "For local instances, set HONCHO_BASE_URL instead."
         )
 
     try:

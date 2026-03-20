@@ -69,6 +69,7 @@ const {
   knsUrl,
   feePolicy,
   maxMultipartParts,
+  contextualMessageTargetExplicit,
   contextualMessageTargetChars,
   broadcastSubscriptions,
   allowedBroadcastChannels,
@@ -92,6 +93,7 @@ const core = new KasiaBridgeCore({
   allowAllBroadcastChannels,
   maxMultipartParts,
   contextualMessageTargetChars,
+  respectContextualMessageTarget: contextualMessageTargetExplicit,
   logger: console,
 });
 await core.init({ skipInitialSync: true });

@@ -47,7 +47,7 @@ function encodeIndexerAlias(alias) {
   return Buffer.from(String(alias || ""), "utf8").toString("hex");
 }
 
-const DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS = 240;
+const DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS = 4096;
 const DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS = 40;
 const DEFAULT_CONTEXTUAL_MESSAGE_MAX_PARTS = 8;
 const DEFAULT_MAX_SEND_JOBS = 100;
@@ -365,6 +365,8 @@ export class KasiaBridgeCore {
     pollLimit = 50,
     processedTxLimit = 1000,
     contextualMessageTargetChars = DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS,
+    respectContextualMessageTarget =
+      contextualMessageTargetChars !== DEFAULT_CONTEXTUAL_MESSAGE_TARGET_CHARS,
     maxMultipartParts = DEFAULT_CONTEXTUAL_MESSAGE_MAX_PARTS,
     maxSendJobs = DEFAULT_MAX_SEND_JOBS,
     randomBytesFn,
@@ -382,6 +384,7 @@ export class KasiaBridgeCore {
     this.pollLimit = pollLimit;
     this.processedTxLimit = processedTxLimit;
     this.contextualMessageTargetChars = contextualMessageTargetChars;
+    this.respectContextualMessageTarget = Boolean(respectContextualMessageTarget);
     this.maxMultipartParts = maxMultipartParts;
     this.maxSendJobs = maxSendJobs;
     this.randomBytesFn = randomBytesFn;
@@ -905,10 +908,26 @@ export class KasiaBridgeCore {
       };
     }
 
+    const singlePartAllowed =
+      !this.respectContextualMessageTarget ||
+      trimmed.length <= this.contextualMessageTargetChars;
+
+    if (singlePartAllowed && this._conversationChunkFits(conversation, trimmed)) {
+      return {
+        status: "ready",
+        chunks: [trimmed],
+        partCount: 1,
+      };
+    }
+
     let targetChars = Math.min(
-      Math.max(DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS, trimmed.length),
+      trimmed.length,
       this.contextualMessageTargetChars
     );
+    if (targetChars >= trimmed.length) {
+      targetChars = trimmed.length - 1;
+    }
+    targetChars = Math.max(DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS, targetChars);
 
     while (targetChars >= DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS) {
       const rawChunks =
@@ -942,10 +961,7 @@ export class KasiaBridgeCore {
       if (targetChars === DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS) {
         break;
       }
-      targetChars = Math.max(
-        DEFAULT_CONTEXTUAL_MESSAGE_MIN_CHARS,
-        Math.min(targetChars - 1, Math.floor(targetChars * 0.75))
-      );
+      targetChars -= 1;
     }
 
     return {

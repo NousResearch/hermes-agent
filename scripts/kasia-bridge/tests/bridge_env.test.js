@@ -31,3 +31,27 @@ test("validateBridgeEnv still rejects missing Kasia endpoints", () => {
 
   assert.throws(() => validateBridgeEnv(config), /KASIA_SEED_PHRASE plus either/);
 });
+
+test("readBridgeEnv uses the cutover Kasia message sizing defaults", () => {
+  const config = readBridgeEnv({
+    KASIA_SEED_PHRASE: "seed phrase",
+    KASIA_INDEXER_URL: "https://indexer.example.com",
+    KASIA_NODE_WBORSH_URL: "ws://127.0.0.1:17110",
+  });
+
+  assert.equal(config.contextualMessageTargetChars, 4096);
+  assert.equal(config.maxMultipartParts, 8);
+  assert.equal(config.contextualMessageTargetExplicit, false);
+});
+
+test("readBridgeEnv tracks when KASIA_TARGET_MESSAGE_CHARS was explicitly set", () => {
+  const config = readBridgeEnv({
+    KASIA_SEED_PHRASE: "seed phrase",
+    KASIA_INDEXER_URL: "https://indexer.example.com",
+    KASIA_NODE_WBORSH_URL: "ws://127.0.0.1:17110",
+    KASIA_TARGET_MESSAGE_CHARS: "80",
+  });
+
+  assert.equal(config.contextualMessageTargetChars, 80);
+  assert.equal(config.contextualMessageTargetExplicit, true);
+});

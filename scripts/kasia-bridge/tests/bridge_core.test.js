@@ -181,6 +181,83 @@ test("send rejects when there is no active conversation", async () => {
   );
 });
 
+test("preflight keeps long contextual messages as one Kasia part when they fit", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new FakeWalletClient();
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const result = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "A".repeat(2000),
+    waitMs: 250,
+  });
+
+  assert.equal(result.status, "submitted");
+  assert.equal(result.partCount, 1);
+  assert.deepEqual(result.txIds, ["tx-1"]);
+  assert.equal(walletClient.sentTransactions.length, 1);
+});
+
+test("explicit target message chars still force chunking even when one payload would fit", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new FakeWalletClient();
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async () => response([]),
+    contextualMessageTargetChars: 80,
+    respectContextualMessageTarget: true,
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const result = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "A".repeat(200),
+    waitMs: 250,
+  });
+
+  assert.equal(result.status, "submitted");
+  assert.equal(result.partCount > 1, true);
+  assert.equal(walletClient.sentTransactions.length, result.partCount);
+});
+
 test("preflight chunking splits oversized contextual messages before send", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
   const walletClient = new PreflightChunkingWalletClient();
@@ -219,6 +296,44 @@ test("preflight chunking splits oversized contextual messages before send", asyn
   assert.equal(result.txId, result.txIds[result.txIds.length - 1]);
   assert.equal(walletClient.sentTransactions.length, result.partCount);
   assert.match(result.statusMessage, /waiting for indexer visibility/i);
+});
+
+test("multipart search does not skip viable Kasia chunk sizes", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new PreflightChunkingWalletClient();
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+  bridge.state.conversations[VALID_CONTACT_ADDRESS] = {
+    conversation_id: "kasia:test",
+    peer_address: VALID_CONTACT_ADDRESS,
+    our_alias: "001122334455",
+    their_alias: "aabbccddeeff",
+    status: "active",
+    updated_at: new Date().toISOString(),
+    last_handshake_block_time: 100,
+    last_context_block_time: 200,
+    pending_handshake: null,
+  };
+
+  const result = await bridge.send({
+    chatId: VALID_CONTACT_ADDRESS,
+    message: "A".repeat(1336),
+    waitMs: 250,
+  });
+
+  assert.equal(result.status, "submitted");
+  assert.equal(result.partCount <= 8, true);
+  assert.equal(result.partCount > 1, true);
+  assert.equal(walletClient.sentTransactions.length, result.partCount);
 });
 
 test("non-size wallet send errors surface as failed send jobs", async () => {

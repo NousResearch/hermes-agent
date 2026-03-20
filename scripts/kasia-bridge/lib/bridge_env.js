@@ -56,8 +56,11 @@ export function readBridgeEnv(env = process.env) {
     knsUrl: String(env.KASIA_KNS_URL || "").trim(),
     feePolicy: String(env.KASIA_FEE_POLICY || "priority").trim() || "priority",
     maxMultipartParts: Number.parseInt(env.KASIA_MAX_MULTIPARTS || "8", 10),
+    contextualMessageTargetExplicit: String(
+      env.KASIA_TARGET_MESSAGE_CHARS || ""
+    ).trim() !== "",
     contextualMessageTargetChars: Number.parseInt(
-      env.KASIA_TARGET_MESSAGE_CHARS || "240",
+      env.KASIA_TARGET_MESSAGE_CHARS || "4096",
       10
     ),
     broadcastSubscriptions: parseBroadcastSubscriptionsEnv(

@@ -6123,8 +6123,15 @@ class AIAgent:
                     # Real invalid_request_error responses include a descriptive message;
                     # transient ones contain only "Error" or are empty. (ref: issue #1608)
                     _err_body = getattr(api_error, "body", None) or {}
+                    _err_type = (_err_body.get("error", {}).get("type", "") if isinstance(_err_body, dict) else "")
                     _err_message = (_err_body.get("error", {}).get("message", "") if isinstance(_err_body, dict) else "")
                     _is_generic_400 = (status_code == 400 and _err_message.strip().lower() in ("error", ""))
+                    # invalid_request_error means the request structure itself is rejected —
+                    # e.g. orphaned tool_result blocks, unknown fields, bad message format.
+                    # These will fail identically on every provider: routing to a fallback
+                    # just produces a second identical 400 from a different backend and hides
+                    # the root cause behind an opaque "Provider returned error" message.
+                    _is_invalid_request = (status_code == 400 and _err_type == "invalid_request_error")
                     is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES and not _is_generic_400
                     is_client_error = (is_local_validation_error or is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 401', 'error code: 403',
@@ -6135,9 +6142,13 @@ class AIAgent:
                     ])) and not is_context_length_error
 
                     if is_client_error:
-                        # Try fallback before aborting — a different provider
-                        # may not have the same issue (rate limit, auth, etc.)
-                        if self._try_activate_fallback():
+                        # Try fallback before aborting — a different provider may not
+                        # have the same issue (rate limit, auth, etc.).
+                        # Exception: invalid_request_error is a structural rejection that
+                        # will fail on any provider. Skip fallback and abort immediately
+                        # so the root cause surfaces in the error message rather than being
+                        # masked by a second 400 from the fallback backend.
+                        if not _is_invalid_request and self._try_activate_fallback():
                             retry_count = 0
                             continue
                         self._dump_api_request_debug(
@@ -6146,15 +6157,16 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}❌ Non-retryable client error detected. Aborting immediately.", force=True)
                         self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")
-                        # Skip session persistence when the error is likely
-                        # context-overflow related (status 400 + large session).
-                        # Persisting the failed user message would make the
-                        # session even larger, causing the same failure on the
-                        # next attempt. (#1630)
-                        if status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80):
+                        # Skip session persistence for invalid_request_error 400s regardless
+                        # of session size: these indicate a structural message problem that
+                        # will reproduce on every subsequent request. Persisting the failed
+                        # user message grows the session and guarantees the same failure on
+                        # the next attempt, creating an unrecoverable loop for gateway users.
+                        # Also skip for large sessions (existing behaviour, ref: #1630).
+                        if status_code == 400 and (_is_invalid_request or approx_tokens > 50000 or len(api_messages) > 80):
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Skipping session persistence "
-                                f"for large failed session to prevent growth loop.",
+                                f"for failed session to prevent growth loop.",
                                 force=True,
                             )
                         else:

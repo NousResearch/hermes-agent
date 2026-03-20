@@ -299,17 +299,19 @@ def _rpc_server_loop(
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
                 try:
-                    _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                    sys.stdout = open(os.devnull, "w")
-                    sys.stderr = open(os.devnull, "w")
+                    _devnull = open(os.devnull, "w")
                     try:
-                        result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
-                        )
+                        _real_stdout, _real_stderr = sys.stdout, sys.stderr
+                        sys.stdout = _devnull
+                        sys.stderr = _devnull
+                        try:
+                            result = handle_function_call(
+                                tool_name, tool_args, task_id=task_id
+                            )
+                        finally:
+                            sys.stdout, sys.stderr = _real_stdout, _real_stderr
                     finally:
-                        sys.stdout.close()
-                        sys.stderr.close()
-                        sys.stdout, sys.stderr = _real_stdout, _real_stderr
+                        _devnull.close()
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = json.dumps({"error": str(exc)})
@@ -574,6 +576,7 @@ def execute_code(
 
         # Wait for RPC thread to finish
         server_sock.close()  # break accept() so thread exits promptly
+        server_sock = None    # prevent double-close in finally
         rpc_thread.join(timeout=3)
 
         # Build response

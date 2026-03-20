@@ -854,6 +854,31 @@ agent:
 
 Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
 
+## Context Pressure Warnings
+
+Separate from iteration budget pressure, context pressure tracks how close the conversation is to the **compaction threshold** — the point where context compression fires to summarize older messages. This helps both you and the agent understand when the conversation is getting long.
+
+| Progress | Level | What happens |
+|----------|-------|-------------|
+| **≥ 60%** to threshold | Info | CLI shows a cyan progress bar; gateway sends an informational notice |
+| **≥ 85%** to threshold | Warning | CLI shows a bold yellow bar; gateway warns compaction is imminent |
+
+In the CLI, context pressure appears as a progress bar in the tool output feed:
+
+```
+  ◐ context ████████████░░░░░░░░ 62% to compaction  48k threshold (50%) · approaching compaction
+```
+
+On messaging platforms, a plain-text notification is sent:
+
+```
+◐ Context: ████████████░░░░░░░░ 62% to compaction (threshold: 50% of window).
+```
+
+If auto-compression is disabled, the warning tells you context may be truncated instead.
+
+Context pressure is automatic — no configuration needed. It fires purely as a user-facing notification and does not modify the message stream or inject anything into the model's context.
+
 ## Auxiliary Models
 
 Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via auto-detection — you don't need to configure anything.
@@ -1042,6 +1067,7 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+    base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -1065,6 +1091,7 @@ display:
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   background_process_notifications: all  # all | result | error | off (gateway only)
+  show_cost: false        # Show estimated $ cost in the CLI status bar
 ```
 
 ### Theme mode

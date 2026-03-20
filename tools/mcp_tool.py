@@ -605,7 +605,9 @@ class SamplingHandler:
                     "function": {
                         "name": getattr(t, "name", ""),
                         "description": getattr(t, "description", "") or "",
-                        "parameters": getattr(t, "inputSchema", {}) or {},
+                        "parameters": _normalize_mcp_input_schema(
+                            getattr(t, "inputSchema", None)
+                        ),
                     },
                 }
                 for t in server_tools
@@ -1213,6 +1215,17 @@ def _make_check_fn(server_name: str):
 # Discovery & registration
 # ---------------------------------------------------------------------------
 
+def _normalize_mcp_input_schema(schema: dict | None) -> dict:
+    """Normalize MCP input schemas for LLM tool-calling compatibility."""
+    if not schema:
+        return {"type": "object", "properties": {}}
+
+    if schema.get("type") == "object" and "properties" not in schema:
+        return {**schema, "properties": {}}
+
+    return schema
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -1231,10 +1244,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": mcp_tool.inputSchema if mcp_tool.inputSchema else {
-            "type": "object",
-            "properties": {},
-        },
+        "parameters": _normalize_mcp_input_schema(mcp_tool.inputSchema),
     }
 
 

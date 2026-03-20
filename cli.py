@@ -3640,6 +3640,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress()
+        elif canonical == "workflow":
+            self._handle_workflow_command(cmd_original)
         elif canonical == "usage":
             self._show_usage()
         elif canonical == "insights":
@@ -4271,6 +4273,116 @@ class HermesCLI:
             else:
                 preview = reasoning_text.strip()
             _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+
+    def _handle_workflow_command(self, command: str):
+        """Handle /workflow subcommands."""
+        from agent.workflow import (
+            WorkflowRecorder, WorkflowRunner, load_workflow, list_workflows,
+            delete_workflow, format_workflow_list, format_workflow_detail,
+        )
+
+        parts = command.split(None, 2)
+        sub = parts[1].lower() if len(parts) > 1 else "help"
+        arg = parts[2].strip() if len(parts) > 2 else ""
+
+        if sub == "record":
+            if not arg:
+                _cprint("  Usage: /workflow record <name>")
+                return
+            if hasattr(self, "_workflow_recorder") and self._workflow_recorder and self._workflow_recorder.is_recording:
+                _cprint(f"  Already recording workflow '{self._workflow_recorder.workflow.name}'. Use /workflow stop first.")
+                return
+            self._workflow_recorder = WorkflowRecorder(arg)
+            _cprint(f"  Recording workflow '{arg}'. Your prompts will be captured.")
+            _cprint(f"  Use /workflow stop to save.")
+
+        elif sub == "stop":
+            if not hasattr(self, "_workflow_recorder") or not self._workflow_recorder or not self._workflow_recorder.is_recording:
+                _cprint("  Not recording any workflow.")
+                return
+            wf = self._workflow_recorder.stop()
+            if wf.steps:
+                path = self._workflow_recorder.save()
+                _cprint(f"  Workflow '{wf.name}' saved ({len(wf.steps)} steps)")
+            else:
+                _cprint("  No steps recorded. Workflow discarded.")
+            self._workflow_recorder = None
+
+        elif sub == "run":
+            if not arg:
+                _cprint("  Usage: /workflow run <name>")
+                return
+            wf = load_workflow(arg)
+            if not wf:
+                _cprint(f"  Workflow '{arg}' not found. Use /workflow list to see available.")
+                return
+            if not wf.steps:
+                _cprint(f"  Workflow '{arg}' has no steps.")
+                return
+
+            _cprint(f"  Running workflow '{wf.name}' ({len(wf.steps)} steps)...")
+            _cprint("")
+
+            runner = WorkflowRunner(wf)
+
+            def on_start(i, step):
+                _cprint(f"  Step {i + 1}/{len(wf.steps)}: {step.prompt[:80]}")
+
+            def on_done(i, step, response):
+                preview = (response or "")[:120].replace("\n", " ")
+                _cprint(f"    -> {preview}")
+                _cprint("")
+
+            def send_prompt(prompt):
+                if not self.agent:
+                    return "Agent not initialized"
+                result = self.agent.run_conversation(
+                    prompt,
+                    conversation_history=self.conversation_history,
+                    session_id=self.session_id,
+                )
+                # Append to conversation history
+                self.conversation_history.append({"role": "user", "content": prompt})
+                if result:
+                    self.conversation_history.append({"role": "assistant", "content": result})
+                return result or ""
+
+            results = runner.run(send_prompt, on_step_start=on_start, on_step_done=on_done)
+
+            ok = sum(1 for r in results if r["status"] == "ok")
+            total_time = sum(r["duration"] for r in results)
+            _cprint(f"  Workflow complete: {ok}/{len(results)} steps OK ({total_time:.1f}s)")
+
+        elif sub == "list":
+            _cprint(f"  {format_workflow_list(list_workflows())}")
+
+        elif sub == "show":
+            if not arg:
+                _cprint("  Usage: /workflow show <name>")
+                return
+            wf = load_workflow(arg)
+            if not wf:
+                _cprint(f"  Workflow '{arg}' not found.")
+                return
+            _cprint(f"  {format_workflow_detail(wf)}")
+
+        elif sub == "delete":
+            if not arg:
+                _cprint("  Usage: /workflow delete <name>")
+                return
+            if delete_workflow(arg):
+                _cprint(f"  Deleted workflow '{arg}'")
+            else:
+                _cprint(f"  Workflow '{arg}' not found.")
+
+        else:
+            _cprint("  Workflow commands:")
+            _cprint("    /workflow record <name>  Start recording a workflow")
+            _cprint("    /workflow stop           Stop recording and save")
+            _cprint("    /workflow run <name>     Replay a saved workflow")
+            _cprint("    /workflow list           List saved workflows")
+            _cprint("    /workflow show <name>    Show workflow steps")
+            _cprint("    /workflow delete <name>  Delete a workflow")
 
     def _manual_compress(self):
         """Manually trigger context compression on the current conversation."""
@@ -6871,6 +6983,11 @@ class HermesCLI:
                     if submit_images:
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+
+                    # Record workflow step if recording
+                    if hasattr(self, "_workflow_recorder") and self._workflow_recorder and self._workflow_recorder.is_recording:
+                        self._workflow_recorder.record_step(user_input)
+                        _cprint(f"  {_DIM}[recording step {self._workflow_recorder.step_count}]{_RST}")
 
                     # Regular chat - run agent
                     self._agent_running = True

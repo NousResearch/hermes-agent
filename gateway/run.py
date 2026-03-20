@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -1335,20 +1336,9 @@ class GatewayRunner:
         
         # Check for commands
         command = event.get_command()
-        
-        # Emit command:* hook for any recognized slash command.
-        # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
-        # in hermes_cli/commands.py — no hardcoded set to maintain here.
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
-        if command and command in GATEWAY_KNOWN_COMMANDS and hasattr(self, "hooks"):
-            await self.hooks.emit(f"command:{command}", {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "command": command,
-                "args": event.get_command_args().strip(),
-            })
 
         # Resolve aliases to canonical name so dispatch only checks canonicals.
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command as _resolve_cmd
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
 
@@ -1366,7 +1356,8 @@ class GatewayRunner:
                     return "⏳ The agent is still starting up — nothing to stop yet."
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    pending_queue = adapter._pending_messages.setdefault(_quick_key, deque())
+                    pending_queue.append(event)
                 return None
 
             if canonical != "stop":
@@ -1396,6 +1387,16 @@ class GatewayRunner:
             logger.debug("PRIORITY stop for session %s", _quick_key[:20])
             running_agent.interrupt()
             return None
+
+        # Emit command:* hook only when this turn is actually being processed now.
+        # Queued/replayed commands should emit when replayed, not when deferred.
+        if command and command in GATEWAY_KNOWN_COMMANDS and hasattr(self, "hooks"):
+            await self.hooks.emit(f"command:{command}", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "command": command,
+                "args": event.get_command_args().strip(),
+            })
 
         if canonical == "new":
             return await self._handle_reset_command(event)

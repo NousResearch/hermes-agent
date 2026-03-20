@@ -5424,13 +5424,16 @@ class HermesCLI:
             agent_thread.start()
 
             # Store TTS stop event so Esc handler can signal it.
-            # Interrupts now fire directly via Esc → agent.interrupt();
-            # we just wait for the agent thread to finish.
+            # Keep the UI repaint loop alive while the agent thread runs so
+            # streamed tool output is flushed promptly under prompt_toolkit.
             self._tts_stop_event = stop_event
             try:
-                agent_thread.join()
+                while agent_thread.is_alive():
+                    agent_thread.join(0.1)
+                    self._invalidate(min_interval=0.15)
             finally:
                 self._tts_stop_event = None
+            agent_thread.join()  # Ensure the thread is fully drained
 
             # Flush any remaining streamed text and close the box
             self._flush_stream()

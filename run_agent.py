@@ -77,6 +77,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
 )
+from agent.camel_guard import CamelDecision, CamelGuard, CamelGuardConfig, sanitize_message_for_api
 from agent.model_metadata import (
     fetch_model_metadata, get_model_context_length,
     estimate_tokens_rough, estimate_messages_tokens_rough,
@@ -775,7 +776,17 @@ class AIAgent:
                     print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
         elif not self.quiet_mode:
             print("🛠️  No tools loaded (all tools filtered out or unavailable)")
-        
+
+        try:
+            from hermes_cli.config import load_config
+
+            _camel_cfg = load_config().get("camel_guard", {})
+        except Exception:
+            _camel_cfg = {}
+        self._camel_guard = CamelGuard(CamelGuardConfig.from_dict(_camel_cfg))
+        if self._camel_guard.config.enabled and not self.quiet_mode:
+            print(f"🛡️  CaMeL guard: {self._camel_guard.config.mode}")
+
         # Check tool requirements
         if self.tools and not self.quiet_mode:
             requirements = check_toolset_requirements()
@@ -2044,6 +2055,9 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        camel_guidance = self._camel_guard.system_prompt_guidance()
+        if camel_guidance:
+            tool_guidance.append(camel_guidance)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -2219,6 +2233,33 @@ class AIAgent:
             )
 
         return messages
+
+    def _camel_decide_tool_call(self, function_name: str, function_args: Dict[str, Any]) -> CamelDecision:
+        return self._camel_guard.evaluate_tool_call(function_name, function_args)
+
+    def _camel_make_tool_message(self, function_name: str, function_result: str, tool_call_id: str) -> Dict[str, Any]:
+        wrapped_content, is_untrusted = self._camel_guard.wrap_tool_result(function_name, function_result)
+        tool_msg = {
+            "role": "tool",
+            "content": wrapped_content,
+            "tool_call_id": tool_call_id,
+        }
+        if is_untrusted:
+            tool_msg["_camel_untrusted"] = True
+            tool_msg["_camel_source"] = function_name
+        return tool_msg
+
+    def _camel_blocked_tool_result(self, function_name: str, decision: CamelDecision) -> str:
+        payload = {
+            "error": decision.reason,
+            "_camel_guard": {
+                "blocked": True,
+                "tool": function_name,
+                "sources": decision.sources,
+                "operator_request": self._camel_guard.latest_trusted_user_message[:240],
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
@@ -4013,6 +4054,7 @@ class AIAgent:
             "content": assistant_message.content or "",
             "reasoning": reasoning_text,
             "finish_reason": finish_reason,
+            "_camel_trust": "model_generated",
         }
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -4142,13 +4184,22 @@ class AIAgent:
         if not messages or len(messages) < 3:
             return
 
+        flush_decision = self._camel_decide_tool_call("memory", {"action": "add", "target": "memory"})
+        if not flush_decision.allowed and self._camel_guard.config.mode == "enforce":
+            logger.info("CaMeL skipped automatic memory flush: %s", flush_decision.reason)
+            return
+        if not flush_decision.allowed:
+            logger.warning("CaMeL monitor: %s", flush_decision.reason)
+
         flush_content = (
             "[System: The session is being compressed. "
             "Save anything worth remembering — prioritize user preferences, "
             "corrections, and recurring patterns over task-specific details.]"
         )
         _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
-        flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
+        flush_msg = self._camel_guard.mark_system_control_message(
+            {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
+        )
         messages.append(flush_msg)
 
         try:
@@ -4156,7 +4207,7 @@ class AIAgent:
             _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
-                api_msg = msg.copy()
+                api_msg = sanitize_message_for_api(msg.copy())
                 if msg.get("role") == "assistant":
                     reasoning = msg.get("reasoning")
                     if reasoning:
@@ -4168,8 +4219,12 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
-            if self._cached_system_prompt:
-                api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
+            effective_system = self._cached_system_prompt or ""
+            camel_envelope = self._camel_guard.render_security_envelope()
+            if camel_envelope:
+                effective_system = (effective_system + "\n\n" + camel_envelope).strip()
+            if effective_system:
+                api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
             # Make one API call with only the memory tool available
             memory_tool_def = None
@@ -4442,7 +4497,7 @@ class AIAgent:
             return
 
         # ── Parse args + pre-execution bookkeeping ───────────────────────
-        parsed_calls = []  # list of (tool_call, function_name, function_args)
+        parsed_calls = []  # list of (tool_call, function_name, function_args, camel_decision)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
 
@@ -4459,8 +4514,14 @@ class AIAgent:
             if not isinstance(function_args, dict):
                 function_args = {}
 
+            camel_decision = self._camel_decide_tool_call(function_name, function_args)
+
             # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if (
+                camel_decision.allowed
+                and function_name in ("write_file", "patch")
+                and self._checkpoint_mgr.enabled
+            ):
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -4470,7 +4531,7 @@ class AIAgent:
                     pass
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if camel_decision.allowed and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -4481,13 +4542,13 @@ class AIAgent:
                 except Exception:
                     pass
 
-            parsed_calls.append((tool_call, function_name, function_args))
+            parsed_calls.append((tool_call, function_name, function_args, camel_decision))
 
         # ── Logging / callbacks ──────────────────────────────────────────
-        tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
+        tool_names_str = ", ".join(name for _, name, _, _ in parsed_calls)
         if not self.quiet_mode:
             print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-            for i, (tc, name, args) in enumerate(parsed_calls, 1):
+            for i, (tc, name, args, camel_decision) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
                     print(f"  📞 Tool {i}: {name}({list(args.keys())})")
@@ -4495,8 +4556,10 @@ class AIAgent:
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                if not camel_decision.allowed and self._camel_guard.config.mode == "enforce":
+                    print(f"     🛡️  {camel_decision.reason}")
 
-        for _, name, args in parsed_calls:
+        for _, name, args, _ in parsed_calls:
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
@@ -4508,11 +4571,16 @@ class AIAgent:
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
         results = [None] * num_tools
 
-        def _run_tool(index, tool_call, function_name, function_args):
+        def _run_tool(index, tool_call, function_name, function_args, camel_decision):
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id)
+                if not camel_decision.allowed and self._camel_guard.config.mode == "enforce":
+                    result = self._camel_blocked_tool_result(function_name, camel_decision)
+                else:
+                    if not camel_decision.allowed:
+                        logger.warning("CaMeL monitor: %s", camel_decision.reason)
+                    result = self._invoke_tool(function_name, function_args, effective_task_id)
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -4531,8 +4599,8 @@ class AIAgent:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
-                for i, (tc, name, args) in enumerate(parsed_calls):
-                    f = executor.submit(_run_tool, i, tc, name, args)
+                for i, (tc, name, args, camel_decision) in enumerate(parsed_calls):
+                    f = executor.submit(_run_tool, i, tc, name, args, camel_decision)
                     futures.append(f)
 
                 # Wait for all to complete (exceptions are captured inside _run_tool)
@@ -4545,7 +4613,7 @@ class AIAgent:
                 spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
         # ── Post-execution: display per-tool results ─────────────────────
-        for i, (tc, name, args) in enumerate(parsed_calls):
+        for i, (tc, name, args, camel_decision) in enumerate(parsed_calls):
             r = results[i]
             if r is None:
                 # Shouldn't happen, but safety fallback
@@ -4585,11 +4653,7 @@ class AIAgent:
                 )
 
             # Append tool result message in order
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tc.id,
-            }
+            tool_msg = self._camel_make_tool_message(name, function_result, tc.id)
             messages.append(tool_msg)
 
         # ── Budget pressure injection ────────────────────────────────────
@@ -4645,6 +4709,7 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            camel_decision = self._camel_decide_tool_call(function_name, function_args)
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -4654,6 +4719,8 @@ class AIAgent:
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                if not camel_decision.allowed and self._camel_guard.config.mode == "enforce":
+                    print(f"     🛡️  {camel_decision.reason}")
 
             if self.tool_progress_callback:
                 try:
@@ -4663,7 +4730,11 @@ class AIAgent:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
             # Checkpoint: snapshot working dir before file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if (
+                camel_decision.allowed
+                and function_name in ("write_file", "patch")
+                and self._checkpoint_mgr.enabled
+            ):
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -4675,7 +4746,7 @@ class AIAgent:
                     pass  # never block tool execution
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if camel_decision.allowed and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -4688,126 +4759,133 @@ class AIAgent:
 
             tool_start_time = time.time()
 
-            if function_name == "todo":
-                from tools.todo_tool import todo_tool as _todo_tool
-                function_result = _todo_tool(
-                    todos=function_args.get("todos"),
-                    merge=function_args.get("merge", False),
-                    store=self._todo_store,
-                )
+            if not camel_decision.allowed and self._camel_guard.config.mode == "enforce":
+                function_result = self._camel_blocked_tool_result(function_name, camel_decision)
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
-            elif function_name == "session_search":
-                if not self._session_db:
-                    function_result = json.dumps({"success": False, "error": "Session database not available."})
-                else:
-                    from tools.session_search_tool import session_search as _session_search
-                    function_result = _session_search(
-                        query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
-                        limit=function_args.get("limit", 3),
-                        db=self._session_db,
-                        current_session_id=self.session_id,
-                    )
-                tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
-            elif function_name == "memory":
-                target = function_args.get("target", "memory")
-                from tools.memory_tool import memory_tool as _memory_tool
-                function_result = _memory_tool(
-                    action=function_args.get("action"),
-                    target=target,
-                    content=function_args.get("content"),
-                    old_text=function_args.get("old_text"),
-                    store=self._memory_store,
-                )
-                # Also send user observations to Honcho when active
-                if self._honcho and target == "user" and function_args.get("action") == "add":
-                    self._honcho_save_user_observation(function_args.get("content", ""))
-                tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
-            elif function_name == "clarify":
-                from tools.clarify_tool import clarify_tool as _clarify_tool
-                function_result = _clarify_tool(
-                    question=function_args.get("question", ""),
-                    choices=function_args.get("choices"),
-                    callback=self.clarify_callback,
-                )
-                tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
-            elif function_name == "delegate_task":
-                from tools.delegate_tool import delegate_task as _delegate_task
-                tasks_arg = function_args.get("tasks")
-                if tasks_arg and isinstance(tasks_arg, list):
-                    spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
-                else:
-                    goal_preview = (function_args.get("goal") or "")[:30]
-                    spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
-                spinner = None
-                if self.quiet_mode:
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
-                    spinner.start()
-                self._delegate_spinner = spinner
-                _delegate_result = None
-                try:
-                    function_result = _delegate_task(
-                        goal=function_args.get("goal"),
-                        context=function_args.get("context"),
-                        toolsets=function_args.get("toolsets"),
-                        tasks=tasks_arg,
-                        max_iterations=function_args.get("max_iterations"),
-                        parent_agent=self,
-                    )
-                    _delegate_result = function_result
-                finally:
-                    self._delegate_spinner = None
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self.quiet_mode:
-                        self._vprint(f"  {cute_msg}")
-            elif self.quiet_mode and not self._has_stream_consumers():
-                face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                emoji = _get_tool_emoji(function_name)
-                preview = _build_tool_preview(function_name, function_args) or function_name
-                if len(preview) > 30:
-                    preview = preview[:27] + "..."
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
-                spinner.start()
-                _spinner_result = None
-                try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        honcho_manager=self._honcho,
-                        honcho_session_key=self._honcho_session_key,
-                    )
-                    _spinner_result = function_result
-                except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
-                    spinner.stop(cute_msg)
+                logger.warning("CaMeL blocked tool %s: %s", function_name, camel_decision.reason)
             else:
-                try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        honcho_manager=self._honcho,
-                        honcho_session_key=self._honcho_session_key,
+                if not camel_decision.allowed:
+                    logger.warning("CaMeL monitor: %s", camel_decision.reason)
+                if function_name == "todo":
+                    from tools.todo_tool import todo_tool as _todo_tool
+                    function_result = _todo_tool(
+                        todos=function_args.get("todos"),
+                        merge=function_args.get("merge", False),
+                        store=self._todo_store,
                     )
-                except Exception as tool_error:
-                    function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                tool_duration = time.time() - tool_start_time
+                    tool_duration = time.time() - tool_start_time
+                    if self.quiet_mode:
+                        self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                elif function_name == "session_search":
+                    if not self._session_db:
+                        function_result = json.dumps({"success": False, "error": "Session database not available."})
+                    else:
+                        from tools.session_search_tool import session_search as _session_search
+                        function_result = _session_search(
+                            query=function_args.get("query", ""),
+                            role_filter=function_args.get("role_filter"),
+                            limit=function_args.get("limit", 3),
+                            db=self._session_db,
+                            current_session_id=self.session_id,
+                        )
+                    tool_duration = time.time() - tool_start_time
+                    if self.quiet_mode:
+                        self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+                elif function_name == "memory":
+                    target = function_args.get("target", "memory")
+                    from tools.memory_tool import memory_tool as _memory_tool
+                    function_result = _memory_tool(
+                        action=function_args.get("action"),
+                        target=target,
+                        content=function_args.get("content"),
+                        old_text=function_args.get("old_text"),
+                        store=self._memory_store,
+                    )
+                    # Also send user observations to Honcho when active
+                    if self._honcho and target == "user" and function_args.get("action") == "add":
+                        self._honcho_save_user_observation(function_args.get("content", ""))
+                    tool_duration = time.time() - tool_start_time
+                    if self.quiet_mode:
+                        self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+                elif function_name == "clarify":
+                    from tools.clarify_tool import clarify_tool as _clarify_tool
+                    function_result = _clarify_tool(
+                        question=function_args.get("question", ""),
+                        choices=function_args.get("choices"),
+                        callback=self.clarify_callback,
+                    )
+                    tool_duration = time.time() - tool_start_time
+                    if self.quiet_mode:
+                        self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+                elif function_name == "delegate_task":
+                    from tools.delegate_tool import delegate_task as _delegate_task
+                    tasks_arg = function_args.get("tasks")
+                    if tasks_arg and isinstance(tasks_arg, list):
+                        spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
+                    else:
+                        goal_preview = (function_args.get("goal") or "")[:30]
+                        spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
+                    spinner = None
+                    if self.quiet_mode:
+                        face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                        spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
+                        spinner.start()
+                    self._delegate_spinner = spinner
+                    _delegate_result = None
+                    try:
+                        function_result = _delegate_task(
+                            goal=function_args.get("goal"),
+                            context=function_args.get("context"),
+                            toolsets=function_args.get("toolsets"),
+                            tasks=tasks_arg,
+                            max_iterations=function_args.get("max_iterations"),
+                            parent_agent=self,
+                        )
+                        _delegate_result = function_result
+                    finally:
+                        self._delegate_spinner = None
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                        if spinner:
+                            spinner.stop(cute_msg)
+                        elif self.quiet_mode:
+                            self._vprint(f"  {cute_msg}")
+                elif self.quiet_mode and not self._has_stream_consumers():
+                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    emoji = _get_tool_emoji(function_name)
+                    preview = _build_tool_preview(function_name, function_args) or function_name
+                    if len(preview) > 30:
+                        preview = preview[:27] + "..."
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
+                    spinner.start()
+                    _spinner_result = None
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            honcho_manager=self._honcho,
+                            honcho_session_key=self._honcho_session_key,
+                        )
+                        _spinner_result = function_result
+                    except Exception as tool_error:
+                        function_result = f"Error executing tool '{function_name}': {tool_error}"
+                        logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    finally:
+                        tool_duration = time.time() - tool_start_time
+                        cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
+                        spinner.stop(cute_msg)
+                else:
+                    try:
+                        function_result = handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            honcho_manager=self._honcho,
+                            honcho_session_key=self._honcho_session_key,
+                        )
+                    except Exception as tool_error:
+                        function_result = f"Error executing tool '{function_name}': {tool_error}"
+                        logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    tool_duration = time.time() - tool_start_time
 
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -4836,11 +4914,7 @@ class AIAgent:
                     f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
                 )
 
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tool_call.id
-            }
+            tool_msg = self._camel_make_tool_message(function_name, function_result, tool_call.id)
             messages.append(tool_msg)
 
             if not self.quiet_mode:
@@ -4921,7 +4995,11 @@ class AIAgent:
             "Please provide a final response summarizing what you've found and accomplished so far, "
             "without calling any more tools."
         )
-        messages.append({"role": "user", "content": summary_request})
+        messages.append(
+            self._camel_guard.mark_system_control_message(
+                {"role": "user", "content": summary_request}
+            )
+        )
 
         try:
             # Build API messages, stripping internal-only fields
@@ -4929,7 +5007,7 @@ class AIAgent:
             _is_strict_api = "api.mistral.ai" in self._base_url_lower
             api_messages = []
             for msg in messages:
-                api_msg = msg.copy()
+                api_msg = sanitize_message_for_api(msg.copy())
                 for internal_field in ("reasoning", "finish_reason"):
                     api_msg.pop(internal_field, None)
                 if _is_strict_api:
@@ -4937,6 +5015,9 @@ class AIAgent:
                 api_messages.append(api_msg)
 
             effective_system = self._cached_system_prompt or ""
+            camel_envelope = self._camel_guard.render_security_envelope()
+            if camel_envelope:
+                effective_system = (effective_system + "\n\n" + camel_envelope).strip()
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
@@ -5009,7 +5090,7 @@ class AIAgent:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                 if final_response:
-                    messages.append({"role": "assistant", "content": final_response})
+                    messages.append(self._camel_guard.mark_assistant_message({"role": "assistant", "content": final_response}))
                 else:
                     final_response = "I reached the iteration limit and couldn't generate a summary."
             else:
@@ -5049,7 +5130,7 @@ class AIAgent:
                     if "<think>" in final_response:
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                     if final_response:
-                        messages.append({"role": "assistant", "content": final_response})
+                        messages.append(self._camel_guard.mark_assistant_message({"role": "assistant", "content": final_response}))
                     else:
                         final_response = "I reached the iteration limit and couldn't generate a summary."
                 else:
@@ -5135,6 +5216,7 @@ class AIAgent:
         # Preserve the original user message before nudge injection.
         # Honcho should receive the actual user input, not system nudges.
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        self._camel_guard.begin_turn(original_user_message, messages)
 
         # Periodic memory nudge: remind the model to consider saving memories.
         # Counter resets whenever the memory tool is actually used.
@@ -5184,7 +5266,10 @@ class AIAgent:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
         # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        user_msg = self._camel_guard.mark_user_message(
+            {"role": "user", "content": user_message},
+            operator_request=original_user_message,
+        )
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
@@ -5339,7 +5424,7 @@ class AIAgent:
             # on assistant messages with tool_calls. We handle both cases here.
             api_messages = []
             for idx, msg in enumerate(messages):
-                api_msg = msg.copy()
+                api_msg = sanitize_message_for_api(msg.copy())
 
                 if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
                     api_msg["content"] = _inject_honcho_turn_context(
@@ -5376,6 +5461,9 @@ class AIAgent:
             # Honcho later-turn recall is intentionally kept OUT of the system prompt
             # so the stable cache prefix remains unchanged.
             effective_system = active_system_prompt or ""
+            camel_envelope = self._camel_guard.render_security_envelope()
+            if camel_envelope:
+                effective_system = (effective_system + "\n\n" + camel_envelope).strip()
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
@@ -5651,7 +5739,7 @@ class AIAgent:
                                             "restart or repeat prior text. Finish the answer directly.]"
                                         ),
                                     }
-                                    messages.append(continue_msg)
+                                    messages.append(self._camel_guard.mark_system_control_message(continue_msg))
                                     self._session_messages = messages
                                     self._save_session_log(messages)
                                     restart_with_length_continuation = True
@@ -6444,7 +6532,9 @@ class AIAgent:
                         assistant_message.tool_calls
                     )
 
-                    assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    assistant_msg = self._camel_guard.mark_assistant_message(
+                        self._build_assistant_message(assistant_message, finish_reason)
+                    )
                     
                     # If this turn has both content AND tool_calls, capture the content
                     # as a fallback final response. Common pattern: model delivers its
@@ -6629,7 +6719,7 @@ class AIAgent:
                                 "send your final answer after completing the task.]"
                             ),
                         }
-                        messages.append(continue_msg)
+                        messages.append(self._camel_guard.mark_system_control_message(continue_msg))
                         self._session_messages = messages
                         self._save_session_log(messages)
                         continue

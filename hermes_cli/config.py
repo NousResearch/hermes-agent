@@ -163,6 +163,11 @@ DEFAULT_CONFIG = {
         "summary_provider": "auto",
         "summary_base_url": None,
     },
+    "camel_guard": {
+        "enabled": True,
+        "mode": "enforce",  # off | monitor | enforce
+        "wrap_untrusted_tool_results": True,
+    },
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,

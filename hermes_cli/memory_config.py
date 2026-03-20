@@ -15,7 +15,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from hermes_cli.config import load_config, save_config_value
+from hermes_cli.config import load_config, set_config_value as save_config_value
 
 console = Console()
 

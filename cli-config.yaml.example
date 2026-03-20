@@ -693,12 +693,59 @@ delegation:
 # Builds a deeper understanding of the user across sessions and tools.
 # Runs alongside USER.md — additive, not a replacement.
 #
+# IMPORTANT: When QMD is enabled (see below), Honcho is completely bypassed.
+# This is a strict OR relationship — both cannot be active simultaneously.
+#
 # Requires: pip install honcho-ai
 # Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
 # API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
 #
 # Hermes-specific overrides (optional — most config comes from ~/.honcho/config.json):
 # honcho: {}
+
+# =============================================================================
+# QMD Integration (Native Anticipatory Memory)
+# =============================================================================
+# Local vector-based memory with FlowState anticipatory context.
+# STRICT ALTERNATIVE to Honcho — when QMD is enabled, Honcho is bypassed.
+#
+# Features:
+#   - Local FAISS indexing (no cloud dependency)
+#   - Anticipatory context via FlowState (zero-latency memory retrieval)
+#   - Configurable embedding models (BGE-M3 default, NousResearch when available)
+#   - Lite mode for resource-constrained environments
+#
+# When enabled=true, this completely overrides Honcho settings.
+# Use either QMD or Honcho — not both.
+#
+# Requires: QMD MCP server running (start with: qmd server)
+#
+# qmd:
+#   enabled: false                    # Enable QMD (bypasses Honcho when true)
+#   host: "127.0.0.1"                # QMD server host
+#   port: 8181                       # QMD server port
+#   base_url: ""                     # Optional: full URL override for remote server
+#   peer_name: "hermes"              # Session identifier prefix
+#
+#   # Index settings
+#   index_name: "qmd_memory"         # FAISS index name
+#   embedding_model: "BAAI/bge-m3"   # Embedding model (1024 dims)
+#   # Lite mode: use lightweight models for faster/smaller footprint
+#   lite_mode: false                 # Use bge-micro-v2 (256 dims) instead
+#
+#   # Memory settings
+#   memory_char_limit: 2200          # Max chars per memory entry
+#   top_k: 5                         # Default results per query
+#
+#   # Write frequency: "async" | "turn" | "session" | N (every N turns)
+#   write_frequency: "async"
+#
+#   # Anticipatory context (FlowState)
+#   anticipatory_enabled: true        # Enable anticipatory memory retrieval
+#   anticipatory_max_results: 3      # Max memories in anticipatory context
+#
+#   # Session strategy: "per-session" | "per-repo" | "per-directory" | "global"
+#   session_strategy: "per-session"
 
 # =============================================================================
 # Display

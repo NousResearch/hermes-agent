@@ -823,6 +823,62 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
 
+    def fetch_startup_snapshot(self, peer_id: str) -> dict[str, str]:
+        """
+        Fetch a lightweight user snapshot for tools-mode startup context.
+
+        Unlike get_prefetch_context, this does NOT require an active session
+        in the local cache. It bootstraps a minimal peer object from peer_id
+        alone, so it can be called right after /new before any session exists.
+
+        Returns a dict with 'representation' and 'card' keys (empty strings
+        on failure). Intentionally excludes AI peer context and dialectic —
+        those are V2 concerns.
+        """
+        try:
+            user_peer = self._get_or_create_peer(peer_id)
+            # Use a minimal temporary session to call context().
+            # We need a session object for context(); pick the first cached
+            # session if available, otherwise create a throw-away one keyed
+            # by peer_id so we don't pollute the real session namespace.
+            session_key = next(iter(self._sessions_cache), None)
+            if session_key:
+                honcho_session = self._sessions_cache[session_key]
+                # Resolve assistant peer from the cached session
+                local_sess = next(
+                    (s for s in self._cache.values() if s.honcho_session_id == session_key),
+                    None,
+                )
+                assistant_peer_id = (
+                    local_sess.assistant_peer_id
+                    if local_sess
+                    else (self._config.ai_peer if self._config else "hermes-assistant")
+                )
+            else:
+                # No session cached yet — create a bootstrap session object.
+                # This does NOT add peers or load messages; it just gives us
+                # a handle to call context() against.
+                assistant_peer_id = self._config.ai_peer if self._config else "hermes-assistant"
+                session_key = self._sanitize_id(f"startup-{peer_id}")
+                honcho_session = self.honcho.session(session_key)
+
+            result: dict[str, str] = {}
+            ctx = honcho_session.context(
+                summary=False,
+                tokens=self._context_tokens,
+                peer_target=peer_id,
+                peer_perspective=assistant_peer_id,
+            )
+            card = ctx.peer_card or []
+            result["representation"] = ctx.peer_representation or ""
+            result["card"] = (
+                "\n".join(card) if isinstance(card, list) else str(card)
+            )
+            return result
+        except Exception as e:
+            logger.debug("fetch_startup_snapshot failed for peer %s: %s", peer_id, e)
+            return {}
+
     def search_context(self, session_key: str, query: str, max_tokens: int = 800) -> str:
         """
         Semantic search over Honcho session context.

@@ -75,8 +75,10 @@ _ensure_ssl_certs()
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Resolve Hermes home directory (respects HERMES_HOME override)
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+# Resolve Hermes home directory through the shared Hermes config path.
+from hermes_cli.config import ensure_process_hermes_home_env
+
+_hermes_home = ensure_process_hermes_home_env()
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -5076,7 +5078,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     pass
             remove_pid_file()
         else:
-            hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
+            hermes_home = str(_hermes_home)
             logger.error(
                 "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
                 "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",

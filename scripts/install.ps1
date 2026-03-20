@@ -30,6 +30,13 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 $NodeVersion = "22"
+$WindowsSandboxWrapperAssetName = "hermes-windows-sandbox-wrapper.exe"
+$WindowsSandboxWrapperManifestRelativePath = "native\windows-sandbox-wrapper\Cargo.toml"
+$CodexWindowsSandboxReleaseTag = "rust-v0.114.0"
+$CodexWindowsSandboxSetupAssetX64 = "codex-windows-sandbox-setup-x86_64-pc-windows-msvc.exe"
+$CodexWindowsSandboxSetupSha256X64 = "1c3ab364f833166464d9d36cc1892ccd95db9ff9d72d85fa547bc5a40722ddcc"
+$CodexWindowsSandboxSetupAssetArm64 = "codex-windows-sandbox-setup-aarch64-pc-windows-msvc.exe"
+$CodexWindowsSandboxSetupSha256Arm64 = "06a78d2c1b8d61226721cfe09f16a48c0c6426832b9accc9fdd42dbc7ed08bda"
 
 # ============================================================================
 # Helper functions
@@ -405,10 +412,134 @@ function Install-SystemPackages {
     }
 }
 
+function Test-Sha256 {
+    param(
+        [string]$Path,
+        [string]$ExpectedSha256
+    )
+
+    if (-not (Test-Path $Path)) { return $false }
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    return $actual -eq $ExpectedSha256.ToLowerInvariant()
+}
+
+function Invoke-DownloadWithSha256 {
+    param(
+        [string]$Url,
+        [string]$Destination,
+        [string]$ExpectedSha256,
+        [string]$Label
+    )
+
+    Write-Info "Downloading $Label..."
+    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+
+    if (-not (Test-Sha256 -Path $Destination -ExpectedSha256 $ExpectedSha256)) {
+        Remove-Item -Force $Destination -ErrorAction SilentlyContinue
+        throw "$Label checksum verification failed"
+    }
+}
+
+function Get-CargoCommand {
+    if (Get-Command cargo -ErrorAction SilentlyContinue) {
+        return (Get-Command cargo).Source
+    }
+
+    $cargoPath = "$env:USERPROFILE\.cargo\bin\cargo.exe"
+    if (Test-Path $cargoPath) {
+        return $cargoPath
+    }
+
+    return $null
+}
+
+function Install-WindowsSandboxHelpers {
+    $binDir = "$HermesHome\bin"
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    switch ($osArch.ToString()) {
+        "X64" {
+            $setupAsset = $CodexWindowsSandboxSetupAssetX64
+            $setupSha256 = $CodexWindowsSandboxSetupSha256X64
+        }
+        "Arm64" {
+            Write-Warn "Windows Sandbox backend provisioning is currently available only on x64 Windows hosts."
+            return $false
+        }
+        default {
+            Write-Warn "Windows Sandbox backend provisioning is not available for architecture: $osArch"
+            return $false
+        }
+    }
+
+    $wrapperTarget = Join-Path $binDir $WindowsSandboxWrapperAssetName
+    $wrapperManifest = Join-Path $InstallDir $WindowsSandboxWrapperManifestRelativePath
+    $wrapperProjectDir = Split-Path -Parent $wrapperManifest
+    $builtWrapper = Join-Path $wrapperProjectDir "target\release\$WindowsSandboxWrapperAssetName"
+
+    $setupUrl = "https://github.com/openai/codex/releases/download/$CodexWindowsSandboxReleaseTag/$setupAsset"
+    $setupTarget = Join-Path $binDir "codex-windows-sandbox-setup.exe"
+    $tmpSetup = Join-Path $env:TEMP $setupAsset
+
+    $wrapperReady = $false
+    $setupReady = $false
+
+    try {
+        if (-not (Test-Path $wrapperManifest)) {
+            if (Test-Path $wrapperTarget) {
+                Write-Warn "Windows Sandbox wrapper source not found at $wrapperManifest. Keeping existing wrapper at $wrapperTarget."
+                $wrapperReady = $true
+            } else {
+                Write-Warn "Windows Sandbox wrapper source not found at $wrapperManifest"
+            }
+        } else {
+            $cargoCmd = Get-CargoCommand
+            if (-not $cargoCmd) {
+                if (Test-Path $wrapperTarget) {
+                    Write-Warn "Rust/Cargo not found. Keeping existing Windows Sandbox wrapper at $wrapperTarget. Rust/Cargo are required to rebuild the wrapper from source."
+                    $wrapperReady = $true
+                } else {
+                    Write-Warn "Rust/Cargo not found. Windows Sandbox wrapper provisioning skipped. Rust/Cargo are required to build hermes-windows-sandbox-wrapper.exe from source."
+                }
+            } else {
+                Write-Info "Building hermes-windows-sandbox-wrapper.exe from source..."
+                & $cargoCmd build --release --locked --manifest-path $wrapperManifest
+                if ($LASTEXITCODE -ne 0) {
+                    throw "cargo build failed for hermes-windows-sandbox-wrapper.exe"
+                }
+                if (-not (Test-Path $builtWrapper)) {
+                    throw "Built wrapper not found at $builtWrapper"
+                }
+
+                Copy-Item -Force $builtWrapper $wrapperTarget
+                Write-Success "Installed hermes-windows-sandbox-wrapper.exe"
+                $wrapperReady = $true
+            }
+        }
+
+        if (Test-Sha256 -Path $setupTarget -ExpectedSha256 $setupSha256) {
+            Write-Success "Windows sandbox setup helper already present"
+            $setupReady = $true
+        } else {
+            Invoke-DownloadWithSha256 -Url $setupUrl -Destination $tmpSetup -ExpectedSha256 $setupSha256 -Label $setupAsset
+            Copy-Item -Force $tmpSetup $setupTarget
+            Write-Success "Installed codex-windows-sandbox-setup.exe"
+            $setupReady = $true
+        }
+
+        return ($wrapperReady -and $setupReady)
+    } catch {
+        Write-Warn "Windows Sandbox helper provisioning failed: $_"
+        return $false
+    } finally {
+        Remove-Item -Force $tmpSetup -ErrorAction SilentlyContinue
+    }
+}
+
 # ============================================================================
 # Installation
 # ============================================================================
-
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
     
@@ -636,6 +767,7 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$HermesHome\bin" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\pairing" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\hooks" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\image_cache" | Out-Null
@@ -909,6 +1041,7 @@ function Main {
     Install-NodeDeps
     Set-PathVariable
     Copy-ConfigTemplates
+    Install-WindowsSandboxHelpers
     Invoke-SetupWizard
     Start-GatewayIfConfigured
     

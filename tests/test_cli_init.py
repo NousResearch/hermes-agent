@@ -1,16 +1,18 @@
 """Tests for HermesCLI initialization -- catches configuration bugs
 that only manifest at runtime (not in mocked unit tests)."""
 
+import importlib
 import os
 import sys
 from unittest.mock import MagicMock, patch
+
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""
-    import importlib
 
     _clean_config = {
         "model": {
@@ -27,23 +29,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
     if env_overrides:
         clean_env.update(env_overrides)
-    prompt_toolkit_stubs = {
-        "prompt_toolkit": MagicMock(),
-        "prompt_toolkit.history": MagicMock(),
-        "prompt_toolkit.styles": MagicMock(),
-        "prompt_toolkit.patch_stdout": MagicMock(),
-        "prompt_toolkit.application": MagicMock(),
-        "prompt_toolkit.layout": MagicMock(),
-        "prompt_toolkit.layout.processors": MagicMock(),
-        "prompt_toolkit.filters": MagicMock(),
-        "prompt_toolkit.layout.dimension": MagicMock(),
-        "prompt_toolkit.layout.menus": MagicMock(),
-        "prompt_toolkit.widgets": MagicMock(),
-        "prompt_toolkit.key_binding": MagicMock(),
-        "prompt_toolkit.completion": MagicMock(),
-        "prompt_toolkit.formatted_text": MagicMock(),
-    }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), \
+    with patch.dict(sys.modules, _prompt_toolkit_stubs()), \
          patch.dict("os.environ", clean_env, clear=False):
         import cli as _cli_mod
         _cli_mod = importlib.reload(_cli_mod)
@@ -152,3 +138,69 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+def _prompt_toolkit_stubs() -> dict[str, MagicMock]:
+    return {
+        "prompt_toolkit": MagicMock(),
+        "prompt_toolkit.history": MagicMock(),
+        "prompt_toolkit.styles": MagicMock(),
+        "prompt_toolkit.patch_stdout": MagicMock(),
+        "prompt_toolkit.application": MagicMock(),
+        "prompt_toolkit.layout": MagicMock(),
+        "prompt_toolkit.layout.processors": MagicMock(),
+        "prompt_toolkit.filters": MagicMock(),
+        "prompt_toolkit.layout.dimension": MagicMock(),
+        "prompt_toolkit.layout.menus": MagicMock(),
+        "prompt_toolkit.widgets": MagicMock(),
+        "prompt_toolkit.key_binding": MagicMock(),
+        "prompt_toolkit.auto_suggest": MagicMock(),
+        "prompt_toolkit.completion": MagicMock(),
+        "prompt_toolkit.formatted_text": MagicMock(),
+    }
+
+
+class TestTerminalConfigBridge:
+    def test_windows_sandbox_terminal_config_bridges_to_env_on_cli_import(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "terminal": {
+                        "backend": "windows-sandbox",
+                        "windows_sandbox_mode": "read-only",
+                        "windows_sandbox_setup": "explicit",
+                        "windows_sandbox_network": False,
+                        "windows_sandbox_bin_dir": r"C:\sandbox\bin",
+                        "windows_sandbox_writable_roots": [r"C:\allowed"],
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        for key in (
+            "TERMINAL_ENV",
+            "TERMINAL_WINDOWS_SANDBOX_MODE",
+            "TERMINAL_WINDOWS_SANDBOX_SETUP",
+            "TERMINAL_WINDOWS_SANDBOX_NETWORK",
+            "TERMINAL_WINDOWS_SANDBOX_BIN_DIR",
+            "TERMINAL_WINDOWS_SANDBOX_WRITABLE_ROOTS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch.dict(sys.modules, _prompt_toolkit_stubs()):
+            import cli as cli_mod
+
+            importlib.reload(cli_mod)
+
+        assert os.environ["TERMINAL_ENV"] == "windows-sandbox"
+        assert os.environ["TERMINAL_WINDOWS_SANDBOX_MODE"] == "read-only"
+        assert os.environ["TERMINAL_WINDOWS_SANDBOX_SETUP"] == "explicit"
+        assert os.environ["TERMINAL_WINDOWS_SANDBOX_NETWORK"] == "False"
+        assert os.environ["TERMINAL_WINDOWS_SANDBOX_BIN_DIR"] == r"C:\sandbox\bin"
+        assert os.environ["TERMINAL_WINDOWS_SANDBOX_WRITABLE_ROOTS"] == '["C:\\\\allowed"]'

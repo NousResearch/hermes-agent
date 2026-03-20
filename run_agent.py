@@ -45,11 +45,12 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-# Load .env from ~/.hermes/.env first, then project root as dev fallback.
+# Load .env from HERMES_HOME first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
+from hermes_cli.config import ensure_process_hermes_home_env, get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = ensure_process_hermes_home_env()
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 if _loaded_env_paths:
@@ -58,8 +59,8 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
+# Point mini-swe-agent at the same Hermes home used by the rest of the process.
+os.environ["MSWEA_GLOBAL_CONFIG_DIR"] = str(_hermes_home)
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 # Import our tool system
@@ -808,8 +809,8 @@ class AIAgent:
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
-        # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
-        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        # Session logs go into HERMES_HOME/sessions alongside gateway sessions.
+        hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"

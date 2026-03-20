@@ -8,10 +8,11 @@ Modular wizard with independently-runnable sections:
   4. Tools — configure TTS, web search, image generation, etc.
   5. Agent Settings — iterations, compression, session reset
 
-Config files are stored in ~/.hermes/ for easy access.
+Config files are stored in HERMES_HOME for easy access.
 """
 
 import importlib.util
+import json
 import logging
 import os
 import sys
@@ -275,6 +276,7 @@ def _sync_model_from_disk(config: Dict[str, Any]) -> None:
 
 # Import config helpers
 from hermes_cli.config import (
+    get_hermes_bin_dir,
     get_hermes_home,
     get_config_path,
     get_env_path,
@@ -679,7 +681,7 @@ def _print_setup_summary(config: dict, hermes_home):
         print_warning(
             "Some tools are disabled. Run 'hermes setup tools' to configure them,"
         )
-        print_warning("or edit ~/.hermes/.env directly to add the missing API keys.")
+        print_warning(f"or edit {get_env_path()} directly to add the missing API keys.")
         print()
 
     # Done banner
@@ -702,7 +704,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
     # Show file locations prominently
-    print(color("📁 All your files are in ~/.hermes/:", Colors.CYAN, Colors.BOLD))
+    print(color(f"📁 All your files are in {hermes_home}:", Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
     print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
@@ -1022,9 +1024,7 @@ def setup_model_provider(config: dict):
             pass
         import yaml
 
-        config_path = (
-            Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
-        )
+        config_path = get_config_path()
         try:
             disk_cfg = {}
             if config_path.exists():
@@ -1109,10 +1109,7 @@ def setup_model_provider(config: dict):
         if base_url:
             import yaml
 
-            config_path = (
-                Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-                / "config.yaml"
-            )
+            config_path = get_config_path()
             try:
                 disk_cfg = {}
                 if config_path.exists():
@@ -2020,6 +2017,70 @@ def setup_tts(config: dict):
 # =============================================================================
 
 
+def _configure_windows_sandbox_backend(config: dict):
+    """Configure the Windows sandbox backend."""
+    from tools.environments.windows_sandbox import (
+        find_setup_helper_executable,
+        find_wrapper_executable
+    )
+
+    terminal_config = config.setdefault("terminal", {})
+
+    print_success("Terminal backend: Windows Sandbox")
+    print_info("Windows-native isolated execution through the Hermes wrapper.")
+    print_info("This backend is explicit-setup only and foreground-only in the first release.")
+    print_info("Background execution, PTY mode, extra writable roots, and custom network settings are not available yet.")
+
+    print()
+    print_info("Working directory for messaging sessions:")
+    print_info("  When using Hermes via Telegram/Discord, this is where")
+    print_info("  the agent starts. CLI mode always starts in the current directory.")
+    current_cwd = terminal_config.get("cwd", "")
+    cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
+    if cwd:
+        terminal_config["cwd"] = cwd
+
+    current_mode = terminal_config.get("windows_sandbox_mode", "workspace-write")
+    mode_choices = [
+        "workspace-write - allow writes in the workspace path only",
+        "read-only - block writes from sandboxed commands",
+    ]
+    default_mode_idx = 0 if current_mode == "workspace-write" else 1
+    selected_mode = "workspace-write" if prompt_choice(
+        "Select Windows sandbox mode:",
+        mode_choices,
+        default_mode_idx,
+    ) == 0 else "read-only"
+
+    terminal_config["windows_sandbox_mode"] = selected_mode
+    terminal_config["windows_sandbox_setup"] = "explicit"
+    terminal_config["windows_sandbox_network"] = False
+    terminal_config["windows_sandbox_bin_dir"] = ""
+    terminal_config["windows_sandbox_writable_roots"] = []
+
+    save_env_value("TERMINAL_WINDOWS_SANDBOX_MODE", selected_mode)
+    save_env_value("TERMINAL_WINDOWS_SANDBOX_SETUP", "explicit")
+    save_env_value("TERMINAL_WINDOWS_SANDBOX_NETWORK", "false")
+    save_env_value("TERMINAL_WINDOWS_SANDBOX_BIN_DIR", "")
+    save_env_value("TERMINAL_WINDOWS_SANDBOX_WRITABLE_ROOTS", json.dumps([]))
+
+    helper_dir = get_hermes_bin_dir()
+    wrapper = find_wrapper_executable(str(helper_dir))
+    setup_helper = find_setup_helper_executable(str(helper_dir), wrapper_path=wrapper)
+
+    print()
+    print_info(f"Supported helper location: {helper_dir}")
+    if wrapper and setup_helper:
+        print_success("Windows sandbox helper binaries are already present in the Hermes bin directory.")
+    else:
+        print_warning("Windows sandbox helper binaries are not present in the Hermes bin directory yet.")
+        print_info("Run scripts/install.ps1 to build hermes-windows-sandbox-wrapper.exe from the vendored source and install codex-windows-sandbox-setup.exe into the Hermes bin directory.")
+
+    print_info("Rust/Cargo are required to build the wrapper during provisioning; they are not required to run an already provisioned wrapper.")
+    print()
+    print_info("After provisioning, run the Windows sandbox setup flow before executing commands.")
+
+
 def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
     import platform as _platform
@@ -2032,39 +2093,53 @@ def setup_terminal_backend(config: dict):
 
     current_backend = config.get("terminal", {}).get("backend", "local")
     is_linux = _platform.system() == "Linux"
+    is_windows = _platform.system() == "Windows"
+    windows_sandbox_supported = is_windows and _platform.machine().strip().lower() in {"amd64", "x86_64"}
+    unsupported_current_windows_sandbox = current_backend == "windows-sandbox" and not windows_sandbox_supported
+
+    if is_windows and not windows_sandbox_supported:
+        print_info("Windows Sandbox backend is currently available only on x64 Windows hosts.")
+    if unsupported_current_windows_sandbox:
+        print_warning("Current backend 'windows-sandbox' is not supported on this architecture. Choose a different backend.")
 
     # Build backend choices with descriptions
-    terminal_choices = [
-        "Local - run directly on this machine (default)",
-        "Docker - isolated container with configurable resources",
-        "Modal - serverless cloud sandbox",
-        "SSH - run on a remote machine",
-        "Daytona - persistent cloud development environment",
+    backend_options: list[tuple[str, str]] = [
+        ("local", "Local - run directly on this machine (default)"),
+        ("docker", "Docker - isolated container with configurable resources"),
+        ("modal", "Modal - serverless cloud sandbox"),
+        ("ssh", "SSH - run on a remote machine"),
+        ("daytona", "Daytona - persistent cloud development environment"),
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
-
-    next_idx = 5
+    if windows_sandbox_supported:
+        backend_options.append(
+            (
+                "windows-sandbox",
+                "Windows Sandbox - isolated Windows-native execution (explicit setup, foreground-only)",
+            )
+        )
     if is_linux:
-        terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
-        idx_to_backend[next_idx] = "singularity"
-        backend_to_idx["singularity"] = next_idx
-        next_idx += 1
+        backend_options.append(("singularity", "Singularity/Apptainer - HPC-friendly container"))
 
-    # Add keep current option
-    keep_current_idx = next_idx
-    terminal_choices.append(f"Keep current ({current_backend})")
-    idx_to_backend[keep_current_idx] = current_backend
+    terminal_choices = [description for _backend, description in backend_options]
+    idx_to_backend = {idx: backend for idx, (backend, _description) in enumerate(backend_options)}
+    backend_to_idx = {backend: idx for idx, (backend, _description) in enumerate(backend_options)}
+
+    # Add keep current option when the current backend is still supported.
+    keep_current_idx = None
+    if not unsupported_current_windows_sandbox:
+        keep_current_idx = len(terminal_choices)
+        terminal_choices.append(f"Keep current ({current_backend})")
+        idx_to_backend[keep_current_idx] = current_backend
 
     default_terminal = backend_to_idx.get(current_backend, 0)
 
     terminal_idx = prompt_choice(
-        "Select terminal backend:", terminal_choices, keep_current_idx
+        "Select terminal backend:", terminal_choices, keep_current_idx if keep_current_idx is not None else default_terminal
     )
 
     selected_backend = idx_to_backend.get(terminal_idx)
 
-    if terminal_idx == keep_current_idx:
+    if keep_current_idx is not None and terminal_idx == keep_current_idx:
         print_info(f"Keeping current backend: {current_backend}")
         return
 
@@ -2264,6 +2339,9 @@ def setup_terminal_backend(config: dict):
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
 
         _prompt_container_resources(config)
+
+    elif selected_backend == "windows-sandbox":
+        _configure_windows_sandbox_backend(config)
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

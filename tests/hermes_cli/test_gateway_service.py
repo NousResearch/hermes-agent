@@ -216,6 +216,35 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is True
 
 
+class TestGatewayServiceEnvironment:
+    def test_generate_systemd_unit_includes_hermes_home(self, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", "/custom/hermes")
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert 'Environment="HERMES_HOME=/custom/hermes"' in unit
+
+    def test_generate_systemd_unit_system_scope_uses_target_home_when_env_missing(self, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'Environment="HERMES_HOME=/home/alice/.hermes"' in unit
+
+    def test_generate_launchd_plist_includes_hermes_home_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>EnvironmentVariables</key>" in plist
+        assert f"<string>{tmp_path}</string>" in plist
+
+
 class TestGatewaySystemServiceRouting:
     def test_gateway_install_passes_system_flags(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)

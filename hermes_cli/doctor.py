@@ -8,10 +8,22 @@ import os
 import sys
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import (
+    ensure_process_hermes_home_env,
+    get_env_path,
+    get_hermes_bin_dir,
+    get_hermes_home,
+    get_project_root,
+    get_windows_sandbox_codex_home,
+    get_windows_sandbox_root,
+    load_config,
+    probe_writable_directory,
+)
 
+ensure_process_hermes_home_env()
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
 
@@ -32,6 +44,12 @@ os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
+from tools.environments.windows_sandbox import (
+    WindowsSandboxEnvironment,
+    find_setup_helper_executable,
+    find_wrapper_executable,
+    get_windows_sandbox_status,
+)
 
 
 _PROVIDER_ENV_HINTS = (
@@ -95,6 +113,33 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _effective_terminal_backend() -> str:
+    """Return the configured terminal backend, honoring env override."""
+    backend = os.getenv("TERMINAL_ENV", "").strip()
+    if backend:
+        return backend
+
+    try:
+        config = load_config()
+    except Exception:
+        return "local"
+
+    terminal_cfg = config.get("terminal", {})
+    if isinstance(terminal_cfg, dict):
+        return str(terminal_cfg.get("backend", "local"))
+    return "local"
+
+
+def _check_writable_directory(label: str, path: Path, issues: list[str], *, should_fix: bool = False) -> None:
+    ok, detail = probe_writable_directory(path, create=should_fix)
+    if ok:
+        check_ok(label, f"({path})")
+        return
+
+    check_fail(label, f"({detail})")
+    issues.append(f"Make {path} writable for the current Hermes user")
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -127,6 +172,155 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     else:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
+
+
+def _get_windows_sandbox_terminal_config() -> dict[str, object]:
+    """Return effective windows-sandbox config for doctor checks."""
+    terminal_cfg: dict[str, object] = {}
+    try:
+        config = load_config()
+        raw_terminal_cfg = config.get("terminal", {})
+        if isinstance(raw_terminal_cfg, dict):
+            terminal_cfg = raw_terminal_cfg
+    except Exception:
+        terminal_cfg = {}
+
+    raw_writable_roots = terminal_cfg.get("windows_sandbox_writable_roots", [])
+    writable_roots: list[str]
+    if isinstance(raw_writable_roots, list):
+        writable_roots = [str(item) for item in raw_writable_roots]
+    else:
+        writable_roots = []
+
+    raw_network = terminal_cfg.get("windows_sandbox_network", False)
+    network_enabled = bool(raw_network)
+    env_network = os.getenv("TERMINAL_WINDOWS_SANDBOX_NETWORK", "").strip().lower()
+    if env_network:
+        network_enabled = env_network in {"1", "true", "yes", "on"}
+
+    return {
+        "bin_dir": os.getenv(
+            "TERMINAL_WINDOWS_SANDBOX_BIN_DIR",
+            str(terminal_cfg.get("windows_sandbox_bin_dir", "") or ""),
+        ).strip(),
+        "mode": os.getenv(
+            "TERMINAL_WINDOWS_SANDBOX_MODE",
+            str(terminal_cfg.get("windows_sandbox_mode", "workspace-write") or "workspace-write"),
+        ).strip() or "workspace-write",
+        "network_enabled": network_enabled,
+        "writable_roots": writable_roots,
+    }
+
+
+def _check_windows_sandbox_backend(issues: list[str]) -> None:
+    """Report backend-specific readiness for the windows-sandbox backend."""
+    print()
+    print(color("◆ Windows Sandbox Backend", Colors.CYAN, Colors.BOLD))
+
+    if os.name != "nt":
+        check_fail("windows-sandbox host support", "(Windows host required)")
+        issues.append("Use a Windows host for the windows-sandbox backend")
+        return
+
+    terminal_cfg = _get_windows_sandbox_terminal_config()
+    bin_dir = str(terminal_cfg["bin_dir"])
+    mode = str(terminal_cfg["mode"])
+    network_enabled = bool(terminal_cfg["network_enabled"])
+    writable_roots = list(terminal_cfg["writable_roots"])
+
+    wrapper = find_wrapper_executable(bin_dir)
+    if wrapper is None:
+        check_fail("windows-sandbox wrapper", "(not found)")
+        issues.append(
+            f"Run scripts/install.ps1 to build hermes-windows-sandbox-wrapper.exe from source and install it under {get_hermes_bin_dir()}; Rust/Cargo are required to build the wrapper, or set TERMINAL_WINDOWS_SANDBOX_BIN_DIR"
+        )
+        return
+    check_ok("windows-sandbox wrapper", f"({wrapper})")
+
+    helper = find_setup_helper_executable(bin_dir, wrapper_path=wrapper)
+    if helper is None:
+        check_fail("windows-sandbox setup helper", "(not found)")
+        issues.append(
+            f"Run scripts/install.ps1 to install codex-windows-sandbox-setup.exe under {get_hermes_bin_dir()} or set TERMINAL_WINDOWS_SANDBOX_BIN_DIR"
+        )
+        return
+    check_ok("windows-sandbox setup helper", f"({helper})")
+
+    try:
+        version_result = subprocess.run(
+            [str(wrapper), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as e:
+        check_fail("windows-sandbox wrapper version check", f"({e})")
+        issues.append("Verify hermes-windows-sandbox-wrapper.exe is launchable")
+        return
+
+    if version_result.returncode == 0:
+        version_text = version_result.stdout.strip() or version_result.stderr.strip() or "version ok"
+        check_ok("windows-sandbox wrapper version", f"({version_text})")
+    else:
+        detail = version_result.stderr.strip() or version_result.stdout.strip() or f"exit {version_result.returncode}"
+        check_fail("windows-sandbox wrapper version", f"({detail})")
+        issues.append("Verify hermes-windows-sandbox-wrapper.exe can run --version successfully")
+        return
+
+    status = get_windows_sandbox_status(
+        bin_dir=bin_dir,
+        cwd=str(PROJECT_ROOT),
+        mode=mode,
+        network_enabled=network_enabled,
+        writable_roots=writable_roots,
+        codex_home=str(get_windows_sandbox_codex_home()),
+    )
+    diagnostics = status.get("diagnostics", {}) if isinstance(status, dict) else {}
+    setup_code = diagnostics.get("setup_code")
+    if setup_code:
+        check_info(f"Setup code: {setup_code}")
+
+    if status.get("error_type") == "setup_required":
+        check_fail("windows-sandbox setup", "(setup required)")
+        issues.append("Complete windows-sandbox setup before using this backend")
+        return
+
+    if status.get("error"):
+        check_fail("windows-sandbox status", f"({status['error']})")
+        issues.append("Resolve windows-sandbox status failure before using this backend")
+        return
+
+    if diagnostics.get("setup_complete"):
+        check_ok("windows-sandbox setup", "(ready)")
+    else:
+        check_warn("windows-sandbox setup", "(status did not confirm readiness)")
+        issues.append("Verify windows-sandbox setup completed successfully")
+        return
+
+    try:
+        env = WindowsSandboxEnvironment(
+            cwd=str(PROJECT_ROOT),
+            timeout=20,
+            mode=mode,
+            network_enabled=network_enabled,
+            writable_roots=writable_roots,
+            bin_dir=bin_dir,
+            codex_home=str(get_windows_sandbox_codex_home()),
+        )
+        result = env.execute("Write-Output hermes-windows-sandbox-doctor", timeout=20)
+    except Exception as e:
+        check_fail("windows-sandbox execution viability", f"({e})")
+        issues.append("Resolve windows-sandbox execution viability before normal use")
+        return
+
+    if result.get("returncode") == 0 and "hermes-windows-sandbox-doctor" in result.get("output", ""):
+        check_ok("windows-sandbox execution viability")
+    else:
+        detail = result.get("output", "").strip() or f"exit {result.get('returncode')}"
+        check_fail("windows-sandbox execution viability", f"({detail})")
+        issues.append("Resolve windows-sandbox execution viability before normal use")
 
 def run_doctor(args):
     """Run diagnostic checks."""
@@ -383,6 +577,42 @@ def run_doctor(args):
     else:
         check_info("~/.hermes/state.db not created yet (will be created on first session)")
 
+    # =========================================================================
+    # Check: Writable state roots
+    # =========================================================================
+    print()
+    print(color("◆ Writable State Roots", Colors.CYAN, Colors.BOLD))
+
+    _check_writable_directory("HERMES_HOME writable", hermes_home, issues, should_fix=should_fix)
+
+    terminal_env = _effective_terminal_backend()
+    if terminal_env == "windows-sandbox":
+        _check_writable_directory(
+            "Hermes bin dir writable",
+            get_hermes_bin_dir(),
+            issues,
+            should_fix=should_fix,
+        )
+        _check_writable_directory(
+            "windows-sandbox root writable",
+            get_windows_sandbox_root(),
+            issues,
+            should_fix=should_fix,
+        )
+        _check_writable_directory(
+            "windows-sandbox Codex home writable",
+            get_windows_sandbox_codex_home(),
+            issues,
+            should_fix=should_fix,
+        )
+        _check_writable_directory(
+            "Temp directory writable",
+            Path(tempfile.gettempdir()),
+            issues,
+            should_fix=False,
+        )
+        _check_windows_sandbox_backend(issues)
+
     _check_gateway_service_linger(issues)
     
     # =========================================================================
@@ -405,7 +635,7 @@ def run_doctor(args):
         check_info("Install for faster search: sudo apt install ripgrep")
     
     # Docker (optional)
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    terminal_env = _effective_terminal_backend()
     if terminal_env == "docker":
         if shutil.which("docker"):
             # Check if docker daemon is running

@@ -60,6 +60,21 @@ class TestFromEnv:
         config = HonchoClientConfig.from_env(workspace_id="custom")
         assert config.workspace_id == "custom"
 
+    def test_reads_base_url_from_env(self):
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            config = HonchoClientConfig.from_env()
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+    def test_enabled_without_api_key_when_base_url_set(self):
+        """base_url alone (no API key) is sufficient to enable a local instance."""
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            os.environ.pop("HONCHO_API_KEY", None)
+            config = HonchoClientConfig.from_env()
+        assert config.api_key is None
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
 
 class TestFromGlobalConfig:
     def test_missing_config_falls_back_to_env(self, tmp_path):
@@ -187,6 +202,36 @@ class TestFromGlobalConfig:
         with patch.dict(os.environ, {"HONCHO_API_KEY": "env-key"}):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.api_key == "env-key"
+
+    def test_base_url_env_fallback(self, tmp_path):
+        """HONCHO_BASE_URL env var is used when no baseUrl in config JSON."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"workspace": "local"}))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+    def test_base_url_from_config_root(self, tmp_path):
+        """baseUrl in config root is read and takes precedence over env var."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"baseUrl": "http://config-host:9000"}))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://config-host:9000"
+
+    def test_base_url_not_read_from_host_block(self, tmp_path):
+        """baseUrl is a root-level connection setting, not overridable per-host (consistent with apiKey)."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://root:9000",
+            "hosts": {"hermes": {"baseUrl": "http://host-block:9001"}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://root:9000"
 
 
 class TestResolveSessionName:

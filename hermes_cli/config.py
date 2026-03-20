@@ -670,6 +670,11 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HONCHO_BASE_URL": {
+        "description": "Base URL for self-hosted Honcho instances (no API key needed)",
+        "prompt": "Honcho base URL (e.g. http://localhost:8000)",
+        "category": "tool",
+    },
 
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": {

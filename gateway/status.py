@@ -83,11 +83,30 @@ def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
     if not cmdline:
-        # If we cannot inspect the process, fall back to the liveness check.
-        return True
+        return False
 
     patterns = (
         "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
+        "hermes gateway",
+        "gateway/run.py",
+    )
+    return any(pattern in cmdline for pattern in patterns)
+
+
+def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
+    """Validate gateway identity from PID-file metadata when cmdline is unavailable."""
+    if record.get("kind") != _GATEWAY_KIND:
+        return False
+
+    argv = record.get("argv")
+    if not isinstance(argv, list) or not argv:
+        return False
+
+    cmdline = " ".join(str(part) for part in argv)
+    patterns = (
+        "hermes_cli.main gateway",
+        "hermes_cli/main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     )
@@ -178,8 +197,8 @@ def write_runtime_status(
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
     payload.setdefault("kind", _GATEWAY_KIND)
-    payload.setdefault("pid", os.getpid())
-    payload.setdefault("start_time", _get_process_start_time(os.getpid()))
+    payload["pid"] = os.getpid()
+    payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not None:
@@ -325,8 +344,9 @@ def get_running_pid() -> Optional[int]:
         return None
 
     if not _looks_like_gateway_process(pid):
-        remove_pid_file()
-        return None
+        if not _record_looks_like_gateway(record):
+            remove_pid_file()
+            return None
 
     return pid
 

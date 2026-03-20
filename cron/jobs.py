@@ -5,7 +5,9 @@ Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
+import copy
 import json
+import logging
 import tempfile
 import os
 import re
@@ -13,6 +15,8 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Any
+
+logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 
@@ -30,6 +34,7 @@ HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
+ONESHOT_GRACE_SECONDS = 120
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -164,6 +169,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         try:
             # Parse and validate
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
+            # Make naive timestamps timezone-aware at parse time so the stored
+            # value doesn't depend on the system timezone matching at check time.
+            if dt.tzinfo is None:
+                dt = dt.astimezone()  # Interpret as local timezone
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -212,6 +221,33 @@ def _ensure_aware(dt: datetime) -> datetime:
     return dt.astimezone(target_tz)
 
 
+def _recoverable_oneshot_run_at(
+    schedule: Dict[str, Any],
+    now: datetime,
+    *,
+    last_run_at: Optional[str] = None,
+) -> Optional[str]:
+    """Return a one-shot run time if it is still eligible to fire.
+
+    One-shot jobs get a small grace window so jobs created a few seconds after
+    their requested minute still run on the next tick. Once a one-shot has
+    already run, it is never eligible again.
+    """
+    if schedule.get("kind") != "once":
+        return None
+    if last_run_at:
+        return None
+
+    run_at = schedule.get("run_at")
+    if not run_at:
+        return None
+
+    run_at_dt = _ensure_aware(datetime.fromisoformat(run_at))
+    if run_at_dt >= now - timedelta(seconds=ONESHOT_GRACE_SECONDS):
+        return run_at
+    return None
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -221,9 +257,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     now = _hermes_now()
 
     if schedule["kind"] == "once":
-        run_at = _ensure_aware(datetime.fromisoformat(schedule["run_at"]))
-        # If in the future, return it; if in the past, no more runs
-        return schedule["run_at"] if run_at > now else None
+        return _recoverable_oneshot_run_at(schedule, now, last_run_at=last_run_at)
 
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
@@ -528,10 +562,18 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
-    """Get all jobs that are due to run now."""
+    """Get all jobs that are due to run now.
+
+    For recurring jobs (cron/interval), if the scheduled time is stale
+    (more than one period in the past, e.g. because the gateway was down),
+    the job is fast-forwarded to the next future run instead of firing
+    immediately.  This prevents a burst of missed jobs on gateway restart.
+    """
     now = _hermes_now()
-    jobs = [_apply_skill_fields(j) for j in load_jobs()]
+    raw_jobs = load_jobs()
+    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
+    needs_save = False
 
     for job in jobs:
         if not job.get("enabled", True):
@@ -539,11 +581,59 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
-            continue
+            recovered_next = _recoverable_oneshot_run_at(
+                job.get("schedule", {}),
+                now,
+                last_run_at=job.get("last_run_at"),
+            )
+            if not recovered_next:
+                continue
+
+            job["next_run_at"] = recovered_next
+            next_run = recovered_next
+            logger.info(
+                "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                job.get("name", job["id"]),
+                recovered_next,
+            )
+            for rj in raw_jobs:
+                if rj["id"] == job["id"]:
+                    rj["next_run_at"] = recovered_next
+                    needs_save = True
+                    break
 
         next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
+
+            # For recurring jobs, check if the scheduled time is stale
+            # (gateway was down and missed the window). Fast-forward to
+            # the next future occurrence instead of firing a stale run.
+            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > 120:
+                # More than 2 minutes late — this is a missed run, not a current one.
+                # Recompute next_run_at to the next future occurrence.
+                new_next = compute_next_run(schedule, now.isoformat())
+                if new_next:
+                    logger.info(
+                        "Job '%s' missed its scheduled time (%s). "
+                        "Fast-forwarding to next run: %s",
+                        job.get("name", job["id"]),
+                        next_run,
+                        new_next,
+                    )
+                    # Update the job in storage
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["next_run_at"] = new_next
+                            needs_save = True
+                            break
+                    continue  # Skip this run
+
             due.append(job)
+
+    if needs_save:
+        save_jobs(raw_jobs)
 
     return due
 

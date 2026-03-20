@@ -101,7 +101,7 @@ def _discover_tools():
         try:
             importlib.import_module(mod_name)
         except Exception as e:
-            logger.debug("Could not import %s: %s", mod_name, e)
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
 
 
 _discover_tools()
@@ -112,6 +112,13 @@ try:
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
+
+# Plugin tool discovery (user/project/pip plugins)
+try:
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+except Exception as e:
+    logger.debug("Plugin discovery failed: %s", e)
 
 
 # =============================================================================
@@ -142,7 +149,7 @@ _LEGACY_TOOLSET_MAP = {
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
         "browser_press", "browser_close", "browser_get_images",
-        "browser_vision"
+        "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
     "rl_tools": [
@@ -222,20 +229,57 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always include plugin-registered tools — they bypass the toolset filter
+    # because their toolsets are dynamic (created at plugin load time).
+    try:
+        from hermes_cli.plugins import get_plugin_tool_names
+        plugin_tools = get_plugin_tool_names()
+        if plugin_tools:
+            tools_to_include.update(plugin_tools)
+    except Exception:
+        pass
+
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
+    # The set of tool names that actually passed check_fn filtering.
+    # Use this (not tools_to_include) for any downstream schema that references
+    # other tools by name — otherwise the model sees tools mentioned in
+    # descriptions that don't actually exist, and hallucinates calls to them.
+    available_tool_names = {t["function"]["name"] for t in filtered_tools}
+
     # Rebuild execute_code schema to only list sandbox tools that are actually
-    # enabled.  Without this, the model sees "web_search is available in
-    # execute_code" even when the user disabled the web toolset (#560-discord).
-    if "execute_code" in tools_to_include:
+    # available.  Without this, the model sees "web_search is available in
+    # execute_code" even when the API key isn't configured or the toolset is
+    # disabled (#560-discord).
+    if "execute_code" in available_tool_names:
         from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
+        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
         dynamic_schema = build_execute_code_schema(sandbox_enabled)
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Strip web tool cross-references from browser_navigate description when
+    # web_search / web_extract are not available.  The static schema says
+    # "prefer web_search or web_extract" which causes the model to hallucinate
+    # those tools when they're missing.
+    if "browser_navigate" in available_tool_names:
+        web_tools_available = {"web_search", "web_extract"} & available_tool_names
+        if not web_tools_available:
+            for i, td in enumerate(filtered_tools):
+                if td.get("function", {}).get("name") == "browser_navigate":
+                    desc = td["function"].get("description", "")
+                    desc = desc.replace(
+                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+                        "",
+                    )
+                    filtered_tools[i] = {
+                        "type": "function",
+                        "function": {**td["function"], "description": desc},
+                    }
+                    break
 
     if not quiet_mode:
         if filtered_tools:
@@ -259,6 +303,7 @@ def get_tool_definitions(
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
 def handle_function_call(
@@ -267,6 +312,8 @@ def handle_function_call(
     task_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    honcho_manager: Optional[Any] = None,
+    honcho_session_key: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -286,7 +333,6 @@ def handle_function_call(
     """
     # Notify the read-loop tracker when a non-read/search tool runs,
     # so the *consecutive* counter resets (reads after other work are fine).
-    _READ_SEARCH_TOOLS = {"read_file", "search_files"}
     if function_name not in _READ_SEARCH_TOOLS:
         try:
             from tools.file_tools import notify_other_tool_call
@@ -298,21 +344,39 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+        except Exception:
+            pass
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            return registry.dispatch(
+            result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                honcho_manager=honcho_manager,
+                honcho_session_key=honcho_session_key,
+            )
+        else:
+            result = registry.dispatch(
+                function_name, function_args,
+                task_id=task_id,
+                user_task=user_task,
+                honcho_manager=honcho_manager,
+                honcho_session_key=honcho_session_key,
             )
 
-        return registry.dispatch(
-            function_name, function_args,
-            task_id=task_id,
-            user_task=user_task,
-        )
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
+        except Exception:
+            pass
+
+        return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"

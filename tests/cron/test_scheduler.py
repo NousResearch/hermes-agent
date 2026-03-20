@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
 
 
 class TestResolveOrigin:
@@ -449,3 +449,136 @@ class TestRunJobSkillBacked:
         assert "Instructions for blogwatcher." in prompt_arg
         assert "Instructions for find-nearby." in prompt_arg
         assert "Combine the results." in prompt_arg
+
+
+class TestSilentDelivery:
+    """Verify that [SILENT] responses suppress delivery while still saving output."""
+
+    def _make_job(self):
+        return {
+            "id": "monitor-job",
+            "name": "monitor",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def test_normal_response_delivers(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "Results here", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
+    def test_silent_response_suppresses_delivery(self, caplog):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+                tick(verbose=False)
+        deliver_mock.assert_not_called()
+        assert any(SILENT_MARKER in r.message for r in caplog.records)
+
+    def test_silent_with_note_suppresses_delivery(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_silent_is_case_insensitive(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_failed_job_always_delivers(self):
+        """Failed jobs deliver regardless of [SILENT] in output."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
+    def test_output_saved_even_when_delivery_suppressed(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output") as save_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            save_mock.return_value = "/tmp/out.md"
+            from cron.scheduler import tick
+            tick(verbose=False)
+        save_mock.assert_called_once_with("monitor-job", "# full output")
+        deliver_mock.assert_not_called()
+
+
+class TestBuildJobPromptSilentHint:
+    """Verify _build_job_prompt always injects [SILENT] guidance."""
+
+    def test_hint_always_present(self):
+        job = {"prompt": "Check for updates"}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+        assert "Check for updates" in result
+
+    def test_hint_present_even_without_prompt(self):
+        job = {"prompt": ""}
+        result = _build_job_prompt(job)
+        assert "[SILENT]" in result
+
+
+class TestBuildJobPromptMissingSkill:
+    """Verify that a missing skill logs a warning and does not crash the job."""
+
+    def _missing_skill_view(self, name: str) -> str:
+        return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+    def test_missing_skill_does_not_raise(self):
+        """Job should run even when a referenced skill is not installed."""
+        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+        # prompt is preserved even though skill was skipped
+        assert "do something" in result
+
+    def test_missing_skill_injects_user_notice_into_prompt(self):
+        """A system notice about the missing skill is injected into the prompt."""
+        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+        assert "ghost-skill" in result
+        assert "not found" in result.lower() or "skipped" in result.lower()
+
+    def test_missing_skill_logs_warning(self, caplog):
+        """A warning is logged when a skill cannot be found."""
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+                _build_job_prompt({"name": "My Job", "skills": ["ghost-skill"], "prompt": "do something"})
+        assert any("ghost-skill" in record.message for record in caplog.records)
+
+    def test_valid_skill_loaded_alongside_missing(self):
+        """A valid skill is still loaded when another skill in the list is missing."""
+
+        def _mixed_skill_view(name: str) -> str:
+            if name == "real-skill":
+                return json.dumps({"success": True, "content": "Real skill content."})
+            return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_mixed_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
+        assert "Real skill content." in result
+        assert "go" in result

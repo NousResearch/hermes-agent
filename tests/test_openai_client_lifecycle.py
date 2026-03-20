@@ -59,8 +59,11 @@ def _build_agent(shared_client=None):
     agent._interrupt_requested = False
     agent._interrupt_message = None
     agent._client_lock = threading.RLock()
-    agent._client_kwargs = {"api_key": "test-key", "base_url": agent.base_url}
+    agent._client_kwargs = {"api_key": "***", "base_url": agent.base_url}
     agent.client = shared_client or FakeSharedClient(lambda **kwargs: {"shared": True})
+    agent.stream_delta_callback = None
+    agent._stream_callback = None
+    agent.reasoning_callback = None
     return agent
 
 
@@ -145,8 +148,9 @@ def test_concurrent_requests_do_not_break_each_other_when_one_client_closes(monk
     thread_one.join(timeout=5)
     thread_two.join(timeout=5)
 
-    assert isinstance(results["first"], APIConnectionError)
-    assert results["second"] == {"ok": "second"}
+    values = list(results.values())
+    assert sum(isinstance(value, APIConnectionError) for value in values) == 1
+    assert values.count({"ok": "second"}) == 1
     assert len(factory.calls) == 2
 
 
@@ -172,7 +176,11 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
     monkeypatch.setattr(run_agent, "OpenAI", factory)
 
     agent = _build_agent(shared_client=stale_shared)
-    response = agent._streaming_api_call({"model": agent.model, "messages": []}, lambda _delta: None)
+    agent.stream_delta_callback = lambda _delta: None
+    # Force chat_completions mode so the streaming path uses
+    # chat.completions.create(stream=True) instead of Codex responses.stream()
+    agent.api_mode = "chat_completions"
+    response = agent._interruptible_streaming_api_call({"model": agent.model, "messages": []})
 
     assert response.choices[0].message.content == "Hello world"
     assert agent.client is replacement_shared

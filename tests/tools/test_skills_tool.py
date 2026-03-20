@@ -374,6 +374,35 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is False
 
+    def test_view_disabled_skill_blocked(self, tmp_path):
+        """Disabled skills should not be viewable via skill_view."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.skills_tool._is_skill_disabled",
+                return_value=True,
+            ),
+        ):
+            _make_skill(tmp_path, "hidden-skill")
+            raw = skill_view("hidden-skill")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_view_enabled_skill_allowed(self, tmp_path):
+        """Non-disabled skills should be viewable normally."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.skills_tool._is_skill_disabled",
+                return_value=False,
+            ),
+        ):
+            _make_skill(tmp_path, "active-skill")
+            raw = skill_view("active-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+
 
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):

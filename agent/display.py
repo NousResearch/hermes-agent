@@ -59,6 +59,32 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
+def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
+    """Get the display emoji for a tool.
+
+    Resolution order:
+    1. Active skin's ``tool_emojis`` overrides (if a skin is loaded)
+    2. Tool registry's per-tool ``emoji`` field
+    3. *default* fallback
+    """
+    # 1. Skin override
+    skin = _get_skin()
+    if skin and skin.tool_emojis:
+        override = skin.tool_emojis.get(tool_name)
+        if override:
+            return override
+    # 2. Registry default
+    try:
+        from tools.registry import registry
+        emoji = registry.get_emoji(tool_name, default="")
+        if emoji:
+            return emoji
+    except Exception:
+        pass
+    # 3. Hardcoded fallback
+    return default
+
+
 # =========================================================================
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================

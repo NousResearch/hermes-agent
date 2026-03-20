@@ -42,7 +42,7 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.local import _find_shell, _sanitize_subprocess_env
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -78,6 +78,11 @@ class ProcessSession:
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
+    # Watcher/notification metadata (persisted for crash recovery)
+    watcher_platform: str = ""
+    watcher_chat_id: str = ""
+    watcher_thread_id: str = ""
+    watcher_interval: int = 0                   # 0 = no watcher configured
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -155,9 +160,7 @@ class ProcessRegistry:
                 else:
                     from ptyprocess import PtyProcess as _PtyProcessCls
                 user_shell = _find_shell()
-                pty_env = {k: v for k, v in os.environ.items()
-                           if k not in _HERMES_PROVIDER_ENV_BLOCKLIST}
-                pty_env.update(env_vars or {})
+                pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
                     [user_shell, "-lic", command],
@@ -198,9 +201,7 @@ class ProcessRegistry:
         # Force unbuffered output for Python scripts so progress is visible
         # during background execution (libraries like tqdm/datasets buffer when
         # stdout is a pipe, hiding output from process(action="poll")).
-        bg_env = {k: v for k, v in os.environ.items()
-                  if k not in _HERMES_PROVIDER_ENV_BLOCKLIST}
-        bg_env.update(env_vars or {})
+        bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             [user_shell, "-lic", command],
@@ -713,6 +714,10 @@ class ProcessRegistry:
                             "started_at": s.started_at,
                             "task_id": s.task_id,
                             "session_key": s.session_key,
+                            "watcher_platform": s.watcher_platform,
+                            "watcher_chat_id": s.watcher_chat_id,
+                            "watcher_thread_id": s.watcher_thread_id,
+                            "watcher_interval": s.watcher_interval,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -759,11 +764,26 @@ class ProcessRegistry:
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),
                     detached=True,  # Can't read output, but can report status + kill
+                    watcher_platform=entry.get("watcher_platform", ""),
+                    watcher_chat_id=entry.get("watcher_chat_id", ""),
+                    watcher_thread_id=entry.get("watcher_thread_id", ""),
+                    watcher_interval=entry.get("watcher_interval", 0),
                 )
                 with self._lock:
                     self._running[session.id] = session
                 recovered += 1
                 logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
+
+                # Re-enqueue watcher so gateway can resume notifications
+                if session.watcher_interval > 0:
+                    self.pending_watchers.append({
+                        "session_id": session.id,
+                        "check_interval": session.watcher_interval,
+                        "session_key": session.session_key,
+                        "platform": session.watcher_platform,
+                        "chat_id": session.watcher_chat_id,
+                        "thread_id": session.watcher_thread_id,
+                    })
 
         # Clear the checkpoint (will be rewritten as processes finish)
         try:
@@ -862,4 +882,5 @@ registry.register(
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
+    emoji="⚙️",
 )

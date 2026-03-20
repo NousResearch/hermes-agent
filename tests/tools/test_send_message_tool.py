@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, send_message_tool
+from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -25,8 +25,11 @@ def _make_config():
 
 
 def _install_telegram_mock(monkeypatch, bot):
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot)
+    parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+    constants_mod = SimpleNamespace(ParseMode=parse_mode)
+    telegram_mod = SimpleNamespace(Bot=lambda token: bot, constants=constants_mod)
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+    monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
 
 class TestSendMessageTool:
@@ -342,3 +345,162 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Regression: long messages are chunked before platform dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestSendToPlatformChunking:
+    def test_long_message_is_chunked(self):
+        """Messages exceeding the platform limit are split into multiple sends."""
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+        long_msg = "word " * 1000  # ~5000 chars, well over Discord's 2000 limit
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "ch", long_msg,
+                )
+            )
+        assert result["success"] is True
+        assert send.await_count >= 3
+        for call in send.await_args_list:
+            assert len(call.args[2]) <= 2020  # each chunk fits the limit
+
+    def test_telegram_media_attaches_to_last_chunk(self):
+        """When chunked, media files are sent only with the last chunk."""
+        sent_calls = []
+
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+            sent_calls.append(media_files or [])
+            return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+
+        long_msg = "word " * 2000  # ~10000 chars, well over 4096
+        media = [("/tmp/photo.png", False)]
+        with patch("tools.send_message_tool._send_telegram", fake_send):
+            asyncio.run(
+                _send_to_platform(
+                    Platform.TELEGRAM,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "123", long_msg, media_files=media,
+                )
+            )
+        assert len(sent_calls) >= 3
+        assert all(call == [] for call in sent_calls[:-1])
+        assert sent_calls[-1] == media
+
+
+# ---------------------------------------------------------------------------
+# HTML auto-detection in Telegram send
+# ---------------------------------------------------------------------------
+
+
+class TestSendToPlatformWhatsapp:
+    def test_whatsapp_routes_via_local_bridge_sender(self):
+        chat_id = "test-user@lid"
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "abc123"})
+
+        with patch("tools.send_message_tool._send_whatsapp", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    "hello from hermes",
+                )
+            )
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+
+class TestSendTelegramHtmlDetection:
+    """Verify that messages containing HTML tags are sent with parse_mode=HTML
+    and that plain / markdown messages use MarkdownV2."""
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        return bot
+
+    def test_html_message_uses_html_parse_mode(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "<b>Hello</b> world")
+        )
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "HTML"
+        assert kwargs["text"] == "<b>Hello</b> world"
+
+    def test_plain_text_uses_markdown_v2(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "Just plain text, no tags")
+        )
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_html_with_code_and_pre_tags(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        html = "<pre>code block</pre> and <code>inline</code>"
+        asyncio.run(_send_telegram("tok", "123", html))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "HTML"
+
+    def test_closing_tag_detected(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "text </div> more"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "HTML"
+
+    def test_angle_brackets_in_math_not_detected(self, monkeypatch):
+        """Expressions like 'x < 5' or '3 > 2' should not trigger HTML mode."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "if x < 5 then y > 2"))
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_html_parse_failure_falls_back_to_plain(self, monkeypatch):
+        """If Telegram rejects the HTML, fall back to plain text."""
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(
+            side_effect=[
+                Exception("Bad Request: can't parse entities: unsupported html tag"),
+                SimpleNamespace(message_id=2),  # plain fallback succeeds
+            ]
+        )
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "<invalid>broken html</invalid>")
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_count == 2
+        second_call = bot.send_message.await_args_list[1].kwargs
+        assert second_call["parse_mode"] is None

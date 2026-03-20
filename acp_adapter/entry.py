@@ -42,19 +42,16 @@ def _setup_logging() -> None:
 
 def _load_env() -> None:
     """Load .env from HERMES_HOME (default ``~/.hermes``)."""
-    from dotenv import load_dotenv
+    from hermes_cli.env_loader import load_hermes_dotenv
 
     hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    env_file = hermes_home / ".env"
-    if env_file.exists():
-        try:
-            load_dotenv(dotenv_path=env_file, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(dotenv_path=env_file, encoding="latin-1")
-        logging.getLogger(__name__).info("Loaded env from %s", env_file)
+    loaded = load_hermes_dotenv(hermes_home=hermes_home)
+    if loaded:
+        for env_file in loaded:
+            logging.getLogger(__name__).info("Loaded env from %s", env_file)
     else:
         logging.getLogger(__name__).info(
-            "No .env found at %s, using system env", env_file
+            "No .env found at %s, using system env", hermes_home / ".env"
         )
 
 

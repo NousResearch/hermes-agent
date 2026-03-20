@@ -26,11 +26,11 @@ class ToolEntry:
 
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
-        "requires_env", "is_async", "description",
+        "requires_env", "is_async", "description", "emoji",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description):
+                 requires_env, is_async, description, emoji):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -39,6 +39,7 @@ class ToolEntry:
         self.requires_env = requires_env
         self.is_async = is_async
         self.description = description
+        self.emoji = emoji
 
 
 class ToolRegistry:
@@ -62,6 +63,7 @@ class ToolRegistry:
         requires_env: list = None,
         is_async: bool = False,
         description: str = "",
+        emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         self._tools[name] = ToolEntry(
@@ -73,6 +75,7 @@ class ToolRegistry:
             requires_env=requires_env or [],
             is_async=is_async,
             description=description or schema.get("description", ""),
+            emoji=emoji,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
@@ -140,6 +143,11 @@ class ToolRegistry:
         """Return the toolset a tool belongs to, or None."""
         entry = self._tools.get(name)
         return entry.toolset if entry else None
+
+    def get_emoji(self, name: str, default: str = "⚡") -> str:
+        """Return the emoji for a tool, or *default* if unset."""
+        entry = self._tools.get(name)
+        return (entry.emoji if entry and entry.emoji else default)
 
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""

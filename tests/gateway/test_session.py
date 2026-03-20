@@ -336,9 +336,59 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
+class TestLoadTranscriptCorruptLines:
+    """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
+    skipped instead of crashing the entire transcript load.  GH-1193."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_corrupt_line_skipped(self, store, tmp_path):
+        session_id = "corrupt_test"
+        transcript_path = store.get_transcript_path(session_id)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcript_path, "w") as f:
+            f.write('{"role": "user", "content": "hello"}\n')
+            f.write('{"role": "assistant", "content": "hi th')  # truncated
+            f.write("\n")
+            f.write('{"role": "user", "content": "goodbye"}\n')
+
+        messages = store.load_transcript(session_id)
+        assert len(messages) == 2
+        assert messages[0]["content"] == "hello"
+        assert messages[1]["content"] == "goodbye"
+
+    def test_all_lines_corrupt_returns_empty(self, store, tmp_path):
+        session_id = "all_corrupt"
+        transcript_path = store.get_transcript_path(session_id)
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcript_path, "w") as f:
+            f.write("not json at all\n")
+            f.write("{truncated\n")
+
+        messages = store.load_transcript(session_id)
+        assert messages == []
+
+    def test_valid_transcript_unaffected(self, store, tmp_path):
+        session_id = "valid_test"
+        store.append_to_transcript(session_id, {"role": "user", "content": "a"})
+        store.append_to_transcript(session_id, {"role": "assistant", "content": "b"})
+
+        messages = store.load_transcript(session_id)
+        assert len(messages) == 2
+        assert messages[0]["content"] == "a"
+        assert messages[1]["content"] == "b"
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
-    so WhatsApp DMs include chat_id while other DMs do not."""
+    so DMs are isolated by chat_id across platforms."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -369,15 +419,72 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         assert store._generate_session_key(source) == build_session_key(source)
 
-    def test_telegram_dm_omits_chat_id(self):
-        """Non-WhatsApp DMs should still omit chat_id (single owner DM)."""
+    def test_store_creates_distinct_group_sessions_per_user(self, store):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:discord:group:guild-123:alice"
+        assert second_entry.session_key == "agent:main:discord:group:guild-123:bob"
+        assert first_entry.session_id != second_entry.session_id
+
+    def test_store_shares_group_sessions_when_disabled_in_config(self, store):
+        store.config.group_sessions_per_user = False
+
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:discord:group:guild-123"
+        assert second_entry.session_key == "agent:main:discord:group:guild-123"
+        assert first_entry.session_id == second_entry.session_id
+
+    def test_telegram_dm_includes_chat_id(self):
+        """Non-WhatsApp DMs should also include chat_id to separate users."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="99",
             chat_type="dm",
         )
         key = build_session_key(source)
-        assert key == "agent:main:telegram:dm"
+        assert key == "agent:main:telegram:dm:99"
+
+    def test_distinct_dm_chat_ids_get_distinct_session_keys(self):
+        """Different DM chats must not collapse into one shared session."""
+        first = SessionSource(platform=Platform.TELEGRAM, chat_id="99", chat_type="dm")
+        second = SessionSource(platform=Platform.TELEGRAM, chat_id="100", chat_type="dm")
+
+        assert build_session_key(first) == "agent:main:telegram:dm:99"
+        assert build_session_key(second) == "agent:main:telegram:dm:100"
+        assert build_session_key(first) != build_session_key(second)
 
     def test_discord_group_includes_chat_id(self):
         """Group/channel keys include chat_type and chat_id."""
@@ -389,6 +496,41 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:discord:group:guild-123"
 
+    def test_group_sessions_are_isolated_per_user_when_user_id_present(self):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+        )
+
+        assert build_session_key(first) == "agent:main:discord:group:guild-123:alice"
+        assert build_session_key(second) == "agent:main:discord:group:guild-123:bob"
+        assert build_session_key(first) != build_session_key(second)
+
+    def test_group_sessions_can_be_shared_when_isolation_disabled(self):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+        )
+
+        assert build_session_key(first, group_sessions_per_user=False) == "agent:main:discord:group:guild-123"
+        assert build_session_key(second, group_sessions_per_user=False) == "agent:main:discord:group:guild-123"
+
     def test_group_thread_includes_thread_id(self):
         """Forum-style threads need a distinct session key within one group."""
         source = SessionSource(
@@ -399,6 +541,17 @@ class TestWhatsAppDMSessionKeyConsistency:
         )
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
+
+    def test_group_thread_sessions_are_isolated_per_user(self):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        assert key == "agent:main:telegram:group:-1002285219667:17585:42"
 
 
 class TestSessionStoreEntriesAttribute:
@@ -600,5 +753,15 @@ class TestLastPromptTokens:
         store.update_session("k1", model="openai/gpt-5.4")
 
         store._db.update_token_counts.assert_called_once_with(
-            "s1", 0, 0, model="openai/gpt-5.4"
+            "s1",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            estimated_cost_usd=None,
+            cost_status=None,
+            cost_source=None,
+            billing_provider=None,
+            billing_base_url=None,
+            model="openai/gpt-5.4",
         )

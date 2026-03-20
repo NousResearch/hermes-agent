@@ -8,7 +8,6 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 import json
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -72,6 +71,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
+            "thread_id": os.getenv("HERMES_SESSION_THREAD_ID"),
         }
     return None
 
@@ -372,7 +372,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, signal, or platform:chat_id"
+                "description": "Delivery target: origin, local, telegram, discord, signal, sms, or platform:chat_id"
             },
             "model": {
                 "type": "string",
@@ -413,13 +413,10 @@ def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
 
-    Requires 'crontab' executable to be present in the system PATH.
     Available in interactive CLI mode and gateway/messaging platforms.
+    The cron system is internal (JSON file-based scheduler ticked by the gateway),
+    so no external crontab executable is required.
     """
-    # Ensure the system can actually install and manage cron entries.
-    if not shutil.which("crontab"):
-        return False
-
     return bool(
         os.getenv("HERMES_INTERACTIVE")
         or os.getenv("HERMES_GATEWAY_SESSION")
@@ -457,4 +454,5 @@ registry.register(
         task_id=kw.get("task_id"),
     ),
     check_fn=check_cronjob_requirements,
+    emoji="⏰",
 )

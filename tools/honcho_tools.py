@@ -49,6 +49,13 @@ def _check_honcho_available() -> bool:
     return _session_manager is not None and _session_key is not None
 
 
+def _resolve_session_context(**kwargs):
+    """Prefer the calling agent's session context over module-global fallback."""
+    session_manager = kwargs.get("honcho_manager") or _session_manager
+    session_key = kwargs.get("honcho_session_key") or _session_key
+    return session_manager, session_key
+
+
 # ── honcho_profile ──
 
 _PROFILE_SCHEMA = {
@@ -69,10 +76,11 @@ _PROFILE_SCHEMA = {
 
 
 def _handle_honcho_profile(args: dict, **kw) -> str:
-    if not _session_manager or not _session_key:
+    session_manager, session_key = _resolve_session_context(**kw)
+    if not session_manager or not session_key:
         return json.dumps({"error": "Honcho is not active for this session."})
     try:
-        card = _session_manager.get_peer_card(_session_key)
+        card = session_manager.get_peer_card(session_key)
         if not card:
             return json.dumps({"result": "No profile facts available yet. The user's profile builds over time through conversations."})
         return json.dumps({"result": card})
@@ -113,11 +121,12 @@ def _handle_honcho_search(args: dict, **kw) -> str:
     query = args.get("query", "")
     if not query:
         return json.dumps({"error": "Missing required parameter: query"})
-    if not _session_manager or not _session_key:
+    session_manager, session_key = _resolve_session_context(**kw)
+    if not session_manager or not session_key:
         return json.dumps({"error": "Honcho is not active for this session."})
     max_tokens = min(int(args.get("max_tokens", 800)), 2000)
     try:
-        result = _session_manager.search_context(_session_key, query, max_tokens=max_tokens)
+        result = session_manager.search_context(session_key, query, max_tokens=max_tokens)
         if not result:
             return json.dumps({"result": "No relevant context found."})
         return json.dumps({"result": result})
@@ -158,11 +167,12 @@ def _handle_honcho_context(args: dict, **kw) -> str:
     query = args.get("query", "")
     if not query:
         return json.dumps({"error": "Missing required parameter: query"})
-    if not _session_manager or not _session_key:
+    session_manager, session_key = _resolve_session_context(**kw)
+    if not session_manager or not session_key:
         return json.dumps({"error": "Honcho is not active for this session."})
     peer_target = args.get("peer", "user")
     try:
-        result = _session_manager.dialectic_query(_session_key, query, peer=peer_target)
+        result = session_manager.dialectic_query(session_key, query, peer=peer_target)
         return json.dumps({"result": result or "No result from Honcho."})
     except Exception as e:
         logger.error("Error querying Honcho context: %s", e)
@@ -200,10 +210,11 @@ def _handle_honcho_conclude(args: dict, **kw) -> str:
     conclusion = args.get("conclusion", "")
     if not conclusion:
         return json.dumps({"error": "Missing required parameter: conclusion"})
-    if not _session_manager or not _session_key:
+    session_manager, session_key = _resolve_session_context(**kw)
+    if not session_manager or not session_key:
         return json.dumps({"error": "Honcho is not active for this session."})
     try:
-        ok = _session_manager.create_conclusion(_session_key, conclusion)
+        ok = session_manager.create_conclusion(session_key, conclusion)
         if ok:
             return json.dumps({"result": f"Conclusion saved: {conclusion}"})
         return json.dumps({"error": "Failed to save conclusion."})
@@ -222,6 +233,7 @@ registry.register(
     schema=_PROFILE_SCHEMA,
     handler=_handle_honcho_profile,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )
 
 registry.register(
@@ -230,6 +242,7 @@ registry.register(
     schema=_SEARCH_SCHEMA,
     handler=_handle_honcho_search,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )
 
 registry.register(
@@ -238,6 +251,7 @@ registry.register(
     schema=_QUERY_SCHEMA,
     handler=_handle_honcho_context,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )
 
 registry.register(
@@ -246,4 +260,5 @@ registry.register(
     schema=_CONCLUDE_SCHEMA,
     handler=_handle_honcho_conclude,
     check_fn=_check_honcho_available,
+    emoji="🔮",
 )

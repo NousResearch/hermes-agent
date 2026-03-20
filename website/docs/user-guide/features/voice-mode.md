@@ -44,6 +44,9 @@ pip install hermes-agent[messaging]
 # Premium TTS (ElevenLabs)
 pip install hermes-agent[tts-premium]
 
+# Local TTS (NeuTTS, optional)
+python -m pip install -U neutts[all]
+
 # Everything at once
 pip install hermes-agent[all]
 ```
@@ -54,6 +57,8 @@ pip install hermes-agent[all]
 | `messaging` | `discord.py[voice]`, `python-telegram-bot`, `aiohttp` | Discord & Telegram bots |
 | `tts-premium` | `elevenlabs` | ElevenLabs TTS provider |
 
+Optional local TTS provider: install `neutts` separately with `python -m pip install -U neutts[all]`. On first use it downloads the model automatically.
+
 :::info
 `discord.py[voice]` installs **PyNaCl** (for voice encryption) and **opus bindings** automatically. This is required for Discord voice channel support.
 :::
@@ -63,9 +68,11 @@ pip install hermes-agent[all]
 ```bash
 # macOS
 brew install portaudio ffmpeg opus
+brew install espeak-ng   # for NeuTTS
 
 # Ubuntu/Debian
 sudo apt install portaudio19-dev ffmpeg libopus0
+sudo apt install espeak-ng   # for NeuTTS
 ```
 
 | Dependency | Purpose | Required For |
@@ -73,6 +80,7 @@ sudo apt install portaudio19-dev ffmpeg libopus0
 | **PortAudio** | Microphone input and audio playback | CLI voice mode |
 | **ffmpeg** | Audio format conversion (MP3 → Opus, PCM → WAV) | All platforms |
 | **Opus** | Discord voice codec | Discord voice channels |
+| **espeak-ng** | Phonemizer backend | Local NeuTTS provider |
 
 ### API Keys
 
@@ -84,8 +92,9 @@ Add to `~/.hermes/.env`:
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
-# Text-to-Speech (optional — Edge TTS works without any key)
-ELEVENLABS_API_KEY=your-key           # ElevenLabs — premium quality
+# Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
+ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
+# VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 ```
 
 :::tip
@@ -303,8 +312,9 @@ DISCORD_ALLOWED_USERS=your-user-id
 # STT — local provider needs no key (pip install faster-whisper)
 # GROQ_API_KEY=your-key            # Alternative: cloud-based, fast, free tier
 
-# TTS — optional, Edge TTS (free) is the default
-# ELEVENLABS_API_KEY=your-key      # Premium quality
+# TTS — optional. Edge TTS and NeuTTS need no key.
+# ELEVENLABS_API_KEY=***      # Premium quality
+# VOICE_TOOLS_OPENAI_KEY=***  # OpenAI TTS / Whisper
 ```
 
 ### Start the Gateway
@@ -385,7 +395,7 @@ stt:
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai"
+  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts"
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -394,6 +404,12 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
+    base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
 ```
 
 ### Environment Variables
@@ -410,9 +426,9 @@ STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
 
-# Text-to-Speech providers (Edge TTS needs no key)
-ELEVENLABS_API_KEY=...             # ElevenLabs (premium quality)
-# OpenAI TTS uses VOICE_TOOLS_OPENAI_KEY
+# Text-to-Speech providers (Edge TTS and NeuTTS need no key)
+ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
+# VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 
 # Discord voice channel
 DISCORD_BOT_TOKEN=...
@@ -440,6 +456,9 @@ Provider priority (automatic fallback): **local** > **groq** > **openai**
 | **Edge TTS** | Good | Free | ~1s | No |
 | **ElevenLabs** | Excellent | Paid | ~2s | Yes |
 | **OpenAI TTS** | Good | Paid | ~1.5s | Yes |
+| **NeuTTS** | Good | Free | Depends on CPU/GPU | No |
+
+NeuTTS uses the `tts.neutts` config block above.
 
 ---
 

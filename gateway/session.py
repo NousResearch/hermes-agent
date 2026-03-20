@@ -8,9 +8,11 @@ Handles:
 - Dynamic system prompt injection (agent knows its context)
 """
 
+import hashlib
 import logging
 import os
 import json
+import re
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -18,6 +20,41 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# PII redaction helpers
+# ---------------------------------------------------------------------------
+
+_PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
+
+
+def _hash_id(value: str) -> str:
+    """Deterministic 12-char hex hash of an identifier."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _hash_sender_id(value: str) -> str:
+    """Hash a sender ID to ``user_<12hex>``."""
+    return f"user_{_hash_id(value)}"
+
+
+def _hash_chat_id(value: str) -> str:
+    """Hash the numeric portion of a chat ID, preserving platform prefix.
+
+    ``telegram:12345`` → ``telegram:<hash>``
+    ``12345``          → ``<hash>``
+    """
+    colon = value.find(":")
+    if colon > 0:
+        prefix = value[:colon]
+        return f"{prefix}:{_hash_id(value[colon + 1:])}"
+    return _hash_id(value)
+
+
+def _looks_like_phone(value: str) -> bool:
+    """Return True if *value* looks like a phone number (E.164 or similar)."""
+    return bool(_PHONE_RE.match(value.strip()))
 
 from .config import (
     Platform,
@@ -146,7 +183,21 @@ class SessionContext:
         }
 
 
-def build_session_context_prompt(context: SessionContext) -> str:
+_PII_SAFE_PLATFORMS = frozenset({
+    Platform.WHATSAPP,
+    Platform.SIGNAL,
+    Platform.TELEGRAM,
+})
+"""Platforms where user IDs can be safely redacted (no in-message mention system
+that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
+and the LLM needs the real ID to tag users."""
+
+
+def build_session_context_prompt(
+    context: SessionContext,
+    *,
+    redact_pii: bool = False,
+) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
     
@@ -154,7 +205,15 @@ def build_session_context_prompt(context: SessionContext) -> str:
     - Where messages are coming from
     - What platforms are connected
     - Where it can deliver scheduled task outputs
+
+    When *redact_pii* is True **and** the source platform is in
+    ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
+    are replaced with deterministic hashes before being sent to the LLM.
+    Platforms like Discord are excluded because mentions need real IDs.
+    Routing still uses the original values (they stay in SessionSource).
     """
+    # Only apply redaction on platforms where IDs aren't needed for mentions
+    redact_pii = redact_pii and context.source.platform in _PII_SAFE_PLATFORMS
     lines = [
         "## Current Session Context",
         "",
@@ -165,7 +224,25 @@ def build_session_context_prompt(context: SessionContext) -> str:
     if context.source.platform == Platform.LOCAL:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
-        lines.append(f"**Source:** {platform_name} ({context.source.description})")
+        # Build a description that respects PII redaction
+        src = context.source
+        if redact_pii:
+            # Build a safe description without raw IDs
+            _uname = src.user_name or (
+                _hash_sender_id(src.user_id) if src.user_id else "user"
+            )
+            _cname = src.chat_name or _hash_chat_id(src.chat_id)
+            if src.chat_type == "dm":
+                desc = f"DM with {_uname}"
+            elif src.chat_type == "group":
+                desc = f"group: {_cname}"
+            elif src.chat_type == "channel":
+                desc = f"channel: {_cname}"
+            else:
+                desc = _cname
+        else:
+            desc = src.description
+        lines.append(f"**Source:** {platform_name} ({desc})")
     
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
@@ -175,7 +252,10 @@ def build_session_context_prompt(context: SessionContext) -> str:
     if context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
     elif context.source.user_id:
-        lines.append(f"**User ID:** {context.source.user_id}")
+        uid = context.source.user_id
+        if redact_pii:
+            uid = _hash_sender_id(uid)
+        lines.append(f"**User ID:** {uid}")
     
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -210,7 +290,8 @@ def build_session_context_prompt(context: SessionContext) -> str:
         lines.append("")
         lines.append("**Home Channels (default destinations):**")
         for platform, home in context.home_channels.items():
-            lines.append(f"  - {platform.value}: {home.name} (ID: {home.chat_id})")
+            hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
+            lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
     
     # Delivery options for scheduled tasks
     lines.append("")
@@ -220,7 +301,10 @@ def build_session_context_prompt(context: SessionContext) -> str:
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
-        lines.append(f"- `\"origin\"` → Back to this chat ({context.source.chat_name or context.source.chat_id})")
+        _origin_label = context.source.chat_name or (
+            _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
+        )
+        lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
     
     # Local always available
     lines.append("- `\"local\"` → Save to local files only (~/.hermes/cron/output/)")
@@ -259,7 +343,11 @@ class SessionEntry:
     # Token tracking
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    cost_status: str = "unknown"
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
@@ -279,8 +367,12 @@ class SessionEntry:
             "chat_type": self.chat_type,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
+            "cost_status": self.cost_status,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -310,36 +402,56 @@ class SessionEntry:
             chat_type=data.get("chat_type", "dm"),
             input_tokens=data.get("input_tokens", 0),
             output_tokens=data.get("output_tokens", 0),
+            cache_read_tokens=data.get("cache_read_tokens", 0),
+            cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
+            cost_status=data.get("cost_status", "unknown"),
         )
 
 
-def build_session_key(source: SessionSource) -> str:
+def build_session_key(source: SessionSource, group_sessions_per_user: bool = True) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
 
     DM rules:
-      - WhatsApp DMs include chat_id (multi-user support).
-      - Other DMs include thread_id when present (e.g. Slack threaded DMs),
-        so each DM thread gets its own session while top-level DMs share one.
-      - Without thread_id or chat_id, all DMs share a single session.
+      - DMs include chat_id when present, so each private conversation is isolated.
+      - thread_id further differentiates threaded DMs within the same DM chat.
+      - Without chat_id, thread_id is used as a best-effort fallback.
+      - Without thread_id or chat_id, DMs share a single session.
 
     Group/channel rules:
-      - thread_id differentiates threads within a channel.
-      - Without thread_id, all messages in a channel share one session.
+      - chat_id identifies the parent group/channel.
+      - user_id/user_id_alt isolates participants within that parent chat when available when
+        ``group_sessions_per_user`` is enabled.
+      - thread_id differentiates threads within that parent chat.
+      - Without participant identifiers, or when isolation is disabled, messages fall back to one
+        shared session per chat.
+      - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
     if source.chat_type == "dm":
+        if source.chat_id:
+            if source.thread_id:
+                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
+            return f"agent:main:{platform}:dm:{source.chat_id}"
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
-        if platform == "whatsapp" and source.chat_id:
-            return f"agent:main:{platform}:dm:{source.chat_id}"
         return f"agent:main:{platform}:dm"
+
+    participant_id = source.user_id_alt or source.user_id
+    key_parts = ["agent:main", platform, source.chat_type]
+
+    if source.chat_id:
+        key_parts.append(source.chat_id)
     if source.thread_id:
-        return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}:{source.thread_id}"
-    return f"agent:main:{platform}:{source.chat_type}:{source.chat_id}"
+        key_parts.append(source.thread_id)
+    if group_sessions_per_user and participant_id:
+        key_parts.append(str(participant_id))
+
+    return ":".join(key_parts)
 
 
 class SessionStore:
@@ -418,7 +530,10 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(source)
+        return build_session_key(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+        )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
         """Check if a session has expired based on its reset policy.
@@ -593,8 +708,15 @@ class SessionStore:
         session_key: str,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
         last_prompt_tokens: int = None,
         model: str = None,
+        estimated_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
         self._ensure_loaded()
@@ -604,15 +726,35 @@ class SessionStore:
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
             entry.output_tokens += output_tokens
+            entry.cache_read_tokens += cache_read_tokens
+            entry.cache_write_tokens += cache_write_tokens
             if last_prompt_tokens is not None:
                 entry.last_prompt_tokens = last_prompt_tokens
-            entry.total_tokens = entry.input_tokens + entry.output_tokens
+            if estimated_cost_usd is not None:
+                entry.estimated_cost_usd += estimated_cost_usd
+            if cost_status:
+                entry.cost_status = cost_status
+            entry.total_tokens = (
+                entry.input_tokens
+                + entry.output_tokens
+                + entry.cache_read_tokens
+                + entry.cache_write_tokens
+            )
             self._save()
             
             if self._db:
                 try:
                     self._db.update_token_counts(
-                        entry.session_id, input_tokens, output_tokens,
+                        entry.session_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        estimated_cost_usd=estimated_cost_usd,
+                        cost_status=cost_status,
+                        cost_source=cost_source,
+                        billing_provider=provider,
+                        billing_base_url=base_url,
                         model=model,
                     )
                 except Exception as e:
@@ -802,7 +944,13 @@ class SessionStore:
             for line in f:
                 line = line.strip()
                 if line:
-                    messages.append(json.loads(line))
+                    try:
+                        messages.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Skipping corrupt line in transcript %s: %s",
+                            session_id, line[:120],
+                        )
         
         return messages
 

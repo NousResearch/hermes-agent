@@ -4,6 +4,7 @@ This module is the single source of truth for the dangerous command system:
 - Pattern detection (DANGEROUS_PATTERNS, detect_dangerous_command)
 - Per-session approval state (thread-safe, keyed by session_key)
 - Approval prompting (CLI interactive + gateway async)
+- Smart approval via auxiliary LLM (auto-approve low-risk commands)
 - Permanent allowlist persistence (config.yaml)
 """
 
@@ -39,7 +40,8 @@ DANGEROUS_PATTERNS = [
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    (r'\b(bash|sh|zsh)\s+-c\s+', "shell command via -c flag"),
+    # Any shell invocation via -c or combined flags like -lc, -ic, etc.
+    (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
@@ -219,17 +221,15 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
-        is_truncated = len(command) > 80
         while True:
             print()
             print(f"  ⚠️  DANGEROUS COMMAND: {description}")
-            print(f"      {command[:80]}{'...' if is_truncated else ''}")
+            print(f"      {command}")
             print()
-            view_hint = "  |  [v]iew full" if is_truncated else ""
             if allow_permanent:
-                print(f"      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny{view_hint}")
+                print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
             else:
-                print(f"      [o]nce  |  [s]ession  |  [d]eny{view_hint}")
+                print("      [o]nce  |  [s]ession  |  [d]eny")
             print()
             sys.stdout.flush()
 
@@ -251,12 +251,6 @@ def prompt_dangerous_approval(command: str, description: str,
                 return "deny"
 
             choice = result["choice"]
-            if choice in ('v', 'view') and is_truncated:
-                print()
-                print("      Full command:")
-                print(f"      {command}")
-                is_truncated = False
-                continue
             if choice in ('o', 'once'):
                 print("      ✓ Allowed once")
                 return "once"
@@ -281,6 +275,68 @@ def prompt_dangerous_approval(command: str, description: str,
             del os.environ["HERMES_SPINNER_PAUSE"]
         print()
         sys.stdout.flush()
+
+
+def _get_approval_mode() -> str:
+    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        return config.get("approvals", {}).get("mode", "manual")
+    except Exception:
+        return "manual"
+
+
+def _smart_approve(command: str, description: str) -> str:
+    """Use the auxiliary LLM to assess risk and decide approval.
+
+    Returns 'approve' if the LLM determines the command is safe,
+    'deny' if genuinely dangerous, or 'escalate' if uncertain.
+
+    Inspired by OpenAI Codex's Smart Approvals guardian subagent
+    (openai/codex#13860).
+    """
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
+
+        client, model = get_text_auxiliary_client(task="approval")
+        if not client or not model:
+            logger.debug("Smart approvals: no aux client available, escalating")
+            return "escalate"
+
+        prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
+
+Command: {command}
+Flagged reason: {description}
+
+Assess the ACTUAL risk of this command. Many flagged commands are false positives — for example, `python -c "print('hello')"` is flagged as "script execution via -c flag" but is completely harmless.
+
+Rules:
+- APPROVE if the command is clearly safe (benign script execution, safe file operations, development tools, package installs, git operations, etc.)
+- DENY if the command could genuinely damage the system (recursive delete of important paths, overwriting system files, fork bombs, wiping disks, dropping databases, etc.)
+- ESCALATE if you're uncertain
+
+Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            **auxiliary_max_tokens_param(16),
+            temperature=0,
+        )
+
+        answer = (response.choices[0].message.content or "").strip().upper()
+
+        if "APPROVE" in answer:
+            return "approve"
+        elif "DENY" in answer:
+            return "deny"
+        else:
+            return "escalate"
+
+    except Exception as e:
+        logger.debug("Smart approvals: LLM call failed (%s), escalating", e)
+        return "escalate"
 
 
 def check_dangerous_command(command: str, env_type: str,
@@ -331,7 +387,10 @@ def check_dangerous_command(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": description,
-            "message": f"⚠️ This command is potentially dangerous ({description}). Asking the user for approval...",
+            "message": (
+                f"⚠️ This command is potentially dangerous ({description}). "
+                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+            ),
         }
 
     choice = prompt_dangerous_approval(command, description,
@@ -372,8 +431,9 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo: bypass all approval prompts and pre-exec guard checks
-    if os.getenv("HERMES_YOLO_MODE"):
+    # --yolo or approvals.mode=off: bypass all approval prompts
+    approval_mode = _get_approval_mode()
+    if os.getenv("HERMES_YOLO_MODE") or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")
@@ -430,6 +490,31 @@ def check_all_command_guards(command: str, env_type: str,
     if not warnings:
         return {"approved": True, "message": None}
 
+    # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
+    # When approvals.mode=smart, ask the aux LLM before prompting the user.
+    # Inspired by OpenAI Codex's Smart Approvals guardian subagent
+    # (openai/codex#13860).
+    if approval_mode == "smart":
+        combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        verdict = _smart_approve(command, combined_desc_for_llm)
+        if verdict == "approve":
+            # Auto-approve and grant session-level approval for these patterns
+            for key, _, _ in warnings:
+                approve_session(session_key, key)
+            logger.debug("Smart approval: auto-approved '%s' (%s)",
+                         command[:60], combined_desc_for_llm)
+            return {"approved": True, "message": None,
+                    "smart_approved": True}
+        elif verdict == "deny":
+            combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+            return {
+                "approved": False,
+                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
+                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                "smart_denied": True,
+            }
+        # verdict == "escalate" → fall through to manual prompt
+
     # --- Phase 3: Approval ---
 
     # Combine descriptions for a single approval prompt
@@ -453,7 +538,9 @@ def check_all_command_guards(command: str, env_type: str,
             "status": "approval_required",
             "command": command,
             "description": combined_desc,
-            "message": f"⚠️ {combined_desc}. Asking the user for approval...",
+            "message": (
+                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+            ),
         }
 
     # CLI interactive: single combined prompt

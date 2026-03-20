@@ -120,6 +120,7 @@ def show_status(args):
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
+        "Tavily": "TAVILY_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
@@ -252,6 +253,7 @@ def show_status(args):
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -275,8 +277,13 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
     if sys.platform.startswith('linux'):
+        try:
+            from hermes_cli.gateway import get_service_name
+            _gw_svc = get_service_name()
+        except Exception:
+            _gw_svc = "hermes-gateway"
         result = subprocess.run(
-            ["systemctl", "--user", "is-active", "hermes-gateway"],
+            ["systemctl", "--user", "is-active", _gw_svc],
             capture_output=True,
             text=True
         )

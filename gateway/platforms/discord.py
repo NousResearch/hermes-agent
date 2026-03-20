@@ -10,6 +10,7 @@ Uses discord.py library for:
 """
 
 import asyncio
+import json
 import logging
 import os
 import struct
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -87,8 +89,9 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client):
+    def __init__(self, voice_client, allowed_user_ids: set = None):
         self._vc = voice_client
+        self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
 
         # Decryption
@@ -274,19 +277,21 @@ class VoiceReceiver:
         if self._dave_session:
             with self._lock:
                 user_id = self._ssrc_to_user.get(ssrc, 0)
-            if user_id == 0:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE skip: unknown user for ssrc=%d", ssrc)
-                return  # unknown user, can't DAVE-decrypt
-            try:
-                import davey
-                decrypted = self._dave_session.decrypt(
-                    user_id, davey.MediaType.audio, decrypted
-                )
-            except Exception as e:
-                if self._packet_debug_count <= 10:
-                    logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
-                return
+            if user_id:
+                try:
+                    import davey
+                    decrypted = self._dave_session.decrypt(
+                        user_id, davey.MediaType.audio, decrypted
+                    )
+                except Exception as e:
+                    # Unencrypted passthrough — use NaCl-decrypted data as-is
+                    if "Unencrypted" not in str(e):
+                        if self._packet_debug_count <= 10:
+                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                        return
+            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
+            # Opus decode directly — audio may be in passthrough mode.
+            # Buffer will get a user_id when SPEAKING event arrives later.
 
         # --- Opus decode -> PCM ---
         try:
@@ -303,6 +308,32 @@ class VoiceReceiver:
     # ------------------------------------------------------------------
     # Silence detection
     # ------------------------------------------------------------------
+
+    def _infer_user_for_ssrc(self, ssrc: int) -> int:
+        """Try to infer user_id for an unmapped SSRC.
+
+        When the bot rejoins a voice channel, Discord may not resend
+        SPEAKING events for users already speaking.  If exactly one
+        allowed user is in the channel, map the SSRC to them.
+        """
+        try:
+            channel = self._vc.channel
+            if not channel:
+                return 0
+            bot_id = self._vc.user.id if self._vc.user else 0
+            allowed = self._allowed_user_ids
+            candidates = [
+                m.id for m in channel.members
+                if m.id != bot_id and (not allowed or str(m.id) in allowed)
+            ]
+            if len(candidates) == 1:
+                uid = candidates[0]
+                self._ssrc_to_user[ssrc] = uid
+                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
+                return uid
+        except Exception:
+            pass
+        return 0
 
     def check_silence(self) -> list:
         """Return list of (user_id, pcm_bytes) for completed utterances."""
@@ -322,6 +353,10 @@ class VoiceReceiver:
 
                 if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
+                    if not user_id:
+                        # SSRC not mapped (SPEAKING event missing after bot rejoin).
+                        # Infer from allowed users in the voice channel.
+                        user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
@@ -400,6 +435,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
+        # Track threads where the bot has participated so follow-up messages
+        # in those threads don't require @mention.  Persisted to disk so the
+        # set survives gateway restarts.
+        self._bot_participated_threads: set = self._load_participated_threads()
+        # Cap to prevent unbounded growth (Discord threads get archived).
+        self._MAX_TRACKED_THREADS = 500
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -580,7 +621,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send a message to a Discord channel."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             # Get the channel
             channel = self._client.get_channel(int(chat_id))
@@ -695,13 +736,14 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Play auto-TTS audio.
 
-        When the bot is in a voice channel for this chat's guild, skip the
-        file attachment — the gateway runner plays audio in the VC instead.
+        When the bot is in a voice channel for this chat's guild, play
+        directly in the VC instead of sending as a file attachment.
         """
         for gid, text_ch_id in self._voice_text_channels.items():
             if str(text_ch_id) == str(chat_id) and self.is_in_voice_channel(gid):
-                logger.debug("[%s] Skipping play_tts for %s — VC playback handled by runner", self.name, chat_id)
-                return SendResult(success=True)
+                logger.info("[%s] Playing TTS in voice channel (guild=%d)", self.name, gid)
+                success = await self.play_in_voice_channel(gid, audio_path)
+                return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
     async def send_voice(
@@ -805,7 +847,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Start voice receiver (Phase 2: listen to users)
         try:
-            receiver = VoiceReceiver(vc)
+            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
             receiver.start()
             self._voice_receivers[guild_id] = receiver
             self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -1001,14 +1043,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # Voice listening (Phase 2)
     # ------------------------------------------------------------------
 
+    # UDP keepalive interval in seconds — prevents Discord from dropping
+    # the UDP route after ~60s of silence.
+    _KEEPALIVE_INTERVAL = 15
+
     async def _voice_listen_loop(self, guild_id: int):
         """Periodically check for completed utterances and process them."""
         receiver = self._voice_receivers.get(guild_id)
         if not receiver:
             return
+        last_keepalive = time.monotonic()
         try:
             while receiver._running:
                 await asyncio.sleep(0.2)
+
+                # Send periodic UDP keepalive to prevent Discord from
+                # dropping the UDP session after ~60s of silence.
+                now = time.monotonic()
+                if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
+                    last_keepalive = now
+                    try:
+                        vc = self._voice_clients.get(guild_id)
+                        if vc and vc.is_connected():
+                            vc._connection.send_packet(b'\xf8\xff\xfe')
+                    except Exception:
+                        pass
+
                 completed = receiver.check_silence()
                 for user_id, pcm_data in completed:
                     if not self._is_allowed_user(str(user_id)):
@@ -1304,16 +1364,17 @@ class DiscordAdapter(BasePlatformAdapter):
         self,
         interaction: discord.Interaction,
         command_text: str,
-        followup_msg: str = "Done~",
+        followup_msg: str | None = None,
     ) -> None:
         """Common handler for simple slash commands that dispatch a command string."""
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
-        try:
-            await interaction.followup.send(followup_msg, ephemeral=True)
-        except Exception as e:
-            logger.debug("Discord followup failed: %s", e)
+        if followup_msg:
+            try:
+                await interaction.followup.send(followup_msg, ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -1321,19 +1382,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         tree = self._client.tree
-
-        @tree.command(name="ask", description="Ask Hermes a question")
-        @discord.app_commands.describe(question="Your question for Hermes")
-        async def slash_ask(interaction: discord.Interaction, question: str):
-            await interaction.response.defer()
-            event = self._build_slash_event(interaction, question)
-            await self.handle_message(event)
-            # The response is sent via the normal send() flow
-            # Send a followup to close the interaction if needed
-            try:
-                await interaction.followup.send("Processing complete~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="new", description="Start a new conversation")
         async def slash_new(interaction: discord.Interaction):
@@ -1354,10 +1402,6 @@ class DiscordAdapter(BasePlatformAdapter):
             await interaction.response.defer(ephemeral=True)
             event = self._build_slash_event(interaction, f"/reasoning {effort}".strip())
             await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
@@ -1433,10 +1477,6 @@ class DiscordAdapter(BasePlatformAdapter):
             await interaction.response.defer(ephemeral=True)
             event = self._build_slash_event(interaction, f"/voice {mode}".strip())
             await self.handle_message(event)
-            try:
-                await interaction.followup.send("Done~", ephemeral=True)
-            except Exception as e:
-                logger.debug("Discord followup failed: %s", e)
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
@@ -1517,6 +1557,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # Tell the user where the thread is
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
         await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+
+        # Track thread participation so follow-ups don't require @mention
+        if thread_id:
+            self._track_thread(thread_id)
 
         # If a message was provided, kick off a new Hermes session in the thread
         starter = (message or "").strip()
@@ -1685,9 +1729,12 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
 
+            # Discord embed description limit is 4096; show full command up to that
+            max_desc = 4088
+            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
             embed = discord.Embed(
                 title="Command Approval Required",
-                description=f"```\n{command[:500]}\n```",
+                description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
             embed.set_footer(text=f"Approval ID: {approval_id}")
@@ -1743,17 +1790,59 @@ class DiscordAdapter(BasePlatformAdapter):
             return f"{parent_name} / {thread_name}"
         return thread_name
 
+    # ------------------------------------------------------------------
+    # Thread participation persistence
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _thread_state_path() -> Path:
+        """Path to the persisted thread participation set."""
+        from hermes_cli.config import get_hermes_home
+        return get_hermes_home() / "discord_threads.json"
+
+    @classmethod
+    def _load_participated_threads(cls) -> set:
+        """Load persisted thread IDs from disk."""
+        path = cls._thread_state_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return set(data)
+        except Exception as e:
+            logger.debug("Could not load discord thread state: %s", e)
+        return set()
+
+    def _save_participated_threads(self) -> None:
+        """Persist the current thread set to disk (best-effort)."""
+        path = self._thread_state_path()
+        try:
+            # Trim to most recent entries if over cap
+            thread_list = list(self._bot_participated_threads)
+            if len(thread_list) > self._MAX_TRACKED_THREADS:
+                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
+                self._bot_participated_threads = set(thread_list)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(thread_list), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Could not save discord thread state: %s", e)
+
+    def _track_thread(self, thread_id: str) -> None:
+        """Add a thread to the participation set and persist."""
+        if thread_id not in self._bot_participated_threads:
+            self._bot_participated_threads.add(thread_id)
+            self._save_participated_threads()
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
-        # UNLESS the channel is in the free-response list.
+        # UNLESS the channel is in the free-response list or the message is
+        # in a thread where the bot has already participated.
         #
-        # Config:
-        #   DISCORD_FREE_RESPONSE_CHANNELS: Comma-separated channel IDs where the
-        #       bot responds to every message without needing a mention.
-        #   DISCORD_REQUIRE_MENTION: Set to "false" to disable mention requirement
-        #       globally (all channels become free-response). Default: "true".
-        #       Can also be set via discord.require_mention in config.yaml.
+        # Config (all settable via discord.* in config.yaml):
+        #   discord.require_mention: Require @mention in server channels (default: true)
+        #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
         parent_channel_id = None
@@ -1772,7 +1861,11 @@ class DiscordAdapter(BasePlatformAdapter):
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
             is_free_channel = bool(channel_ids & free_channels)
 
-            if require_mention and not is_free_channel:
+            # Skip the mention check if the message is in a thread where
+            # the bot has previously participated (auto-created or replied in).
+            in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+
+            if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions:
                     return
 
@@ -1781,17 +1874,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 
         # Auto-thread: when enabled, automatically create a thread for every
-        # new message in a text channel so each conversation is isolated.
+        # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "").lower() in ("true", "1", "yes")
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             if auto_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
+                    self._track_thread(thread_id)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -1891,7 +1985,12 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
         )
-        
+
+        # Track thread participation so the bot won't require @mention for
+        # follow-up messages in threads it has already engaged in.
+        if thread_id:
+            self._track_thread(thread_id)
+
         await self.handle_message(event)
 
 

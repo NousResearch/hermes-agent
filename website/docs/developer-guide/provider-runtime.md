@@ -37,6 +37,7 @@ That ordering matters because Hermes treats the saved model/provider choice as t
 
 Current provider families include:
 
+- AI Gateway (Vercel)
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
@@ -68,11 +69,21 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 - ACP editor sessions
 - auxiliary model tasks
 
-## OpenRouter vs custom OpenAI-compatible base URLs
+## AI Gateway
 
-Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when both `OPENROUTER_API_KEY` and `OPENAI_API_KEY` exist.
+Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
 
-It also distinguishes between:
+## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
+
+Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, and `OPENAI_API_KEY`).
+
+Each provider's API key is scoped to its own base URL:
+
+- `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
+- `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
+- `OPENAI_API_KEY` is used for custom endpoints and as a fallback
+
+Hermes also distinguishes between:
 
 - a real custom endpoint selected by the user
 - the OpenRouter fallback path used when no custom endpoint is configured
@@ -80,7 +91,7 @@ It also distinguishes between:
 That distinction is especially important for:
 
 - local model servers
-- non-OpenRouter OpenAI-compatible APIs
+- non-OpenRouter/non-AI Gateway OpenAI-compatible APIs
 - switching providers without re-running setup
 - config-saved custom endpoints that should keep working even when `OPENAI_BASE_URL` is not exported in the current shell
 
@@ -130,7 +141,41 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 
 ## Fallback models
 
-Hermes also supports a configured fallback model/provider, allowing runtime failover in supported error paths.
+Hermes supports a configured fallback model/provider pair, allowing runtime failover when the primary model encounters errors.
+
+### How it works internally
+
+1. **Storage**: `AIAgent.__init__` stores the `fallback_model` dict and sets `_fallback_activated = False`.
+
+2. **Trigger points**: `_try_activate_fallback()` is called from three places in the main retry loop in `run_agent.py`:
+   - After max retries on invalid API responses (None choices, missing content)
+   - On non-retryable client errors (HTTP 401, 403, 404)
+   - After max retries on transient errors (HTTP 429, 500, 502, 503)
+
+3. **Activation flow** (`_try_activate_fallback`):
+   - Returns `False` immediately if already activated or not configured
+   - Calls `resolve_provider_client()` from `auxiliary_client.py` to build a new client with proper auth
+   - Determines `api_mode`: `codex_responses` for openai-codex, `anthropic_messages` for anthropic, `chat_completions` for everything else
+   - Swaps in-place: `self.model`, `self.provider`, `self.base_url`, `self.api_mode`, `self.client`, `self._client_kwargs`
+   - For anthropic fallback: builds a native Anthropic client instead of OpenAI-compatible
+   - Re-evaluates prompt caching (enabled for Claude models on OpenRouter)
+   - Sets `_fallback_activated = True` — prevents firing again
+   - Resets retry count to 0 and continues the loop
+
+4. **Config flow**:
+   - CLI: `cli.py` reads `CLI_CONFIG["fallback_model"]` → passes to `AIAgent(fallback_model=...)`
+   - Gateway: `gateway/run.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
+   - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
+
+### What does NOT support fallback
+
+- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
+- **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
+- **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
+
+### Test coverage
+
+See `tests/test_fallback_model.py` for comprehensive tests covering all supported providers, one-shot semantics, and edge cases.
 
 ## Related docs
 

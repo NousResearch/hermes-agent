@@ -20,65 +20,23 @@ import json
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-# =========================================================================
-# Model pricing (USD per million tokens) — approximate as of early 2026
-# =========================================================================
-MODEL_PRICING = {
-    # OpenAI
-    "gpt-4o": {"input": 2.50, "output": 10.00},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-4.1": {"input": 2.00, "output": 8.00},
-    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
-    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
-    "gpt-4.5-preview": {"input": 75.00, "output": 150.00},
-    "gpt-5": {"input": 10.00, "output": 30.00},
-    "gpt-5.4": {"input": 10.00, "output": 30.00},
-    "o3": {"input": 10.00, "output": 40.00},
-    "o3-mini": {"input": 1.10, "output": 4.40},
-    "o4-mini": {"input": 1.10, "output": 4.40},
-    # Anthropic
-    "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
-    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
-    "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00},
-    "claude-3-opus-20240229": {"input": 15.00, "output": 75.00},
-    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
-    # DeepSeek
-    "deepseek-chat": {"input": 0.14, "output": 0.28},
-    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
-    # Google
-    "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
-    # Meta (via providers)
-    "llama-4-maverick": {"input": 0.50, "output": 0.70},
-    "llama-4-scout": {"input": 0.20, "output": 0.30},
-    # Z.AI / GLM (direct provider — pricing not published externally, treat as local)
-    "glm-5": {"input": 0.0, "output": 0.0},
-    "glm-4.7": {"input": 0.0, "output": 0.0},
-    "glm-4.5": {"input": 0.0, "output": 0.0},
-    "glm-4.5-flash": {"input": 0.0, "output": 0.0},
-    # Kimi / Moonshot (direct provider — pricing not published externally, treat as local)
-    "kimi-k2.5": {"input": 0.0, "output": 0.0},
-    "kimi-k2-thinking": {"input": 0.0, "output": 0.0},
-    "kimi-k2-turbo-preview": {"input": 0.0, "output": 0.0},
-    "kimi-k2-0905-preview": {"input": 0.0, "output": 0.0},
-    # MiniMax (direct provider — pricing not published externally, treat as local)
-    "MiniMax-M2.5": {"input": 0.0, "output": 0.0},
-    "MiniMax-M2.5-highspeed": {"input": 0.0, "output": 0.0},
-    "MiniMax-M2.1": {"input": 0.0, "output": 0.0},
-}
+from agent.usage_pricing import (
+    CanonicalUsage,
+    DEFAULT_PRICING,
+    estimate_usage_cost,
+    format_duration_compact,
+    get_pricing,
+    has_known_pricing,
+)
 
-# Fallback: unknown/custom models get zero cost (we can't assume pricing
-# for self-hosted models, custom OAI endpoints, local inference, etc.)
-_DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
+_DEFAULT_PRICING = DEFAULT_PRICING
 
 
-def _has_known_pricing(model_name: str) -> bool:
+def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
     """Check if a model has known pricing (vs unknown/custom endpoint)."""
-    return _get_pricing(model_name) is not _DEFAULT_PRICING
+    return has_known_pricing(model_name, provider=provider, base_url=base_url)
 
 
 def _get_pricing(model_name: str) -> Dict[str, float]:
@@ -87,67 +45,51 @@ def _get_pricing(model_name: str) -> Dict[str, float]:
     Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
     we can't assume costs for self-hosted endpoints, local inference, etc.
     """
-    if not model_name:
-        return _DEFAULT_PRICING
-
-    # Strip provider prefix (e.g., "anthropic/claude-..." -> "claude-...")
-    bare = model_name.split("/")[-1].lower()
-
-    # Exact match first
-    if bare in MODEL_PRICING:
-        return MODEL_PRICING[bare]
-
-    # Fuzzy prefix match — prefer the LONGEST matching key to avoid
-    # e.g. "gpt-4o" matching before "gpt-4o-mini" for "gpt-4o-mini-2024-07-18"
-    best_match = None
-    best_len = 0
-    for key, price in MODEL_PRICING.items():
-        if bare.startswith(key) and len(key) > best_len:
-            best_match = price
-            best_len = len(key)
-    if best_match:
-        return best_match
-
-    # Keyword heuristics (checked in most-specific-first order)
-    if "opus" in bare:
-        return {"input": 15.00, "output": 75.00}
-    if "sonnet" in bare:
-        return {"input": 3.00, "output": 15.00}
-    if "haiku" in bare:
-        return {"input": 0.80, "output": 4.00}
-    if "gpt-4o-mini" in bare:
-        return {"input": 0.15, "output": 0.60}
-    if "gpt-4o" in bare:
-        return {"input": 2.50, "output": 10.00}
-    if "gpt-5" in bare:
-        return {"input": 10.00, "output": 30.00}
-    if "deepseek" in bare:
-        return {"input": 0.14, "output": 0.28}
-    if "gemini" in bare:
-        return {"input": 0.15, "output": 0.60}
-
-    return _DEFAULT_PRICING
+    return get_pricing(model_name)
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate the USD cost for a given model and token counts."""
-    pricing = _get_pricing(model)
-    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+def _estimate_cost(
+    session_or_model: Dict[str, Any] | str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    *,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    provider: str = None,
+    base_url: str = None,
+) -> tuple[float, str]:
+    """Estimate the USD cost for a session row or a model/token tuple."""
+    if isinstance(session_or_model, dict):
+        session = session_or_model
+        model = session.get("model") or ""
+        usage = CanonicalUsage(
+            input_tokens=session.get("input_tokens") or 0,
+            output_tokens=session.get("output_tokens") or 0,
+            cache_read_tokens=session.get("cache_read_tokens") or 0,
+            cache_write_tokens=session.get("cache_write_tokens") or 0,
+        )
+        provider = session.get("billing_provider")
+        base_url = session.get("billing_base_url")
+    else:
+        model = session_or_model or ""
+        usage = CanonicalUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+        )
+    result = estimate_usage_cost(
+        model,
+        usage,
+        provider=provider,
+        base_url=base_url,
+    )
+    return float(result.amount_usd or 0.0), result.status
 
 
 def _format_duration(seconds: float) -> str:
     """Format seconds into a human-readable duration string."""
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    minutes = seconds / 60
-    if minutes < 60:
-        return f"{minutes:.0f}m"
-    hours = minutes / 60
-    if hours < 24:
-        remaining_min = int(minutes % 60)
-        return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
-    days = hours / 24
-    return f"{days:.1f}d"
+    return format_duration_compact(seconds)
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
@@ -234,24 +176,30 @@ class InsightsEngine:
 
     # Columns we actually need (skip system_prompt, model_config blobs)
     _SESSION_COLS = ("id, source, model, started_at, ended_at, "
-                     "message_count, tool_call_count, input_tokens, output_tokens")
+                     "message_count, tool_call_count, input_tokens, output_tokens, "
+                     "cache_read_tokens, cache_write_tokens, billing_provider, "
+                     "billing_base_url, billing_mode, estimated_cost_usd, "
+                     "actual_cost_usd, cost_status, cost_source")
+
+    # Pre-computed query strings — f-string evaluated once at class definition,
+    # not at runtime, so no user-controlled value can alter the query structure.
+    _GET_SESSIONS_WITH_SOURCE = (
+        f"SELECT {_SESSION_COLS} FROM sessions"
+        " WHERE started_at >= ? AND source = ?"
+        " ORDER BY started_at DESC"
+    )
+    _GET_SESSIONS_ALL = (
+        f"SELECT {_SESSION_COLS} FROM sessions"
+        " WHERE started_at >= ?"
+        " ORDER BY started_at DESC"
+    )
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
         """Fetch sessions within the time window."""
         if source:
-            cursor = self._conn.execute(
-                f"""SELECT {self._SESSION_COLS} FROM sessions
-                    WHERE started_at >= ? AND source = ?
-                    ORDER BY started_at DESC""",
-                (cutoff, source),
-            )
+            cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
-            cursor = self._conn.execute(
-                f"""SELECT {self._SESSION_COLS} FROM sessions
-                    WHERE started_at >= ?
-                    ORDER BY started_at DESC""",
-                (cutoff,),
-            )
+            cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
@@ -386,21 +334,30 @@ class InsightsEngine:
         """Compute high-level overview statistics."""
         total_input = sum(s.get("input_tokens") or 0 for s in sessions)
         total_output = sum(s.get("output_tokens") or 0 for s in sessions)
-        total_tokens = total_input + total_output
+        total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
+        total_cache_write = sum(s.get("cache_write_tokens") or 0 for s in sessions)
+        total_tokens = total_input + total_output + total_cache_read + total_cache_write
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
 
         # Cost estimation (weighted by model)
         total_cost = 0.0
+        actual_cost = 0.0
         models_with_pricing = set()
         models_without_pricing = set()
+        unknown_cost_sessions = 0
+        included_cost_sessions = 0
         for s in sessions:
             model = s.get("model") or ""
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            total_cost += _estimate_cost(model, inp, out)
+            estimated, status = _estimate_cost(s)
+            total_cost += estimated
+            actual_cost += s.get("actual_cost_usd") or 0.0
             display = model.split("/")[-1] if "/" in model else (model or "unknown")
-            if _has_known_pricing(model):
+            if status == "included":
+                included_cost_sessions += 1
+            elif status == "unknown":
+                unknown_cost_sessions += 1
+            if _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
                 models_with_pricing.add(display)
             else:
                 models_without_pricing.add(display)
@@ -427,8 +384,11 @@ class InsightsEngine:
             "total_tool_calls": total_tool_calls,
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read,
+            "total_cache_write_tokens": total_cache_write,
             "total_tokens": total_tokens,
             "estimated_cost": total_cost,
+            "actual_cost": actual_cost,
             "total_hours": total_hours,
             "avg_session_duration": avg_duration,
             "avg_messages_per_session": total_messages / len(sessions) if sessions else 0,
@@ -440,12 +400,15 @@ class InsightsEngine:
             "date_range_end": date_range_end,
             "models_with_pricing": sorted(models_with_pricing),
             "models_without_pricing": sorted(models_without_pricing),
+            "unknown_cost_sessions": unknown_cost_sessions,
+            "included_cost_sessions": included_cost_sessions,
         }
 
     def _compute_model_breakdown(self, sessions: List[Dict]) -> List[Dict]:
         """Break down usage by model."""
         model_data = defaultdict(lambda: {
             "sessions": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
             "total_tokens": 0, "tool_calls": 0, "cost": 0.0,
         })
 
@@ -457,12 +420,18 @@ class InsightsEngine:
             d["sessions"] += 1
             inp = s.get("input_tokens") or 0
             out = s.get("output_tokens") or 0
+            cache_read = s.get("cache_read_tokens") or 0
+            cache_write = s.get("cache_write_tokens") or 0
             d["input_tokens"] += inp
             d["output_tokens"] += out
-            d["total_tokens"] += inp + out
+            d["cache_read_tokens"] += cache_read
+            d["cache_write_tokens"] += cache_write
+            d["total_tokens"] += inp + out + cache_read + cache_write
             d["tool_calls"] += s.get("tool_call_count") or 0
-            d["cost"] += _estimate_cost(model, inp, out)
-            d["has_pricing"] = _has_known_pricing(model)
+            estimate, status = _estimate_cost(s)
+            d["cost"] += estimate
+            d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            d["cost_status"] = status
 
         result = [
             {"model": model, **data}
@@ -476,7 +445,8 @@ class InsightsEngine:
         """Break down usage by platform/source."""
         platform_data = defaultdict(lambda: {
             "sessions": 0, "messages": 0, "input_tokens": 0,
-            "output_tokens": 0, "total_tokens": 0, "tool_calls": 0,
+            "output_tokens": 0, "cache_read_tokens": 0,
+            "cache_write_tokens": 0, "total_tokens": 0, "tool_calls": 0,
         })
 
         for s in sessions:
@@ -486,9 +456,13 @@ class InsightsEngine:
             d["messages"] += s.get("message_count") or 0
             inp = s.get("input_tokens") or 0
             out = s.get("output_tokens") or 0
+            cache_read = s.get("cache_read_tokens") or 0
+            cache_write = s.get("cache_write_tokens") or 0
             d["input_tokens"] += inp
             d["output_tokens"] += out
-            d["total_tokens"] += inp + out
+            d["cache_read_tokens"] += cache_read
+            d["cache_write_tokens"] += cache_write
+            d["total_tokens"] += inp + out + cache_read + cache_write
             d["tool_calls"] += s.get("tool_call_count") or 0
 
         result = [

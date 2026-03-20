@@ -37,6 +37,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 
+# Sentinel: when a cron agent has nothing new to report, it can start its
+# response with this marker to suppress delivery.  Output is still saved
+# locally for audit.
+SILENT_MARKER = "[SILENT]"
+
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
@@ -132,6 +137,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
+        "sms": Platform.SMS,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:
@@ -179,6 +185,17 @@ def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
     skills = job.get("skills")
+
+    # Always prepend [SILENT] guidance so the cron agent can suppress
+    # delivery when it has nothing new or noteworthy to report.
+    silent_hint = (
+        "[SYSTEM: If you have nothing new or noteworthy to report, respond "
+        "with exactly \"[SILENT]\" (optionally followed by a brief internal "
+        "note). This suppresses delivery to the user while still saving "
+        "output locally. Only use [SILENT] when there are genuinely no "
+        "changes worth reporting.]\n\n"
+    )
+    prompt = silent_hint + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
@@ -190,11 +207,14 @@ def _build_job_prompt(job: dict) -> str:
     from tools.skills_tool import skill_view
 
     parts = []
+    skipped: list[str] = []
     for skill_name in skill_names:
         loaded = json.loads(skill_view(skill_name))
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            raise RuntimeError(error)
+            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+            skipped.append(skill_name)
+            continue
 
         content = str(loaded.get("content") or "").strip()
         if parts:
@@ -206,6 +226,15 @@ def _build_job_prompt(job: dict) -> str:
                 content,
             ]
         )
+
+    if skipped:
+        notice = (
+            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"and were skipped: {', '.join(skipped)}. "
+            f"Start your response with a brief notice so the user is aware, e.g.: "
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+        )
+        parts.insert(0, notice)
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
@@ -315,6 +344,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
+        smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
@@ -331,12 +361,29 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
+        from agent.smart_model_routing import resolve_turn_route
+        turn_route = resolve_turn_route(
+            prompt,
+            smart_routing,
+            {
+                "model": model,
+                "api_key": runtime.get("api_key"),
+                "base_url": runtime.get("base_url"),
+                "provider": runtime.get("provider"),
+                "api_mode": runtime.get("api_mode"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+            },
+        )
+
         agent = AIAgent(
-            model=model,
-            api_key=runtime.get("api_key"),
-            base_url=runtime.get("base_url"),
-            provider=runtime.get("provider"),
-            api_mode=runtime.get("api_mode"),
+            model=turn_route["model"],
+            api_key=turn_route["runtime"].get("api_key"),
+            base_url=turn_route["runtime"].get("base_url"),
+            provider=turn_route["runtime"].get("provider"),
+            api_mode=turn_route["runtime"].get("api_mode"),
+            acp_command=turn_route["runtime"].get("command"),
+            acp_args=turn_route["runtime"].get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
@@ -465,9 +512,16 @@ def tick(verbose: bool = True) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
-                # Deliver the final response to the origin/target chat
+                # Deliver the final response to the origin/target chat.
+                # If the agent responded with [SILENT], skip delivery (but
+                # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                if deliver_content:
+                should_deliver = bool(deliver_content)
+                if should_deliver and success and deliver_content.strip().upper().startswith(SILENT_MARKER):
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+
+                if should_deliver:
                     try:
                         _deliver_result(job, deliver_content)
                     except Exception as de:

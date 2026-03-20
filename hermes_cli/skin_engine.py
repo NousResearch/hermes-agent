@@ -60,6 +60,12 @@ All fields are optional. Missing values inherit from the ``default`` skin.
     # Tool prefix: character for tool output lines (default: ┊)
     tool_prefix: "┊"
 
+    # Tool emojis: override the default emoji for any tool (used in spinners & progress)
+    tool_emojis:
+      terminal: "⚔"           # Override terminal tool emoji
+      web_search: "🔮"        # Override web_search tool emoji
+      # Any tool not listed here uses its registry default
+
 USAGE
 =====
 
@@ -111,6 +117,7 @@ class SkinConfig:
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
+    tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
@@ -344,12 +351,12 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(Ψ) Available Commands",
         },
         "tool_prefix": "│",
-        "banner_logo": """[bold #B8E8FF]██████╗  ██████╗ ███████╗██╗██████╗ ███████╗ ██████╗ ███╗   ██╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #97D6FF]██╔══██╗██╔═══██╗██╔════╝██║██╔══██╗██╔════╝██╔═══██╗████╗  ██║      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#75C1F6]██████╔╝██║   ██║███████╗██║██║  ██║█████╗  ██║   ██║██╔██╗ ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#4FA2E0]██╔═══╝ ██║   ██║╚════██║██║██║  ██║██╔══╝  ██║   ██║██║╚██╗██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#2E7CC7]██║     ╚██████╔╝███████║██║██████╔╝███████╗╚██████╔╝██║ ╚████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#1B4F95]╚═╝      ╚═════╝ ╚══════╝╚═╝╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+        "banner_logo": """[bold #B8E8FF]██████╗  ██████╗ ███████╗███████╗██╗██████╗  ██████╗ ███╗   ██╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #97D6FF]██╔══██╗██╔═══██╗██╔════╝██╔════╝██║██╔══██╗██╔═══██╗████╗  ██║      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#75C1F6]██████╔╝██║   ██║███████╗█████╗  ██║██║  ██║██║   ██║██╔██╗ ██║█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#4FA2E0]██╔═══╝ ██║   ██║╚════██║██╔══╝  ██║██║  ██║██║   ██║██║╚██╗██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#2E7CC7]██║     ╚██████╔╝███████║███████╗██║██████╔╝╚██████╔╝██║ ╚████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#1B4F95]╚═╝      ╚═════╝ ╚══════╝╚══════╝╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
         "banner_hero": """[#2A6FB9]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#5DB8F5]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#5DB8F5]⠀⠀⠀⠀⠀⠀⠀⢠⣿⠏⠀Ψ⠀⠹⣿⡄⠀⠀⠀⠀⠀⠀⠀[/]
@@ -541,6 +548,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
+        tool_emojis=data.get("tool_emojis", {}),
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
     )

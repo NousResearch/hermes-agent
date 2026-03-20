@@ -1747,14 +1747,22 @@ class GatewayRunner:
                     _token_source = "actual"
                 else:
                     _approx_tokens = estimate_messages_tokens_rough(history)
-                    # Apply safety factor only for rough estimates
+                    # Rough estimates overestimate tool-heavy content by 30-50%.
+                    # Lower the threshold (not raise it) so compression fires
+                    # conservatively when we don't have real token data.
                     _compress_token_threshold = int(
-                        _compress_token_threshold * 1.4
+                        _compress_token_threshold * 0.7
                     )
-                    _warn_token_threshold = int(_warn_token_threshold * 1.4)
+                    _warn_token_threshold = int(_warn_token_threshold * 0.7)
                     _token_source = "estimated"
 
-                _needs_compress = _approx_tokens >= _compress_token_threshold
+                # Hard safety valve: force compression if message count is very high,
+                # regardless of token estimates (handles death spiral from API disconnects)
+                _HARD_MSG_LIMIT = 400
+                _needs_compress = (
+                    _approx_tokens >= _compress_token_threshold
+                    or _msg_count >= _HARD_MSG_LIMIT
+                )
 
                 if _needs_compress:
                     logger.info(

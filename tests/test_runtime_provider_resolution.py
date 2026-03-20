@@ -479,8 +479,8 @@ def test_api_key_provider_explicit_api_mode_config(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
-def test_api_key_provider_default_url_stays_chat_completions(monkeypatch):
-    """API-key providers with default /v1 URL should stay on chat_completions."""
+def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
+    """MiniMax with default /anthropic URL should auto-detect anthropic_messages mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -489,8 +489,49 @@ def test_api_key_provider_default_url_stays_chat_completions(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
     assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_minimax_stale_v1_url_auto_corrected(monkeypatch):
+    """MiniMax with stale /v1 base URL should be auto-corrected to /anthropic."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_minimax_cn_stale_v1_url_auto_corrected(monkeypatch):
+    """MiniMax-CN with stale /v1 base URL should be auto-corrected to /anthropic."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-cn")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-minimax-cn-key")
+    monkeypatch.setenv("MINIMAX_CN_BASE_URL", "https://api.minimaxi.com/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-cn")
+
+    assert resolved["provider"] == "minimax-cn"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+
+
+def test_minimax_explicit_api_mode_respected(monkeypatch):
+    """Explicit api_mode config should override MiniMax auto-detection."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "chat_completions"})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://api.minimax.io/v1"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

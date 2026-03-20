@@ -73,6 +73,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen/qwen-2.5-72b-instruct": 32768,
     "glm-4.7": 202752,
     "glm-5": 202752,
+    "glm-5-turbo": 202752,  # Zhipu: same 202K context as glm-5
     "glm-4.5": 131072,
     "glm-4.5-flash": 131072,
     "kimi-for-coding": 262144,

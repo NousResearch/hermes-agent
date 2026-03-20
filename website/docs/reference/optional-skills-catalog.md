@@ -1,4 +1,4 @@
----
+﻿---
 sidebar_position: 6
 title: "Official Optional Skills Catalog"
 description: "Catalog of official optional skills available from the repository"
@@ -18,7 +18,7 @@ Official optional skills live in the repository under `optional-skills/`. Instal
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `solana` | Query Solana blockchain data with USD pricing — wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network stats. Uses Solana RPC + CoinGecko. No API key required. | `blockchain/solana` |
+| `solana` | Query Solana blockchain data with USD pricing - wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network stats. Uses Solana RPC + CoinGecko. No API key required. | `blockchain/solana` |
 
 ## email
 
@@ -30,7 +30,7 @@ Official optional skills live in the repository under `optional-skills/`. Instal
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `neuroskill-bci` | Connect to a running NeuroSkill instance and incorporate the user's real-time cognitive and emotional state (focus, relaxation, mood, cognitive load, drowsiness, heart rate, HRV, sleep staging, and 40+ derived EXG scores) into responses. Requires a BCI wearable (Muse 2/S or Open… | `health/neuroskill-bci` |
+| `neuroskill-bci` | Connect to a running NeuroSkill instance and incorporate the user's real-time cognitive and emotional state (focus, relaxation, mood, cognitive load, drowsiness, heart rate, HRV, sleep staging, and 40+ derived EXG scores) into responses. Requires a BCI wearable (Muse 2/S or Open... | `health/neuroskill-bci` |
 
 ## migration
 
@@ -42,7 +42,8 @@ Official optional skills live in the repository under `optional-skills/`. Instal
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `qmd` | Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd — a hybrid retrieval engine with BM25, vector search, and LLM reranking. Supports CLI and MCP integration. | `research/qmd` |
+| `autoresearch` | Run bounded, manifest-driven research cycles against a workspace-defined project. Inspect AutoResearch manifests, validate families, execute research_cycle runs, inspect reports, and prepare publishable summaries through the bundled helper script. | `research/autoresearch` |
+| `qmd` | Search personal knowledge bases, notes, docs, and meeting transcripts locally using qmd - a hybrid retrieval engine with BM25, vector search, and LLM reranking. Supports CLI and MCP integration. | `research/qmd` |
 
 ## security
 

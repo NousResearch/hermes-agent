@@ -177,6 +177,19 @@ All phone numbers are automatically redacted in logs:
 - `+15551234567` → `+155****4567`
 - This applies to both Hermes gateway logs and the global redaction system
 
+### Note to Self (Single-Number Setup)
+
+If you run signal-cli as a **linked secondary device** on your own phone number (rather than a separate bot number), you can interact with Hermes through Signal's "Note to Self" feature.
+
+Just send a message to yourself from your phone — signal-cli picks it up and Hermes responds in the same conversation.
+
+**How it works:**
+- "Note to Self" messages arrive as `syncMessage.sentMessage` envelopes
+- The adapter detects when these are addressed to the bot's own account and processes them as regular inbound messages
+- Echo-back protection (sent-timestamp tracking) prevents infinite loops — the bot's own replies are filtered out automatically
+
+**No extra configuration needed.** This works automatically as long as `SIGNAL_ACCOUNT` matches your phone number.
+
 ### Health Monitoring
 
 The adapter monitors the SSE connection and automatically reconnects if:

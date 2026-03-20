@@ -3815,6 +3815,29 @@ For more help on a command:
         help="Enable lite mode for QMD (faster, lower memory)"
     )
 
+    # hermes memory switch-model [model]
+    memory_switch = memory_subparsers.add_parser(
+        "switch-model", help="Switch embedding model, restart server, prompt to re-ingest if dimension changed",
+        description=(
+            "Switch the QMD embedding model to a new one. The server will be restarted\n"
+            "and you'll be asked whether to re-ingest memories if the embedding\n"
+            "dimension changed (FAISS indexes are fixed-dimension).\n\n"
+            "Examples:\n"
+            "  hermes memory switch-model mlx-community/Nomic-embed-text\n"
+            "  hermes memory switch-model BAAI/bge-m3\n"
+            "  hermes memory switch-model --auto  # auto-detect best for your hardware"
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    memory_switch.add_argument(
+        "model", nargs="?", metavar="MODEL",
+        help="Model ID (e.g. mlx-community/Nomic-embed-text, BAAI/bge-m3). Use --auto for hardware detection."
+    )
+    memory_switch.add_argument(
+        "--auto", action="store_true",
+        help="Auto-detect the best model for your hardware"
+    )
+
     # hermes memory ingest
     memory_ingest = memory_subparsers.add_parser(
         "ingest", help="Scan and ingest Hermes memory files into QMD",

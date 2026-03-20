@@ -232,6 +232,8 @@ def memory_command(args):
         return cmd_config(args)
     elif cmd == "ingest":
         return cmd_ingest(args)
+    elif cmd == "switch-model":
+        return cmd_switch_model(args)
     else:
         # No subcommand -- show status by default
         return cmd_status(args)
@@ -367,7 +369,7 @@ def cmd_mode(args):
         console.print(f"Current memory backend: [bold]{current}[/bold]")
         console.print("\nAvailable backends:")
         console.print("  [cyan]honcho[/cyan] - Cloud-backed cross-session memory (honcho.dev)")
-        console.print("  [cyan]qmd[/cyan]    - Local vector-based memory with FlowState")
+        console.print("  [cyan]qmd[/cyan]    - Local vector-based memory (native Hermes QMD)")
         console.print("  [cyan]off[/cyan]    - Local MEMORY.md only (no cross-session)")
         return
 
@@ -380,9 +382,62 @@ def cmd_mode(args):
         _disable_memory(cfg)
 
 
+def _get_hardware_auto_model(hw_info: dict) -> tuple[str, str]:
+    """Determine the best embedding model automatically based on detected hardware.
+
+    Returns (model_id, backend) suitable for the QMD server's --model argument.
+    backend: 'ollama', 'mlx', or 'huggingface'
+    """
+    import shutil
+
+    ollama_available = shutil.which("ollama") is not None
+    ollama_has_nomic = False
+    if ollama_available:
+        try:
+            import httpx
+            r = httpx.get("http://localhost:11434/api/tags", timeout=5)
+            if r.status_code == 200:
+                models = r.json().get("models", [])
+                ollama_has_nomic = any("nomic-embed-text" in m.get("name", "") for m in models)
+        except Exception:
+            pass
+
+    if hw_info["os"] == "Darwin" and hw_info["arch"] == "arm64":
+        # Apple Silicon — prefer Ollama with Metal, then MLX, then CPU HF
+        if hw_info["has_mps"]:
+            ram = hw_info.get("ram_gb", 16)
+            if ollama_has_nomic:
+                # Ollama's nomic-embed-text runs on Metal GPU natively
+                return ("nomic-embed-text", "ollama")
+            elif ram >= 8:
+                # MLX via Ollama compatibility layer
+                return ("mlx-community/Nomic-embed-text", "mlx")
+            else:
+                return ("mlx-community/bge-micro-v2", "mlx")
+        else:
+            # Apple Silicon but MPS not available — use CPU HF with light model
+            return ("BAAI/bge-micro-v2", "huggingface")
+    elif hw_info["has_gpu"] and hw_info["gpu_type"] == "nvidia_cuda":
+        # NVIDIA CUDA — use full BGE-M3 for best quality
+        return ("BAAI/bge-m3", "huggingface")
+    else:
+        # Linux CPU or unknown — lightweight CPU model
+        ram = hw_info.get("ram_gb", 8)
+        if ram >= 16:
+            return ("BAAI/bge-m3", "huggingface")
+        elif ram >= 4:
+            return ("sentence-transformers/all-MiniLM-L6-v2", "huggingface")
+        else:
+            return ("BAAI/bge-micro-v2", "huggingface")
+
+
 def _enable_qmd(cfg: dict):
     """Enable QMD as the memory backend."""
     console.print("\n[bold]Enabling QMD memory backend...[/bold]")
+
+    # Detect hardware for auto-model selection
+    hw_info = _get_hardware_info()
+    auto_model, auto_backend = _get_hardware_auto_model(hw_info)
 
     # Check if qmd section exists
     if "qmd" not in cfg:
@@ -391,14 +446,16 @@ def _enable_qmd(cfg: dict):
     # Enable QMD
     cfg["qmd"]["enabled"] = True
 
+    # Use auto-detected model unless already configured
+    if "embedding_model" not in cfg["qmd"] or not cfg["qmd"]["embedding_model"]:
+        cfg["qmd"]["embedding_model"] = auto_model
+        console.print(f"[dim]Auto-detected embedding model: {auto_model} (hardware: {hw_info['gpu_type'] or 'CPU'})[/dim]")
+
     # Ensure required fields
-    # BAAI/bge-m3 is the default for optimal general use (highest quality, works out of box)
     if "host" not in cfg["qmd"]:
         cfg["qmd"]["host"] = "127.0.0.1"
     if "port" not in cfg["qmd"]:
         cfg["qmd"]["port"] = 8181
-    if "embedding_model" not in cfg["qmd"]:
-        cfg["qmd"]["embedding_model"] = "BAAI/bge-m3"  # Default: highest quality, no Ollama needed
 
     try:
         save_config_value("qmd.enabled", "true")
@@ -477,9 +534,9 @@ def cmd_setup(args):
     if not backend:
         console.print("\n[bold]Memory Backend Setup[/bold]\n")
         console.print("Select a memory backend to set up:\n")
-        console.print("  [1] [cyan]QMD[/cyan] - Local vector memory with FlowState anticipatory context")
+        console.print("  [1] [cyan]QMD[/cyan] - Local vector memory with native Hermes anticipatory context")
         console.print("      No cloud required, fast local retrieval")
-        console.print("      [dim]Default embedding: qwen3.5b:0.8b[/dim]\n")
+        console.print("      [dim]Auto-selects best model for your hardware (Metal/CUDA/CPU)[/dim]\n")
         console.print("  [2] [cyan]Honcho[/cyan] - Cloud-backed cross-session user modeling")
         console.print("      Requires honcho.dev account and API key\n")
         console.print("  [3] [cyan]Cancel[/cyan]\n")
@@ -699,6 +756,165 @@ def cmd_config(args):
         console.print("[green]✓ Lite mode enabled[/green]")
 
     console.print("\nRestart Hermes for changes to take effect.")
+
+
+def cmd_switch_model(args):
+    """Switch embedding model, restart server, prompt to re-ingest if dimension changed."""
+    cfg = _load_hermes_config()
+
+    if cfg.get("qmd", {}).get("enabled") != True:
+        console.print("[yellow]QMD is not enabled. Run 'hermes memory mode qmd' first.[/yellow]")
+        return
+
+    # Resolve target model
+    use_auto = getattr(args, "auto", False)
+    model_arg = getattr(args, "model", None)
+
+    if use_auto:
+        hw_info = _get_hardware_info()
+        target_model, target_backend = _get_hardware_auto_model(hw_info)
+        hw_desc = f"{hw_info['gpu_type'] or 'CPU'}, {hw_info['ram_gb']:.0f}GB RAM, {target_backend}"
+        console.print(f"[dim]Auto-detecting model for hardware: {hw_desc}[/dim]")
+    elif model_arg:
+        target_model = model_arg
+    else:
+        # Show available models and exit
+        hw_info = _get_hardware_info()
+        console.print("\n[bold]Switch Embedding Model[/bold]\n")
+        console.print("Usage: [cyan]hermes memory switch-model <model>[/cyan]")
+        console.print("       [cyan]hermes memory switch-model --auto[/cyan]  (auto-detect)\n")
+        console.print("[bold]Hardware-detected models:[/bold]")
+        available = _get_recommended_models(hw_info)
+        filtered = _filter_models_for_hardware(available, hw_info)
+        for m in filtered:
+            badge = " [green](MLX)[/green]" if m["format"] == "mlx" else ""
+            console.print(f"  {m['id']}{badge}  — {m['description']}")
+        console.print()
+        return
+
+    # Get current state
+    old_model = cfg.get("qmd", {}).get("embedding_model", "not set")
+    old_dim = None
+    try:
+        import httpx
+        r = httpx.get("http://127.0.0.1:8181/status", timeout=5)
+        if r.status_code == 200:
+            old_dim = r.json().get("embedding_dim")
+    except Exception:
+        pass
+
+    if old_model == target_model:
+        console.print(f"[dim]Model is already {target_model}.[/dim]")
+        return
+
+    console.print(f"\n[bold]Switching embedding model:[/bold]")
+    console.print(f"  {old_model} → [green]{target_model}[/green]")
+    if old_dim:
+        console.print(f"  Old index dimension: {old_dim}")
+
+    # Save new model to config
+    save_config_value("qmd.embedding_model", target_model)
+    console.print(f"[green]✓ Model saved to config[/green]")
+
+    # Restart the QMD server
+    console.print("\nRestarting QMD server...")
+    _restart_qmd_server()
+    console.print("[green]✓ Server restarted[/green]")
+
+    # Check new dimension
+    new_dim = None
+    try:
+        import httpx
+        r = httpx.get("http://127.0.0.1:8181/status", timeout=5)
+        if r.status_code == 200:
+            new_dim = r.json().get("embedding_dim")
+            mem_count = r.json().get("memory_count", 0)
+            console.print(f"  New index dimension: {new_dim}")
+            console.print(f"  Memories in index: {mem_count}")
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not verify new server state: {e}[/yellow]")
+        new_dim = None
+
+    # Prompt for re-ingestion when model changes
+    # We can't reliably compare embedding dimensions without rebuilding the index
+    # (loaded FAISS index shows its own dimension, not the new model's output dim),
+    # so we always prompt when the model changes to ensure the user is aware.
+    if old_model != target_model:
+        console.print()
+        console.print(f"[yellow]⚠ Embedding model changed ({old_model} → {target_model}).[/yellow]")
+        console.print("  If the new model produces different embedding dimensions than the old one,")
+        console.print("  the existing FAISS index will produce degraded search results.")
+        console.print("  Re-ingestion rebuilds the index with the new model's dimensions.\n")
+        try:
+            response = input("Re-ingest all memories now? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Re-ingestion skipped.[/yellow]")
+            response = "n"
+
+        if response == "y":
+            console.print("\n[bold]Re-ingesting...[/bold]")
+            # Wipe existing memories first
+            try:
+                import httpx
+                httpx.delete("http://127.0.0.1:8181/memories", timeout=5)
+            except Exception:
+                pass
+            # Run ingest
+            ingest_args = type('obj', (object,), {'dry_run': False, 'force': True})()
+            cmd_ingest(ingest_args)
+        else:
+            console.print("[dim]Re-ingestion skipped. Run 'hermes memory ingest' later.[/dim]")
+
+
+def _restart_qmd_server():
+    """Kill existing QMD server process and restart it in background."""
+    import subprocess
+
+    # Find and kill existing server on port 8181
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti:8181"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.stdout.strip():
+            pids = result.stdout.strip().split()
+            for pid in pids:
+                try:
+                    subprocess.run(["kill", "-9", pid], timeout=5)
+                except Exception:
+                    pass
+            console.print("[dim]  Stopped old server process.[/dim]")
+    except Exception:
+        pass
+
+    # Start new server in background
+    import os
+    server_script = Path.home() / ".hermes" / "qmd_server" / "server.py"
+    try:
+        subprocess.Popen(
+            ["python3", str(server_script)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(server_script.parent),
+            start_new_session=True,
+        )
+    except Exception as e:
+        console.print(f"[red]✗ Failed to start server: {e}[/red]")
+        return
+
+    # Wait for server to come up
+    import time
+    for _ in range(15):
+        time.sleep(0.5)
+        try:
+            import httpx
+            r = httpx.get("http://127.0.0.1:8181/status", timeout=2)
+            if r.status_code == 200:
+                return
+        except Exception:
+            continue
+
+    console.print("[yellow]Warning: server may not be fully ready yet.[/yellow]")
 
 
 # =============================================================================

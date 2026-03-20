@@ -388,10 +388,10 @@ def _enable_qmd(cfg: dict):
         cfg["qmd"]["embedding_model"] = "qwen3.5b:0.8b"
 
     try:
-        save_config_value("qmd.enabled", True)
-        save_config_value("qmd.host", cfg["qmd"]["host"])
-        save_config_value("qmd.port", cfg["qmd"]["port"])
-        save_config_value("qmd.embedding_model", cfg["qmd"]["embedding_model"])
+        save_config_value("qmd.enabled", "true")
+        save_config_value("qmd.host", str(cfg["qmd"]["host"]))
+        save_config_value("qmd.port", str(cfg["qmd"]["port"]))
+        save_config_value("qmd.embedding_model", str(cfg["qmd"]["embedding_model"]))
         console.print("[green]✓ QMD enabled in config.yaml[/green]")
     except Exception as e:
         console.print(f"[red]✗ Failed to save config: {e}[/red]")
@@ -412,7 +412,7 @@ def _enable_honcho(cfg: dict):
     # Disable QMD in config
     if "qmd" in cfg:
         try:
-            save_config_value("qmd.enabled", False)
+            save_config_value("qmd.enabled", "false")
             console.print("[dim]QMD disabled in config.yaml[/dim]")
         except Exception:
             pass
@@ -447,7 +447,7 @@ def _disable_memory(cfg: dict):
     # Disable QMD
     if "qmd" in cfg:
         try:
-            save_config_value("qmd.enabled", False)
+            save_config_value("qmd.enabled", "false")
             console.print("[dim]QMD disabled[/dim]")
         except Exception:
             pass
@@ -584,9 +584,9 @@ def _setup_qmd_interactive():
 
     # Save config
     try:
-        save_config_value("qmd.enabled", True)
+        save_config_value("qmd.enabled", "true")
         save_config_value("qmd.host", host)
-        save_config_value("qmd.port", int(port))
+        save_config_value("qmd.port", str(port))
         save_config_value("qmd.embedding_model", embed_model)
         console.print("\n[green]✓ QMD configured successfully![/green]")
     except Exception as e:
@@ -682,7 +682,7 @@ def cmd_config(args):
         console.print(f"[green]✓ Server URL set to http://{host}:{port}[/green]")
 
     if lite_mode:
-        save_config_value("qmd.lite_mode", True)
+        save_config_value("qmd.lite_mode", "true")
         console.print("[green]✓ Lite mode enabled[/green]")
 
     console.print("\nRestart Hermes for changes to take effect.")

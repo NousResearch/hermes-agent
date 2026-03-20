@@ -208,10 +208,12 @@ Pasting multi-line text is supported — use `Alt+Enter` or `Ctrl+J` to insert n
 
 You can interrupt the agent at any point:
 
-- **Type a new message + Enter** while the agent is working — it interrupts and processes your new instructions
+- **Type a new message + Enter** while the agent is working — it interrupts the current task and switches to your new turn
+- **`/queue <prompt>`** while the agent is working — keep a follow-up pending for the next turn without interrupting now
+- **`Esc`** or **`/stop`** — preempt the current task immediately
 - **`Ctrl+C`** — interrupt the current operation (press twice within 2s to force exit)
 - In-progress terminal commands are killed immediately (SIGTERM, then SIGKILL after 1s)
-- Multiple messages typed during interrupt are combined into one prompt
+- Queued follow-ups remain pending after an interrupt and run on the next turn
 
 ## Tool Progress Display
 

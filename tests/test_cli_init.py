@@ -4,6 +4,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 import os
 import sys
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -42,6 +43,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         "prompt_toolkit.key_binding": MagicMock(),
         "prompt_toolkit.completion": MagicMock(),
         "prompt_toolkit.formatted_text": MagicMock(),
+        "prompt_toolkit.auto_suggest": MagicMock(),
     }
     with patch.dict(sys.modules, prompt_toolkit_stubs), \
          patch.dict("os.environ", clean_env, clear=False):
@@ -104,7 +106,33 @@ class TestSingleQueryState:
         assert cli._voice_tts_done.is_set()
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
+        assert hasattr(cli, "_visible_followups")
 
+    def test_visible_followup_preview_tracks_fifo_queue(self):
+        cli = _make_cli()
+
+        cli._enqueue_visible_followup("first queued question")
+        cli._enqueue_visible_followup(("second queued question", [Path("/tmp/mock.png")]))
+
+        assert cli._visible_followup_snapshot() == [
+            "first queued question",
+            "second queued question [+1 image]",
+        ]
+
+        preview_lines = cli._pending_followup_preview_lines()
+        assert preview_lines[0] == "Queued follow-up messages"
+        assert "1. first queued question" in preview_lines
+        assert "2. second queued question [+1 image]" in preview_lines
+
+        cli._consume_visible_followup()
+        assert cli._visible_followup_snapshot() == ["second queued question [+1 image]"]
+
+    def test_followup_preview_handles_image_only_payload(self):
+        cli = _make_cli()
+
+        cli._enqueue_visible_followup(("", [Path("/tmp/one.png"), Path("/tmp/two.png")]))
+
+        assert cli._visible_followup_snapshot() == ["[2 images attached]"]
 
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):

@@ -31,6 +31,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/compress` | Manually compress conversation context (flush memories + summarize) |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
 | `/stop` | Kill all running background processes |
+| `/queue <prompt>` | Queue a follow-up behind the current run. Only works while Hermes is already busy. |
 | `/background <prompt>` | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 
@@ -97,6 +98,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info. |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
+| `/queue <prompt>` | Queue a follow-up behind the current run without interrupting it. Only works while Hermes is already busy. |
 | `/model [provider:model]` | Show or change the model, including provider switches. |
 | `/provider` | Show provider availability and auth status. |
 | `/personality [name]` | Set a personality overlay for the session. |
@@ -121,6 +123,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 ## Notes
 
 - `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/verbose`, and `/plugins` are **CLI-only** commands.
-- `/status`, `/sethome`, and `/update` are **messaging-only** commands.
-- `/background`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
+- `/status`, `/stop`, `/sethome`, `/resume`, and `/update` are **messaging-only** commands.
+- `/background`, `/queue`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

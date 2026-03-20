@@ -57,6 +57,7 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
 import queue
+from collections import deque
 
 from agent.usage_pricing import (
     CanonicalUsage,
@@ -1196,6 +1197,8 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._visible_followups: deque[str] = deque()
+        self._visible_followups_lock = threading.Lock()
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -1241,6 +1244,74 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    @staticmethod
+    def _summarize_followup_payload(payload: Any) -> str:
+        """Return a compact user-facing preview for a queued follow-up."""
+        text = ""
+        image_count = 0
+        if isinstance(payload, tuple):
+            text = str(payload[0] or "").strip()
+            images = payload[1] if len(payload) > 1 else []
+            image_count = len(images or [])
+        else:
+            text = str(payload or "").strip()
+
+        preview = text.splitlines()[0].strip() if text else ""
+        if len(preview) > 72:
+            preview = preview[:69].rstrip() + "..."
+
+        if image_count and preview:
+            suffix = "image" if image_count == 1 else "images"
+            return f"{preview} [+{image_count} {suffix}]"
+        if image_count:
+            suffix = "image" if image_count == 1 else "images"
+            return f"[{image_count} {suffix} attached]"
+        return preview or "[empty follow-up]"
+
+    def _enqueue_visible_followup(self, payload: Any) -> None:
+        """Track queued follow-ups so the TUI can render them like Codex."""
+        preview = self._summarize_followup_payload(payload)
+        with self._visible_followups_lock:
+            self._visible_followups.append(preview)
+        self._invalidate(min_interval=0.0)
+
+    @staticmethod
+    def _extract_queue_payload(text: str, images: list[Any] | None = None) -> Any | None:
+        """Return the payload targeted by `/queue`, or None for invalid usage."""
+        images = list(images or [])
+        stripped = text.strip()
+        if not stripped.lower().startswith("/queue"):
+            return None
+
+        parts = stripped.split(maxsplit=1)
+        queued_text = parts[1].strip() if len(parts) > 1 else ""
+        if not queued_text and not images:
+            return None
+        return (queued_text, images) if images else queued_text
+
+    def _consume_visible_followup(self) -> None:
+        """Drop the oldest rendered follow-up once processing starts."""
+        with self._visible_followups_lock:
+            if self._visible_followups:
+                self._visible_followups.popleft()
+        self._invalidate(min_interval=0.0)
+
+    def _visible_followup_snapshot(self) -> list[str]:
+        """Return queued follow-up previews in FIFO order."""
+        with self._visible_followups_lock:
+            return list(self._visible_followups)
+
+    def _pending_followup_preview_lines(self) -> list[str]:
+        """Build the TUI preview lines for queued follow-up messages."""
+        queued = self._visible_followup_snapshot()
+        if not queued:
+            return []
+
+        lines = ["Queued follow-up messages"]
+        lines.extend(f"{idx}. {item}" for idx, item in enumerate(queued, start=1))
+        lines.append("Enter interrupts now; use /queue to keep these for the next turn.")
+        return lines
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -3662,6 +3733,17 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "queue":
+            if self._agent_running:
+                payload = self._extract_queue_payload(cmd_original)
+                if payload is None:
+                    _cprint("  Usage: /queue <prompt>")
+                else:
+                    self._enqueue_visible_followup(payload)
+                    self._pending_input.put(payload)
+                    _cprint("  Queued for the next turn.")
+            else:
+                _cprint("  /queue only works while Hermes is already busy.")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -5236,18 +5318,17 @@ class HermesCLI:
             except Exception:
                 pass
 
-
     def chat(self, message, images: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
-        Handles streaming output, interrupt detection (user typing while agent
-        is working), and re-queueing of interrupted messages.
+        Handles streaming output, explicit interrupt detection, and re-queueing
+        of interrupted messages.
         
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
-        race conditions between the process_loop and interrupt monitoring. Messages
-        typed while the agent is running go to _interrupt_queue; messages typed while
-        idle go to _pending_input.
+        race conditions between the process_loop and interrupt monitoring.
+        Explicit interrupt requests go to _interrupt_queue; ordinary follow-ups
+        queue in _pending_input until the current task finishes.
         
         Args:
             message: The user's message (str or multimodal content list)
@@ -5380,53 +5461,17 @@ class HermesCLI:
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
 
-            # Monitor the dedicated interrupt queue while the agent runs.
-            # _interrupt_queue is separate from _pending_input, so process_loop
-            # and chat() never compete for the same queue.
-            # When a clarify question is active, user input is handled entirely
-            # by the Enter key binding (routed to the clarify response queue),
-            # so we skip interrupt processing to avoid stealing that input.
-            interrupt_msg = None
-            while agent_thread.is_alive():
-                if hasattr(self, '_interrupt_queue'):
-                    try:
-                        interrupt_msg = self._interrupt_queue.get(timeout=0.1)
-                        if interrupt_msg:
-                            # If clarify is active, the Enter handler routes
-                            # input directly; this queue shouldn't have anything.
-                            # But if it does (race condition), don't interrupt.
-                            if self._clarify_state or self._clarify_freetext:
-                                continue
-                            print(f"\n⚡ New message detected, interrupting...")
-                            # Signal TTS to stop on interrupt
-                            if stop_event is not None:
-                                stop_event.set()
-                            self.agent.interrupt(interrupt_msg)
-                            # Debug: log to file (stdout may be devnull from redirect_stdout)
-                            try:
-                                _dbg = _hermes_home / "interrupt_debug.log"
-                                with open(_dbg, "a") as _f:
-                                    import time as _t
-                                    _f.write(f"{_t.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
-                                             f"children={len(self.agent._active_children)}, "
-                                             f"parent._interrupt={self.agent._interrupt_requested}\n")
-                                    for _ci, _ch in enumerate(self.agent._active_children):
-                                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
-                            except Exception:
-                                pass
-                            break
-                    except queue.Empty:
-                        # Force prompt_toolkit to flush any pending stdout
-                        # output from the agent thread.  Without this, the
-                        # StdoutProxy buffer only flushes on renderer passes
-                        # triggered by input events — on macOS this causes
-                        # the CLI to appear frozen until the user types. (#1624)
-                        self._invalidate(min_interval=0.15)
-                else:
-                    # Fallback for non-interactive mode (e.g., single-query)
+            # Store TTS stop event so Esc handler can signal it.
+            # Keep the UI repaint loop alive while the agent thread runs so
+            # streamed tool output is flushed promptly under prompt_toolkit.
+            self._tts_stop_event = stop_event
+            try:
+                while agent_thread.is_alive():
                     agent_thread.join(0.1)
-
-            agent_thread.join()  # Ensure agent thread completes
+                    self._invalidate(min_interval=0.15)
+            finally:
+                self._tts_stop_event = None
+            agent_thread.join()  # Ensure the thread is fully drained
 
             # Flush any remaining streamed text and close the box
             self._flush_stream()
@@ -5480,7 +5525,7 @@ class HermesCLI:
             # Handle interrupt - check if we were interrupted
             pending_message = None
             if result and result.get("interrupted"):
-                pending_message = result.get("interrupt_message") or interrupt_msg
+                pending_message = result.get("interrupt_message")
                 # Add indicator that we were interrupted
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
@@ -5558,21 +5603,8 @@ class HermesCLI:
                 ).start()
 
 
-            # Combine all interrupt messages (user may have typed multiple while waiting)
-            # and re-queue as one prompt for process_loop
-            if pending_message and hasattr(self, '_pending_input'):
-                all_parts = [pending_message]
-                while not self._interrupt_queue.empty():
-                    try:
-                        extra = self._interrupt_queue.get_nowait()
-                        if extra:
-                            all_parts.append(extra)
-                    except queue.Empty:
-                        break
-                combined = "\n".join(all_parts)
-                print(f"\n📨 Queued: '{combined[:50]}{'...' if len(combined) > 50 else ''}'")
-                self._pending_input.put(combined)
-            
+            # On interrupt, follow-ups are already in _pending_input
+            # (queued by handle_enter while agent was running).
             return response
             
         except Exception as e:
@@ -5820,10 +5852,8 @@ class HermesCLI:
             - Approval selection: selected choice goes to approval response queue
             - Clarify freetext mode: answer goes to the clarify response queue
             - Clarify choice mode: selected choice goes to the clarify response queue
-            - Agent running: goes to _interrupt_queue (chat() monitors this)
+            - Agent running: interrupts by default; `/queue` opts into follow-up queueing
             - Agent idle: goes to _pending_input (process_loop monitors this)
-            Commands (starting with /) always go to _pending_input so they're
-            handled as commands, not sent as interrupt text to the agent.
             """
             # --- Sudo password prompt: submit the typed password ---
             if self._sudo_state:
@@ -5884,25 +5914,49 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and text.startswith("/")):
-                    self._interrupt_queue.put(payload)
-                    # Debug: log to file when message enters interrupt queue
-                    try:
-                        _dbg = _hermes_home / "interrupt_debug.log"
-                        with open(_dbg, "a") as _f:
-                            import time as _t
-                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                     f"agent_running={self._agent_running}\n")
-                    except Exception:
-                        pass
-                else:
-                    self._pending_input.put(payload)
+                # /stop while agent is running: interrupt immediately (like Esc)
+                if self._agent_running and text and text.strip() == "/stop":
+                    _cprint("\n⚡ Interrupting agent...")
+                    if self._tts_stop_event is not None:
+                        self._tts_stop_event.set()
+                    self.agent.interrupt()
+                    event.app.current_buffer.reset(append_to_history=True)
+                    event.app.invalidate()
+                    return
+                if self._agent_running:
+                    queued_payload = self._extract_queue_payload(text, images)
+                    if queued_payload is not None:
+                        self._enqueue_visible_followup(queued_payload)
+                        self._pending_input.put(queued_payload)
+                    else:
+                        if self._tts_stop_event is not None:
+                            self._tts_stop_event.set()
+                        self._pending_input.put(payload)
+                        self.agent.interrupt()
+                    event.app.current_buffer.reset(append_to_history=True)
+                    event.app.invalidate()
+                    return
+                self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
+                event.app.invalidate()
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
+
+        @kb.add('escape')
+        def handle_escape(event):
+            """OpenCode-style interrupt: Escape preempts the running task."""
+            if self._agent_running and self.agent and not (
+                self._sudo_state or self._secret_state or self._approval_state or self._clarify_state
+            ):
+                _cprint("\n⚡ Interrupting agent...")
+                # Signal streaming TTS to stop
+                if self._tts_stop_event is not None:
+                    self._tts_stop_event.set()
+                self.agent.interrupt()
+                event.app.invalidate()
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
@@ -6353,7 +6407,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "Enter interrupts, /queue saves next turn, Esc or /stop preempts, Ctrl+C cancels"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -6427,6 +6481,37 @@ class HermesCLI:
         spinner_widget = Window(
             content=FormattedTextControl(get_spinner_text),
             height=get_spinner_height,
+        )
+
+        def _get_pending_followups_display():
+            queued_lines = cli_ref._pending_followup_preview_lines()
+            if not queued_lines:
+                return []
+
+            box_width = _panel_box_width("Queued follow-up messages", queued_lines, min_width=54, max_width=88)
+            inner_text_width = max(8, box_width - 2)
+            lines = []
+            lines.append(('class:queued-border', '╭─ '))
+            lines.append(('class:queued-title', 'Queued follow-up messages'))
+            lines.append(('class:queued-border', ' ' + ('─' * max(0, box_width - len("Queued follow-up messages") - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:queued-border', box_width)
+            for idx, entry in enumerate(queued_lines[1:-1], start=1):
+                style = 'class:queued-item' if idx > 1 else 'class:queued-item-first'
+                for wrapped in _wrap_panel_text(entry, inner_text_width, subsequent_indent="   "):
+                    _append_panel_line(lines, 'class:queued-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:queued-border', box_width)
+            for wrapped in _wrap_panel_text(queued_lines[-1], inner_text_width):
+                _append_panel_line(lines, 'class:queued-border', 'class:queued-hint', wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:queued-border', box_width)
+            lines.append(('class:queued-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        queued_followups_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_pending_followups_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: bool(cli_ref._visible_followup_snapshot())),
         )
 
         spacer = Window(
@@ -6684,6 +6769,7 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 spinner_widget,
+                queued_followups_widget,
                 spacer,
                 status_bar,
                 input_rule_top,
@@ -6726,6 +6812,11 @@ class HermesCLI:
             'clarify-selected': '#FFD700 bold',
             'clarify-active-other': '#FFD700 italic',
             'clarify-countdown': '#CD7F32',
+            'queued-border': '#CD7F32',
+            'queued-title': '#FFD700 bold',
+            'queued-item': '#FFF8DC',
+            'queued-item-first': '#FFF8DC bold',
+            'queued-hint': '#AAAAAA italic',
             # Sudo password panel
             'sudo-prompt': '#FF6B6B bold',
             'sudo-border': '#CD7F32',
@@ -6808,6 +6899,7 @@ class HermesCLI:
                             # Schedule app exit
                             if app.is_running:
                                 app.exit()
+                        self._consume_visible_followup()
                         continue
                     
                     # Expand paste references back to full content
@@ -6851,6 +6943,7 @@ class HermesCLI:
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
+                        self._consume_visible_followup()
                         self._agent_running = False
                         self._spinner_text = ""
                         app.invalidate()  # Refresh status line

@@ -67,6 +67,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg",), args_hint="<prompt>"),
+    CommandDef("queue", "Queue a follow-up behind the active run", "Session",
+               args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session",
                gateway_only=True),
     CommandDef("sethome", "Set this chat as the home channel", "Session",

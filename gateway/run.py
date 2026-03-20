@@ -5120,9 +5120,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         class _QuietFilter(logging.Filter):
             NOISY = {'evey.mqtt', 'httpx', 'httpcore', 'telegram.ext', 'discord.gateway',
                       'discord.client', 'discord.http', 'hpack', 'h11', 'h2',
-                      'aiohttp.access', 'PIL'}
+                      'aiohttp.access', 'PIL', 'mcp.client.streamable_http',
+                      'tools.mcp_tool', 'hermes_cli.plugins', 'run_agent'}
             def filter(self, record):
-                return record.name not in self.NOISY and not record.name.startswith('httpx.')
+                if record.name in self.NOISY:
+                    return False
+                if record.name.startswith(('httpx.', 'mcp.')):
+                    return False
+                return True
         stdout_handler.addFilter(_QuietFilter())
         stdout_handler.setFormatter(logging.Formatter('[%(name)s] %(message)s'))
         logging.getLogger().addHandler(stdout_handler)

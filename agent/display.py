@@ -255,19 +255,21 @@ class KawaiiSpinner:
 
     @staticmethod
     def _clean_message(msg):
-        """Strip kawaii faces, emojis, and verbs from spinner message for clean logging."""
+        """Extract clean tool/action name from spinner message for structured logging."""
         import re
-        # Remove kawaii face patterns like (◕‿◕✿), ♪(´ε` ), etc.
-        msg = re.sub(r'[♪٩ヾ]?\([^)]{1,20}\)[☆۶っ]?\s*', '', msg)
-        # Remove common emoji
-        msg = re.sub(r'[⚡🐍✍️🧠💬💭💡✨💫🌟]+\s*', '', msg)
-        # Remove thinking verbs with trailing ...
-        verbs = ('pondering', 'contemplating', 'musing', 'cogitating', 'ruminating',
-                 'deliberating', 'mulling', 'reflecting', 'processing', 'reasoning',
-                 'analyzing', 'computing', 'synthesizing', 'formulating', 'brainstorming')
-        for v in verbs:
-            msg = msg.replace(f'{v}...', '').replace(v, '')
-        return msg.strip() or msg
+        # Try to extract tool name after a known emoji prefix
+        match = re.search(r'(?:[⚡🐍✍️📖🧠💬])\s*(\S+)', msg)
+        if match:
+            return match.group(1)
+        # Strip ALL non-ASCII characters (kawaii faces, emoji, special chars)
+        cleaned = re.sub(r'[^\x20-\x7E]', '', msg)
+        # Remove parenthetical face patterns
+        cleaned = re.sub(r'\([^)]*\)\s*', '', cleaned)
+        # Remove thinking verbs
+        cleaned = re.sub(r'(pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|processing|reasoning|analyzing|computing|synthesizing|formulating|brainstorming)\.{0,3}', '', cleaned)
+        # Remove the old hermes format prefix
+        cleaned = re.sub(r'^[┊|]\s*', '', cleaned)
+        return cleaned.strip()
 
     def _animate(self):
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),

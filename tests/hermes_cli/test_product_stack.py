@@ -1,13 +1,17 @@
+import json
 from pathlib import Path
-from unittest.mock import patch
+from subprocess import CompletedProcess
+from unittest.mock import AsyncMock, patch
 
 import yaml
 
 from hermes_cli.product_config import load_product_config
 from hermes_cli.product_stack import (
     KANIDM_IMAGE,
+    bootstrap_first_admin,
     ensure_kanidm_certificates,
     ensure_product_stack_started,
+    get_first_admin_state_path,
     get_kanidm_compose_path,
     get_kanidm_data_root,
     get_kanidm_server_config_path,
@@ -114,7 +118,7 @@ def test_ensure_product_stack_started_uses_generated_compose_file(tmp_path, monk
     assert "--user" in cert_command
     assert f"{get_kanidm_data_root().as_posix()}:/data" in cert_command
     assert compose_command[:4] == ["docker", "compose", "-f", str(get_kanidm_compose_path())]
-    assert compose_command[-2:] == ["up", "-d"]
+    assert compose_command[-4:] == ["up", "-d", "--wait", "--force-recreate"]
     assert Path(compose_command[3]) == get_kanidm_compose_path()
 
 
@@ -135,4 +139,79 @@ def test_ensure_kanidm_certificates_skips_when_files_exist(tmp_path, monkeypatch
     with patch("hermes_cli.product_stack.subprocess.run") as mock_run:
         ensure_kanidm_certificates(config)
 
+    mock_run.assert_not_called()
+
+
+def test_bootstrap_first_admin_creates_person_and_stores_reset_link(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    config = load_product_config()
+    config["bootstrap"]["first_admin_username"] = "supplier-admin"
+    config["bootstrap"]["first_admin_display_name"] = "Supplier Admin"
+    config["bootstrap"]["first_admin_reset_ttl_seconds"] = 7200
+
+    calls = []
+
+    def _fake_run(command, **kwargs):
+        calls.append(command)
+        joined = " ".join(command)
+        if "recover-account" in joined:
+            if " supplier-admin" in f" {joined} ":
+                return CompletedProcess(command, 0, stdout='new_password: "user-secret"\n', stderr="")
+            return CompletedProcess(command, 0, stdout='new_password: "temp-secret"\n', stderr="")
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    with (
+        patch("hermes_cli.product_stack._runtime_user_spec", return_value="1000:1000"),
+        patch("hermes_cli.product_stack.get_env_value", return_value="existing-secret"),
+        patch("hermes_cli.product_stack.subprocess.run", side_effect=_fake_run),
+        patch(
+            "hermes_cli.product_stack._bootstrap_first_admin_remote",
+            new=AsyncMock(return_value="https://localhost:8443/ui/reset?token=abc123"),
+        ) as mock_remote_bootstrap,
+    ):
+        state = bootstrap_first_admin(config)
+
+    assert state["username"] == "supplier-admin"
+    assert state["display_name"] == "Supplier Admin"
+    assert state["temporary_password"] == "user-secret"
+    assert state["auth_mode"] == "passkey"
+    assert get_first_admin_state_path().exists()
+    assert any(
+        "exec -w / -u 0:0 hermes-kanidm /sbin/kanidmd -c /data/server.toml recover-account"
+        in " ".join(cmd)
+        for cmd in calls
+    )
+    assert any("recover-account supplier-admin" in " ".join(cmd) for cmd in calls)
+    assert all("recover-account" not in " ".join(cmd) or "-u 1000:1000" not in " ".join(cmd) for cmd in calls)
+    mock_remote_bootstrap.assert_awaited_once_with(
+        config,
+        "temp-secret",
+        "supplier-admin",
+        "Supplier Admin",
+        7200,
+    )
+
+
+def test_bootstrap_first_admin_reuses_existing_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    config = load_product_config()
+    with (
+        patch("hermes_cli.product_stack._runtime_user_spec", return_value="1000:1000"),
+        patch("hermes_cli.product_stack.get_env_value", return_value="existing-secret"),
+    ):
+        initialize_product_stack(config)
+    existing = {
+        "username": "admin",
+        "display_name": "Administrator",
+        "temporary_password": "existing-secret",
+        "auth_mode": "passkey",
+    }
+    get_first_admin_state_path().write_text(json.dumps(existing), encoding="utf-8")
+
+    with patch("hermes_cli.product_stack.subprocess.run") as mock_run:
+        state = bootstrap_first_admin(config)
+
+    assert state["temporary_password"] == existing["temporary_password"]
     mock_run.assert_not_called()

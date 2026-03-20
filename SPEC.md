@@ -81,9 +81,10 @@ The intended identity model is:
 - `Kanidm` provides identity, login, credential enrollment, and recovery flows
 - the product remains an OIDC client and still owns its own application session and authorization model
 - bundled `Kanidm` should run as a local Docker-managed service in the first implementation
-- the supplier creates the first admin during setup
+- the supplier bootstraps the first product admin during setup
 - later users are created by an admin in the web UI
 - user recovery should use `Kanidm` native recovery actions rather than a product-owned password reset flow
+- the built-in `idm_admin` account remains an internal operator account and should not become the user-facing product admin
 
 The bundled `Kanidm` service files should be generated under:
 
@@ -100,17 +101,20 @@ The first implementation should also treat these startup details as part of the 
 
 - `Kanidm` certificate generation must happen before `compose up`
 - the generated service should run `kanidmd` directly, not through a shell wrapper
+- service startup should use `docker compose up -d --wait --force-recreate` so changed container definitions are actually applied
 - the bundled container should run with the host uid/gid when available so the bind-mounted service directory remains accessible without loosening permissions
+- bundled admin bootstrap should use the official `kanidm` Python client for local provisioning rather than trying to automate the interactive CLI
 
 The intended user-lifecycle flow is:
 
-1. supplier setup creates the first admin account
-2. admin signs into the authenticated local web app through `Kanidm`
-3. admin creates additional users in the web UI
-4. the product service provisions those users into `Kanidm`
-5. admin issues a native `Kanidm` recovery or reset action for first access
-6. the user completes credential enrollment through `Kanidm`
-7. the product continues to treat `Kanidm` as the login authority and OIDC provider
+1. supplier setup creates the first product admin account in `Kanidm`
+2. setup issues a one-time local temporary password for that first product admin
+3. the first product admin signs into the authenticated local web app through `Kanidm`
+4. admin creates additional users in the web UI
+5. the product service provisions those users into `Kanidm`
+6. admin issues a native `Kanidm` recovery or reset action for first access
+7. the user completes credential enrollment through `Kanidm`
+8. the product continues to treat `Kanidm` as the login authority and OIDC provider
 
 The first setup flow should start the stack automatically after config generation and first-admin bootstrap.
 

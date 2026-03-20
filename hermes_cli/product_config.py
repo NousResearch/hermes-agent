@@ -64,6 +64,8 @@ DEFAULT_PRODUCT_CONFIG: Dict[str, Any] = {
     },
     "bootstrap": {
         "first_admin_username": "admin",
+        "first_admin_display_name": "Administrator",
+        "first_admin_reset_ttl_seconds": 86400,
     },
     "services": {
         "kanidm": {
@@ -100,6 +102,7 @@ def ensure_product_home() -> None:
         users_root,
         product_root / "logs",
         product_root / "services",
+        product_root / "bootstrap",
     ):
         path.mkdir(parents=True, exist_ok=True)
         _secure_dir(path)

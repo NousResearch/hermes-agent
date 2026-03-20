@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import secrets
 import subprocess
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict
 
@@ -16,10 +18,12 @@ from hermes_cli.product_config import (
     load_product_config,
     save_product_config,
 )
-from utils import atomic_yaml_write
+from utils import atomic_json_write, atomic_yaml_write
 
 
 KANIDM_IMAGE = "kanidm/server:latest"
+IDM_ADMIN_NAME = "idm_admin"
+_RECOVER_PASSWORD_RE = re.compile(r'new_password:\s*"([^"]+)"')
 
 
 def get_product_services_root() -> Path:
@@ -32,6 +36,14 @@ def get_kanidm_service_root() -> Path:
 
 def get_kanidm_data_root() -> Path:
     return get_kanidm_service_root() / "data"
+
+
+def get_product_bootstrap_root() -> Path:
+    return get_product_storage_root() / "bootstrap"
+
+
+def get_first_admin_state_path() -> Path:
+    return get_product_bootstrap_root() / "first_admin.json"
 
 
 def get_kanidm_compose_path() -> Path:
@@ -139,7 +151,6 @@ def _build_compose_spec(config: Dict[str, Any]) -> Dict[str, Any]:
         "restart": "unless-stopped",
         "ports": [f"{bind_host}:{kanidm_port}:8443"],
         "volumes": [f"{data_root}:/data"],
-        "working_dir": "/data",
         "command": [
             "/sbin/kanidmd",
             "server",
@@ -160,7 +171,12 @@ def _build_compose_spec(config: Dict[str, Any]) -> Dict[str, Any]:
 def initialize_product_stack(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
     product_config = config or load_product_config()
     ensure_product_home()
-    _secure_tree(get_product_services_root(), get_kanidm_service_root(), get_kanidm_data_root())
+    _secure_tree(
+        get_product_services_root(),
+        get_kanidm_service_root(),
+        get_kanidm_data_root(),
+        get_product_bootstrap_root(),
+    )
 
     urls = resolve_product_urls(product_config)
     product_config.setdefault("network", {})["public_host"] = urls["public_host"]
@@ -221,12 +237,141 @@ def ensure_kanidm_certificates(config: Dict[str, Any] | None = None) -> None:
             _secure_file(path)
 
 
+def _docker_exec_command(
+    config: Dict[str, Any],
+    *args: str,
+    exec_user: str | None = None,
+) -> list[str]:
+    container_name = str(
+        config.get("services", {}).get("kanidm", {}).get("container_name", "hermes-kanidm")
+    ).strip() or "hermes-kanidm"
+    command = ["docker", "exec", "-w", "/"]
+    runtime_user = str(config.get("services", {}).get("kanidm", {}).get("user", "")).strip()
+    selected_user = runtime_user if exec_user is None else exec_user
+    if selected_user:
+        command.extend(["-u", selected_user])
+    command.extend([container_name, *args])
+    return command
+
+
+def _recover_account_password(config: Dict[str, Any], account_name: str) -> str:
+    result = subprocess.run(
+        _docker_exec_command(
+            config,
+            "/sbin/kanidmd",
+            "-c",
+            "/data/server.toml",
+            "recover-account",
+            account_name,
+            exec_user="0:0",
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    match = _RECOVER_PASSWORD_RE.search(result.stdout + "\n" + result.stderr)
+    if not match:
+        raise RuntimeError(f"Could not parse recovery password for {account_name} from Kanidm output")
+    return match.group(1)
+
+
+def _kanidm_module():
+    try:
+        return import_module("kanidm")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "The 'kanidm' Python package is required for bundled product bootstrap. "
+            "Install hermes-agent with the updated product dependencies."
+        ) from exc
+
+
+def _authenticated_kanidm_admin_client(config: Dict[str, Any]):
+    kanidm = _kanidm_module()
+    return kanidm, kanidm.KanidmClient(
+        uri=resolve_product_urls(config)["issuer_url"],
+        verify_hostnames=False,
+        ca_path=str(get_kanidm_data_root() / "ca.pem"),
+    )
+
+
+async def _bootstrap_first_admin_remote(
+    config: Dict[str, Any],
+    password: str,
+    username: str,
+    display_name: str,
+    ttl_seconds: int,
+) -> None:
+    kanidm, client = _authenticated_kanidm_admin_client(config)
+    try:
+        await client.authenticate_password(
+            username=IDM_ADMIN_NAME,
+            password=password,
+            update_internal_auth_token=True,
+        )
+        try:
+            existing_person = await client.person_account_get(username)
+        except (kanidm.NoMatchingEntries, AttributeError):
+            existing_person = None
+        if existing_person is None:
+            await client.person_account_create(username, display_name)
+    finally:
+        await client.openapi_client.close()
+
+
+def load_first_admin_state() -> Dict[str, Any] | None:
+    state_path = get_first_admin_state_path()
+    if not state_path.exists():
+        return None
+    import json
+
+    return json.loads(state_path.read_text(encoding="utf-8"))
+
+
+def bootstrap_first_admin(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    product_config = initialize_product_stack(config or load_product_config())
+    username = str(product_config.get("bootstrap", {}).get("first_admin_username", "admin")).strip() or "admin"
+    display_name = str(
+        product_config.get("bootstrap", {}).get("first_admin_display_name", "Administrator")
+    ).strip() or "Administrator"
+    ttl_seconds = int(product_config.get("bootstrap", {}).get("first_admin_reset_ttl_seconds", 86400))
+
+    existing_state = load_first_admin_state()
+    if existing_state and existing_state.get("username") == username and existing_state.get("temporary_password"):
+        return existing_state
+
+    ensure_product_stack_started(product_config)
+    password = _recover_account_password(product_config, IDM_ADMIN_NAME)
+    import asyncio
+
+    asyncio.run(
+        _bootstrap_first_admin_remote(
+            product_config,
+            password,
+            username,
+            display_name,
+            ttl_seconds,
+        )
+    )
+    temporary_password = _recover_account_password(product_config, username)
+
+    state = {
+        "username": username,
+        "display_name": display_name,
+        "temporary_password": temporary_password,
+        "auth_mode": str(product_config.get("auth", {}).get("mode", "passkey")).strip() or "passkey",
+    }
+    state_path = get_first_admin_state_path()
+    atomic_json_write(state_path, state)
+    _secure_file(state_path)
+    return state
+
+
 def ensure_product_stack_started(config: Dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
     product_config = config or initialize_product_stack()
     ensure_kanidm_certificates(product_config)
     compose_path = get_kanidm_compose_path()
     return subprocess.run(
-        ["docker", "compose", "-f", str(compose_path), "up", "-d"],
+        ["docker", "compose", "-f", str(compose_path), "up", "-d", "--wait", "--force-recreate"],
         check=True,
         capture_output=True,
         text=True,

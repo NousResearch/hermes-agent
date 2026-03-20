@@ -25,6 +25,7 @@ dependencies = [
   "jinja2",
   "pydantic>=2.0",
   "uvicorn>=0.30",
+  "kanidm",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit",
   # Tools

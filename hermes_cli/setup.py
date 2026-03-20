@@ -3163,6 +3163,7 @@ def run_setup_wizard(args):
     ensure_hermes_home()
     from hermes_cli.product_config import initialize_product_config_file
     from hermes_cli.product_stack import (
+        bootstrap_first_admin,
         ensure_product_stack_started,
         initialize_product_stack,
     )
@@ -3170,7 +3171,11 @@ def run_setup_wizard(args):
     def _start_product_stack_best_effort() -> None:
         try:
             ensure_product_stack_started()
+            state = bootstrap_first_admin()
             print_info("Bundled Kanidm service is up.")
+            print_info(f"  First admin: {state['username']}")
+            print_info(f"  First admin temporary password: {state['temporary_password']}")
+            print_info(f"  Auth mode: {state['auth_mode']}")
         except FileNotFoundError:
             print_warning("Docker was not found. The bundled Kanidm service was generated but not started.")
         except Exception as exc:

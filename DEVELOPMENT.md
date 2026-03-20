@@ -70,7 +70,11 @@ Do not mark work done early.
 - Treat `bind_host` and `public_host` as separate concerns in setup and implementation.
 - For the bundled `Kanidm` stack, generate certificates before starting the compose service.
 - The generated `Kanidm` service should run `kanidmd` directly, not through a shell entrypoint assumption.
+- Start or restart the bundled `Kanidm` stack with `docker compose up -d --wait --force-recreate` so changed container definitions are actually applied.
 - When bind-mounting the service data directory, run the container with the host uid/gid when available so secure local permissions still work on Linux.
+- Use the official `kanidm` Python client for automated local provisioning; do not try to automate the interactive `kanidm` CLI for installer bootstrap.
+- Treat the built-in `idm_admin` account as an internal operator identity only. Do not promote the user-facing product admin into `idm_admins` during setup.
+- The current supported first-admin bootstrap flow is a one-time local temporary password issued via `recover-account`, not a setup-generated reset link.
 
 ## Local process hygiene
 

@@ -185,6 +185,38 @@ class TestGetModelContextLength:
             assert result == 32768  # cache wins over API's 999999
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata._query_local_context_length")
+    def test_live_local_query_beats_stale_cache(self, mock_local_query, mock_fetch, tmp_path):
+        """For local endpoints, a live server response takes priority over cached value."""
+        mock_fetch.return_value = {}
+        mock_local_query.return_value = 8192  # live server reports 8k (e.g. low VRAM run)
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            # Stale cache entry claims 1M (written when VRAM was plentiful)
+            save_context_length("nemotron-mini", "http://localhost:11434", 1048576)
+            result = get_model_context_length(
+                "nemotron-mini", base_url="http://localhost:11434"
+            )
+        # Live query (8192) must win over stale cache (1048576)
+        assert result == 8192
+        mock_local_query.assert_called_once_with("nemotron-mini", "http://localhost:11434")
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata._query_local_context_length")
+    def test_stale_cache_used_when_local_server_unreachable(self, mock_local_query, mock_fetch, tmp_path):
+        """If local server is unreachable, fall back to the persistent cache."""
+        mock_fetch.return_value = {}
+        mock_local_query.return_value = None  # server not running
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("nemotron-mini", "http://localhost:11434", 32768)
+            result = get_model_context_length(
+                "nemotron-mini", base_url="http://localhost:11434"
+            )
+        # Cache (32768) is used since live query returned None
+        assert result == 32768
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_no_base_url_skips_cache(self, mock_fetch, tmp_path):
         """Without base_url, cache lookup is skipped."""
         mock_fetch.return_value = {}

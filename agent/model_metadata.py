@@ -745,9 +745,9 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
-    1. Persistent cache (previously discovered via probing)
-    2. Active endpoint metadata (/models for explicit custom endpoints)
-    3. Local server query (for local endpoints)
+    1. Live local server query (for local endpoints — loaded ctx can change)
+    2. Persistent cache (fallback when local server is unreachable)
+    3. Active endpoint metadata (/models for explicit custom endpoints)
     4. Anthropic /v1/models API (API-key users only, not OAuth)
     5. OpenRouter live API metadata
     6. Nous suffix-match via OpenRouter cache
@@ -764,13 +764,21 @@ def get_model_context_length(
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
 
-    # 1. Check persistent cache (model+provider)
+    # 1. For local endpoints, prefer live query over cache (loaded context can
+    #    change between runs due to different VRAM or num_ctx settings).
+    if base_url and is_local_endpoint(base_url):
+        live_ctx = _query_local_context_length(model, base_url)
+        if live_ctx:
+            save_context_length(model, base_url, live_ctx)
+            return live_ctx
+
+    # 2. Check persistent cache (model+provider)
     if base_url:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             return cached
 
-    # 2. Active endpoint metadata for explicit custom routes
+    # 3. Active endpoint metadata for explicit custom routes
     if _is_custom_endpoint(base_url):
         endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
         matched = endpoint_metadata.get(model)

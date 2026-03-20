@@ -507,16 +507,28 @@ class TestGetModelContextLengthLocalFallback:
 
         mock_query.assert_not_called()
 
-    def test_cached_result_skips_local_query(self):
-        """Cached context length is returned without querying the local server."""
+    def test_local_endpoint_live_query_takes_priority_over_cache(self):
+        """For local endpoints, live query runs before cache (loaded ctx can change between runs)."""
         from agent.model_metadata import get_model_context_length
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
-             patch("agent.model_metadata._query_local_context_length") as mock_query:
+             patch("agent.model_metadata._query_local_context_length", return_value=131072) as mock_query, \
+             patch("agent.model_metadata.save_context_length"):
+            result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
+
+        assert result == 131072
+        mock_query.assert_called_once()
+
+    def test_cached_result_used_as_fallback_when_local_query_returns_none(self):
+        """For local endpoints, cache is used as fallback when the live query returns None."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
+             patch("agent.model_metadata._query_local_context_length", return_value=None) as mock_query:
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result == 65536
-        mock_query.assert_not_called()
+        mock_query.assert_called_once()
 
     def test_no_base_url_does_not_query_local_server(self):
         """When base_url is empty, local server is not queried."""

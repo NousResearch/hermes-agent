@@ -662,6 +662,33 @@ class SlackAdapter(BasePlatformAdapter):
             # Strip the bot mention from the text
             text = text.replace(f"<@{self._bot_user_id}>", "").strip()
 
+            # Fetch thread context if bot is mentioned inside a thread
+            if thread_ts and thread_ts != ts:
+                try:
+                    result = await self._app.client.conversations_replies(
+                        channel=channel_id,
+                        ts=thread_ts,
+                        limit=20,
+                    )
+                    thread_messages = result.get("messages", [])
+                    thread_context_lines = []
+                    for msg in thread_messages:
+                        if msg.get("ts") == ts:
+                            continue  # skip current message
+                        if msg.get("bot_id"):
+                            sender = "Assistant"
+                        else:
+                            msg_user = await self._resolve_user_name(msg.get("user", ""))
+                            sender = msg_user or "User"
+                        msg_text = msg.get("text", "").replace(f"<@{self._bot_user_id}>", "").strip()
+                        if msg_text:
+                            thread_context_lines.append(f"{sender}: {msg_text}")
+                    if thread_context_lines:
+                        thread_context = "\n".join(thread_context_lines)
+                        text = f"[Thread context:]\n{thread_context}\n\n[New message:]\n{text}"
+                except Exception as e:
+                    logger.debug("[Slack] Failed to fetch thread context: %s", e)
+
         # Determine message type
         msg_type = MessageType.TEXT
         if text.startswith("/"):

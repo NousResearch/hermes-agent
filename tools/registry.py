@@ -105,7 +105,20 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s check raised; skipping", name)
                     continue
-            result.append({"type": "function", "function": entry.schema})
+            # Sanitize apostrophes in tool descriptions to prevent
+            # crashes with some local LLM backends (e.g. vLLM + Qwen).
+            import copy
+            schema = copy.deepcopy(entry.schema)
+            def _sanitize(obj):
+                if isinstance(obj, str):
+                    return obj.replace("’", "`").replace("'", "`")
+                if isinstance(obj, dict):
+                    return {k: _sanitize(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_sanitize(i) for i in obj]
+                return obj
+            schema = _sanitize(schema)
+            result.append({"type": "function", "function": schema})
         return result
 
     # ------------------------------------------------------------------

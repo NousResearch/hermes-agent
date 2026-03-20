@@ -404,10 +404,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         
         result = agent.run_conversation(prompt)
         
-        final_response = result.get("final_response", "")
-        if not final_response:
-            final_response = "(No response generated)"
-        
+        final_response = result.get("final_response", "") or ""
+        # Use placeholder only for internal logging — keep final_response clean
+        # so empty responses don't get delivered as "(No response generated)"
+        logged_response = final_response or "(No response generated)"
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -420,7 +421,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 ## Response
 
-{final_response}
+{logged_response}
 """
         
         logger.info("Job '%s' completed successfully", job_name)

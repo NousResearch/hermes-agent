@@ -726,9 +726,16 @@ def systemd_status(deep: bool = False, system: bool = False):
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+    # Prepend the venv bin to the current PATH so that tools installed in the
+    # venv (and user-installed tools like ffmpeg) are found by the launchd
+    # agent.  launchd provides only a minimal default PATH, so we capture the
+    # full PATH at plist-generation time (i.e. from the user's interactive
+    # shell) and bake it in.
+    sane_path = f"{venv_bin}:{os.environ['PATH']}"
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -748,6 +755,12 @@ def generate_launchd_plist() -> str:
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{sane_path}</string>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>

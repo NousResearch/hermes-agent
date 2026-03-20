@@ -55,104 +55,52 @@ _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
 # Descending tiers for context length probing when the model is unknown.
-# We start high and step down on context-length errors until one works.
+# We start at 128K (a safe default for most modern models) and step down
+# on context-length errors until one works.
 CONTEXT_PROBE_TIERS = [
-    2_000_000,
-    1_000_000,
-    512_000,
-    200_000,
     128_000,
     64_000,
     32_000,
+    16_000,
+    8_000,
 ]
 
+# Default context length when no detection method succeeds.
+DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
+
+# Thin fallback defaults — only broad model family patterns.
+# These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
+# all miss. Replaced the previous 80+ entry dict.
+# For provider-specific context lengths, models.dev is the primary source.
 DEFAULT_CONTEXT_LENGTHS = {
-    "anthropic/claude-opus-4": 200000,
-    "anthropic/claude-opus-4.5": 200000,
-    "anthropic/claude-opus-4.6": 1000000,
-    "anthropic/claude-sonnet-4": 200000,
-    "anthropic/claude-sonnet-4-20250514": 200000,
-    "anthropic/claude-sonnet-4.5": 200000,
-    "anthropic/claude-sonnet-4.6": 1000000,
-    "anthropic/claude-haiku-4.5": 200000,
-    # Bare Anthropic model IDs (for native API provider)
+    # Anthropic Claude 4.6 (1M context) — bare IDs only to avoid
+    # fuzzy-match collisions (e.g. "anthropic/claude-sonnet-4" is a
+    # substring of "anthropic/claude-sonnet-4.6").
+    # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
-    "claude-opus-4-5-20251101": 200000,
-    "claude-sonnet-4-5-20250929": 200000,
-    "claude-opus-4-1-20250805": 200000,
-    "claude-opus-4-20250514": 200000,
-    "claude-sonnet-4-20250514": 200000,
-    "claude-haiku-4-5-20251001": 200000,
-    "openai/gpt-5": 128000,
-    "openai/gpt-4.1": 1047576,
-    "openai/gpt-4.1-mini": 1047576,
-    "openai/gpt-4o": 128000,
-    "openai/gpt-4-turbo": 128000,
-    "openai/gpt-4o-mini": 128000,
-    "google/gemini-3-pro-preview": 1048576,
-    "google/gemini-3-flash": 1048576,
-    "google/gemini-2.5-flash": 1048576,
-    "google/gemini-2.0-flash": 1048576,
-    "google/gemini-2.5-pro": 1048576,
-    "deepseek/deepseek-v3.2": 65536,
-    "meta-llama/llama-3.3-70b-instruct": 131072,
-    "deepseek/deepseek-chat-v3": 65536,
-    "qwen/qwen-2.5-72b-instruct": 32768,
-    "glm-4.7": 202752,
-    "glm-5": 202752,
-    "glm-4.5": 131072,
-    "glm-4.5-flash": 131072,
-    "kimi-for-coding": 262144,
-    "kimi-k2.5": 262144,
-    "kimi-k2-thinking": 262144,
-    "kimi-k2-thinking-turbo": 262144,
-    "kimi-k2-turbo-preview": 262144,
-    "kimi-k2-0905-preview": 131072,
-    "MiniMax-M2.7": 204800,
-    "MiniMax-M2.7-highspeed": 204800,
-    "MiniMax-M2.5": 204800,
-    "MiniMax-M2.5-highspeed": 204800,
-    "MiniMax-M2.1": 204800,
-    # OpenCode Zen models
-    "gpt-5.4-pro": 128000,
-    "gpt-5.4": 128000,
-    "gpt-5.3-codex": 128000,
-    "gpt-5.3-codex-spark": 128000,
-    "gpt-5.2": 128000,
-    "gpt-5.2-codex": 128000,
-    "gpt-5.1": 128000,
-    "gpt-5.1-codex": 128000,
-    "gpt-5.1-codex-max": 128000,
-    "gpt-5.1-codex-mini": 128000,
+    "claude-opus-4.6": 1000000,
+    "claude-sonnet-4.6": 1000000,
+    # Catch-all for older Claude models (must sort after specific entries)
+    "claude": 200000,
+    # OpenAI
+    "gpt-4.1": 1047576,
     "gpt-5": 128000,
-    "gpt-5-codex": 128000,
-    "gpt-5-nano": 128000,
-    # Bare model IDs without provider prefix (avoid duplicates with entries above)
-    "claude-opus-4-5": 200000,
-    "claude-opus-4-1": 200000,
-    "claude-sonnet-4-5": 200000,
-    "claude-sonnet-4": 200000,
-    "claude-haiku-4-5": 200000,
-    "claude-3-5-haiku": 200000,
-    "gemini-3.1-pro": 1048576,
-    "gemini-3-pro": 1048576,
-    "gemini-3-flash": 1048576,
-    "minimax-m2.5": 204800,
-    "minimax-m2.5-free": 204800,
-    "minimax-m2.1": 204800,
-    "glm-4.6": 202752,
-    "kimi-k2": 262144,
-    "qwen3-coder": 32768,
-    "big-pickle": 128000,
-    # Alibaba Cloud / DashScope Qwen models
-    "qwen3.5-plus": 131072,
-    "qwen3-max": 131072,
-    "qwen3-coder-plus": 131072,
-    "qwen3-coder-next": 131072,
-    "qwen-plus-latest": 131072,
-    "qwen3.5-flash": 131072,
-    "qwen-vl-max": 32768,
+    "gpt-4": 128000,
+    # Google
+    "gemini": 1048576,
+    # DeepSeek
+    "deepseek": 128000,
+    # Meta
+    "llama": 131072,
+    # Qwen
+    "qwen": 131072,
+    # MiniMax
+    "minimax": 204800,
+    # GLM
+    "glm": 202752,
+    # Kimi
+    "kimi": 262144,
 }
 
 _CONTEXT_LENGTH_KEYS = (
@@ -693,22 +641,100 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     return None
 
 
+def _normalize_model_version(model: str) -> str:
+    """Normalize version separators for matching.
+
+    Nous uses dashes: claude-opus-4-6, claude-sonnet-4-5
+    OpenRouter uses dots: claude-opus-4.6, claude-sonnet-4.5
+    Normalize both to dashes for comparison.
+    """
+    return model.replace(".", "-")
+
+
+def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> Optional[int]:
+    """Query Anthropic's /v1/models endpoint for context length.
+
+    Only works with regular ANTHROPIC_API_KEY (sk-ant-api*).
+    OAuth tokens (sk-ant-oat*) from Claude Code return 401.
+    """
+    if not api_key or api_key.startswith("sk-ant-oat"):
+        return None  # OAuth tokens can't access /v1/models
+    try:
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        url = f"{base}/v1/models?limit=1000"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        for m in data.get("data", []):
+            if m.get("id") == model:
+                ctx = m.get("max_input_tokens")
+                if isinstance(ctx, int) and ctx > 0:
+                    return ctx
+    except Exception as e:
+        logger.debug("Anthropic /v1/models query failed: %s", e)
+    return None
+
+
+def _resolve_nous_context_length(model: str) -> Optional[int]:
+    """Resolve Nous Portal model context length via OpenRouter metadata.
+
+    Nous model IDs are bare (e.g. 'claude-opus-4-6') while OpenRouter uses
+    prefixed IDs (e.g. 'anthropic/claude-opus-4.6'). Try suffix matching
+    with version normalization (dot↔dash).
+    """
+    metadata = fetch_model_metadata()  # OpenRouter cache
+    # Exact match first
+    if model in metadata:
+        return metadata[model].get("context_length")
+
+    normalized = _normalize_model_version(model).lower()
+
+    for or_id, entry in metadata.items():
+        bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
+        if bare.lower() == model.lower() or _normalize_model_version(bare).lower() == normalized:
+            return entry.get("context_length")
+
+    # Partial prefix match for cases like gemini-3-flash → gemini-3-flash-preview
+    # Require match to be at a word boundary (followed by -, :, or end of string)
+    model_lower = model.lower()
+    for or_id, entry in metadata.items():
+        bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
+        for candidate, query in [(bare.lower(), model_lower), (_normalize_model_version(bare).lower(), normalized)]:
+            if candidate.startswith(query) and (
+                len(candidate) == len(query) or candidate[len(query)] in "-:."
+            ):
+                return entry.get("context_length")
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",
     api_key: str = "",
     config_context_length: int | None = None,
+    provider: str = "",
 ) -> int:
     """Get the context length for a model.
 
     Resolution order:
-    0. Explicit config override (model.context_length in config.yaml)
+    0. Explicit config override (model.context_length or custom_providers per-model)
     1. Persistent cache (previously discovered via probing)
     2. Active endpoint metadata (/models for explicit custom endpoints)
-    3. Local server query (for local endpoints when model not in /models list)
-    4. OpenRouter API metadata
-    5. Hardcoded DEFAULT_CONTEXT_LENGTHS (fuzzy match for hosted routes only)
-    6. First probe tier (2M) — will be narrowed on first context error
+    3. Local server query (for local endpoints)
+    4. Anthropic /v1/models API (API-key users only, not OAuth)
+    5. OpenRouter live API metadata
+    6. Nous suffix-match via OpenRouter cache
+    7. models.dev registry lookup (provider-aware)
+    8. Thin hardcoded defaults (broad family patterns)
+    9. Default fallback (128K)
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -744,9 +770,7 @@ def get_model_context_length(
             if isinstance(context_length, int):
                 return context_length
         if not _is_known_provider_base_url(base_url):
-            # Explicit third-party endpoints should not borrow fuzzy global
-            # defaults from unrelated providers with similarly named models.
-            # But first try querying the local server directly.
+            # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url)
                 if local_ctx and local_ctx > 0:
@@ -756,31 +780,53 @@ def get_model_context_length(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
                 "in config.yaml to override.",
-                model, base_url, f"{CONTEXT_PROBE_TIERS[0]:,}",
+                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
-            return CONTEXT_PROBE_TIERS[0]
+            return DEFAULT_FALLBACK_CONTEXT
 
-    # 3. OpenRouter API metadata
+    # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
+    if provider == "anthropic" or (
+        base_url and "api.anthropic.com" in base_url
+    ):
+        ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
+        if ctx:
+            return ctx
+
+    # 5. Provider-aware lookups (before generic OpenRouter cache)
+    # These are provider-specific and take priority over the generic OR cache,
+    # since the same model can have different context limits per provider
+    # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
+    if provider == "nous":
+        ctx = _resolve_nous_context_length(model)
+        if ctx:
+            return ctx
+    elif provider:
+        from agent.models_dev import lookup_models_dev_context
+        ctx = lookup_models_dev_context(provider, model)
+        if ctx:
+            return ctx
+
+    # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length", 128000)
 
-    # 4. Hardcoded defaults (fuzzy match — longest key first for specificity)
+    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     for default_model, length in sorted(
         DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
     ):
         if default_model in model or model in default_model:
             return length
 
-    # 5. Query local server for unknown models before defaulting to 2M
+    # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url)
         if local_ctx and local_ctx > 0:
             save_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 6. Unknown model — start at highest probe tier
-    return CONTEXT_PROBE_TIERS[0]
+    # 10. Default fallback — 128K
+    return DEFAULT_FALLBACK_CONTEXT
 
 
 def estimate_tokens_rough(text: str) -> int:

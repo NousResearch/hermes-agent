@@ -734,7 +734,9 @@ def generate_launchd_plist() -> str:
     # agent.  launchd provides only a minimal default PATH, so we capture the
     # full PATH at plist-generation time (i.e. from the user's interactive
     # shell) and bake it in.
-    sane_path = f"{venv_bin}:{os.environ['PATH']}"
+    sane_path = ":".join(
+        dict.fromkeys([venv_bin] + [p for p in os.environ["PATH"].split(":") if p])
+    )
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

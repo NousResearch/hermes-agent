@@ -130,6 +130,22 @@ class TestLaunchdPlistPath:
         plist = gateway_cli.generate_launchd_plist()
         assert "/custom/bin" in plist
 
+    def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
+        venv_bin = str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        plist = gateway_cli.generate_launchd_plist()
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                parts = path_value.split(":")
+                assert parts.count(venv_bin) == 1
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
+
+
 
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection

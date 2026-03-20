@@ -4838,7 +4838,7 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
-            elif self.quiet_mode and not self._has_stream_consumers():
+            elif self.quiet_mode:
                 face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                 emoji = _get_tool_emoji(function_name)
                 preview = _build_tool_preview(function_name, function_args) or function_name
@@ -6568,7 +6568,19 @@ class AIAgent:
                                 self._vprint(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
-                    
+
+                    # Close any open streaming display (response box, reasoning
+                    # box) before tool execution begins.  Intermediate turns may
+                    # have streamed early content that opened the response box;
+                    # flushing here prevents it from wrapping tool feed lines.
+                    # Only signal the display callback — TTS (_stream_callback)
+                    # should NOT receive None (it uses None as end-of-stream).
+                    if self.stream_delta_callback:
+                        try:
+                            self.stream_delta_callback(None)
+                        except Exception:
+                            pass
+
                     _msg_count_before_tools = len(messages)
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 

@@ -206,11 +206,11 @@ PLATFORM_HINTS = {
         "contextually appropriate."
     ),
     "cron": (
-        "You are running as a scheduled cron job. Your final response is automatically "
-        "delivered to the job's configured destination, so do not use send_message to "
-        "send to that same target again. If you want the user to receive something in "
-        "the scheduled destination, put it directly in your final response. Use "
-        "send_message only for additional or different targets."
+        "You are running as a scheduled cron job. There is no user present — you "
+        "cannot ask questions, request clarification, or wait for follow-up. Execute "
+        "the task fully and autonomously, making reasonable decisions where needed. "
+        "Your final response is automatically delivered to the job's configured "
+        "destination — put the primary content directly in your response."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "

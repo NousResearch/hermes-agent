@@ -12,6 +12,17 @@ from hermes_state import SessionDB
 from tools.todo_tool import TodoStore
 
 
+class _FakeCompressor:
+    """Minimal stand-in for ContextCompressor."""
+
+    def __init__(self):
+        self.last_prompt_tokens = 500
+        self.last_completion_tokens = 200
+        self.last_total_tokens = 700
+        self.compression_count = 3
+        self._context_probed = True
+
+
 class _FakeAgent:
     def __init__(self, session_id: str, session_start):
         self.session_id = session_id
@@ -24,6 +35,42 @@ class _FakeAgent:
         )
         self.flush_memories = MagicMock()
         self._invalidate_system_prompt = MagicMock()
+
+        # Token counters (non-zero to verify reset)
+        self.session_total_tokens = 1000
+        self.session_input_tokens = 600
+        self.session_output_tokens = 400
+        self.session_prompt_tokens = 550
+        self.session_completion_tokens = 350
+        self.session_cache_read_tokens = 100
+        self.session_cache_write_tokens = 50
+        self.session_reasoning_tokens = 80
+        self.session_api_calls = 5
+        self.session_estimated_cost_usd = 0.42
+        self.session_cost_status = "estimated"
+        self.session_cost_source = "openrouter"
+        self.context_compressor = _FakeCompressor()
+
+    def reset_session_state(self):
+        """Mirror the real AIAgent.reset_session_state()."""
+        self.session_total_tokens = 0
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_reasoning_tokens = 0
+        self.session_api_calls = 0
+        self.session_estimated_cost_usd = 0.0
+        self.session_cost_status = "unknown"
+        self.session_cost_source = "none"
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            self.context_compressor.last_prompt_tokens = 0
+            self.context_compressor.last_completion_tokens = 0
+            self.context_compressor.last_total_tokens = 0
+            self.context_compressor.compression_count = 0
+            self.context_compressor._context_probed = False
 
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
@@ -58,6 +105,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         "prompt_toolkit.key_binding": MagicMock(),
         "prompt_toolkit.completion": MagicMock(),
         "prompt_toolkit.formatted_text": MagicMock(),
+        "prompt_toolkit.auto_suggest": MagicMock(),
     }
     with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
         "os.environ", clean_env, clear=False
@@ -137,3 +185,38 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
     cli.console.clear.assert_called_once()
     cli.show_banner.assert_called_once()
     assert cli.conversation_history == []
+
+
+def test_new_session_resets_token_counters(tmp_path):
+    """Regression test for #2099: /new must zero all token counters."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+
+    # Verify counters are non-zero before reset
+    agent = cli.agent
+    assert agent.session_total_tokens > 0
+    assert agent.session_api_calls > 0
+    assert agent.context_compressor.compression_count > 0
+
+    cli.process_command("/new")
+
+    # All agent token counters must be zero
+    assert agent.session_total_tokens == 0
+    assert agent.session_input_tokens == 0
+    assert agent.session_output_tokens == 0
+    assert agent.session_prompt_tokens == 0
+    assert agent.session_completion_tokens == 0
+    assert agent.session_cache_read_tokens == 0
+    assert agent.session_cache_write_tokens == 0
+    assert agent.session_reasoning_tokens == 0
+    assert agent.session_api_calls == 0
+    assert agent.session_estimated_cost_usd == 0.0
+    assert agent.session_cost_status == "unknown"
+    assert agent.session_cost_source == "none"
+
+    # Context compressor counters must also be zero
+    comp = agent.context_compressor
+    assert comp.last_prompt_tokens == 0
+    assert comp.last_completion_tokens == 0
+    assert comp.last_total_tokens == 0
+    assert comp.compression_count == 0
+    assert comp._context_probed is False

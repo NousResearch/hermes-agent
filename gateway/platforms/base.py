@@ -834,7 +834,7 @@ class BasePlatformAdapter(ABC):
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
-                print(f"[{self.name}] 🖼️ Queuing photo follow-up for session {session_key} without interrupt")
+                logger.info("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
                 existing = self._pending_messages.get(session_key)
                 if existing and existing.message_type == MessageType.PHOTO:
                     existing.media_urls.extend(event.media_urls)
@@ -849,7 +849,7 @@ class BasePlatformAdapter(ABC):
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
-            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
+            logger.info("[%s] New message while session %s is active - triggering interrupt", self.name, session_key)
             self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
@@ -970,7 +970,7 @@ class BasePlatformAdapter(ABC):
 
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
-                        print(f"[{self.name}] Failed to send response: {result.error}")
+                        logger.error("[%s] Failed to send response: %s", self.name, result.error)
                         # Try sending without markdown as fallback
                         fallback_result = await self.send(
                             chat_id=event.source.chat_id,
@@ -979,7 +979,7 @@ class BasePlatformAdapter(ABC):
                             metadata=_thread_metadata,
                         )
                         if not fallback_result.success:
-                            print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
+                            logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -1048,7 +1048,7 @@ class BasePlatformAdapter(ABC):
                             )
 
                         if not media_result.success:
-                            print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
+                            logger.error("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                     except Exception as media_err:
                         print(f"[{self.name}] Error sending media: {media_err}")
 

@@ -3815,6 +3815,30 @@ For more help on a command:
         help="Enable lite mode for QMD (faster, lower memory)"
     )
 
+    # hermes memory ingest
+    memory_ingest = memory_subparsers.add_parser(
+        "ingest", help="Scan and ingest Hermes memory files into QMD",
+        description=(
+            "Scans for memory files and ingests them into QMD for persistent memory.\n\n"
+            "Files ingested:\n"
+            "  - ~/.hermes/SOUL.md (agent persona)\n"
+            "  - ~/.hermes/USER.md, memory.md (user memory)\n"
+            "  - ~/.agents/skills/*/SKILL.md (user skills)\n"
+            "  - ~/.hermes/hermes-agent/skills/*/SKILL.md\n"
+            "  - Documentation files\n\n"
+            "Files are chunked if too large and tagged for easy retrieval."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    memory_ingest.add_argument(
+        "--dry-run", action="store_true",
+        help="Show files that would be ingested without ingesting them"
+    )
+    memory_ingest.add_argument(
+        "--force", "-y", action="store_true",
+        help="Skip confirmation prompt"
+    )
+
     def cmd_memory(args):
         from hermes_cli.memory_config import memory_command
         memory_command(args)

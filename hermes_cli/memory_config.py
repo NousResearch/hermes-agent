@@ -106,6 +106,12 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
 
     Returns:
         List of dicts with: id, name, size_gb, format, description
+
+    Note on embedding models:
+        NousResearch does not currently have text embedding models on HuggingFace.
+        They specialize in text generation models (Hermes series). For embedding,
+        we recommend BAAI/bge-m3 (highest quality, out-of-box) or nomic-embed-text
+        (cross-lingual, via Ollama).
     """
     models = []
 
@@ -141,6 +147,18 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
         # Linux/Other - CUDA or CPU models
         ram = hw_info["ram_gb"] or 16
 
+        # BGE M3 is recommended for optimal general use (highest quality, out of box)
+        if ram >= 8:
+            models.append({
+                "id": "BAAI/bge-m3",
+                "name": "BGE M3 (sentence-transformers) ★ RECOMMENDED",
+                "size_gb": 2.5,
+                "format": "pytorch",
+                "description": "Highest quality, works out of box (no Ollama needed)",
+                "min_ram": 8,
+                "recommended": True,
+            })
+
         models.extend([
             {
                 "id": "BAAI/bge-micro-v2",
@@ -151,14 +169,6 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
                 "min_ram": 2,
             },
             {
-                "id": "qwen3.5b:0.8b",
-                "name": "Qwen 3.5B (Ollama)",
-                "size_gb": 4.0,
-                "format": "pytorch",
-                "description": "Good quality via Ollama",
-                "min_ram": 8,
-            },
-            {
                 "id": "nomic-embed-text",
                 "name": "Nomic Embed Text (Ollama)",
                 "size_gb": 0.9,
@@ -166,18 +176,15 @@ def _get_recommended_models(hw_info: dict) -> list[dict]:
                 "description": "Cross-lingual via Ollama",
                 "min_ram": 4,
             },
-        ])
-
-        # Add sentence-transformers option if enough RAM
-        if ram >= 8:
-            models.append({
-                "id": "BAAI/bge-m3",
-                "name": "BGE M3 (sentence-transformers)",
-                "size_gb": 2.5,
+            {
+                "id": "qwen3.5b:0.8b",
+                "name": "Qwen 3.5B (Ollama)",
+                "size_gb": 4.0,
                 "format": "pytorch",
-                "description": "Highest quality, requires more RAM",
+                "description": "Good quality via Ollama",
                 "min_ram": 8,
-            })
+            },
+        ])
 
     return models
 
@@ -220,6 +227,8 @@ def memory_command(args):
         return cmd_setup(args)
     elif cmd == "config":
         return cmd_config(args)
+    elif cmd == "ingest":
+        return cmd_ingest(args)
     else:
         # No subcommand -- show status by default
         return cmd_status(args)
@@ -261,7 +270,7 @@ def _get_backend_details(cfg: dict) -> dict:
         qmd = cfg.get("qmd", {})
         details.update({
             "server": f"{qmd.get('host', '127.0.0.1')}:{qmd.get('port', 8181)}",
-            "embedding_model": qmd.get("embedding_model", "qwen3.5b:0.8b"),
+            "embedding_model": qmd.get("embedding_model", "BAAI/bge-m3"),
             "lite_mode": qmd.get("lite_mode", False),
             "index_name": qmd.get("index_name", "qmd_memory"),
             "write_frequency": qmd.get("write_frequency", "async"),
@@ -297,7 +306,7 @@ def cmd_status(args):
         table.add_column("Setting", style="cyan")
         table.add_column("Value", style="white")
         table.add_row("Server", details.get("server", "localhost:8181"))
-        table.add_row("Embedding Model", details.get("embedding_model", "qwen3.5b:0.8b"))
+        table.add_row("Embedding Model", details.get("embedding_model", "BAAI/bge-m3"))
         table.add_row("Lite Mode", "Yes" if details.get("lite_mode") else "No")
         table.add_row("Index", details.get("index_name", "qmd_memory"))
         table.add_row("Write Frequency", details.get("write_frequency", "async"))
@@ -380,12 +389,13 @@ def _enable_qmd(cfg: dict):
     cfg["qmd"]["enabled"] = True
 
     # Ensure required fields
+    # BAAI/bge-m3 is the default for optimal general use (highest quality, works out of box)
     if "host" not in cfg["qmd"]:
         cfg["qmd"]["host"] = "127.0.0.1"
     if "port" not in cfg["qmd"]:
         cfg["qmd"]["port"] = 8181
     if "embedding_model" not in cfg["qmd"]:
-        cfg["qmd"]["embedding_model"] = "qwen3.5b:0.8b"
+        cfg["qmd"]["embedding_model"] = "BAAI/bge-m3"  # Default: highest quality, no Ollama needed
 
     try:
         save_config_value("qmd.enabled", "true")
@@ -686,3 +696,241 @@ def cmd_config(args):
         console.print("[green]✓ Lite mode enabled[/green]")
 
     console.print("\nRestart Hermes for changes to take effect.")
+
+
+# =============================================================================
+# QMD Ingest - Load Hermes memory files into QMD
+# =============================================================================
+
+def _find_hermes_memory_files() -> list[tuple[str, Path]]:
+    """Find all memory-relevant files in the Hermes directory.
+
+    Returns:
+        List of (description, path) tuples for files that should be ingested.
+    """
+    hermes_dir = Path.home() / ".hermes"
+    agent_dir = hermes_dir / "hermes-agent"
+    agents_dir = Path.home() / ".agents"
+
+    files = []
+
+    # Core Hermes files
+    if (hermes_dir / "SOUL.md").exists():
+        files.append(("Agent persona (SOUL.md)", hermes_dir / "SOUL.md"))
+
+    # User memory files
+    for name in ["USER.md", "MEMORY.md", "memory.md"]:
+        if (hermes_dir / name).exists():
+            files.append((f"User memory ({name})", hermes_dir / name))
+
+    # Agent skills (SKILL.md files)
+    if agents_dir.exists():
+        for skill_dir in agents_dir.iterdir():
+            if skill_dir.is_dir():
+                skill_md = skill_dir / "SKILL.md"
+                if skill_md.exists():
+                    files.append((f"Skill: {skill_dir.name}", skill_md))
+
+    # Optional skills
+    if (agent_dir / "optional-skills").exists():
+        for category_dir in (agent_dir / "optional-skills").iterdir():
+            if category_dir.is_dir():
+                for skill_dir in category_dir.iterdir():
+                    if skill_dir.is_dir():
+                        skill_md = skill_dir / "SKILL.md"
+                        if skill_md.exists():
+                            files.append((f"Optional skill: {skill_dir.name}", skill_md))
+
+    # Bundled skills
+    if (agent_dir / "skills").exists():
+        for skill_dir in (agent_dir / "skills").iterdir():
+            if skill_dir.is_dir():
+                skill_md = skill_dir / "SKILL.md"
+                if skill_md.exists():
+                    files.append((f"Bundled skill: {skill_dir.name}", skill_md))
+
+    # Hermes contributing guide (useful context for agents)
+    if (agent_dir / "CONTRIBUTING.md").exists():
+        files.append(("Hermes CONTRIBUTING.md", agent_dir / "CONTRIBUTING.md"))
+
+    # README files
+    for readme in ["README.md", "AGENTS.md"]:
+        if (agent_dir / readme).exists():
+            files.append((f"Documentation: {readme}", agent_dir / readme))
+
+    return files
+
+
+def _ingest_file_to_qmd(path: Path, role: str = "agent", tags: list = None) -> dict:
+    """Ingest a single file into QMD.
+
+    Args:
+        path: Path to the file to ingest
+        role: Memory role (user, agent, system)
+        tags: Optional tags for the memory
+
+    Returns:
+        dict with 'success', 'message', and optionally 'id'
+    """
+    import httpx
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception as e:
+        return {"success": False, "message": f"Failed to read: {e}"}
+
+    # Truncate very long files into chunks
+    max_chunk_size = 8000  # characters
+    if len(content) > max_chunk_size:
+        # Split into chunks at paragraph boundaries
+        chunks = []
+        current = ""
+        for line in content.split("\n"):
+            if len(current) + len(line) > max_chunk_size:
+                if current:
+                    chunks.append(current.strip())
+                current = line
+            else:
+                current += "\n" + line
+        if current.strip():
+            chunks.append(current.strip())
+    else:
+        chunks = [content.strip()]
+
+    if tags is None:
+        tags = []
+
+    # Add file name as a tag
+    tags = tags + [path.name]
+
+    results = []
+    errors = []
+
+    for i, chunk in enumerate(chunks):
+        if not chunk:
+            continue
+
+        try:
+            import httpx
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(
+                    "http://127.0.0.1:8181/memories",
+                    json={"content": chunk, "role": role, "tags": tags + [f"chunk:{i+1}"]},
+                )
+                if resp.status_code == 200:
+                    results.append(resp.json()["id"])
+                else:
+                    errors.append(f"Chunk {i+1}: HTTP {resp.status_code}")
+
+        except httpx.ConnectError:
+            return {"success": False, "message": "QMD server not running. Start with: qmd server"}
+        except Exception as e:
+            errors.append(f"Chunk {i+1}: {e}")
+
+    if errors:
+        return {
+            "success": len(results) > 0,
+            "message": f"Ingested {len(results)} chunks, {len(errors)} errors",
+            "ids": results,
+            "errors": errors,
+        }
+
+    return {
+        "success": True,
+        "message": f"Ingested {len(results)} chunk(s)",
+        "ids": results,
+    }
+
+
+def cmd_ingest(args):
+    """Scan and ingest Hermes memory files into QMD.
+
+    Scans for:
+    - ~/.hermes/SOUL.md (agent persona)
+    - ~/.hermes/USER.md, memory.md (user memory)
+    - ~/.agents/skills/*/SKILL.md (user skills)
+    - ~/.hermes/hermes-agent/optional-skills/*/*/SKILL.md
+    - ~/.hermes/hermes-agent/skills/*/SKILL.md
+    - Documentation files
+    """
+    cfg = _load_hermes_config()
+    backend = _get_memory_backend(cfg)
+
+    if backend != "qmd":
+        console.print("[yellow]QMD must be enabled to ingest files.[/yellow]")
+        console.print(f"Current backend: {backend}")
+        console.print("Enable QMD with: [cyan]hermes memory mode qmd[/cyan]")
+        return
+
+    # Check if QMD server is running
+    try:
+        import httpx
+        resp = httpx.get("http://127.0.0.1:8181/status", timeout=5)
+        if resp.status_code != 200:
+            console.print("[red]QMD server returned error.[/red]")
+            return
+    except httpx.ConnectError:
+        console.print("[red]QMD server is not running.[/red]")
+        console.print("Start with: [cyan]qmd server[/cyan]")
+        return
+
+    # Find all memory files
+    files = _find_hermes_memory_files()
+
+    if not files:
+        console.print("[yellow]No memory files found.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Found {len(files)} memory file(s):[/bold]\n")
+
+    # Show files to be ingested
+    for i, (desc, path) in enumerate(files, 1):
+        size = path.stat().st_size
+        size_str = f"{size:,} bytes" if size < 1024 else f"{size/1024:.1f} KB"
+        console.print(f"  [{i}] {desc}")
+        console.print(f"      {path} ({size_str})")
+
+    # Confirm ingestion
+    console.print()
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run:
+        console.print("[dim]--dry-run specified. Skipping ingestion.[/dim]")
+        return
+
+    force = getattr(args, "force", False)
+    if not force:
+        try:
+            response = input(f"\nIngest {len(files)} file(s) into QMD? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Ingestion cancelled.[/yellow]")
+            return
+
+        if response != "y":
+            console.print("[yellow]Ingestion cancelled.[/yellow]")
+            return
+
+    # Ingest files
+    console.print("\n[bold]Ingesting files...[/bold]\n")
+
+    total_success = 0
+    total_errors = 0
+
+    for desc, path in files:
+        console.print(f"[dim]Ingesting: {desc}[/dim]")
+        result = _ingest_file_to_qmd(path, role="agent", tags=["hermes", "ingested"])
+
+        if result["success"]:
+            total_success += 1
+            console.print(f"  [green]✓[/green] {result['message']}")
+        else:
+            total_errors += 1
+            console.print(f"  [red]✗[/red] {result.get('message', 'Unknown error')}")
+            if "errors" in result:
+                for err in result["errors"][:3]:  # Show first 3 errors
+                    console.print(f"      [red]  {err}[/red]")
+
+    console.print()
+    if total_errors == 0:
+        console.print(f"[green]✓ Successfully ingested {total_success} file(s)[/green]")
+    else:
+        console.print(f"[yellow]⚠ Ingested {total_success} file(s), {total_errors} error(s)[/yellow]")

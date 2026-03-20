@@ -3678,6 +3678,18 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "queue":
+            if not self._agent_running:
+                _cprint("  /queue only works while Hermes is busy. Just type your message normally.")
+            else:
+                # Extract prompt after "/queue " or "/q "
+                parts = cmd_original.split(None, 1)
+                payload = parts[1].strip() if len(parts) > 1 else ""
+                if not payload:
+                    _cprint("  Usage: /queue <prompt>")
+                else:
+                    self._pending_input.put(payload)
+                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":

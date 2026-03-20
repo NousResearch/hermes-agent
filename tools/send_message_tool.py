@@ -55,6 +55,11 @@ SEND_MESSAGE_SCHEMA = {
 
 def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
+
+    if not isinstance(args, dict):
+        return json.dumps({
+            "error": "Invalid arguments: expected dictionary"
+    })
     action = args.get("action", "send")
 
     if action == "list":

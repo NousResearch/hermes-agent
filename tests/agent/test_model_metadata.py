@@ -106,9 +106,14 @@ class TestEstimateMessagesTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
-    def test_claude_models_200k(self):
+    def test_claude_models_context_lengths(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
-            if "claude" in key:
+            if "claude" not in key:
+                continue
+            # Claude 4.6 models have 1M context
+            if "4.6" in key or "4-6" in key:
+                assert value == 1000000, f"{key} should be 1000000"
+            else:
                 assert value == 200000, f"{key} should be 200000"
 
     def test_gpt4_models_128k_or_1m(self):

@@ -275,8 +275,10 @@ class KawaiiSpinner:
         # Log a single clean line and wait.
         if not hasattr(self._out, 'isatty') or not self._out.isatty():
             clean = self._clean_message(self.message)
-            if clean and clean != '...':
+            if clean:
                 self._write(f"  [tool] {clean}", flush=True)
+            else:
+                self._write(f"  [thinking]", flush=True)
             while self.running:
                 time.sleep(0.5)
             return
@@ -358,9 +360,8 @@ class KawaiiSpinner:
                 self._write(f"  {final_message}", flush=True)
             else:
                 elapsed = f" {time.time() - self.start_time:.1f}s" if self.start_time else ""
-                clean = self._clean_message(final_message)
-                if clean:
-                    self._write(f"  [done] {clean} ({elapsed})", flush=True)
+                clean = self._clean_message(final_message) or "thinking"
+                self._write(f"  [done] {clean} ({elapsed})", flush=True)
 
     def __enter__(self):
         self.start()

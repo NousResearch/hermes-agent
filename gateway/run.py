@@ -1505,7 +1505,7 @@ class GatewayRunner:
             return await self._handle_compress_command(event)
 
         if canonical == "workflow":
-            return await self._handle_workflow_command(cmd_args, event)
+            return await self._handle_workflow_command(event.get_command_args().strip(), event)
 
         if canonical == "usage":
             return await self._handle_usage_command(event)

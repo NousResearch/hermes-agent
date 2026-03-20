@@ -11,6 +11,27 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+
+def _env_or_default(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if isinstance(value, str) and value.strip():
+        return value
+    return default
+
+
+def _runtime_defaults() -> dict[str, str]:
+    try:
+        from hermes_cli.product_config import resolve_runtime_defaults
+
+        return resolve_runtime_defaults()
+    except Exception:
+        return {
+            "runtime_profile": "tier1",
+            "runtime_toolset": "mynah-tier1",
+            "inference_model": "qwen3.5-9b-local",
+        }
+
+
 class RuntimeTurnRequest(BaseModel):
     user_message: str
     conversation_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -102,8 +123,9 @@ def _load_runtime_soul() -> str:
 def build_runtime_agent() -> RuntimeConversationAgent:
     from run_agent import AIAgent
 
-    runtime_toolset = os.getenv("MYNAH_RUNTIME_TOOLSET", "mynah-tier1")
-    inference_model = os.getenv("MYNAH_INFERENCE_MODEL", "qwen3.5-9b-local")
+    defaults = _runtime_defaults()
+    runtime_toolset = _env_or_default("MYNAH_RUNTIME_TOOLSET", defaults["runtime_toolset"])
+    inference_model = _env_or_default("MYNAH_INFERENCE_MODEL", defaults["inference_model"])
     base_url = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8080/v1")
     api_key = os.getenv("OPENAI_API_KEY", "dummy")
     identity_prompt = _load_runtime_soul()
@@ -123,10 +145,11 @@ def build_runtime_agent() -> RuntimeConversationAgent:
 
 def create_runtime_app(factory: RuntimeAgentFactory | None = None) -> FastAPI:
     agent_factory = factory or HermesRuntimeAgentFactory()
-    runtime_profile = os.getenv("MYNAH_RUNTIME_PROFILE", "tier1")
-    runtime_toolset = os.getenv("MYNAH_RUNTIME_TOOLSET", "mynah-tier1")
+    defaults = _runtime_defaults()
+    runtime_profile = _env_or_default("MYNAH_RUNTIME_PROFILE", defaults["runtime_profile"])
+    runtime_toolset = _env_or_default("MYNAH_RUNTIME_TOOLSET", defaults["runtime_toolset"])
     hermes_home = os.getenv("HERMES_HOME", "")
-    model = os.getenv("MYNAH_INFERENCE_MODEL", "")
+    model = _env_or_default("MYNAH_INFERENCE_MODEL", defaults["inference_model"])
 
     app = FastAPI(title="MYNAH Hermes Runtime", version="0.1.0")
 

@@ -3127,8 +3127,10 @@ def run_setup_wizard(args):
       hermes setup agent     — just agent settings
     """
     ensure_hermes_home()
+    from hermes_cli.product_config import initialize_product_config_file
 
     config = load_config()
+    initialize_product_config_file()
     hermes_home = get_hermes_home()
 
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)

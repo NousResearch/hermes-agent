@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from hermes_cli.product_config import load_product_config, save_product_config
 from mynah_runtime.service import (
     _load_runtime_soul,
     create_runtime_app,
@@ -120,3 +121,26 @@ def test_runtime_identity_prompt_requires_soul(monkeypatch, tmp_path):
         assert "SOUL.md" in str(exc)
     else:
         raise AssertionError("expected runtime to require SOUL.md")
+
+
+def test_runtime_health_uses_product_config_defaults(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("MYNAH_RUNTIME_PROFILE", raising=False)
+    monkeypatch.delenv("MYNAH_RUNTIME_TOOLSET", raising=False)
+    monkeypatch.delenv("MYNAH_INFERENCE_MODEL", raising=False)
+
+    config = load_product_config()
+    config["runtime"]["default_profile"] = "tier2"
+    config["runtime"]["default_toolset"] = "mynah-tier2"
+    config["models"]["default_route"]["model"] = "qwen-test-model"
+    save_product_config(config)
+
+    client = TestClient(create_runtime_app(FakeFactory()))
+
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    assert health.json()["runtime_profile"] == "tier2"
+    assert health.json()["runtime_toolset"] == "mynah-tier2"
+    assert health.json()["model"] == "qwen-test-model"

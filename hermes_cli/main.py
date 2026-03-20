@@ -896,8 +896,12 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+    elif selected_provider == "minimax":
+        _model_flow_minimax(config, current_model)
+    elif selected_provider == "minimax-cn":
+        _model_flow_minimax_cn(config, current_model)
 
 
 def _prompt_provider_choice(choices):
@@ -1061,6 +1065,154 @@ def _model_flow_nous(config, current_model=""):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
+    else:
+        print("No change.")
+
+
+def _model_flow_minimax(config, current_model=""):
+    """MiniMax provider (global): ensure logged in via OAuth, then pick model."""
+    from hermes_cli.auth import (
+        get_minimax_auth_status, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, resolve_minimax_runtime_credentials,
+        AuthError, format_auth_error, _login_minimax, PROVIDER_REGISTRY,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+    import argparse
+
+    state = get_minimax_auth_status("minimax")
+    if not state or not state.get("access_token"):
+        print("Not logged into MiniMax. Starting OAuth login...")
+        print()
+        try:
+            mock_args = argparse.Namespace(
+                portal_url=None, inference_url=None, client_id=None,
+                scope=None, no_browser=False, timeout=15.0,
+                ca_bundle=None, insecure=False,
+            )
+            _login_minimax(mock_args, PROVIDER_REGISTRY["minimax"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+        # _login_minimax already handles model selection + config update
+        return
+
+    # Already logged in — resolve credentials
+    print("Fetching MiniMax credentials...")
+    try:
+        creds = resolve_minimax_runtime_credentials(provider="minimax")
+    except Exception as exc:
+        relogin = isinstance(exc, AuthError) and exc.relogin_required
+        msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+        if relogin:
+            print(f"Session expired: {msg}")
+            print("Re-authenticating with MiniMax...\n")
+            try:
+                mock_args = argparse.Namespace(
+                    portal_url=None, inference_url=None, client_id=None,
+                    scope=None, no_browser=False, timeout=15.0,
+                    ca_bundle=None, insecure=False,
+                )
+                _login_minimax(mock_args, PROVIDER_REGISTRY["minimax"])
+            except Exception as login_exc:
+                print(f"Re-login failed: {login_exc}")
+            return
+        print(f"Could not resolve credentials: {msg}")
+        return
+
+    inference_url = creds.get("base_url", "")
+    print(f"Using MiniMax at: {inference_url}")
+
+    model_ids = [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ]
+    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("minimax", inference_url)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        print(f"Default model set to: {selected} (via MiniMax)")
+    else:
+        print("No change.")
+
+
+def _model_flow_minimax_cn(config, current_model=""):
+    """MiniMax provider (China): ensure logged in via OAuth, then pick model."""
+    from hermes_cli.auth import (
+        get_minimax_auth_status, _prompt_model_selection, _save_model_choice,
+        _update_config_for_provider, resolve_minimax_runtime_credentials,
+        AuthError, format_auth_error, _login_minimax, PROVIDER_REGISTRY,
+    )
+    from hermes_cli.config import get_env_value, save_env_value
+    import argparse
+
+    state = get_minimax_auth_status("minimax-cn")
+    if not state or not state.get("access_token"):
+        print("Not logged into MiniMax (China). Starting OAuth login...")
+        print()
+        try:
+            mock_args = argparse.Namespace(
+                portal_url=None, inference_url=None, client_id=None,
+                scope=None, no_browser=False, timeout=15.0,
+                ca_bundle=None, insecure=False,
+            )
+            _login_minimax(mock_args, PROVIDER_REGISTRY["minimax-cn"])
+        except SystemExit:
+            print("Login cancelled or failed.")
+            return
+        except Exception as exc:
+            print(f"Login failed: {exc}")
+            return
+        return
+
+    print("Fetching MiniMax (China) credentials...")
+    try:
+        creds = resolve_minimax_runtime_credentials(provider="minimax-cn")
+    except Exception as exc:
+        relogin = isinstance(exc, AuthError) and exc.relogin_required
+        msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
+        if relogin:
+            print(f"Session expired: {msg}")
+            print("Re-authenticating with MiniMax (China)...\n")
+            try:
+                mock_args = argparse.Namespace(
+                    portal_url=None, inference_url=None, client_id=None,
+                    scope=None, no_browser=False, timeout=15.0,
+                    ca_bundle=None, insecure=False,
+                )
+                _login_minimax(mock_args, PROVIDER_REGISTRY["minimax-cn"])
+            except Exception as login_exc:
+                print(f"Re-login failed: {login_exc}")
+            return
+        print(f"Could not resolve credentials: {msg}")
+        return
+
+    inference_url = creds.get("base_url", "")
+    print(f"Using MiniMax (China) at: {inference_url}")
+
+    model_ids = [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+    ]
+    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("minimax-cn", inference_url)
+        if get_env_value("OPENAI_BASE_URL"):
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        print(f"Default model set to: {selected} (via MiniMax China)")
     else:
         print("No change.")
 
@@ -1466,11 +1618,15 @@ _PROVIDER_MODELS = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",

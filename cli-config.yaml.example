@@ -727,11 +727,12 @@ delegation:
 #   base_url: ""                     # Optional: full URL override for remote server
 #   peer_name: "hermes"              # Session identifier prefix
 #
-#   # Index settings
-#   index_name: "qmd_memory"         # FAISS index name
-#   embedding_model: "BAAI/bge-m3"   # Embedding model (1024 dims)
-#   # Lite mode: use lightweight models for faster/smaller footprint
-#   lite_mode: false                 # Use bge-micro-v2 (256 dims) instead
+    # Index settings
+    index_name: "qmd_memory"         # FAISS index name
+    # Ollama embedding model (use 'nomic-embed-text' for cross-lingual)
+    embedding_model: "qwen3.5b:0.8b"   # Default: local Ollama model (896 dims)
+    # Lite mode: use lightweight models for faster/smaller footprint
+    lite_mode: false                 # Use bge-micro-v2 (256 dims) instead
 #
 #   # Memory settings
 #   memory_char_limit: 2200          # Max chars per memory entry

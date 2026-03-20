@@ -54,6 +54,10 @@ EMBEDDING_DIMS = {
     "BAAI/bge-m3": 1024,
     "BAAI/bge-micro-v2": 256,
     "sentence-transformers/all-MiniLM-L6-v2": 384,
+    # Ollama models (use Ollama embedding models for best results)
+    "qwen3.5b:0.8b": 896,
+    "qwen3:0.8b": 896,
+    "nomic-embed-text": 768,
 }
 
 

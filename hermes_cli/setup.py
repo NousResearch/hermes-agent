@@ -881,6 +881,8 @@ def setup_model_provider(config: dict):
         "Kimi / Moonshot (Kimi coding models)",
         "MiniMax (global endpoint)",
         "MiniMax China (mainland China endpoint)",
+        "Login with MiniMax OAuth (global — browser-based)",
+        "Login with MiniMax OAuth (China — browser-based)",
         "Kilo Code (Kilo Gateway API)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
         "AI Gateway (Vercel — 200+ models, pay-per-use)",
@@ -1293,7 +1295,77 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 8:  # Kilo Code
+    elif provider_idx == 8:  # MiniMax OAuth (global)
+        selected_provider = "minimax"
+        print()
+        print_header("MiniMax Login (OAuth — global)")
+        print_info("This will open your browser to authenticate with MiniMax.")
+        print_info("You'll need a MiniMax account with an active API subscription.")
+        print()
+
+        try:
+            from hermes_cli.auth import _login_minimax, PROVIDER_REGISTRY
+            import argparse
+
+            mock_args = argparse.Namespace(
+                portal_url=None,
+                inference_url=None,
+                client_id=None,
+                scope=None,
+                no_browser=False,
+                timeout=15.0,
+                ca_bundle=None,
+                insecure=False,
+            )
+            pconfig = PROVIDER_REGISTRY["minimax"]
+            _login_minimax(mock_args, pconfig)
+            _sync_model_from_disk(config)
+            return
+        except SystemExit:
+            print_warning("MiniMax login was cancelled or failed.")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+        except Exception as e:
+            print_error(f"Login failed: {e}")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+
+    elif provider_idx == 9:  # MiniMax OAuth China
+        selected_provider = "minimax-cn"
+        print()
+        print_header("MiniMax Login (OAuth — China)")
+        print_info("This will open your browser to authenticate with MiniMax (China).")
+        print_info("You'll need a MiniMax China account with an active API subscription.")
+        print()
+
+        try:
+            from hermes_cli.auth import _login_minimax, PROVIDER_REGISTRY
+            import argparse
+
+            mock_args = argparse.Namespace(
+                portal_url=None,
+                inference_url=None,
+                client_id=None,
+                scope=None,
+                no_browser=False,
+                timeout=15.0,
+                ca_bundle=None,
+                insecure=False,
+            )
+            pconfig = PROVIDER_REGISTRY["minimax-cn"]
+            _login_minimax(mock_args, pconfig)
+            _sync_model_from_disk(config)
+            return
+        except SystemExit:
+            print_warning("MiniMax China login was cancelled or failed.")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+        except Exception as e:
+            print_error(f"Login failed: {e}")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+
+    elif provider_idx == 10:  # Kilo Code
         selected_provider = "kilocode"
         print()
         print_header("Kilo Code API Key")
@@ -1326,7 +1398,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "kilocode", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 9:  # Anthropic
+    elif provider_idx == 11:  # Anthropic
         selected_provider = "anthropic"
         print()
         print_header("Anthropic Authentication")
@@ -1430,7 +1502,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    elif provider_idx == 10:  # AI Gateway
+    elif provider_idx == 12:  # AI Gateway
         selected_provider = "ai-gateway"
         print()
         print_header("AI Gateway API Key")
@@ -1462,7 +1534,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+    elif provider_idx == 13:  # Alibaba Cloud / DashScope
         selected_provider = "alibaba"
         print()
         print_header("Alibaba Cloud / DashScope API Key")
@@ -1494,7 +1566,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
         _set_model_provider(config, "alibaba", pconfig.inference_base_url)
 
-    elif provider_idx == 12:  # OpenCode Zen
+    elif provider_idx == 14:  # OpenCode Zen
         selected_provider = "opencode-zen"
         print()
         print_header("OpenCode Zen API Key")
@@ -1527,7 +1599,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 13:  # OpenCode Go
+    elif provider_idx == 15:  # OpenCode Go
         selected_provider = "opencode-go"
         print()
         print_header("OpenCode Go API Key")
@@ -1560,7 +1632,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 14:  # GitHub Copilot
+    elif provider_idx == 16:  # GitHub Copilot
         selected_provider = "copilot"
         print()
         print_header("GitHub Copilot")
@@ -1593,7 +1665,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 15:  # GitHub Copilot ACP
+    elif provider_idx == 17:  # GitHub Copilot ACP
         selected_provider = "copilot-acp"
         print()
         print_header("GitHub Copilot ACP")

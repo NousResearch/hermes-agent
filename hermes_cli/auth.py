@@ -73,6 +73,16 @@ CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
+# MiniMax OAuth defaults (PKCE-enhanced device code flow)
+DEFAULT_MINIMAX_PORTAL_URL = "https://api.minimax.io"
+DEFAULT_MINIMAX_CN_PORTAL_URL = "https://api.minimaxi.com"
+DEFAULT_MINIMAX_INFERENCE_URL = "https://api.minimax.io/anthropic"
+DEFAULT_MINIMAX_CN_INFERENCE_URL = "https://api.minimaxi.com/anthropic"
+MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
+MINIMAX_OAUTH_SCOPE = "profile model.completion"
+MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+MINIMAX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120  # refresh 2 min before expiry
+
 
 # =============================================================================
 # Provider Registry
@@ -144,8 +154,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
-        auth_type="api_key",
-        inference_base_url="https://api.minimax.io/anthropic",
+        auth_type="oauth_device_code",
+        portal_base_url=DEFAULT_MINIMAX_PORTAL_URL,
+        inference_base_url=DEFAULT_MINIMAX_INFERENCE_URL,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        scope=MINIMAX_OAUTH_SCOPE,
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
     ),
@@ -167,8 +180,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "minimax-cn": ProviderConfig(
         id="minimax-cn",
         name="MiniMax (China)",
-        auth_type="api_key",
-        inference_base_url="https://api.minimaxi.com/anthropic",
+        auth_type="oauth_device_code",
+        portal_base_url=DEFAULT_MINIMAX_CN_PORTAL_URL,
+        inference_base_url=DEFAULT_MINIMAX_CN_INFERENCE_URL,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        scope=MINIMAX_OAUTH_SCOPE,
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
@@ -1169,6 +1185,167 @@ def _refresh_access_token(
     raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
 
 
+# =============================================================================
+# MiniMax OAuth — PKCE-enhanced device code flow
+# =============================================================================
+
+def _generate_pkce_verifier() -> str:
+    """Generate a random PKCE code verifier (43-128 chars, unreserved URL chars)."""
+    import secrets
+    # 64 chars from URL-safe unreserved set
+    return secrets.token_urlsafe(64)[:64]
+
+
+def _generate_pkce_challenge(verifier: str) -> str:
+    """Generate S256 PKCE code challenge from verifier."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _request_minimax_device_code(
+    client: httpx.Client,
+    portal_base_url: str,
+    client_id: str,
+    scope: str,
+) -> Dict[str, Any]:
+    """
+    Request a MiniMax OAuth device code with PKCE.
+    Returns dict with user_code, verification_uri, expired_in (unix timestamp ms!), interval, state.
+    """
+    verifier = _generate_pkce_verifier()
+    challenge = _generate_pkce_challenge(verifier)
+    state = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode("ascii")
+
+    response = client.post(
+        f"{portal_base_url}/oauth/code",
+        data={
+            "response_type": "code",
+            "client_id": client_id,
+            "scope": scope,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        },
+    )
+
+    if response.status_code != 200:
+        raise AuthError(
+            f"MiniMax device code request failed with status {response.status_code}",
+            provider="minimax", code="device_code_request_error",
+        )
+
+    data = response.json()
+    if not data.get("user_code") or not data.get("verification_uri"):
+        raise AuthError(
+            "MiniMax device code response missing required fields",
+            provider="minimax", code="device_code_incomplete",
+        )
+    if data.get("state") != state:
+        raise AuthError(
+            "MiniMax OAuth state mismatch — possible CSRF",
+            provider="minimax", code="state_mismatch",
+        )
+
+    return {
+        "user_code": data["user_code"],
+        "verification_uri": data["verification_uri"],
+        "expired_in": data["expired_in"],  # unix timestamp in milliseconds!
+        "interval": data.get("interval", 2000),
+        "state": state,
+        "verifier": verifier,
+    }
+
+
+def _poll_minimax_token(
+    client: httpx.Client,
+    portal_base_url: str,
+    client_id: str,
+    user_code: str,
+    verifier: str,
+) -> Dict[str, Any]:
+    """
+    Poll for MiniMax OAuth token.
+    expired_in in the response is a unix timestamp in milliseconds (NOT seconds).
+    """
+    response = client.post(
+        f"{portal_base_url}/oauth/token",
+        data={
+            "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
+            "client_id": client_id,
+            "user_code": user_code,
+            "code_verifier": verifier,
+        },
+    )
+
+    if response.status_code != 200:
+        try:
+            err = response.json()
+            msg = err.get("base_resp", {}).get("status_msg") or str(err)
+        except Exception:
+            msg = response.text or f"HTTP {response.status_code}"
+        return {"status": "error", "message": msg}
+
+    payload = response.json()
+
+    # MiniMax returns {status: "success"|"error"|..., expired_in: unix_ts_ms, ...}
+    if payload.get("status") == "error":
+        return {"status": "error", "message": payload.get("status_msg") or "Unknown error"}
+
+    if payload.get("status") != "success":
+        return {"status": "pending", "message": "Authorization pending"}
+
+    if not payload.get("access_token") or not payload.get("refresh_token") or not payload.get("expired_in"):
+        return {"status": "error", "message": "Token response incomplete"}
+
+    return {
+        "status": "success",
+        "access_token": payload["access_token"],
+        "refresh_token": payload["refresh_token"],
+        "expired_in": payload["expired_in"],  # unix timestamp ms
+        "resource_url": payload.get("resource_url"),
+    }
+
+
+def _refresh_minimax_access_token(
+    client: httpx.Client,
+    portal_base_url: str,
+    client_id: str,
+    refresh_token: str,
+) -> Dict[str, Any]:
+    """Refresh a MiniMax OAuth access token using refresh_token."""
+    response = client.post(
+        f"{portal_base_url}/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+        },
+    )
+
+    if response.status_code != 200:
+        try:
+            err = response.json()
+            msg = err.get("base_resp", {}).get("status_msg") or str(err)
+        except Exception:
+            msg = response.text or f"HTTP {response.status_code}"
+        code = "invalid_grant" if response.status_code == 400 else "refresh_failed"
+        raise AuthError(msg, provider="minimax", code=code, relogin_required=True)
+
+    payload = response.json()
+    if not payload.get("access_token") or not payload.get("refresh_token") or not payload.get("expired_in"):
+        raise AuthError(
+            "MiniMax token refresh returned incomplete payload",
+            provider="minimax", code="invalid_token", relogin_required=True,
+        )
+
+    return {
+        "access_token": payload["access_token"],
+        "refresh_token": payload["refresh_token"],
+        "expired_in": payload["expired_in"],
+        "resource_url": payload.get("resource_url"),
+    }
+
+
 def _mint_agent_key(
     *,
     client: httpx.Client,
@@ -1515,9 +1692,112 @@ def resolve_nous_runtime_credentials(
     }
 
 
+def resolve_minimax_runtime_credentials(
+    *,
+    provider: str = "minimax",
+    timeout_seconds: float = 15.0,
+    insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve MiniMax inference credentials for runtime use.
+
+    MiniMax OAuth uses access_token as the Bearer token directly (no agent key minting).
+    The access token expires at the unix timestamp (ms!) stored in expires_at_ms.
+    Concurrent processes coordinate through the auth store file lock.
+
+    Returns dict with: provider, base_url, api_key, expires_at, expires_in, source.
+    """
+    timeout = httpx.Timeout(timeout_seconds)
+    verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = auth_store.get("providers", {}).get(provider, {})
+
+        if not state or not state.get("access_token"):
+            raise AuthError(
+                f"No MiniMax auth state found for {provider}. Run `hermes model` to log in.",
+                provider=provider, code="not_logged_in", relogin_required=True,
+            )
+
+        portal_base_url = state.get("portal_base_url") or (
+            DEFAULT_MINIMAX_CN_PORTAL_URL if provider == "minimax-cn" else DEFAULT_MINIMAX_PORTAL_URL
+        )
+        inference_base_url = state.get("inference_base_url") or (
+            DEFAULT_MINIMAX_CN_INFERENCE_URL if provider == "minimax-cn" else DEFAULT_MINIMAX_INFERENCE_URL
+        )
+        client_id = state.get("client_id") or MINIMAX_OAUTH_CLIENT_ID
+        access_token = state["access_token"]
+        refresh_token = state.get("refresh_token")
+        expires_at_ms = state.get("expires_at_ms")  # unix timestamp in ms!
+
+        # Determine if token is expired (with skew)
+        needs_refresh = True
+        if expires_at_ms:
+            expires_epoch_s = int(expires_at_ms) / 1000.0
+            needs_refresh = expires_epoch_s <= (time.time() + MINIMAX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
+
+        if needs_refresh:
+            if not refresh_token:
+                raise AuthError(
+                    "MiniMax access token expired and no refresh token available. Please re-login.",
+                    provider=provider, code="token_expired", relogin_required=True,
+                )
+            with httpx.Client(timeout=timeout, verify=verify) as client:
+                refreshed = _refresh_minimax_access_token(
+                    client=client,
+                    portal_base_url=portal_base_url,
+                    client_id=client_id,
+                    refresh_token=refresh_token,
+                )
+            now = datetime.now(timezone.utc)
+            new_expires_at_ms = int(refreshed["expired_in"])
+            new_expires_at = datetime.fromtimestamp(
+                new_expires_at_ms / 1000.0, tz=timezone.utc
+            ).isoformat()
+            new_expires_in = max(0, int((new_expires_at_ms / 1000.0) - time.time()))
+            state["access_token"] = refreshed["access_token"]
+            state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
+            state["expires_at_ms"] = new_expires_at_ms
+            state["expires_at"] = new_expires_at
+            state["expires_in"] = new_expires_in
+            state["obtained_at"] = now.isoformat()
+            if refreshed.get("resource_url"):
+                state["resource_url"] = refreshed["resource_url"]
+                inference_base_url = refreshed["resource_url"]
+            access_token = refreshed["access_token"]
+            _save_auth_store(auth_store)
+
+    return {
+        "provider": provider,
+        "base_url": inference_base_url,
+        "api_key": access_token,
+        "expires_at": state.get("expires_at"),
+        "expires_in": state.get("expires_in", 0),
+        "source": "cache",
+    }
+
+
 # =============================================================================
 # Status helpers
 # =============================================================================
+
+def get_minimax_auth_status(provider: str = "minimax") -> Dict[str, Any]:
+    """Status snapshot for `hermes status` output."""
+    state = get_provider_auth_state(provider)
+    if not state:
+        return {"logged_in": False}
+    expires_at_ms = state.get("expires_at_ms")
+    return {
+        "logged_in": bool(state.get("access_token")),
+        "portal_base_url": state.get("portal_base_url"),
+        "inference_base_url": state.get("inference_base_url"),
+        "expires_at_ms": expires_at_ms,
+        "expires_at": state.get("expires_at"),
+        "has_refresh_token": bool(state.get("refresh_token")),
+    }
+
 
 def get_nous_auth_status() -> Dict[str, Any]:
     """Status snapshot for `hermes status` output."""
@@ -1630,6 +1910,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_codex_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    if target in ("minimax", "minimax-cn"):
+        return get_minimax_auth_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
@@ -2281,6 +2563,174 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
             print()
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
+
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
+    except Exception as exc:
+        print(f"Login failed: {exc}")
+        raise SystemExit(1)
+
+
+# =============================================================================
+# MiniMax OAuth login
+# =============================================================================
+
+def _login_minimax(args, pconfig: ProviderConfig) -> None:
+    """MiniMax OAuth device authorization flow (PKCE-enhanced)."""
+    provider = pconfig.id
+    portal_base_url = (
+        getattr(args, "portal_url", None)
+        or os.getenv("MINIMAX_PORTAL_URL")
+        or pconfig.portal_base_url
+    ).rstrip("/")
+    requested_inference_url = (
+        getattr(args, "inference_url", None)
+        or pconfig.inference_base_url
+    ).rstrip("/")
+    client_id = getattr(args, "client_id", None) or pconfig.client_id
+    scope = getattr(args, "scope", None) or pconfig.scope
+    open_browser = not getattr(args, "no_browser", False)
+    timeout_seconds = getattr(args, "timeout", None) or 15.0
+    timeout = httpx.Timeout(timeout_seconds)
+
+    insecure = bool(getattr(args, "insecure", False))
+    ca_bundle = (
+        getattr(args, "ca_bundle", None)
+        or os.getenv("HERMES_CA_BUNDLE")
+        or os.getenv("SSL_CERT_FILE")
+    )
+    verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
+
+    if _is_remote_session():
+        open_browser = False
+
+    print(f"Starting Hermes login via {pconfig.name}...")
+    print(f"Portal: {portal_base_url}")
+    if insecure:
+        print("TLS verification: disabled (--insecure)")
+    elif ca_bundle:
+        print(f"TLS verification: custom CA bundle ({ca_bundle})")
+
+    try:
+        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+            device_data = _request_minimax_device_code(
+                client=client,
+                portal_base_url=portal_base_url,
+                client_id=client_id,
+                scope=scope,
+            )
+
+            verification_url = str(device_data["verification_uri"])
+            user_code = str(device_data["user_code"])
+            expires_at_ms = int(device_data["expired_in"])  # unix timestamp in ms!
+            poll_interval_ms = max(1000, int(device_data.get("interval", 2000)))
+            verifier = device_data["verifier"]
+
+            print()
+            print("To continue:")
+            print(f"  1. Open: {verification_url}")
+            print(f"  2. If prompted, enter code: {user_code}")
+
+            if open_browser:
+                try:
+                    opened = webbrowser.open(verification_url)
+                    if opened:
+                        print("  (Opened browser for verification)")
+                    else:
+                        print("  Could not open browser automatically — use the URL above.")
+                except Exception:
+                    print("  Could not open browser automatically — use the URL above.")
+
+            print(f"Waiting for approval (polling every {poll_interval_ms / 1000:.1f}s)...")
+
+            # Poll until authorization completes or code expires
+            while time.time() * 1000 < expires_at_ms:
+                result = _poll_minimax_token(
+                    client=client,
+                    portal_base_url=portal_base_url,
+                    client_id=client_id,
+                    user_code=user_code,
+                    verifier=verifier,
+                )
+
+                if result["status"] == "success":
+                    token_data = result
+                    break
+                if result["status"] == "error":
+                    raise AuthError(
+                        f"MiniMax OAuth failed: {result.get('message', 'Unknown error')}",
+                        provider=provider, code="oauth_error",
+                    )
+                # status == "pending": keep polling
+                time.sleep(poll_interval_ms / 1000.0)
+            else:
+                raise AuthError(
+                    "MiniMax OAuth timed out before authorization completed.",
+                    provider=provider, code="oauth_timeout",
+                )
+
+        # Process token response
+        now = datetime.now(timezone.utc)
+        new_expires_at_ms = int(token_data["expired_in"])
+        expires_at = datetime.fromtimestamp(
+            new_expires_at_ms / 1000.0, tz=timezone.utc
+        ).isoformat()
+        expires_in = max(0, int((new_expires_at_ms / 1000.0) - time.time()))
+        inference_base_url = (
+            (token_data.get("resource_url") or "").rstrip("/")
+            or requested_inference_url
+        )
+        if inference_base_url != requested_inference_url:
+            print(f"Using portal-provided inference URL: {inference_base_url}")
+
+        auth_state: Dict[str, Any] = {
+            "portal_base_url": portal_base_url,
+            "inference_base_url": inference_base_url,
+            "client_id": client_id,
+            "scope": scope,
+            "token_type": "Bearer",
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data["refresh_token"],
+            "obtained_at": now.isoformat(),
+            "expires_at": expires_at,
+            "expires_at_ms": new_expires_at_ms,
+            "expires_in": expires_in,
+            "resource_url": token_data.get("resource_url"),
+            "tls": {
+                "insecure": verify is False,
+                "ca_bundle": verify if isinstance(verify, str) else None,
+            },
+        }
+
+        # Save auth state
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            _save_provider_state(auth_store, provider, auth_state)
+            saved_to = _save_auth_store(auth_store)
+
+        config_path = _update_config_for_provider(provider, inference_base_url)
+        print()
+        print("Login successful!")
+        print(f"  Auth state: {saved_to}")
+        print(f"  Config updated: {config_path} (model.provider={provider})")
+
+        # Show available models for selection
+        try:
+            default_model = "MiniMax-M2.7"
+            print()
+            print(f"Default model: {default_model}")
+            selected = _prompt_model_selection([
+                "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed",
+                "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
+            ], current_model=default_model)
+            if selected:
+                _save_model_choice(selected)
+                print(f"Default model set to: {selected}")
+        except Exception as exc:
+            print(f"Model selection skipped: {exc}")
 
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

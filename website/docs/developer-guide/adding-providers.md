@@ -305,14 +305,14 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 Run tests with xdist disabled:
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
 ```
 
 For deeper changes, run the full suite before pushing:
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python -m pytest tests/ -n0 -q
 ```
 
@@ -321,14 +321,14 @@ python -m pytest tests/ -n0 -q
 After tests, run a real smoke test.
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python -m hermes_cli.main chat -q "Say hello" --provider your-provider --model your-model
 ```
 
 Also test the interactive flows if you changed menus:
 
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python -m hermes_cli.main model
 python -m hermes_cli.main setup
 ```

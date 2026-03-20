@@ -991,6 +991,27 @@ class AIAgent:
                 _config_context_length = int(_config_context_length)
             except (TypeError, ValueError):
                 _config_context_length = None
+
+        # Check custom_providers per-model context_length
+        if _config_context_length is None:
+            _custom_providers = _agent_cfg.get("custom_providers")
+            if isinstance(_custom_providers, list):
+                for _cp_entry in _custom_providers:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                    if _cp_url and _cp_url == self.base_url.rstrip("/"):
+                        _cp_models = _cp_entry.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_model_cfg = _cp_models.get(self.model, {})
+                            if isinstance(_cp_model_cfg, dict):
+                                _cp_ctx = _cp_model_cfg.get("context_length")
+                                if _cp_ctx is not None:
+                                    try:
+                                        _config_context_length = int(_cp_ctx)
+                                    except (TypeError, ValueError):
+                                        pass
+                        break
         
         self.context_compressor = ContextCompressor(
             model=self.model,
@@ -1003,6 +1024,7 @@ class AIAgent:
             base_url=self.base_url,
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
+            provider=self.provider,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0

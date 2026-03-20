@@ -1504,7 +1504,7 @@ class HermesCLI:
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
-    def _stream_delta(self, text: str) -> None:
+    def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
 
         Receives text deltas from the agent as tokens arrive. Buffers
@@ -1514,7 +1514,15 @@ class HermesCLI:
         Reasoning/thinking blocks (<REASONING_SCRATCHPAD>, <think>, etc.)
         are suppressed during streaming since they'd display raw XML tags.
         The agent strips them from the final response anyway.
+
+        A ``None`` value signals an intermediate turn boundary (tools are
+        about to execute).  Flushes any open boxes and resets state so
+        tool feed lines render cleanly between turns.
         """
+        if text is None:
+            self._flush_stream()
+            self._reset_stream_state()
+            return
         if not text:
             return
 

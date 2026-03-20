@@ -787,14 +787,30 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content
 
         # 1) Protect fenced code blocks (``` ... ```)
+        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
+        def _protect_fenced(m):
+            raw = m.group(0)
+            # Split off opening ``` (with optional language) and closing ```
+            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3
+            opening = raw[:open_end]
+            body_and_close = raw[open_end:]
+            body = body_and_close[:-3]
+            body = body.replace('\\', '\\\\').replace('`', '\\`')
+            return _ph(opening + body + '```')
+
         text = re.sub(
             r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            lambda m: _ph(m.group(0)),
+            _protect_fenced,
             text,
         )
 
         # 2) Protect inline code (`...`)
-        text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
+        #    Escape \ inside inline code per MarkdownV2 spec.
+        text = re.sub(
+            r'(`[^`]+`)',
+            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            text,
+        )
 
         # 3) Convert markdown links – escape the display text; inside the URL
         #    only ')' and '\' need escaping per the MarkdownV2 spec.

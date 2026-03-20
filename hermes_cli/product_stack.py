@@ -14,6 +14,10 @@ from typing import Any, Dict
 import httpx
 
 from hermes_cli.config import _secure_dir, _secure_file, get_env_value, save_env_value_secure
+from hermes_cli.product_oidc import (
+    discover_product_oidc_provider_metadata,
+    load_product_oidc_client_settings,
+)
 from hermes_cli.product_config import (
     ensure_product_home,
     get_product_storage_root,
@@ -342,10 +346,14 @@ def bootstrap_product_oidc_client(config: Dict[str, Any] | None = None) -> Dict[
     if not client_secret:
         raise RuntimeError("Pocket ID did not return an OIDC client secret")
     save_env_value_secure(str(product_config["auth"]["client_secret_ref"]), client_secret)
+    settings = load_product_oidc_client_settings(product_config)
+    metadata = discover_product_oidc_provider_metadata(settings)
     return {
         "client_id": client_id,
-        "issuer_url": urls["issuer_url"],
+        "issuer_url": settings.issuer_url,
         "callback_url": urls["oidc_callback_url"],
+        "authorization_endpoint": metadata.authorization_endpoint,
+        "token_endpoint": metadata.token_endpoint,
     }
 
 
@@ -381,4 +389,3 @@ def bootstrap_first_admin_enrollment(config: Dict[str, Any] | None = None) -> Di
     atomic_json_write(state_path, state)
     _secure_file(state_path)
     return state
-

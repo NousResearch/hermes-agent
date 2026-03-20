@@ -182,11 +182,34 @@ def test_bootstrap_product_oidc_client_creates_client_and_rotates_secret(tmp_pat
         patch("hermes_cli.product_stack.httpx.Client", return_value=stub),
         patch("hermes_cli.product_stack.get_env_value", return_value="setup-static-key"),
         patch("hermes_cli.product_stack.save_env_value_secure") as mock_save_env,
+        patch(
+            "hermes_cli.product_stack.load_product_oidc_client_settings",
+            return_value=type(
+                "_Settings",
+                (),
+                {
+                    "issuer_url": "http://officebox.local:1411",
+                },
+            )(),
+        ),
+        patch(
+            "hermes_cli.product_stack.discover_product_oidc_provider_metadata",
+            return_value=type(
+                "_Metadata",
+                (),
+                {
+                    "authorization_endpoint": "http://officebox.local:1411/authorize",
+                    "token_endpoint": "http://officebox.local:1411/token",
+                },
+            )(),
+        ),
     ):
         state = bootstrap_product_oidc_client(config)
 
     assert state["client_id"] == "hermes-core"
     assert state["issuer_url"] == "http://officebox.local:1411"
+    assert state["authorization_endpoint"] == "http://officebox.local:1411/authorize"
+    assert state["token_endpoint"] == "http://officebox.local:1411/token"
     assert any(req[0] == "POST" and req[1] == "/api/oidc/clients" for req in stub.requests)
     mock_save_env.assert_called_once_with("HERMES_PRODUCT_OIDC_CLIENT_SECRET", "new-client-secret")
 

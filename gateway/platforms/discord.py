@@ -487,9 +487,11 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.voice_states = True
             
             # Create bot
+            proxy = os.getenv("DISCORD_PROXY") or os.getenv("HTTPS_PROXY")
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                proxy=proxy,
             )
             
             # Parse allowed user entries (may contain usernames or IDs)
@@ -1161,8 +1163,9 @@ class DiscordAdapter(BasePlatformAdapter):
             
             # Download the image and send as a Discord file attachment
             # (Discord renders attachments inline, unlike plain URLs)
+            proxy = os.getenv("DISCORD_PROXY") or os.getenv("HTTPS_PROXY")
             async with aiohttp.ClientSession() as session:
-                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                async with session.get(image_url, proxy=proxy, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if resp.status != 200:
                         raise Exception(f"Failed to download image: HTTP {resp.status}")
                     

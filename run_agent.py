@@ -6060,6 +6060,26 @@ class AIAgent:
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
                     ])
 
+                    # Server disconnected without response often means context too large.
+                    # Treat it as a context-length error if the session is large.
+                    is_server_disconnect = (
+                        'server disconnected' in error_msg
+                        or 'peer closed connection' in error_msg
+                        or 'readerror' in error_msg.lower()
+                        or error_type in ('ReadError', 'RemoteProtocolError', 'ServerDisconnectedError')
+                    )
+                    if is_server_disconnect and not is_context_length_error:
+                        ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
+                        is_large_session = approx_tokens > ctx_len * 0.6 or len(api_messages) > 200
+                        if is_large_session:
+                            is_context_length_error = True
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Server disconnected with large session "
+                                f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
+                                f"treating as context-length error, attempting compression.",
+                                force=True,
+                            )
+
                     # Fallback heuristic: Anthropic sometimes returns a generic
                     # 400 invalid_request_error with just "Error" as the message
                     # when the context is too large.  If the error message is very
@@ -6580,27 +6600,29 @@ class AIAgent:
                     _compressor = self.context_compressor
                     _new_tool_msgs = messages[_msg_count_before_tools:]
                     _new_chars = sum(len(str(m.get("content", "") or "")) for m in _new_tool_msgs)
-                    _estimated_next_prompt = (
-                        _compressor.last_prompt_tokens
-                        + _compressor.last_completion_tokens
-                        + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
-                    )
+                    # If last_prompt_tokens is 0 (stale/no API data), fall back to
+                    # rough estimate to avoid missing compression after API disconnects.
+                    if _compressor.last_prompt_tokens > 0:
+                        _estimated_next_prompt = (
+                            _compressor.last_prompt_tokens
+                            + _compressor.last_completion_tokens
+                            + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
+                        )
+                    else:
+                        from agent.model_metadata import estimate_messages_tokens_rough
+                        _estimated_next_prompt = estimate_messages_tokens_rough(messages)
 
                     # ── Context pressure warnings (user-facing only) ──────────
-                    # Notify the user (NOT the LLM) as context approaches the
-                    # compaction threshold.  Thresholds are relative to where
-                    # compaction fires, not the raw context window.
-                    # Does not inject into messages — just prints to CLI output
-                    # and fires status_callback for gateway platforms.
                     if _compressor.threshold_tokens > 0:
                         _compaction_progress = _estimated_next_prompt / _compressor.threshold_tokens
                         if _compaction_progress >= 0.85 and not self._context_70_warned:
                             self._context_70_warned = True
-                            self._context_50_warned = True  # skip first tier if we jumped past it
+                            self._context_50_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
                         elif _compaction_progress >= 0.60 and not self._context_50_warned:
                             self._context_50_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
+
 
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
                         messages, active_system_prompt = self._compress_context(

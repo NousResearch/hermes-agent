@@ -79,6 +79,12 @@ def _import_sounddevice():
     return sd
 
 
+def _import_kittentts():
+    """Lazy import KittenTTS. Returns the class or raises ImportError."""
+    from kittentts import KittenTTS
+    return KittenTTS
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -88,6 +94,8 @@ DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
+DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
+DEFAULT_KITTENTTS_VOICE = "Jasper"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
@@ -759,6 +767,69 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 
 # ===========================================================================
+# Provider: KittenTTS (local, lightweight)
+# ===========================================================================
+
+# Module-level cache for KittenTTS model instance
+_kittentts_model_cache: Dict[str, Any] = {}
+
+
+def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using KittenTTS local ONNX model.
+
+    KittenTTS is a lightweight TTS engine (25-80MB models) that runs
+    entirely on CPU without requiring a GPU or API key.
+
+    Args:
+        text: Text to convert to speech.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    KittenTTS = _import_kittentts()
+    kt_config = tts_config.get("kittentts", {})
+    model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)
+    voice = kt_config.get("voice", DEFAULT_KITTENTTS_VOICE)
+    speed = kt_config.get("speed", 1.0)
+    clean_text = kt_config.get("clean_text", True)
+
+    # Use cached model instance if available
+    global _kittentts_model_cache
+    if model_name not in _kittentts_model_cache:
+        logger.info("[KittenTTS] Loading model: %s", model_name)
+        _kittentts_model_cache[model_name] = KittenTTS(model_name)
+        logger.info("[KittenTTS] Model loaded successfully")
+
+    model = _kittentts_model_cache[model_name]
+
+    # Generate audio (returns numpy array at 24kHz)
+    audio = model.generate(text, voice=voice, speed=speed, clean_text=clean_text)
+
+    # Save as WAV
+    import soundfile as sf
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    sf.write(wav_path, audio, 24000)
+
+    # Convert to desired format if needed
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            # No ffmpeg — rename the WAV to the expected path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -877,6 +948,18 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "kittentts":
+            try:
+                _import_kittentts()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "KittenTTS provider selected but 'kittentts' package not installed. "
+                             "Run: pip install https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with KittenTTS (local, ~25MB)...")
+            _generate_kittentts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -914,9 +997,9 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
 
         # Try Opus conversion for Telegram compatibility
-        # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
+        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path

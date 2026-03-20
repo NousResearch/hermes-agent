@@ -60,8 +60,11 @@ def parse_anchor_config(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
 
         # Expand ~ and env vars
-        expanded = os.path.expanduser(os.path.expandvars(path_str))
-        resolved = str(Path(expanded).resolve())
+        try:
+            expanded = os.path.expanduser(os.path.expandvars(path_str))
+            resolved = str(Path(expanded).resolve())
+        except (OSError, ValueError):
+            continue
 
         keywords = entry.get("keywords", [])
         if isinstance(keywords, str):
@@ -73,7 +76,10 @@ def parse_anchor_config(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             stem = Path(resolved).stem.lower()
             keywords = [stem]
 
-        max_chars = int(entry.get("max_chars", DEFAULT_MAX_CHARS_PER_ANCHOR))
+        try:
+            max_chars = int(entry.get("max_chars", DEFAULT_MAX_CHARS_PER_ANCHOR))
+        except (ValueError, TypeError):
+            max_chars = DEFAULT_MAX_CHARS_PER_ANCHOR
 
         anchors.append({
             "path": resolved,
@@ -86,7 +92,10 @@ def parse_anchor_config(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def get_max_total_chars(config: Dict[str, Any]) -> int:
     """Get the global max total chars for all anchors combined."""
-    return int(config.get("context_anchors_max_total_chars", DEFAULT_MAX_TOTAL_CHARS))
+    try:
+        return int(config.get("context_anchors_max_total_chars", DEFAULT_MAX_TOTAL_CHARS))
+    except (ValueError, TypeError):
+        return DEFAULT_MAX_TOTAL_CHARS
 
 
 def is_auto_save_enabled(config: Dict[str, Any]) -> bool:
@@ -116,7 +125,7 @@ def load_anchor_file(anchor: Dict[str, Any]) -> Optional[str]:
     path = anchor["path"]
     try:
         content = Path(path).read_text(encoding="utf-8").strip()
-    except (OSError, IOError) as e:
+    except (OSError, IOError, UnicodeDecodeError) as e:
         logger.debug("Could not read anchor file %s: %s", path, e)
         return None
 

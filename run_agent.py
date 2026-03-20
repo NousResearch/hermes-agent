@@ -881,6 +881,7 @@ class AIAgent:
         self._context_anchors = parse_anchor_config(_agent_cfg)
         self._anchors_max_total = get_anchors_max_total(_agent_cfg)
         self._anchors_auto_save = anchors_auto_save_enabled(_agent_cfg)
+        self._active_anchors = None  # set by _flush_anchor_state
         self._anchor_pre_flush_sent = False  # one nudge per session
         self._anchor_hashes_at_nudge = {}  # snapshot taken when nudge is sent
         self._turns_since_memory = 0
@@ -4323,7 +4324,7 @@ class AIAgent:
                         timeout=30.0,
                         **_flush_kwargs,
                     )
-                except (RuntimeError, Exception) as e:
+                except Exception as e:
                     logger.debug("Anchor flush LLM call failed (round %d): %s", round_num, e)
                     break
 

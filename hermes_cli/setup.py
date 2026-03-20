@@ -497,6 +497,40 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         print_error("Please enter 'y' or 'n'")
 
 
+def setup_product_network() -> None:
+    """Configure product-level network hostnames used by the local app stack."""
+    from hermes_cli.product_config import load_product_config, save_product_config
+    from hermes_cli.product_stack import resolve_product_urls
+
+    product_config = load_product_config()
+    current_public_host = str(
+        product_config.get("network", {}).get("public_host", "localhost")
+    ).strip() or "localhost"
+
+    print_header("Product Network")
+    print_info("Choose the hostname users will use to reach this machine.")
+    print_info("This hostname is used for local app URLs and Kanidm OIDC origins.")
+    print_info("Use a hostname like localhost, officebox.local, or a DNS name.")
+    print_info("Raw IP addresses are not supported for the Kanidm public host.")
+
+    while True:
+        public_host = (
+            prompt("Public host", current_public_host).strip() or current_public_host
+        )
+        candidate = load_product_config()
+        candidate.setdefault("network", {})["public_host"] = public_host
+        try:
+            urls = resolve_product_urls(candidate)
+        except ValueError as exc:
+            print_warning(str(exc))
+            continue
+        product_config["network"]["public_host"] = public_host
+        save_product_config(product_config)
+        print_info(f"  App URL: {urls['app_base_url']}")
+        print_info(f"  Kanidm issuer: {urls['issuer_url']}")
+        break
+
+
 def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
     """
     Display a multi-select checklist and return the indices of selected items.
@@ -3311,6 +3345,9 @@ def run_setup_wizard(args):
     print_info(f"Install dir:  {PROJECT_ROOT}")
     print()
     print_info("You can edit these files directly or use 'hermes config edit'")
+
+    # Product network host used by local URLs and Kanidm origins
+    setup_product_network()
 
     # Section 1: Model & Provider
     setup_model_provider(config)

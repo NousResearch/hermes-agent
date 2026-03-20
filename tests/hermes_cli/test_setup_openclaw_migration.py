@@ -191,6 +191,7 @@ class TestSetupWizardOpenclawIntegration:
                 setup_mod, "_offer_openclaw_migration", return_value=False
             ) as mock_migration,
             # Mock the actual setup sections so they don't run
+            patch.object(setup_mod, "setup_product_network"),
             patch.object(setup_mod, "setup_model_provider"),
             patch.object(setup_mod, "setup_terminal_backend"),
             patch.object(setup_mod, "setup_agent_settings"),
@@ -223,6 +224,7 @@ class TestSetupWizardOpenclawIntegration:
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
+            patch.object(setup_mod, "setup_product_network"),
             patch.object(setup_mod, "setup_model_provider"),
             patch.object(setup_mod, "setup_terminal_backend"),
             patch.object(setup_mod, "setup_agent_settings"),
@@ -256,6 +258,7 @@ class TestSetupWizardOpenclawIntegration:
             patch("hermes_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
+            patch.object(setup_mod, "setup_product_network"),
             patch.object(setup_mod, "setup_model_provider") as setup_model_provider,
             patch.object(setup_mod, "setup_terminal_backend"),
             patch.object(setup_mod, "setup_agent_settings"),

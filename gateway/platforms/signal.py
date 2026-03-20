@@ -13,6 +13,7 @@ Requires:
 
 import asyncio
 import base64
+import glob
 import json
 import logging
 import os
@@ -160,6 +161,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.send_read_receipts = extra.get("send_read_receipts", False)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -248,14 +250,16 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={self.account}"
+        sse_url = f"{self.http_url}/api/v1/events"
+        sse_params = {"account": self.account}
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
             try:
-                logger.debug("Signal SSE: connecting to %s", url)
+                logger.debug("Signal SSE: connecting to %s (account=%s)", sse_url, _redact_phone(self.account))
                 async with self.client.stream(
-                    "GET", url,
+                    "GET", sse_url,
+                    params=sse_params,
                     headers={"Accept": "text/event-stream"},
                     timeout=None,
                 ) as response:
@@ -430,6 +434,7 @@ class SignalAdapter(BasePlatformAdapter):
                 if att_size > SIGNAL_MAX_ATTACHMENT_SIZE:
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
+                logger.debug("Signal: processing attachment %s (size %d)", att_id, att_size)
                 try:
                     cached_path, ext = await self._fetch_attachment(att_id)
                     if cached_path:
@@ -437,6 +442,8 @@ class SignalAdapter(BasePlatformAdapter):
                         content_type = att.get("contentType") or _ext_to_mime(ext)
                         media_urls.append(cached_path)
                         media_types.append(content_type)
+                    else:
+                        logger.warning("Signal: failed to fetch attachment %s - got null path", att_id)
                 except Exception:
                     logger.exception("Signal: failed to fetch attachment %s", att_id)
 
@@ -457,7 +464,7 @@ class SignalAdapter(BasePlatformAdapter):
             if any(mt.startswith("audio/") for mt in media_types):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.IMAGE
+                msg_type = MessageType.PHOTO
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -484,22 +491,54 @@ class SignalAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+        # Send read receipt if enabled
+        if self.send_read_receipts and sender and ts_ms:
+            await self._send_read_receipt(sender, ts_ms)
+
+    async def _send_read_receipt(self, sender: str, timestamp: int) -> None:
+        """Send a read receipt for a message."""
+        try:
+            await self._rpc("sendReceipt", {
+                "account": self.account,
+                "recipient": sender,
+                "type": "read",
+                "targetTimestamp": timestamp,
+            }, rpc_id="receipt")
+        except Exception:
+            logger.debug("Signal: failed to send read receipt to %s", _redact_phone(sender))
+
     # ------------------------------------------------------------------
     # Attachment Handling
     # ------------------------------------------------------------------
 
     async def _fetch_attachment(self, attachment_id: str) -> tuple:
-        """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
-        result = await self._rpc("getAttachment", {
-            "account": self.account,
-            "attachmentId": attachment_id,
-        })
+        """Fetch an attachment from disk or via JSON-RPC and cache it. Returns (path, ext)."""
+        # Try reading directly from signal-cli attachments directory first.
+        # This avoids the getAttachment RPC which can fail if account ID is wrong.
+        att_dir = os.path.join(os.path.expanduser("~"), ".local", "share", "signal-cli", "attachments")
+        raw_data = None
 
-        if not result:
-            return None, ""
+        if os.path.isdir(att_dir):
+            matches = glob.glob(os.path.join(att_dir, f"{attachment_id}*"))
+            if matches:
+                att_file = matches[0]
+                try:
+                    with open(att_file, "rb") as f:
+                        raw_data = f.read()
+                    logger.debug("Signal: read attachment %s from disk (%d bytes)", attachment_id, len(raw_data))
+                except Exception as e:
+                    logger.warning("Signal: failed to read attachment from disk: %s", e)
 
-        # Result is base64-encoded file content
-        raw_data = base64.b64decode(result)
+        # Fall back to JSON-RPC if disk read failed
+        if not raw_data:
+            result = await self._rpc("getAttachment", {
+                "account": self.account,
+                "attachmentId": attachment_id,
+            })
+            if not result:
+                return None, ""
+            raw_data = base64.b64decode(result)
+
         ext = _guess_extension(raw_data)
 
         if _is_image_ext(ext):
@@ -667,6 +706,36 @@ class SignalAdapter(BasePlatformAdapter):
         if result is not None:
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send document failed")
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file as an attachment."""
+        return await self.send_document(chat_id, image_path, caption)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file as an attachment."""
+        return await self.send_document(chat_id, audio_path, caption)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a video file as an attachment."""
+        return await self.send_document(chat_id, video_path, caption)
 
     # ------------------------------------------------------------------
     # Typing Indicators

@@ -34,6 +34,30 @@ class TestSignalConfigLoading:
         assert sc.extra["http_url"] == "http://localhost:9090"
         assert sc.extra["account"] == "+15551234567"
 
+    def test_apply_env_overrides_signal_read_receipts_true(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.setenv("SIGNAL_SEND_READ_RECEIPTS", "true")
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        sc = config.platforms[Platform.SIGNAL]
+        assert sc.extra["send_read_receipts"] is True
+
+    def test_apply_env_overrides_signal_read_receipts_false(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.setenv("SIGNAL_SEND_READ_RECEIPTS", "false")
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        sc = config.platforms[Platform.SIGNAL]
+        assert sc.extra["send_read_receipts"] is False
+
     def test_signal_not_loaded_without_both_vars(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
         # No SIGNAL_ACCOUNT
@@ -284,6 +308,91 @@ class TestSignalAuthorization:
 # ---------------------------------------------------------------------------
 # Send Message Tool
 # ---------------------------------------------------------------------------
+
+class TestSignalReadReceipts:
+    """Tests for read receipt sending behavior."""
+
+    def _make_config(self, **extra):
+        config = PlatformConfig()
+        config.enabled = True
+        config.extra = {
+            "http_url": "http://localhost:8080",
+            "account": "+15551234567",
+            **extra,
+        }
+        return config
+
+    def test_read_receipts_disabled_by_default(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        from gateway.platforms.signal import SignalAdapter
+        adapter = SignalAdapter(self._make_config())
+        assert adapter.send_read_receipts is False
+
+    def test_read_receipts_enabled_via_config(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        from gateway.platforms.signal import SignalAdapter
+        adapter = SignalAdapter(self._make_config(send_read_receipts=True))
+        assert adapter.send_read_receipts is True
+
+    @pytest.mark.asyncio
+    async def test_read_receipt_sent_when_enabled(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        from unittest.mock import AsyncMock
+        from gateway.platforms.signal import SignalAdapter
+        adapter = SignalAdapter(self._make_config(send_read_receipts=True))
+        adapter._rpc = AsyncMock()
+
+        await adapter._send_read_receipt("+44999999999", 1234567890000)
+
+        adapter._rpc.assert_called_once_with(
+            "sendReceipt",
+            {
+                "account": "+15551234567",
+                "recipient": "+44999999999",
+                "type": "read",
+                "targetTimestamp": 1234567890000,
+            },
+            rpc_id="receipt",
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_sends_receipt_when_enabled(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        from unittest.mock import AsyncMock
+        from gateway.platforms.signal import SignalAdapter
+        adapter = SignalAdapter(self._make_config(send_read_receipts=True))
+        adapter.handle_message = AsyncMock()
+        adapter._send_read_receipt = AsyncMock()
+
+        envelope = {
+            "dataMessage": {"message": "hello", "timestamp": 1234567890000},
+            "source": "+44999999999",
+            "sourceNumber": "+44999999999",
+            "timestamp": 1234567890000,
+        }
+        await adapter._handle_envelope(envelope)
+
+        adapter._send_read_receipt.assert_called_once_with("+44999999999", 1234567890000)
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_no_receipt_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "")
+        from unittest.mock import AsyncMock
+        from gateway.platforms.signal import SignalAdapter
+        adapter = SignalAdapter(self._make_config(send_read_receipts=False))
+        adapter.handle_message = AsyncMock()
+        adapter._send_read_receipt = AsyncMock()
+
+        envelope = {
+            "dataMessage": {"message": "hello", "timestamp": 1234567890000},
+            "source": "+44999999999",
+            "sourceNumber": "+44999999999",
+            "timestamp": 1234567890000,
+        }
+        await adapter._handle_envelope(envelope)
+
+        adapter._send_read_receipt.assert_not_called()
+
 
 class TestSignalSendMessage:
     def test_signal_in_platform_map(self):

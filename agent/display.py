@@ -254,6 +254,15 @@ class KawaiiSpinner:
             pass
 
     def _animate(self):
+        # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
+        # skip the animation entirely — it creates massive log bloat.
+        # Just log the start once and let stop() log the completion.
+        if not hasattr(self._out, 'isatty') or not self._out.isatty():
+            self._write(f"  [tool] {self.message}", flush=True)
+            while self.running:
+                time.sleep(0.5)
+            return
+
         # Cache skin wings at start (avoid per-frame imports)
         skin = _get_skin()
         wings = skin.get_spinner_wings() if skin else []
@@ -319,12 +328,19 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        # Clear the spinner line with spaces instead of \033[K to avoid
-        # garbled escape codes when prompt_toolkit's patch_stdout is active.
-        blanks = ' ' * max(self.last_line_len + 5, 40)
-        self._write(f"\r{blanks}\r", end='', flush=True)
+
+        is_tty = hasattr(self._out, 'isatty') and self._out.isatty()
+        if is_tty:
+            # Clear the spinner line with spaces instead of \033[K to avoid
+            # garbled escape codes when prompt_toolkit's patch_stdout is active.
+            blanks = ' ' * max(self.last_line_len + 5, 40)
+            self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
-            self._write(f"  {final_message}", flush=True)
+            elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
+            if is_tty:
+                self._write(f"  {final_message}", flush=True)
+            else:
+                self._write(f"  [done] {final_message}{elapsed}", flush=True)
 
     def __enter__(self):
         self.start()

@@ -45,9 +45,14 @@ def mirror_to_session(
             logger.debug("Mirror: no session found for %s:%s:%s", platform, chat_id, thread_id)
             return False
 
+        # Use "user" role for mirrored cron/delivery messages to maintain
+        # proper user/assistant alternation in the conversation history.
+        # Using "assistant" caused two consecutive assistant messages which
+        # confuses models and can cause API rejections on strict providers.
         mirror_msg = {
-            "role": "assistant",
-            "content": message_text,
+            "role": "user",
+            "content": f"[Cron delivery from {source_label}]
+{message_text}",
             "timestamp": datetime.now().isoformat(),
             "mirror": True,
             "mirror_source": source_label,

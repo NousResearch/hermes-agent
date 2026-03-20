@@ -292,6 +292,16 @@ class DeliveryRouter:
         send_metadata = dict(metadata or {})
         if target.thread_id and "thread_id" not in send_metadata:
             send_metadata["thread_id"] = target.thread_id
+
+        # Message tagging — prepend source tag for multi-agent clarity
+        source_tag = send_metadata.pop("source_tag", None)
+        if not source_tag:
+            job_name = send_metadata.get("job_name")
+            if job_name:
+                source_tag = f"Cron: {job_name}"
+        if source_tag:
+            content = f"[{source_tag}]\n{content}"
+
         return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
 
 

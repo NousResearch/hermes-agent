@@ -136,6 +136,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "matrix": Platform.MATRIX,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }

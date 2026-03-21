@@ -1374,9 +1374,6 @@ class AIAgent:
         def _run_review():
             import contextlib, os as _os
             try:
-                # Redirect stdout to devnull so spinners, cute messages,
-                # and any other print() calls from the review agent don't
-                # leak into the main CLI display.
                 with open(_os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull):
                     review_agent = AIAgent(
@@ -1396,6 +1393,39 @@ class AIAgent:
                         user_message=prompt,
                         conversation_history=messages_snapshot,
                     )
+
+                # Scan the review agent's messages for successful tool actions
+                # and surface a compact summary to the user.
+                actions = []
+                for msg in getattr(review_agent, "_session_messages", []):
+                    if not isinstance(msg, dict) or msg.get("role") != "tool":
+                        continue
+                    try:
+                        data = json.loads(msg.get("content", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if not data.get("success"):
+                        continue
+                    message = data.get("message", "")
+                    target = data.get("target", "")
+                    if "created" in message.lower():
+                        actions.append(message)
+                    elif "updated" in message.lower():
+                        actions.append(message)
+                    elif "added" in message.lower() or (target and "add" in message.lower()):
+                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                        actions.append(f"{label} updated")
+                    elif "Entry added" in message:
+                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                        actions.append(f"{label} updated")
+                    elif "removed" in message.lower() or "replaced" in message.lower():
+                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                        actions.append(f"{label} updated")
+
+                if actions:
+                    summary = " · ".join(dict.fromkeys(actions))
+                    self._safe_print(f"  💾 {summary}")
+
             except Exception as e:
                 logger.debug("Background memory/skill review failed: %s", e)
 

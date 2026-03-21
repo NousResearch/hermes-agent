@@ -10,22 +10,30 @@ import os
 import sys
 from pathlib import Path
 
-GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
+from honcho_integration.client import resolve_config_path, GLOBAL_CONFIG_PATH
+
 HOST = "hermes"
 
 
+def _config_path() -> Path:
+    """Return the active Honcho config path (instance-local or global)."""
+    return resolve_config_path()
+
+
 def _read_config() -> dict:
-    if GLOBAL_CONFIG_PATH.exists():
+    path = _config_path()
+    if path.exists():
         try:
-            return json.loads(GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {}
 
 
-def _write_config(cfg: dict) -> None:
-    GLOBAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GLOBAL_CONFIG_PATH.write_text(
+def _write_config(cfg: dict, path: Path | None = None) -> None:
+    path = path or _config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
@@ -87,9 +95,14 @@ def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
     cfg = _read_config()
 
+    active_path = _config_path()
     print("\nHoncho memory setup\n" + "─" * 40)
     print("  Honcho gives Hermes persistent cross-session memory.")
-    print("  Config is shared with other hosts at ~/.honcho/config.json\n")
+    if active_path != GLOBAL_CONFIG_PATH:
+        print(f"  Instance config: {active_path}")
+    else:
+        print("  Config is shared with other hosts at ~/.honcho/config.json")
+    print()
 
     if not _ensure_sdk_installed():
         return
@@ -162,10 +175,10 @@ def cmd_setup(args) -> None:
         hermes_host["recallMode"] = new_recall
 
     # Session strategy
-    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
+    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-directory")
     print(f"\n  Session strategy options:")
-    print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
-    print("    per-directory — one session per working directory")
+    print("    per-directory — one session per working directory (default)")
+    print("    per-session   — new Honcho session each run, named by Hermes session ID")
     print("    per-repo      — one session per git repository (uses repo root name)")
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
@@ -176,7 +189,7 @@ def cmd_setup(args) -> None:
     hermes_host.setdefault("saveMessages", True)
 
     _write_config(cfg)
-    print(f"\n  Config written to {GLOBAL_CONFIG_PATH}")
+    print(f"\n  Config written to {active_path}")
 
     # Test connection
     print("  Testing connection... ", end="", flush=True)
@@ -223,8 +236,10 @@ def cmd_status(args) -> None:
 
     cfg = _read_config()
 
+    active_path = _config_path()
+
     if not cfg:
-        print("  No Honcho config found at ~/.honcho/config.json")
+        print(f"  No Honcho config found at {active_path}")
         print("  Run 'hermes honcho setup' to configure.\n")
         return
 
@@ -243,7 +258,7 @@ def cmd_status(args) -> None:
     print(f"  API key:        {masked}")
     print(f"  Workspace:      {hcfg.workspace_id}")
     print(f"  Host:           {hcfg.host}")
-    print(f"  Config path:    {GLOBAL_CONFIG_PATH}")
+    print(f"  Config path:    {active_path}")
     print(f"  AI peer:        {hcfg.ai_peer}")
     print(f"  User peer:      {hcfg.peer_name or 'not set'}")
     print(f"  Session key:    {hcfg.resolve_session_name()}")
@@ -275,7 +290,7 @@ def cmd_sessions(args) -> None:
     if not sessions:
         print("  No session mappings configured.\n")
         print("  Add one with: hermes honcho map <session-name>")
-        print("  Or edit ~/.honcho/config.json directly.\n")
+        print(f"  Or edit {_config_path()} directly.\n")
         return
 
     cwd = os.getcwd()
@@ -361,7 +376,7 @@ def cmd_peer(args) -> None:
 
     if changed:
         _write_config(cfg)
-        print(f"  Saved to {GLOBAL_CONFIG_PATH}\n")
+        print(f"  Saved to {_config_path()}\n")
 
 
 def cmd_mode(args) -> None:
@@ -434,7 +449,7 @@ def cmd_tokens(args) -> None:
 
     if changed:
         _write_config(cfg)
-        print(f"  Saved to {GLOBAL_CONFIG_PATH}\n")
+        print(f"  Saved to {_config_path()}\n")
 
 
 def cmd_identity(args) -> None:

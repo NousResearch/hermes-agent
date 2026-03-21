@@ -216,7 +216,7 @@ def load_cli_config() -> Dict[str, Any]:
             "compact": False,
             "resume_display": "full",
             "show_reasoning": False,
-            "streaming": False,
+            "streaming": True,
 
             "skin": "default",
         },

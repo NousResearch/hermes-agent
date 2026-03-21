@@ -743,13 +743,24 @@ def get_active_environments_info() -> Dict[str, Any]:
         "count": len(_active_environments),
         "task_ids": list(_active_environments.keys()),
         "workdirs": {},
+        "backends": {},
     }
-    
+
     # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
-    for task_id in _active_environments.keys():
+    for task_id, env in _active_environments.items():
+        cwd = getattr(env, "cwd", None)
+        if cwd is not None:
+            info["workdirs"][task_id] = cwd
+
+        backend = getattr(env, "backend", None) or getattr(env, "__class__", None)
+        if isinstance(backend, str):
+            info["backends"][task_id] = backend
+        elif backend is not None:
+            info["backends"][task_id] = getattr(backend, "__name__", str(backend))
+
         scratch_dir = _get_scratch_dir()
-        pattern = f"hermes-*{task_id[:8]}*"
+        pattern = f"hermes-*{str(task_id)[:8]}*"
         import glob
         for path in glob.glob(str(scratch_dir / pattern)):
             try:
@@ -757,7 +768,7 @@ def get_active_environments_info() -> Dict[str, Any]:
                 total_size += size
             except OSError as e:
                 logger.debug("Could not stat path %s: %s", path, e)
-    
+
     info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
     return info
 

@@ -109,12 +109,15 @@ This is the most critical step in the entire setup. Without the correct intents 
 On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see three toggles:
 
 | Intent | Purpose | Required? |
-|--------|---------|-----------|
+|--------|---------|-----------| 
 | **Presence Intent** | See user online/offline status | Optional |
-| **Server Members Intent** | Access the member list | Optional |
+| **Server Members Intent** | Access the member list, resolve usernames | **Required** |
 | **Message Content Intent** | Read the text content of messages | **Required** |
 
-**Enable Message Content Intent** by toggling it **ON**. Without this, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
+**Enable both Server Members Intent and Message Content Intent** by toggling them **ON**.
+
+- Without **Message Content Intent**, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
+- Without **Server Members Intent**, the bot cannot resolve usernames for the allowed users list and may fail to identify who is messaging it.
 
 :::warning[This is the #1 reason Discord bots don't work]
 If your bot is online but never responds to messages, the **Message Content Intent** is almost certainly disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.

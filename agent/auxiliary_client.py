@@ -654,16 +654,20 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     if not token:
         return None, None
 
-    # Allow base URL override from config.yaml model.base_url
+    # Allow base URL override from config.yaml model.base_url, but only
+    # when the configured provider is anthropic — otherwise a non-Anthropic
+    # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
     base_url = _ANTHROPIC_DEFAULT_BASE_URL
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            if cfg_provider == "anthropic":
+                cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+                if cfg_base_url:
+                    base_url = cfg_base_url
     except Exception:
         pass
 

@@ -336,6 +336,7 @@ class GatewayRunner:
         self._running = False
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
+        self._exit_with_failure = False
         self._exit_reason: Optional[str] = None
         
         # Track running agents per session for interrupt support
@@ -592,6 +593,10 @@ class GatewayRunner:
         return self._exit_cleanly
 
     @property
+    def should_exit_with_failure(self) -> bool:
+        return self._exit_with_failure
+
+    @property
     def exit_reason(self) -> Optional[str]:
         return self._exit_reason
 
@@ -643,7 +648,11 @@ class GatewayRunner:
 
         if not self.adapters:
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
-            logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
+            if adapter.fatal_error_retryable:
+                self._exit_with_failure = True
+                logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
+            else:
+                logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
             await self.stop()
 
     def _request_clean_exit(self, reason: str) -> None:
@@ -5266,6 +5275,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
+
+    if runner.should_exit_with_failure:
+        if runner.exit_reason:
+            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+        return False
     
     # Stop cron ticker cleanly
     cron_stop.set()

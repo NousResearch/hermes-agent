@@ -53,6 +53,15 @@ def _make_adapter():
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._running = False
+    adapter._message_handler = None
+    adapter._fatal_error_code = None
+    adapter._fatal_error_message = None
+    adapter._fatal_error_retryable = True
+    adapter._fatal_error_handler = None
+    adapter._active_sessions = {}
+    adapter._pending_messages = {}
+    adapter._background_tasks = set()
+    adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     return adapter
 
@@ -197,6 +206,54 @@ class TestFileHandleClosedOnError:
             result = await adapter.connect()
 
         assert result is False
+        mock_fh.close.assert_called_once()
+        assert adapter._bridge_log_fh is None
+
+
+class TestBridgeRuntimeFailure:
+    """Verify runtime bridge death is surfaced as a fatal adapter error."""
+
+    @pytest.mark.asyncio
+    async def test_send_marks_retryable_fatal_when_managed_bridge_exits(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        mock_fh = MagicMock()
+        adapter._bridge_log_fh = mock_fh
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 7
+        adapter._bridge_process = mock_proc
+
+        result = await adapter.send("chat-123", "hello")
+
+        assert result.success is False
+        assert "exited unexpectedly" in result.error
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        assert adapter.fatal_error_retryable is True
+        fatal_handler.assert_awaited_once()
+        mock_fh.close.assert_called_once()
+        assert adapter._bridge_log_fh is None
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_marks_retryable_fatal_when_managed_bridge_exits(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        mock_fh = MagicMock()
+        adapter._bridge_log_fh = mock_fh
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 23
+        adapter._bridge_process = mock_proc
+
+        await adapter._poll_messages()
+
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        assert adapter.fatal_error_retryable is True
+        fatal_handler.assert_awaited_once()
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
 

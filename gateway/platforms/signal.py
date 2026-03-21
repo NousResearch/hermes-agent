@@ -513,7 +513,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
-            "attachmentId": attachment_id,
+            "id": attachment_id,
         })
 
         if not result:

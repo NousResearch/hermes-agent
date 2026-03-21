@@ -2336,7 +2336,7 @@ class AIAgent:
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
         # so the agent can correctly report which model it is (workaround for API bug).
-        if self.provider in ("alibaba-coding-plan", "alibaba-coding-plan-anthropic"):
+        if self.provider == "alibaba":
             _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
             prompt_parts.append(
                 f"You are powered by the model named {_model_short}. "

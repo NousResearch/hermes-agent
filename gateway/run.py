@@ -3677,6 +3677,20 @@ class GatewayRunner:
         if not self._session_db:
             return "Session database not available."
 
+        # Ensure session exists in SQLite DB (it may only exist in session_store
+        # if this is the first command in a new session)
+        existing_title = self._session_db.get_session_title(session_id)
+        if existing_title is None:
+            # Session doesn't exist in DB yet — create it
+            try:
+                self._session_db.create_session(
+                    session_id=session_id,
+                    source=source.platform.value if source.platform else "unknown",
+                    user_id=source.user_id,
+                )
+            except Exception:
+                pass  # Session might already exist, ignore errors
+
         title_arg = event.get_command_args().strip()
         if title_arg:
             # Sanitize the title before setting

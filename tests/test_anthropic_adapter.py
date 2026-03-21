@@ -450,6 +450,12 @@ class TestNormalizeModelName:
         assert normalize_model_name("claude-opus-4-6") == "claude-opus-4-6"
         assert normalize_model_name("claude-opus-4-5-20251101") == "claude-opus-4-5-20251101"
 
+    def test_preserve_dots_for_alibaba_dashscope(self):
+        """Alibaba/DashScope use dots in model names (e.g. qwen3.5-plus). Fixes #1739."""
+        assert normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

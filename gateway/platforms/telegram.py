@@ -358,6 +358,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batch_tasks.clear()
         self._pending_photo_batches.clear()
 
+        for task in self._pending_text_batch_tasks.values():
+            if task and not task.done():
+                task.cancel()
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+
         self._mark_disconnected()
         self._app = None
         self._bot = None

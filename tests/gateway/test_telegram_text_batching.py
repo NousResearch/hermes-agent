@@ -119,3 +119,31 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+
+class TestTextBatchDisconnect:
+    @pytest.mark.asyncio
+    async def test_disconnect_cancels_pending_text_batch_tasks(self):
+        from gateway.platforms.telegram import TelegramAdapter
+
+        config = PlatformConfig(enabled=True, token="fake-token")
+        adapter = TelegramAdapter(config)
+        adapter.handle_message = AsyncMock()
+
+        task = MagicMock()
+        task.done.return_value = False
+        adapter._pending_text_batch_tasks["session:text-burst"] = task
+        adapter._pending_text_batches["session:text-burst"] = _make_event("buffered text")
+
+        adapter._app = MagicMock()
+        adapter._app.updater.running = True
+        adapter._app.updater.stop = AsyncMock()
+        adapter._app.running = True
+        adapter._app.stop = AsyncMock()
+        adapter._app.shutdown = AsyncMock()
+
+        await adapter.disconnect()
+
+        task.cancel.assert_called_once()
+        assert adapter._pending_text_batch_tasks == {}
+        assert adapter._pending_text_batches == {}

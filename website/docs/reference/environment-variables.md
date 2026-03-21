@@ -263,6 +263,7 @@ compression:
 | `AUXILIARY_VISION_MODEL` | Override model for vision tasks |
 | `AUXILIARY_VISION_BASE_URL` | Direct OpenAI-compatible endpoint for vision tasks |
 | `AUXILIARY_VISION_API_KEY` | API key paired with `AUXILIARY_VISION_BASE_URL` |
+| `AUXILIARY_VISION_TIMEOUT` | Timeout in seconds for vision analysis LLM calls (default: `30`) |
 | `AUXILIARY_WEB_EXTRACT_PROVIDER` | Override provider for web extraction/summarization |
 | `AUXILIARY_WEB_EXTRACT_MODEL` | Override model for web extraction/summarization |
 | `AUXILIARY_WEB_EXTRACT_BASE_URL` | Direct OpenAI-compatible endpoint for web extraction/summarization |

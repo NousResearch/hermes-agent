@@ -299,11 +299,14 @@ async def vision_analyze_tool(
         logger.info("Processing image with vision model...")
         
         # Call the vision API via centralized router
+        # Allow configurable timeout via environment variable for slow local models
+        vision_timeout = float(os.getenv("AUXILIARY_VISION_TIMEOUT", "30"))
         call_kwargs = {
             "task": "vision",
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 2000,
+            "timeout": vision_timeout,
         }
         if model:
             call_kwargs["model"] = model

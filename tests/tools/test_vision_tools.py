@@ -234,6 +234,54 @@ class TestHandleVisionAnalyze:
 
 
 # ---------------------------------------------------------------------------
+# Configurable vision timeout (AUXILIARY_VISION_TIMEOUT)
+# ---------------------------------------------------------------------------
+
+
+class TestVisionTimeout:
+    """Verify that AUXILIARY_VISION_TIMEOUT env var controls the LLM call timeout."""
+
+    @pytest.mark.asyncio
+    async def test_default_timeout_is_30(self, tmp_path):
+        """Without AUXILIARY_VISION_TIMEOUT, timeout should default to 30."""
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test description"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response) as mock_llm,
+        ):
+            os.environ.pop("AUXILIARY_VISION_TIMEOUT", None)
+            await vision_analyze_tool(str(img), "describe", "test/model")
+            call_kwargs = mock_llm.call_args
+            assert call_kwargs.kwargs.get("timeout") == 30.0 or call_kwargs[1].get("timeout") == 30.0
+
+    @pytest.mark.asyncio
+    async def test_custom_timeout_from_env(self, tmp_path):
+        """AUXILIARY_VISION_TIMEOUT=180 should pass timeout=180 to async_call_llm."""
+        img = tmp_path / "test.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test description"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch.dict(os.environ, {"AUXILIARY_VISION_TIMEOUT": "180"}),
+            patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response) as mock_llm,
+        ):
+            await vision_analyze_tool(str(img), "describe", "test/model")
+            call_kwargs = mock_llm.call_args
+            assert call_kwargs.kwargs.get("timeout") == 180.0 or call_kwargs[1].get("timeout") == 180.0
+
+
+# ---------------------------------------------------------------------------
 # Error logging with exc_info — verify tracebacks are logged
 # ---------------------------------------------------------------------------
 

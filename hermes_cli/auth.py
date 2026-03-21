@@ -668,6 +668,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "featherless-ai": "featherless",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

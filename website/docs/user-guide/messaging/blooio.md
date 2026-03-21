@@ -14,6 +14,10 @@ Unlike Socket Mode platforms such as Slack, Blooio requires a **public HTTPS bas
 Hermes manages the Blooio webhook for you. You provide your API key and public base URL, and Hermes creates or updates the instance-specific webhook automatically.
 :::
 
+:::warning Public Hostname Required
+Blooio does **not** work with a private-only Hermes instance. You must provide a **publicly reachable HTTPS hostname** that forwards to the Hermes gateway. A local-only `localhost` setup, a private LAN IP, or DNS without a real HTTPS service behind it is not enough.
+:::
+
 ## Prerequisites
 
 - A **Blooio API key**
@@ -141,6 +145,71 @@ This works well for:
 - Home servers
 - Developer machines
 
+#### Cloudflare Tunnel quick walkthrough (recommended for testing)
+
+If you already use Cloudflare, this is usually the fastest way to test Blooio.
+
+1. Pick a hostname, for example `hermes-blooio.example.com`
+2. Install `cloudflared` on the same machine as Hermes
+3. Authenticate and create a tunnel:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create hermes-blooio
+```
+
+4. Route DNS for the hostname to the tunnel:
+
+```bash
+cloudflared tunnel route dns hermes-blooio hermes-blooio.example.com
+```
+
+5. Create a `cloudflared` config that forwards the public hostname to the local Hermes Blooio port:
+
+```yaml
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/your-user/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: hermes-blooio.example.com
+    service: http://127.0.0.1:8081
+  - service: http_status:404
+```
+
+6. Set your Hermes Blooio config:
+
+```bash
+BLOOIO_PUBLIC_BASE_URL=https://hermes-blooio.example.com
+BLOOIO_WEBHOOK_PORT=8081
+BLOOIO_BIND_HOST=127.0.0.1
+```
+
+7. Start Hermes:
+
+```bash
+hermes gateway
+```
+
+8. Start the tunnel:
+
+```bash
+cloudflared tunnel run hermes-blooio
+```
+
+9. Verify the public URL reaches Hermes:
+
+```bash
+curl https://hermes-blooio.example.com/health
+```
+
+Expected response:
+
+```json
+{"status": "ok", "platform": "blooio"}
+```
+
+If `/health` does not work from the public URL, Blooio webhook delivery and outgoing attachment hosting will not work either.
+
 ### Option C: Tailscale Funnel
 
 If Hermes is running on your local computer, plain Tailscale by itself is **not** enough, because Blooio is not inside your tailnet and needs a public HTTPS endpoint.
@@ -191,6 +260,8 @@ If you want Blooio on your own computer:
 5. Confirm that the public URL can reach:
    - `GET /health`
    - `POST /webhooks/blooio/{instance_id}`
+
+For a more general explanation of Hermes features that require public inbound connectivity, see [Webhooks](/docs/user-guide/messaging/webhooks).
 
 :::warning
 Avoid temporary or changing public URLs for normal use. If the public URL changes, Hermes will need to update the Blooio webhook registration and any in-flight media URLs may stop working. Stable hostnames are strongly preferred.

@@ -455,10 +455,26 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
-            # Bridge per-platform settings from config.yaml into gw_data
+            # Merge platforms section from config.yaml into gw_data so that
+            # nested keys like platforms.webhook.extra.routes are loaded.
+            yaml_platforms = yaml_cfg.get("platforms")
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
+                gw_data["platforms"] = platforms_data
+            if isinstance(yaml_platforms, dict):
+                for plat_name, plat_block in yaml_platforms.items():
+                    if not isinstance(plat_block, dict):
+                        continue
+                    existing = platforms_data.get(plat_name, {})
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    # Deep-merge extra dicts so gateway.json defaults survive
+                    merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    merged = {**existing, **plat_block}
+                    if merged_extra:
+                        merged["extra"] = merged_extra
+                    platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
             for plat in Platform:
                 if plat == Platform.LOCAL:

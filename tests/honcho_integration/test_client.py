@@ -11,6 +11,7 @@ from honcho_integration.client import (
     HonchoClientConfig,
     get_honcho_client,
     reset_honcho_client,
+    resolve_config_path,
     GLOBAL_CONFIG_PATH,
     HOST,
 )
@@ -25,7 +26,7 @@ class TestHonchoClientConfigDefaults:
         assert config.environment == "production"
         assert config.enabled is False
         assert config.save_messages is True
-        assert config.session_strategy == "per-session"
+        assert config.session_strategy == "per-directory"
         assert config.recall_mode == "hybrid"
         assert config.session_peer_prefix is False
         assert config.linked_hosts == []
@@ -157,7 +158,7 @@ class TestFromGlobalConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"apiKey": "key"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.session_strategy == "per-session"
+        assert config.session_strategy == "per-directory"
 
     def test_context_tokens_host_block_wins(self, tmp_path):
         """Host block contextTokens should override root."""
@@ -328,6 +329,47 @@ class TestGetLinkedWorkspaces:
         )
         workspaces = config.get_linked_workspaces()
         assert "cursor" in workspaces
+
+
+class TestResolveConfigPath:
+    def test_prefers_hermes_home_when_exists(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        local_cfg = hermes_home / "honcho.json"
+        local_cfg.write_text('{"apiKey": "local"}')
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            result = resolve_config_path()
+        assert result == local_cfg
+
+    def test_falls_back_to_global_when_no_local(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        # No honcho.json in HERMES_HOME
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            result = resolve_config_path()
+        assert result == GLOBAL_CONFIG_PATH
+
+    def test_falls_back_to_global_without_hermes_home_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HOME", None)
+            result = resolve_config_path()
+        assert result == GLOBAL_CONFIG_PATH
+
+    def test_from_global_config_uses_local_path(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        local_cfg = hermes_home / "honcho.json"
+        local_cfg.write_text(json.dumps({
+            "apiKey": "local-key",
+            "workspace": "local-ws",
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            config = HonchoClientConfig.from_global_config()
+        assert config.api_key == "local-key"
+        assert config.workspace_id == "local-ws"
 
 
 class TestResetHonchoClient:

@@ -772,6 +772,12 @@ setup_path() {
         case "$LOGIN_SHELL" in
             zsh)
                 [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
+                [ -f "$HOME/.zprofile" ] && SHELL_CONFIGS+=("$HOME/.zprofile")
+                # If neither exists, create ~/.zshrc (common on fresh macOS installs)
+                if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+                    touch "$HOME/.zshrc"
+                    SHELL_CONFIGS+=("$HOME/.zshrc")
+                fi
                 ;;
             bash)
                 [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")

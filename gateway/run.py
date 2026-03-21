@@ -2276,9 +2276,17 @@ class GatewayRunner:
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
-            # If streaming already delivered the response, return None so
-            # _process_message_background doesn't send it again.
+            # If streaming already delivered the response, extract and
+            # deliver any MEDIA: files before returning None.  Streaming
+            # sends raw text chunks that include MEDIA: tags — the normal
+            # post-processing in _process_message_background is skipped
+            # when already_sent is True, so media files would never be
+            # delivered without this.
             if agent_result.get("already_sent"):
+                if response:
+                    await self._deliver_media_from_response(
+                        response, event, adapter,
+                    )
                 return None
 
             return response
@@ -3185,6 +3193,82 @@ class GatewayRunner:
                     os.unlink(p)
                 except OSError:
                     pass
+
+    async def _deliver_media_from_response(
+        self,
+        response: str,
+        event: MessageEvent,
+        adapter,
+    ) -> None:
+        """Extract MEDIA: tags and local file paths from a response and deliver them.
+
+        Called after streaming has already sent the text to the user, so the
+        text itself is already delivered — this only handles file attachments
+        that the normal _process_message_background path would have caught.
+        """
+        from pathlib import Path
+
+        try:
+            media_files, _ = adapter.extract_media(response)
+            _, cleaned = adapter.extract_images(response)
+            local_files, _ = adapter.extract_local_files(cleaned)
+
+            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+
+            _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+            _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+            _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+            for media_path, is_voice in media_files:
+                try:
+                    ext = Path(media_path).suffix.lower()
+                    if ext in _AUDIO_EXTS:
+                        await adapter.send_voice(
+                            chat_id=event.source.chat_id,
+                            audio_path=media_path,
+                            metadata=_thread_meta,
+                        )
+                    elif ext in _VIDEO_EXTS:
+                        await adapter.send_video(
+                            chat_id=event.source.chat_id,
+                            video_path=media_path,
+                            metadata=_thread_meta,
+                        )
+                    elif ext in _IMAGE_EXTS:
+                        await adapter.send_image_file(
+                            chat_id=event.source.chat_id,
+                            image_path=media_path,
+                            metadata=_thread_meta,
+                        )
+                    else:
+                        await adapter.send_document(
+                            chat_id=event.source.chat_id,
+                            file_path=media_path,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+
+            for file_path in local_files:
+                try:
+                    ext = Path(file_path).suffix.lower()
+                    if ext in _IMAGE_EXTS:
+                        await adapter.send_image_file(
+                            chat_id=event.source.chat_id,
+                            image_path=file_path,
+                            metadata=_thread_meta,
+                        )
+                    else:
+                        await adapter.send_document(
+                            chat_id=event.source.chat_id,
+                            file_path=file_path,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+
+        except Exception as e:
+            logger.warning("Post-stream media extraction failed: %s", e)
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

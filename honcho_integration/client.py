@@ -1,7 +1,9 @@
 """Honcho client initialization and configuration.
 
-Reads the global ~/.honcho/config.json when available, falling back
-to environment variables.
+Resolution order for config file:
+  1. $HERMES_HOME/honcho.json  (instance-local, enables isolated Hermes instances)
+  2. ~/.honcho/config.json     (global, shared across all Honcho-enabled apps)
+  3. Environment variables     (HONCHO_API_KEY, HONCHO_ENVIRONMENT)
 
 Resolution order for host-specific settings:
   1. Explicit host block fields (always win)
@@ -25,6 +27,24 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
+
+
+def _get_hermes_home() -> Path:
+    """Get HERMES_HOME without importing hermes_cli (avoids circular deps)."""
+    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def resolve_config_path() -> Path:
+    """Return the active Honcho config path.
+
+    Checks $HERMES_HOME/honcho.json first (instance-local), then falls back
+    to ~/.honcho/config.json (global).  Returns the global path if neither
+    exists (for first-time setup writes).
+    """
+    local_path = _get_hermes_home() / "honcho.json"
+    if local_path.exists():
+        return local_path
+    return GLOBAL_CONFIG_PATH
 
 
 _RECALL_MODE_ALIASES = {"auto": "hybrid"}
@@ -107,7 +127,7 @@ class HonchoClientConfig:
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
     # Session resolution
-    session_strategy: str = "per-session"
+    session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
@@ -136,11 +156,11 @@ class HonchoClientConfig:
         host: str = HOST,
         config_path: Path | None = None,
     ) -> HonchoClientConfig:
-        """Create config from ~/.honcho/config.json.
+        """Create config from the resolved Honcho config path.
 
-        Falls back to environment variables if the file doesn't exist.
+        Resolution: $HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars.
         """
-        path = config_path or GLOBAL_CONFIG_PATH
+        path = config_path or resolve_config_path()
         if not path.exists():
             logger.debug("No global Honcho config at %s, falling back to env", path)
             return cls.from_env()
@@ -216,7 +236,7 @@ class HonchoClientConfig:
         # sessionStrategy / sessionPeerPrefix: host first, root fallback
         session_strategy = (
             host_block.get("sessionStrategy")
-            or raw.get("sessionStrategy", "per-session")
+            or raw.get("sessionStrategy", "per-directory")
         )
         host_prefix = host_block.get("sessionPeerPrefix")
         session_peer_prefix = (
@@ -326,7 +346,7 @@ class HonchoClientConfig:
                 return f"{self.peer_name}-{base}"
             return base
 
-        # per-directory: one Honcho session per working directory
+        # per-directory: one Honcho session per working directory (default)
         if self.session_strategy in ("per-directory", "per-session"):
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:

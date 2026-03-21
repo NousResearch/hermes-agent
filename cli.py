@@ -5779,6 +5779,73 @@ class HermesCLI:
         self._invalidate(min_interval=0.0)
         return True
 
+    # --- Protected TUI extension hooks for wrapper CLIs ---
+
+    def _get_extra_tui_widgets(self) -> list:
+        """Return extra prompt_toolkit widgets to insert into the TUI layout.
+
+        Wrapper CLIs can override this to inject widgets (e.g. a mini-player,
+        overlay menu) into the layout without overriding ``run()``.  Widgets
+        are inserted between the spacer and the status bar.
+        """
+        return []
+
+    def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
+        """Register extra keybindings on the TUI ``KeyBindings`` object.
+
+        Wrapper CLIs can override this to add keybindings (e.g. transport
+        controls, modal shortcuts) without overriding ``run()``.
+
+        Parameters
+        ----------
+        kb : KeyBindings
+            The active keybinding registry for the prompt_toolkit application.
+        input_area : TextArea
+            The main input widget, for wrappers that need to inspect or
+            manipulate user input from a keybinding handler.
+        """
+
+    def _build_tui_layout_children(
+        self,
+        *,
+        sudo_widget,
+        secret_widget,
+        approval_widget,
+        clarify_widget,
+        spinner_widget,
+        spacer,
+        status_bar,
+        input_rule_top,
+        image_bar,
+        input_area,
+        input_rule_bot,
+        voice_status_bar,
+        completions_menu,
+    ) -> list:
+        """Assemble the ordered list of children for the root ``HSplit``.
+
+        Wrapper CLIs typically override ``_get_extra_tui_widgets`` instead of
+        this method.  Override this only when you need full control over widget
+        ordering.
+        """
+        return [
+            Window(height=0),
+            sudo_widget,
+            secret_widget,
+            approval_widget,
+            clarify_widget,
+            spinner_widget,
+            spacer,
+            *self._get_extra_tui_widgets(),
+            status_bar,
+            input_rule_top,
+            image_bar,
+            input_area,
+            input_rule_bot,
+            voice_status_bar,
+            completions_menu,
+        ]
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
@@ -6741,26 +6808,32 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
+        # Allow wrapper CLIs to register extra keybindings.
+        self._register_extra_tui_keybindings(kb, input_area=input_area)
+
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when
         # the corresponding interactive prompt is active.
+        completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
+
         layout = Layout(
-            HSplit([
-                Window(height=0),
-                sudo_widget,
-                secret_widget,
-                approval_widget,
-                clarify_widget,
-                spinner_widget,
-                spacer,
-                status_bar,
-                input_rule_top,
-                image_bar,
-                input_area,
-                input_rule_bot,
-                voice_status_bar,
-                CompletionsMenu(max_height=12, scroll_offset=1),
-            ])
+            HSplit(
+                self._build_tui_layout_children(
+                    sudo_widget=sudo_widget,
+                    secret_widget=secret_widget,
+                    approval_widget=approval_widget,
+                    clarify_widget=clarify_widget,
+                    spinner_widget=spinner_widget,
+                    spacer=spacer,
+                    status_bar=status_bar,
+                    input_rule_top=input_rule_top,
+                    image_bar=image_bar,
+                    input_area=input_area,
+                    input_rule_bot=input_rule_bot,
+                    voice_status_bar=voice_status_bar,
+                    completions_menu=completions_menu,
+                )
+            )
         )
         
         # Style for the application

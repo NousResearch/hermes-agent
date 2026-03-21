@@ -1588,6 +1588,21 @@ class GatewayRunner:
                 else:
                     return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
+        # Plugin-registered slash commands
+        if command:
+            try:
+                from hermes_cli.plugins import get_plugin_command_handler
+                plugin_handler = get_plugin_command_handler(command)
+                if plugin_handler:
+                    user_args = event.get_command_args().strip()
+                    import asyncio as _aio
+                    result = plugin_handler(user_args)
+                    if _aio.iscoroutine(result):
+                        result = await result
+                    return str(result) if result else None
+            except Exception as e:
+                logger.debug("Plugin command dispatch failed (non-fatal): %s", e)
+
         # Skill slash commands: /skill-name loads the skill and sends to agent
         if command:
             try:

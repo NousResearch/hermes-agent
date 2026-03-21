@@ -160,11 +160,14 @@ def _deliver_result(job: dict, content: str) -> None:
         return
 
     # Run the async send in a fresh event loop (safe from any thread)
+    coro = _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id)
     try:
-        result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
+        result = asyncio.run(coro)
     except RuntimeError:
         # asyncio.run() fails if there's already a running loop in this thread;
+        # close the abandoned coroutine to prevent RuntimeWarning, then
         # spin up a new thread to avoid that.
+        coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))

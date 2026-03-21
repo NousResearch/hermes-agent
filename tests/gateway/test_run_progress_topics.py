@@ -56,7 +56,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
 class FakeAgent:
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs["tool_progress_callback"]
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):

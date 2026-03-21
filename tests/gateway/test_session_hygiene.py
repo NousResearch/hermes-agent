@@ -284,6 +284,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._pending_clarifications = {}
     runner._session_db = None
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None

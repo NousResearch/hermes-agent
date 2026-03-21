@@ -46,6 +46,16 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send"
+            },
+            "controls": {
+                "type": "object",
+                "description": "Optional interactive controls for the outgoing message. Currently rendered natively on Telegram and ignored on unsupported direct-send platforms.",
+                "properties": {
+                    "buttons": {
+                        "type": "array",
+                        "description": "Rows of buttons. Each button supports {label, action} for callback buttons or {label, url} for external links.",
+                    }
+                }
             }
         },
         "required": []
@@ -76,6 +86,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    controls = args.get("controls") or {}
     if not target or not message:
         return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
 
@@ -172,6 +183,7 @@ def _handle_send(args):
                 cleaned_message,
                 thread_id=thread_id,
                 media_files=media_files,
+                controls=controls,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -267,7 +279,7 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, controls=None):  # controls: Optional[ControlsDef]
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -289,16 +301,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
 
-    # Smart-chunk the message to fit within platform limits.
-    # For short messages or platforms without a known limit this is a no-op.
-    max_len = _MAX_LENGTHS.get(platform)
-    if max_len:
-        chunks = BasePlatformAdapter.truncate_message(message, max_len)
-    else:
-        chunks = [message]
-
-    # --- Telegram: special handling for media attachments ---
+    # --- Telegram: native controls + media ---
     if platform == Platform.TELEGRAM:
+        max_len = _MAX_LENGTHS.get(platform)
+        chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -308,6 +314,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                controls=controls if is_last else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -315,6 +322,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-Telegram platforms ---
+    # Append controls as numbered text fallback before chunking
+    if controls:
+        fallback = BasePlatformAdapter.render_controls_as_text(controls)
+        if fallback:
+            message = message.rstrip() + "\n\n" + fallback
+
     if media_files and not message.strip():
         return {
             "error": (
@@ -322,12 +335,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 f"target {platform.value} had only media attachments"
             )
         }
-    warning = None
+    warnings = []
     if media_files:
-        warning = (
+        warnings.append(
             f"MEDIA attachments were omitted for {platform.value}; "
             "native send_message media delivery is currently only supported for telegram"
         )
+
+    # Smart-chunk the (possibly extended) message to fit platform limits.
+    max_len = _MAX_LENGTHS.get(platform)
+    chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
 
     last_result = None
     for chunk in chunks:
@@ -350,14 +367,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             return result
         last_result = result
 
-    if warning and isinstance(last_result, dict) and last_result.get("success"):
-        warnings = list(last_result.get("warnings", []))
-        warnings.append(warning)
-        last_result["warnings"] = warnings
+    if warnings and isinstance(last_result, dict) and last_result.get("success"):
+        existing_warnings = list(last_result.get("warnings", []))
+        existing_warnings.extend(warnings)
+        last_result["warnings"] = existing_warnings
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, controls=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -393,6 +410,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         thread_kwargs = {}
         if thread_id is not None:
             thread_kwargs["message_thread_id"] = int(thread_id)
+        from gateway.platforms.telegram import build_telegram_reply_markup
+
+        reply_markup = build_telegram_reply_markup(controls)
 
         last_msg = None
         warnings = []
@@ -401,7 +421,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 last_msg = await bot.send_message(
                     chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    parse_mode=send_parse_mode, reply_markup=reply_markup, **thread_kwargs
                 )
             except Exception as md_error:
                 # Parse failed, fall back to plain text
@@ -417,7 +437,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         plain = message
                     last_msg = await bot.send_message(
                         chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        parse_mode=None, reply_markup=reply_markup, **thread_kwargs
                     )
                 else:
                     raise

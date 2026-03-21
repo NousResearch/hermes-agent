@@ -38,6 +38,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._pending_clarifications = {}
     runner._voice_mode = {}
     runner._is_user_authorized = lambda _source: True
     return runner

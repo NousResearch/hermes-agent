@@ -27,7 +27,12 @@ def _make_config():
 def _install_telegram_mock(monkeypatch, bot):
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, constants=constants_mod)
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token: bot,
+        InlineKeyboardButton=lambda **kwargs: SimpleNamespace(**kwargs),
+        InlineKeyboardMarkup=lambda keyboard: SimpleNamespace(inline_keyboard=keyboard),
+        constants=constants_mod,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -103,6 +108,7 @@ class TestSendMessageTool:
             "hello",
             thread_id=None,
             media_files=[],
+            controls={},
         )
         mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None)
 
@@ -142,6 +148,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="99999",
             media_files=[],
+            controls={},
         )
         mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="99999")
 
@@ -171,6 +178,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            controls={},
         )
         mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585")
 
@@ -201,6 +209,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="17585",
             media_files=[],
+            controls={},
         )
 
     def test_media_only_message_uses_placeholder_for_mirroring(self):
@@ -229,17 +238,112 @@ class TestSendMessageTool:
             "",
             thread_id=None,
             media_files=[("/tmp/example.ogg", False)],
+            controls={},
         )
-        mirror_mock.assert_called_once_with(
-            "telegram",
+
+    def test_passes_generic_controls_to_platform_send(self):
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": "Choose one",
+                        "controls": {
+                            "buttons": [
+                                [{"label": "Approve", "action": "approve"}],
+                            ]
+                        },
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
             "-1001",
-            "[Sent audio attachment]",
-            source_label="cli",
+            "Choose one",
             thread_id=None,
+            media_files=[],
+            controls={
+                "buttons": [
+                    [{"label": "Approve", "action": "approve"}],
+                ]
+            },
         )
+
+
+    def test_non_telegram_controls_appended_as_text_fallback(self):
+        """On non-Telegram platforms, controls are rendered as numbered text in the message."""
+        discord_cfg = SimpleNamespace(enabled=True, token="tok", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    discord_cfg,
+                    "ch",
+                    "Pick one:",
+                    controls={
+                        "buttons": [
+                            [{"label": "Alpha", "action": "a"}],
+                            [{"label": "Beta", "action": "b"}],
+                        ]
+                    },
+                )
+            )
+
+        assert result["success"] is True
+        sent_text = send.await_args.args[2]
+        assert "1. Alpha" in sent_text
+        assert "2. Beta" in sent_text
+        # The original message should still be there
+        assert "Pick one:" in sent_text
 
 
 class TestSendTelegramMediaDelivery:
+    def test_sends_inline_keyboard_with_message(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "Choose one",
+                controls={
+                    "buttons": [
+                        [{"label": "Approve", "action": "approve"}],
+                        [{"label": "Docs", "url": "https://example.com"}],
+                    ]
+                },
+            )
+        )
+
+        assert result["success"] is True
+        reply_markup = bot.send_message.await_args.kwargs["reply_markup"]
+        assert len(reply_markup.inline_keyboard) == 2
+        assert reply_markup.inline_keyboard[0][0].callback_data == "hermes:approve"
+        assert reply_markup.inline_keyboard[1][0].url == "https://example.com"
+
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
         image_path = tmp_path / "photo.png"
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
@@ -374,7 +478,7 @@ class TestSendToPlatformChunking:
         """When chunked, media files are sent only with the last chunk."""
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, controls=None):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 

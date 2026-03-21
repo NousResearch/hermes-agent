@@ -19,6 +19,7 @@ try:
     from telegram import Update, Bot, Message
     from telegram.ext import (
         Application,
+        CallbackQueryHandler,
         CommandHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
@@ -32,6 +33,7 @@ except ImportError:
     Bot = Any
     Message = Any
     Application = Any
+    CallbackQueryHandler = Any
     CommandHandler = Any
     TelegramMessageHandler = Any
     filters = None
@@ -51,6 +53,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    ControlsDef,
     MessageEvent,
     MessageType,
     SendResult,
@@ -96,6 +99,70 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _has_visible_text(text: str) -> bool:
+    """Return True when a chunk still has user-visible content."""
+    return bool(re.sub(r"\s+", "", text or ""))
+
+
+_CALLBACK_PREFIX = "hermes:"
+
+
+def _normalize_callback_action(action: Any) -> str:
+    """Normalize a user-facing action into compact Telegram callback data.
+
+    Truncated to 48 chars so that after prepending the ``hermes:`` prefix
+    (7 chars) the total stays within Telegram's 64-byte callback_data limit.
+    """
+    text = str(action or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-_")
+    return text[:48]
+
+
+def parse_telegram_callback_action(data: Any) -> str:
+    """Extract the Hermes action identifier from Telegram callback data."""
+    text = str(data or "")
+    if text.startswith(_CALLBACK_PREFIX):
+        return text[len(_CALLBACK_PREFIX):]
+    return text
+
+
+def build_telegram_reply_markup(controls: Optional[ControlsDef]):
+    """Build Telegram InlineKeyboardMarkup from generic Hermes controls."""
+    rows = controls.get("buttons") if isinstance(controls, dict) else None
+    if not rows:
+        return None
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    keyboard = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        button_row = []
+        for button in row:
+            if not isinstance(button, dict):
+                continue
+            label = str(button.get("label") or button.get("text") or "").strip()[:64]
+            if not label:
+                continue
+            url = str(button.get("url") or "").strip()
+            if url:
+                button_row.append(InlineKeyboardButton(text=label, url=url))
+                continue
+            action = _normalize_callback_action(button.get("action"))
+            if not action:
+                continue
+            callback_data = f"{_CALLBACK_PREFIX}{action}"[:64]
+            button_row.append(InlineKeyboardButton(text=label, callback_data=callback_data))
+        if button_row:
+            keyboard.append(button_row)
+
+    if not keyboard:
+        return None
+    return InlineKeyboardMarkup(keyboard)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -110,7 +177,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     MEDIA_GROUP_WAIT_SECONDS = 0.8
-    
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -242,6 +309,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app.add_handler(TelegramMessageHandler(
                 filters.COMMAND,
                 self._handle_command
+            ))
+            self._app.add_handler(CallbackQueryHandler(
+                self._handle_callback_query
             ))
             self._app.add_handler(TelegramMessageHandler(
                 filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
@@ -387,9 +457,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
                     for chunk in chunks
                 ]
+            chunks = [chunk for chunk in chunks if _has_visible_text(_strip_mdv2(chunk))]
+            if not chunks:
+                logger.info("[%s] Skipping empty Telegram message after formatting", self.name)
+                return SendResult(success=True, raw_response={"message_ids": []})
             
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None
+            reply_markup = None
+            if metadata:
+                reply_markup = metadata.get("reply_markup")
+                if reply_markup is None:
+                    reply_markup = build_telegram_reply_markup(metadata.get("controls"))
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -406,6 +485,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_markup=reply_markup if i == 0 else None,
                                 reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                                 message_thread_id=int(thread_id) if thread_id else None,
                             )
@@ -414,10 +494,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
+                                if not _has_visible_text(plain_chunk):
+                                    logger.info("[%s] Skipping empty Telegram chunk after Markdown fallback", self.name)
+                                    continue
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
+                                    reply_markup=reply_markup if i == 0 else None,
                                     reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                                     message_thread_id=int(thread_id) if thread_id else None,
                                 )
@@ -432,7 +516,8 @@ class TelegramAdapter(BasePlatformAdapter):
                             await asyncio.sleep(wait)
                         else:
                             raise
-                message_ids.append(str(msg.message_id))
+                if msg is not None:
+                    message_ids.append(str(msg.message_id))
             
             return SendResult(
                 success=True,
@@ -443,6 +528,25 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_interactive(
+        self,
+        chat_id: str,
+        content: str,
+        controls: Optional[ControlsDef],
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Telegram message with native inline keyboard controls."""
+        meta = dict(metadata or {})
+        if controls:
+            meta["controls"] = controls
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=meta or None,
+        )
 
     async def edit_message(
         self,
@@ -956,6 +1060,77 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND)
+        await self.handle_message(event)
+
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle Telegram inline button callbacks as normalized interaction events."""
+        query = getattr(update, "callback_query", None)
+        message = getattr(query, "message", None)
+        if not query or not message:
+            return
+
+        data = str(getattr(query, "data", "") or "")
+        if not data.startswith(_CALLBACK_PREFIX):
+            return
+        action = parse_telegram_callback_action(data)
+        label = ""
+        try:
+            markup = getattr(message, "reply_markup", None)
+            keyboard = getattr(markup, "inline_keyboard", None) or []
+            for row in keyboard:
+                for button in row:
+                    if getattr(button, "callback_data", None) == data:
+                        label = str(getattr(button, "text", "") or "")
+                        raise StopIteration
+        except StopIteration:
+            pass
+
+        try:
+            ack = f"Selected: {label}" if label else "Selection received"
+            await query.answer(text=ack[:200])
+        except Exception as e:
+            logger.debug("[%s] Failed to answer callback query: %s", self.name, e)
+
+        chat = message.chat
+        user = query.from_user
+        chat_type = "dm"
+        if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            chat_type = "group"
+        elif chat.type == ChatType.CHANNEL:
+            chat_type = "channel"
+
+        source = self.build_source(
+            chat_id=str(chat.id),
+            chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
+            chat_type=chat_type,
+            user_id=str(user.id) if user else None,
+            user_name=user.full_name if user else None,
+            thread_id=str(message.message_thread_id) if message.message_thread_id else None,
+        )
+
+        original_text = message.text or message.caption or ""
+        event_text = label or action or "button"
+
+        event = MessageEvent(
+            text=event_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=query,
+            message_id=str(message.message_id),
+            metadata={
+                "interaction": {
+                    "kind": "button",
+                    "action": action,
+                    "label": label or None,
+                    "callback_data": data or None,
+                    "source_message_id": str(message.message_id),
+                    "source_text": original_text or None,
+                }
+            },
+            reply_to_message_id=str(message.message_id),
+            reply_to_text=original_text or None,
+            timestamp=getattr(query, "message", message).date,
+        )
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

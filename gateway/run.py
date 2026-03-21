@@ -14,6 +14,8 @@ Usage:
 """
 
 import asyncio
+import concurrent.futures
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +26,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -218,7 +221,8 @@ from gateway.session import (
     build_session_key,
 )
 from gateway.delivery import DeliveryRouter, DeliveryTarget
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter, ControlsDef, GATEWAY_NO_RESPONSE, MessageEvent, MessageType
+from tools.clarify_tool import CLARIFY_TIMED_OUT_RESPONSE
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +357,14 @@ class GatewayRunner:
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+        # Track pending clarify interactions per session. This is the first
+        # gateway-native consumer of the generic interaction model from #503.
+        #
+        # Threading model: entries are created/removed on the asyncio event loop
+        # (via run_coroutine_threadsafe from the agent thread). The agent thread
+        # blocks on a concurrent.futures.Future stored inside each entry; the
+        # event loop resolves that Future when the user responds.
+        self._pending_clarifications: Dict[str, Dict[str, Any]] = {}
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
@@ -614,6 +626,436 @@ class GatewayRunner:
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
+
+    _CLARIFY_TIMEOUT_SECONDS = 120
+    _CLARIFY_ACTION_RE = re.compile(r"^clarify-([a-z0-9]+)-(choice-(\d+)|other)$")
+    _APPROVAL_ACTION_RE = re.compile(r"^approve-([a-f0-9]+)-(once|always|deny)$")
+
+    # NOTE: _pending_clarifications is initialized in __init__ — access it
+    # directly as self._pending_clarifications everywhere.
+
+    @classmethod
+    def _parse_clarify_action(cls, action: str) -> tuple[Optional[str], Optional[int], bool]:
+        match = cls._CLARIFY_ACTION_RE.fullmatch(str(action or "").strip().lower())
+        if not match:
+            return None, None, False
+        if match.group(2) == "other":
+            return match.group(1), None, True
+        index_text = match.group(3)
+        return match.group(1), int(index_text) if index_text is not None else None, False
+
+    @staticmethod
+    def _platform_supports_native_controls(platform: Optional[Platform]) -> bool:
+        return platform == Platform.TELEGRAM
+
+    def _build_clarify_controls(self, request_id: str, choices: List[str]) -> ControlsDef:
+        rows = [
+            [{"label": choice, "action": f"clarify-{request_id}-choice-{idx}"}]
+            for idx, choice in enumerate(choices)
+        ]
+        rows.append([{"label": "Other", "action": f"clarify-{request_id}-other"}])
+        return {"buttons": rows}
+
+    def _build_approval_controls(self, session_key: str) -> tuple[ControlsDef, str]:
+        """Build inline-button controls for a dangerous-command approval prompt.
+
+        Returns ``(controls, key_hash)`` where *key_hash* is stored in the
+        pending-approval dict so we can reverse-lookup by callback action.
+        """
+        key_hash = hashlib.sha256(session_key.encode()).hexdigest()[:10]
+        controls: ControlsDef = {"buttons": [[
+            {"label": "Allow Once", "action": f"approve-{key_hash}-once"},
+            {"label": "Always Allow", "action": f"approve-{key_hash}-always"},
+            {"label": "Deny", "action": f"approve-{key_hash}-deny"},
+        ]]}
+        return controls, key_hash
+
+    def _truncate_controls_for_platform(
+        self, controls: ControlsDef, source: SessionSource,
+    ) -> tuple[ControlsDef, List[str], List[str]]:
+        """Truncate controls to the platform's button limit.
+
+        Returns ``(truncated_controls, overflow_labels, numeric_reply_choices)`` where
+        *overflow_labels* contains the labels that were removed and should be
+        rendered as numbered text in the message body, and
+        *numeric_reply_choices* is the exact ordered set of choices that a
+        numeric text reply should resolve against.
+        """
+        adapter = self.adapters.get(source.platform) if source else None
+        limit = getattr(adapter, "MAX_INTERACTIVE_BUTTONS", None) if adapter else None
+        if limit is None:
+            return controls, [], []
+
+        rows = controls.get("buttons") or []
+        # Flatten to individual buttons
+        flat = [btn for row in rows for btn in row if isinstance(btn, dict)]
+        if len(flat) <= limit:
+            return controls, [], []
+
+        # Keep first (limit - 1) buttons + the last button (assumed "Other")
+        kept = flat[: limit - 1] + [flat[-1]]
+        overflow = flat[limit - 1 : -1]
+        overflow_labels = [str(b.get("label", "")).strip() for b in overflow if b.get("label")]
+        numeric_reply_choices = overflow_labels[:]
+
+        truncated: ControlsDef = {"buttons": [[btn] for btn in kept]}
+        return truncated, overflow_labels, numeric_reply_choices
+
+    def _set_clarify_passthrough(self, source: SessionSource, session_key: str, enabled: bool) -> None:
+        adapter = self.adapters.get(source.platform) if source else None
+        if not adapter or not session_key:
+            return
+        if enabled and hasattr(adapter, "enable_session_passthrough"):
+            adapter.enable_session_passthrough(session_key)
+        elif not enabled and hasattr(adapter, "disable_session_passthrough"):
+            adapter.disable_session_passthrough(session_key)
+
+    async def _send_interactive_prompt(
+        self,
+        *,
+        adapter: Any,
+        source: SessionSource,
+        content: str,
+        controls: ControlsDef,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """Send interactive UI using adapter API when available, with legacy fallback."""
+        if hasattr(adapter, "send_interactive"):
+            return await adapter.send_interactive(
+                source.chat_id,
+                content,
+                controls,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+
+        legacy_metadata = dict(metadata or {})
+        legacy_metadata["controls"] = controls
+        return await adapter.send(
+            source.chat_id,
+            content,
+            reply_to=reply_to,
+            metadata=legacy_metadata,
+        )
+    def _format_clarify_prompt(
+        self,
+        question: str,
+        choices: List[str],
+        *,
+        use_native_controls: bool,
+        overflow_choices: Optional[List[str]] = None,
+    ) -> str:
+        prompt = f"**Hermes needs your input**\n\n{question.strip()}"
+        if not choices:
+            return prompt + "\n\nReply with your answer."
+        if use_native_controls:
+            suffix = "\n\nTap a choice, or type your own answer."
+            if overflow_choices:
+                controls: ControlsDef = {"buttons": [[{"label": c, "action": f"overflow-{i}"}] for i, c in enumerate(overflow_choices)]}
+                text = BasePlatformAdapter.render_controls_as_text(controls)
+                if text:
+                    suffix = f"\n\nOr pick from these additional options:\n{text}\n\nTap a button above, reply with a number, or type your own answer."
+            return prompt + suffix
+
+        # Build a temporary ControlsDef and render as text
+        tmp_controls: ControlsDef = {"buttons": [[{"label": c, "action": f"choice-{i}"}] for i, c in enumerate(choices)]}
+        numbered = BasePlatformAdapter.render_controls_as_text(tmp_controls)
+        return f"{prompt}\n\n{numbered}\n\nReply with a number or type your own answer."
+
+    async def _start_clarify_interaction(
+        self,
+        source: SessionSource,
+        session_key: str,
+        question: str,
+        choices: List[str],
+        response_future: concurrent.futures.Future,
+        request_id: str,
+    ) -> None:
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            raise RuntimeError("No adapter is available for this platform.")
+
+        use_native_controls = self._platform_supports_native_controls(source.platform) and bool(choices)
+        metadata: Dict[str, Any] = {}
+        if source.thread_id:
+            metadata["thread_id"] = source.thread_id
+        overflow_choices: List[str] = []
+        numeric_reply_choices: List[str] = list(choices)
+        controls: Optional[ControlsDef] = None
+        if use_native_controls:
+            controls = self._build_clarify_controls(request_id, choices)
+            controls, overflow_choices, numeric_reply_choices = self._truncate_controls_for_platform(controls, source)
+
+        prompt = self._format_clarify_prompt(
+            question,
+            choices,
+            use_native_controls=use_native_controls,
+            overflow_choices=overflow_choices,
+        )
+
+        pending = {
+            "request_id": request_id,
+            "question": question,
+            "choices": list(choices),
+            "future": response_future,
+            "accepting_text": not choices,
+            "source": source,
+            "prompt_message_id": None,
+            "numeric_reply_choices": numeric_reply_choices,
+        }
+        self._pending_clarifications[session_key] = pending
+        self._set_clarify_passthrough(source, session_key, True)
+        result = None
+        try:
+            if use_native_controls and controls:
+                try:
+                    result = await self._send_interactive_prompt(
+                        adapter=adapter,
+                        source=source,
+                        content=prompt,
+                        controls=controls,
+                        metadata=metadata or None,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send clarify controls; falling back to text prompt: %s", e)
+                    result = None
+
+                if not result or not result.success:
+                    fallback_prompt = self._format_clarify_prompt(
+                        question,
+                        choices,
+                        use_native_controls=False,
+                    )
+                    pending["numeric_reply_choices"] = list(choices)
+                    result = await adapter.send(
+                        source.chat_id,
+                        fallback_prompt,
+                        metadata=metadata or None,
+                    )
+            else:
+                result = await adapter.send(
+                    source.chat_id,
+                    prompt,
+                    metadata=metadata or None,
+                )
+        except Exception:
+            self._pending_clarifications.pop(session_key, None)
+            self._set_clarify_passthrough(source, session_key, False)
+            raise
+
+        if not result or not result.success:
+            self._pending_clarifications.pop(session_key, None)
+            self._set_clarify_passthrough(source, session_key, False)
+            error_msg = getattr(result, "error", None) if result is not None else None
+            raise RuntimeError(error_msg or "Failed to send clarify prompt.")
+
+        pending["prompt_message_id"] = result.message_id
+
+    def _resolve_pending_clarification(self, session_key: str, response: str) -> bool:
+        pending = self._pending_clarifications.pop(session_key, None)
+        if not pending:
+            return False
+        source = pending.get("source")
+        if source:
+            self._set_clarify_passthrough(source, session_key, False)
+        future = pending.get("future")
+        if future and not future.done():
+            future.set_result(str(response).strip())
+            return True
+        return False
+
+    def _cancel_pending_clarification(self, session_key: str, reason: str) -> bool:
+        pending = self._pending_clarifications.pop(session_key, None)
+        if not pending:
+            return False
+        source = pending.get("source")
+        if source:
+            self._set_clarify_passthrough(source, session_key, False)
+        future = pending.get("future")
+        if future and not future.done():
+            future.set_result(reason)
+            return True
+        return False
+
+    async def _cancel_pending_clarification_async(self, session_key: str, reason: str) -> bool:
+        return self._cancel_pending_clarification(session_key, reason)
+
+    @staticmethod
+    def _tool_messages_include_clarify_timeout(messages: List[dict]) -> bool:
+        for message in messages or []:
+            if message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                payload = json.loads(content)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("timed_out") is True:
+                return True
+            if payload.get("user_response") == CLARIFY_TIMED_OUT_RESPONSE:
+                return True
+        return False
+
+    async def _handle_pending_clarification(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        interaction = event.metadata.get("interaction") if isinstance(event.metadata, dict) else None
+        action = str((interaction or {}).get("action") or "").strip().lower()
+        request_id, choice_index, wants_other = self._parse_clarify_action(action)
+        pending = self._pending_clarifications.get(session_key)
+
+        if request_id:
+            if not pending or pending.get("request_id") != request_id:
+                return "That selection is no longer active."
+
+            if wants_other:
+                pending["accepting_text"] = True
+                adapter = self.adapters.get(event.source.platform)
+                if adapter:
+                    metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    await adapter.send(
+                        event.source.chat_id,
+                        "Type your answer.",
+                        reply_to=pending.get("prompt_message_id"),
+                        metadata=metadata,
+                    )
+                return GATEWAY_NO_RESPONSE
+
+            choices = pending.get("choices") or []
+            if choice_index is None or not (0 <= choice_index < len(choices)):
+                return "That selection is no longer valid."
+            self._resolve_pending_clarification(session_key, choices[choice_index])
+            return GATEWAY_NO_RESPONSE
+
+        if not pending or event.is_command():
+            return None
+
+        text = (event.text or "").strip()
+        if not text:
+            return None
+
+        numeric_reply_choices = pending.get("numeric_reply_choices")
+        if not isinstance(numeric_reply_choices, list):
+            numeric_reply_choices = pending.get("choices") or []
+        if text.isdigit():
+            numeric_index = int(text) - 1
+            if 0 <= numeric_index < len(numeric_reply_choices):
+                text = numeric_reply_choices[numeric_index]
+
+        self._resolve_pending_clarification(session_key, text)
+        return GATEWAY_NO_RESPONSE
+
+    async def _handle_pending_approval(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        """Handle an approval button callback from Telegram inline buttons.
+
+        Returns a result message if this event was an approval callback,
+        ``None`` otherwise (so the caller can fall through to normal dispatch).
+        """
+        interaction = event.metadata.get("interaction") if isinstance(event.metadata, dict) else None
+        action = str((interaction or {}).get("action") or "").strip().lower()
+        match = self._APPROVAL_ACTION_RE.fullmatch(action)
+        if not match:
+            return None
+
+        key_hash = match.group(1)
+        decision = match.group(2)  # once | always | deny
+
+        # Reverse-lookup the pending approval by stored key_hash
+        found_key: Optional[str] = None
+        for sk, pending in self._pending_approvals.items():
+            if pending.get("key_hash") == key_hash:
+                found_key = sk
+                break
+
+        if found_key is None or found_key != session_key:
+            return "That approval is no longer active."
+
+        import time as _time
+        approval = self._pending_approvals.get(found_key, {})
+        ts = approval.get("timestamp", 0)
+        if _time.time() - ts > self._APPROVAL_TIMEOUT_SECONDS:
+            self._pending_approvals.pop(found_key, None)
+            return "⚠️ Approval expired (timed out after 5 minutes). Ask the agent to try again."
+
+        self._pending_approvals.pop(found_key)
+        cmd = approval.get("command", "")
+        pattern_keys = approval.get("pattern_keys", [])
+        if not pattern_keys:
+            pk = approval.get("pattern_key", "")
+            pattern_keys = [pk] if pk else []
+
+        if decision == "deny":
+            logger.info("User denied dangerous command via inline button")
+            return "❌ Command denied."
+
+        from tools.approval import approve_session, approve_permanent
+
+        if decision == "always":
+            for pk in pattern_keys:
+                approve_permanent(pk)
+            scope_msg = " (pattern approved permanently)"
+        else:
+            # "once" — approve for this session so the immediate replay works
+            for pk in pattern_keys:
+                approve_session(found_key, pk)
+            scope_msg = ""
+
+        logger.info("User approved dangerous command via inline button: %s...%s", cmd[:60], scope_msg)
+        from tools.terminal_tool import terminal_tool
+        result = terminal_tool(command=cmd, force=True)
+        return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
+
+    def _make_gateway_clarify_callback(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        source: SessionSource,
+        session_key: str,
+    ):
+        def callback(question, choices):
+            response_future: concurrent.futures.Future = concurrent.futures.Future()
+            request_id = uuid.uuid4().hex[:10]
+            safe_choices = [str(choice).strip() for choice in (choices or []) if str(choice).strip()]
+            start_future = asyncio.run_coroutine_threadsafe(
+                self._start_clarify_interaction(
+                    source=source,
+                    session_key=session_key,
+                    question=str(question or "").strip(),
+                    choices=safe_choices,
+                    response_future=response_future,
+                    request_id=request_id,
+                ),
+                loop,
+            )
+            try:
+                start_future.result(timeout=15)
+            except (concurrent.futures.TimeoutError, Exception):
+                # Clean up dangling pending entry if the start coroutine
+                # timed out or raised before completing.
+                self._pending_clarifications.pop(session_key, None)
+                self._set_clarify_passthrough(source, session_key, False)
+                raise
+
+            try:
+                return str(response_future.result(timeout=self._CLARIFY_TIMEOUT_SECONDS)).strip()
+            except concurrent.futures.TimeoutError:
+                cleanup_future = asyncio.run_coroutine_threadsafe(
+                    self._cancel_pending_clarification_async(
+                        session_key,
+                        CLARIFY_TIMED_OUT_RESPONSE,
+                    ),
+                    loop,
+                )
+                try:
+                    cleanup_future.result(timeout=5)
+                except Exception:
+                    pass
+                logger.info("Clarify request timed out for session %s", session_key)
+                return CLARIFY_TIMED_OUT_RESPONSE
+
+        return callback
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -1088,6 +1530,12 @@ class GatewayRunner:
         self._running_agents.clear()
         self._pending_messages.clear()
         self._pending_approvals.clear()
+        for session_key in list(self._pending_clarifications.keys()):
+            self._cancel_pending_clarification(
+                session_key,
+                "The gateway shut down while waiting for your response.",
+            )
+        self._pending_clarifications.clear()
         self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
@@ -1341,6 +1789,16 @@ class GatewayRunner:
                         )
             return None
         
+        _quick_key = self._session_key_for_source(source)
+
+        clarify_result = await self._handle_pending_clarification(event, _quick_key)
+        if clarify_result is not None:
+            return clarify_result
+
+        approval_result = await self._handle_pending_approval(event, _quick_key)
+        if approval_result is not None:
+            return approval_result
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -1348,7 +1806,6 @@ class GatewayRunner:
         # Special case: Telegram/photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
-        _quick_key = self._session_key_for_source(source)
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
@@ -2149,18 +2606,53 @@ class GatewayRunner:
                 pending = pop_pending(session_key)
                 if pending:
                     pending["timestamp"] = _time.time()
-                    self._pending_approvals[session_key] = pending
-                    # Append structured instructions so the user knows how to respond
                     cmd_preview = pending.get("command", "")
                     if len(cmd_preview) > 200:
                         cmd_preview = cmd_preview[:200] + "..."
                     approval_hint = (
-                        f"\n\n⚠️ **Dangerous command requires approval:**\n"
+                        f"⚠️ **Dangerous command requires approval:**\n"
                         f"```\n{cmd_preview}\n```\n"
-                        f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                        f"for the session, or `/deny` to cancel."
                     )
-                    response = (response or "") + approval_hint
+
+                    if source.platform == Platform.TELEGRAM:
+                        controls, key_hash = self._build_approval_controls(session_key)
+                        pending["key_hash"] = key_hash
+                        self._pending_approvals[session_key] = pending
+                        interactive_hint = approval_hint + "Tap a button below, or reply `/approve` / `/deny`."
+                        fallback_hint = approval_hint + (
+                            "Reply `/approve` to execute, `/approve session` to approve this pattern "
+                            "for the session, or `/deny` to cancel."
+                        )
+                        adapter = self.adapters.get(source.platform)
+                        sent_with_controls = False
+                        if adapter:
+                            meta: Dict[str, Any] = {}
+                            if source.thread_id:
+                                meta["thread_id"] = source.thread_id
+                            try:
+                                send_result = await self._send_interactive_prompt(
+                                    adapter=adapter,
+                                    source=source,
+                                    content=interactive_hint,
+                                    controls=controls,
+                                    metadata=meta or None,
+                                )
+                                if send_result.success:
+                                    pending["approval_message_id"] = send_result.message_id
+                                    sent_with_controls = True
+                                else:
+                                    logger.warning("Failed to send Telegram approval controls: %s", send_result.error)
+                            except Exception as e:
+                                logger.debug("Failed to send approval buttons: %s", e)
+                        if not sent_with_controls:
+                            response = (response or "") + "\n\n" + fallback_hint
+                    else:
+                        self._pending_approvals[session_key] = pending
+                        approval_hint += (
+                            "Reply `/approve` to execute, `/approve session` to approve this pattern "
+                            "for the session, or `/deny` to cancel."
+                        )
+                        response = (response or "") + "\n\n" + approval_hint
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
             
@@ -2261,10 +2753,11 @@ class GatewayRunner:
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
-            # If streaming already delivered the response, return None so
+            # If streaming already delivered the response, return the gateway
+            # sentinel so _process_message_background doesn't warn or resend.
             # _process_message_background doesn't send it again.
             if agent_result.get("already_sent"):
-                return None
+                return GATEWAY_NO_RESPONSE
 
             return response
             
@@ -2400,6 +2893,11 @@ class GatewayRunner:
             return "⏳ The agent is still starting up — nothing to stop yet."
         if agent:
             agent.interrupt()
+            self._cancel_pending_clarification(
+                session_key,
+                "The task was interrupted before the user responded.",
+            )
+            self._pending_approvals.pop(session_key, None)
             return "⚡ Stopping the current task... The agent will finish its current step and respond."
         else:
             return "No active task to stop."
@@ -4604,6 +5102,7 @@ class GatewayRunner:
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_event_loop()
+        _loop_for_clarify = asyncio.get_event_loop()
         _hooks_ref = self.hooks
 
         def _step_callback_sync(iteration: int, tool_names: list) -> None:
@@ -4731,6 +5230,11 @@ class GatewayRunner:
                 provider_data_collection=pr.get("data_collection"),
                 session_id=session_id,
                 tool_progress_callback=progress_callback if tool_progress_enabled else None,
+                clarify_callback=self._make_gateway_clarify_callback(
+                    _loop_for_clarify,
+                    source,
+                    session_key,
+                ),
                 step_callback=_step_callback_sync if _hooks_ref.loaded_hooks else None,
                 stream_delta_callback=_stream_delta_cb,
                 status_callback=_status_callback_sync,
@@ -4811,6 +5315,12 @@ class GatewayRunner:
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+            if self._tool_messages_include_clarify_timeout(result.get("messages", [])):
+                logger.info(
+                    "Suppressing follow-up response after clarify timeout for session %s",
+                    session_key,
+                )
+                final_response = GATEWAY_NO_RESPONSE
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0

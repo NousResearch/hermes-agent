@@ -38,6 +38,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._pending_clarifications = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}

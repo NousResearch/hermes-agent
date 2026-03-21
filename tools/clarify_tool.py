@@ -4,7 +4,9 @@ Clarify Tool Module - Interactive Clarifying Questions
 
 Allows the agent to present structured multiple-choice questions or open-ended
 prompts to the user. In CLI mode, choices are navigable with arrow keys. On
-messaging platforms, choices are rendered as a numbered list.
+messaging platforms, the platform layer can render native controls such as
+Telegram inline buttons, with text fallback on platforms that do not yet
+support them.
 
 The actual user-interaction logic lives in the platform layer (cli.py for CLI,
 gateway/run.py for messaging). This module defines the schema, validation, and
@@ -18,6 +20,7 @@ from typing import Dict, Any, List, Optional, Callable
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
+CLARIFY_TIMED_OUT_RESPONSE = "__HERMES_CLARIFY_TIMED_OUT__"
 
 
 def clarify_tool(
@@ -68,11 +71,16 @@ def clarify_tool(
             ensure_ascii=False,
         )
 
-    return json.dumps({
+    response_text = str(user_response).strip()
+    payload = {
         "question": question,
         "choices_offered": choices,
-        "user_response": str(user_response).strip(),
-    }, ensure_ascii=False)
+        "user_response": response_text,
+    }
+    if response_text == CLARIFY_TIMED_OUT_RESPONSE:
+        payload["timed_out"] = True
+        payload["user_response"] = ""
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def check_clarify_requirements() -> bool:

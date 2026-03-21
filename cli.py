@@ -1616,6 +1616,9 @@ class HermesCLI:
             if not text:
                 return
             self._stream_box_opened = True
+            # Initialize markdown renderer for this streaming response
+            from hermes_cli.markdown_renderer import StreamingMarkdownRenderer
+            self._md_renderer = StreamingMarkdownRenderer()
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -1631,7 +1634,9 @@ class HermesCLI:
         # Emit complete lines, keep partial remainder in buffer
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(line)
+            rendered = self._md_renderer.render_line(line)
+            if rendered is not None:
+                _cprint(rendered)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -1639,8 +1644,19 @@ class HermesCLI:
         self._close_reasoning_box()
 
         if self._stream_buf:
-            _cprint(self._stream_buf)
+            if hasattr(self, "_md_renderer") and self._md_renderer:
+                rendered = self._md_renderer.render_line(self._stream_buf)
+                if rendered is not None:
+                    _cprint(rendered)
+            else:
+                _cprint(self._stream_buf)
             self._stream_buf = ""
+
+        # Flush any buffered content from the markdown renderer (e.g. table header)
+        if hasattr(self, "_md_renderer") and self._md_renderer:
+            tail = self._md_renderer.flush()
+            if tail is not None:
+                _cprint(tail)
 
         # Close the response box
         if self._stream_box_opened:
@@ -3905,9 +3921,10 @@ class HermesCLI:
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
 
+                    from rich.markdown import Markdown as _RichMarkdown
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _RichMarkdown(response, hyperlinks=False),
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -5578,9 +5595,10 @@ class HermesCLI:
                     # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
                 else:
+                    from rich.markdown import Markdown as _RichMarkdown
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _RichMarkdown(response, hyperlinks=False),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,

@@ -339,6 +339,7 @@ class MiniSWERunner:
                     
                     # Add tool calls in XML format
                     for tool_call in msg["tool_calls"]:
+                        if not tool_call or not isinstance(tool_call, dict): continue
                         try:
                             arguments = json.loads(tool_call["function"]["arguments"]) \
                                 if isinstance(tool_call["function"]["arguments"], str) \

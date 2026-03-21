@@ -681,10 +681,10 @@ class AIAgent:
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-            # Alibaba/DashScope use their own API key; do not fall back to ANTHROPIC_TOKEN (Fixes #1739 401).
+            # Third-party Anthropic-compatible providers must use their own API key (Fixes #1739, #2374).
             _base = (base_url or "").lower()
-            _is_alibaba_dashscope = (self.provider == "alibaba") or ("dashscope" in _base) or ("aliyuncs" in _base)
-            effective_key = (api_key or "") if _is_alibaba_dashscope else (api_key or resolve_anthropic_token() or "")
+            _skip_anthropic_token = not self._uses_native_anthropic_auth()
+            effective_key = (api_key or "") if _skip_anthropic_token else (api_key or resolve_anthropic_token() or "")
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
@@ -3340,9 +3340,8 @@ class AIAgent:
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
-        # Alibaba/DashScope use their own API key; do not refresh from ANTHROPIC_TOKEN (Fixes #1739 401).
-        _base = (getattr(self, "_anthropic_base_url", None) or "").lower()
-        if (self.provider == "alibaba") or ("dashscope" in _base) or ("aliyuncs" in _base):
+        # Third-party Anthropic-compatible providers must not use Anthropic token refresh.
+        if not self._uses_native_anthropic_auth():
             return False
 
         try:
@@ -3768,7 +3767,7 @@ class AIAgent:
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-                effective_key = fb_client.api_key or resolve_anthropic_token() or ""
+                effective_key = fb_client.api_key if not self._uses_native_anthropic_auth() else (fb_client.api_key or resolve_anthropic_token() or "")
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = getattr(fb_client, "base_url", None)
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
@@ -3946,6 +3945,22 @@ class AIAgent:
                 str(msg.get("role", "user") or "user"),
             )
         return transformed
+
+    def _uses_native_anthropic_auth(self) -> bool:
+        """True only for native Anthropic endpoints that should use resolve_anthropic_token().
+
+        Third-party Anthropic-compatible providers (MiniMax, DashScope, custom /anthropic
+        endpoints) must use their own API keys and must never have credentials overwritten
+        by Anthropic OAuth/token resolution.
+
+        Native Anthropic: provider=="anthropic" or base URL contains api.anthropic.com.
+        Everything else: provider-specific key only.
+        """
+        provider = (getattr(self, "provider", "") or "").lower()
+        if provider == "anthropic":
+            return True
+        base = (getattr(self, "_anthropic_base_url", None) or getattr(self, "base_url", "") or "").lower()
+        return "api.anthropic.com" in base
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using Alibaba/DashScope anthropic-compatible endpoint (model names keep dots, e.g. qwen3.5-plus)."""

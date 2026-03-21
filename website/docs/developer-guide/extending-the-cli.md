@@ -170,22 +170,16 @@ The default implementation returns:
 
 ## Layout diagram
 
-```
-┌─────────────────────────────────────────┐
-│ (output scrolls here)                   │
-│                                         │
-│                          spacer ────────│
-│ ★ Your extra widgets appear here ★      │
-├─────────────────────────────────────────┤
-│ ⚕ claude-sonnet-4 · 42% · 2m    status │
-├─────────────────────────────────────────┤
-│ 📎 2 images                    image bar│
-│ ❯ your input here           input area  │
-├─────────────────────────────────────────┤
-│ 🎤 Voice mode: listening   voice status │
-│ ▸ completions...         autocomplete   │
-└─────────────────────────────────────────┘
-```
+The default layout order from top to bottom is:
+
+1. Output area
+2. Spacer
+3. Extra widgets from `_get_extra_tui_widgets()`
+4. Status bar
+5. Image bar
+6. Input area
+7. Voice status bar
+8. Completions menu
 
 ## Tips
 

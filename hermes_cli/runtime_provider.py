@@ -359,9 +359,14 @@ def resolve_runtime_provider(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
-        # Allow base URL override from config.yaml model.base_url
+        # Allow base URL override from config.yaml model.base_url, but only
+        # when the configured provider is anthropic — otherwise a non-Anthropic
+        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
         model_cfg = _get_model_config()
-        cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == "anthropic":
+            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
         return {
             "provider": "anthropic",

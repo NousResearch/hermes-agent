@@ -424,7 +424,7 @@ agent:
 # Toolsets
 # =============================================================================
 # Control which tools the agent has access to.
-# Use "all" to enable everything, or specify individual toolsets.
+# Use `hermes tools` to interactively enable/disable tools per platform.
 
 # =============================================================================
 # Platform Toolsets (per-platform tool configuration)
@@ -533,53 +533,11 @@ platform_toolsets:
 #   debugging    - terminal + web + file (for troubleshooting)
 #   safe         - web + vision + moa (no terminal access)
 
-# -----------------------------------------------------------------------------
-# OPTION 1: Enable all tools (default)
-# -----------------------------------------------------------------------------
-toolsets:
-  - all
-
-# -----------------------------------------------------------------------------
-# OPTION 2: Minimal - just web search and terminal
-# Great for: Simple coding tasks, quick lookups
-# -----------------------------------------------------------------------------
-# toolsets:
-#   - web
-#   - terminal
-
-# -----------------------------------------------------------------------------
-# OPTION 3: Research mode - no execution capabilities
-# Great for: Safe information gathering, research tasks
-# -----------------------------------------------------------------------------
-# toolsets:
-#   - web
-#   - vision
-#   - skills
-
-# -----------------------------------------------------------------------------
-# OPTION 4: Full automation - browser + terminal
-# Great for: Web scraping, automation tasks, testing
-# -----------------------------------------------------------------------------
-# toolsets:
-#   - terminal
-#   - browser
-#   - web
-
-# -----------------------------------------------------------------------------
-# OPTION 5: Creative mode - vision + image generation
-# Great for: Design work, image analysis, creative tasks
-# -----------------------------------------------------------------------------
-# toolsets:
-#   - vision
-#   - image_gen
-#   - web
-
-# -----------------------------------------------------------------------------
-# OPTION 6: Safe mode - no terminal or browser
-# Great for: Restricted environments, untrusted queries
-# -----------------------------------------------------------------------------
-# toolsets:
-#   - safe
+# NOTE: The top-level "toolsets" key is deprecated and ignored.
+# Tool configuration is managed per-platform via platform_toolsets above.
+# Use `hermes tools` to configure interactively, or edit platform_toolsets directly.
+#
+# CLI override: hermes chat --toolsets terminal,web,file
 
 # =============================================================================
 # MCP (Model Context Protocol) Servers

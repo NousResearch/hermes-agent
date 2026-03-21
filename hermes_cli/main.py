@@ -2570,20 +2570,44 @@ def _restore_stashed_changes(
     has_conflicts = bool(unmerged.stdout.strip())
 
     if restore.returncode != 0 or has_conflicts:
-        # Reset the working tree so Hermes is runnable with the updated code
-        subprocess.run(
-            git_cmd + ["reset", "--hard", "HEAD"],
-            cwd=cwd,
-            capture_output=True,
-        )
-        print("✗ Update pulled new code, but restoring local changes failed.")
+        print("✗ Update pulled new code, but restoring local changes hit conflicts.")
         if restore.stdout.strip():
             print(restore.stdout.strip())
         if restore.stderr.strip():
             print(restore.stderr.strip())
-        print("The working tree has been reset to a clean state.")
-        print("Your changes are still preserved in git stash.")
-        print(f"Resolve manually with: git stash apply {stash_ref}")
+
+        # Show which files conflicted
+        conflicted_files = unmerged.stdout.strip()
+        if conflicted_files:
+            print("\nConflicted files:")
+            for f in conflicted_files.splitlines():
+                print(f"  • {f}")
+
+        print("\nYour stashed changes are preserved — nothing is lost.")
+        print(f"  Stash ref: {stash_ref}")
+
+        # Ask before resetting (if interactive)
+        do_reset = True
+        if prompt_user:
+            print("\nReset working tree to clean state so Hermes can run?")
+            print("  (You can re-apply your changes later with: git stash apply)")
+            print("[Y/n] ", end="", flush=True)
+            response = input().strip().lower()
+            if response not in ("", "y", "yes"):
+                do_reset = False
+
+        if do_reset:
+            subprocess.run(
+                git_cmd + ["reset", "--hard", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+            )
+            print("Working tree reset to clean state.")
+        else:
+            print("Working tree left as-is (may have conflict markers).")
+            print("Resolve conflicts manually, then run: git stash drop")
+
+        print(f"Restore your changes with: git stash apply {stash_ref}")
         sys.exit(1)
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)

@@ -60,7 +60,7 @@ class TestBuildAnthropicClient:
             assert "oauth-2025-04-20" in betas
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # fine-grained-tool-streaming removed: causes hang on turn 2+ (#2356)
             assert "api_key" not in kwargs
 
     def test_api_key_uses_api_key(self):

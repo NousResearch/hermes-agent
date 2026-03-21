@@ -2033,6 +2033,20 @@ class GatewayRunner:
                 message_text = f"{context_note}\n\n{message_text}"
 
         # -----------------------------------------------------------------
+        # Enrich video messages with a context note for the agent
+        # -----------------------------------------------------------------
+        if event.media_urls:
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_video = mtype.startswith("video/") or event.message_type == MessageType.VIDEO
+                if is_video:
+                    context_note = (
+                        f"[The user sent a video. Saved at: {path}. "
+                        f"Use video_analyze tool with video_path='{path}' to analyze it.]"
+                    )
+                    message_text = f"{context_note}\n\n{message_text}"
+
+        # -----------------------------------------------------------------
         # Inject reply context when user replies to a message not in history.
         # Telegram (and other platforms) let users reply to specific messages,
         # but if the quoted message is from a previous session, cron delivery,
@@ -5077,7 +5091,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
-    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache, cleanup_video_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
@@ -5112,6 +5126,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
+            try:
+                removed = cleanup_video_cache(max_age_hours=24)
+                if removed:
+                    logger.info("Video cache cleanup: removed %d stale file(s)", removed)
+            except Exception as e:
+                logger.debug("Video cache cleanup error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

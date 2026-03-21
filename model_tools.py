@@ -141,6 +141,7 @@ def _discover_tools():
         "tools.terminal_tool",
         "tools.file_tools",
         "tools.vision_tools",
+        "tools.video_analysis_tool",
         "tools.mixture_of_agents_tool",
         "tools.image_generation_tool",
         "tools.skills_tool",

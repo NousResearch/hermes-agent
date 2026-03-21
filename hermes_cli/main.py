@@ -2559,12 +2559,29 @@ def _restore_stashed_changes(
         capture_output=True,
         text=True,
     )
-    if restore.returncode != 0:
+
+    # Check for unmerged (conflicted) files — can happen even when returncode is 0
+    unmerged = subprocess.run(
+        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    has_conflicts = bool(unmerged.stdout.strip())
+
+    if restore.returncode != 0 or has_conflicts:
+        # Reset the working tree so Hermes is runnable with the updated code
+        subprocess.run(
+            git_cmd + ["reset", "--hard", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+        )
         print("✗ Update pulled new code, but restoring local changes failed.")
         if restore.stdout.strip():
             print(restore.stdout.strip())
         if restore.stderr.strip():
             print(restore.stderr.strip())
+        print("The working tree has been reset to a clean state.")
         print("Your changes are still preserved in git stash.")
         print(f"Resolve manually with: git stash apply {stash_ref}")
         sys.exit(1)

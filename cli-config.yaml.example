@@ -696,8 +696,8 @@ display:
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.
-  # Disabled by default — enable to try the streaming UX.
-  streaming: false
+  # Stream tokens to the terminal in real-time. Disable to wait for full responses.
+  streaming: true
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

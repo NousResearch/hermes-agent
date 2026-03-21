@@ -23,9 +23,11 @@ import pytest
 # which is not on sys.path by default.
 # ---------------------------------------------------------------------------
 
+# Plugin path: prefer home dir install, fall back to in-repo copy
 _plugin_dir = Path.home() / ".hermes" / "plugins" / "hermes-memory-store"
-if str(_plugin_dir) not in sys.path:
-    sys.path.insert(0, str(_plugin_dir))
+if not _plugin_dir.exists():
+    _plugin_dir = Path(__file__).resolve().parent.parent.parent / "plugins" / "hermes-memory-store"
+sys.path.insert(0, str(_plugin_dir))
 
 from store import MemoryStore
 from retrieval import FactRetriever

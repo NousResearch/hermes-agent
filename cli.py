@@ -48,6 +48,8 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -67,6 +69,36 @@ from agent.usage_pricing import (
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+# prompt_toolkit normalizes modified Enter to ControlM, but preserves the raw
+# escape sequence in KeyPress.data. Handle the common modified-Enter variants
+# here so chat UIs can support Shift+Enter without losing existing bindings.
+_SHIFT_ENTER_SEQUENCES = frozenset({
+    "\x1b[27;2;13~",  # xterm-style modified Enter (Ghostty)
+    "\x1b[13;2u",     # CSI-u modified Enter
+})
+ANSI_SEQUENCES.setdefault("\x1b[13;2u", Keys.ControlM)
+
+
+def _last_key_sequence_data(event: Any) -> Optional[str]:
+    try:
+        key_sequence = getattr(event, "key_sequence", None) or []
+        if not key_sequence:
+            return None
+        return getattr(key_sequence[-1], "data", None)
+    except Exception:
+        return None
+
+
+def _is_shift_enter_sequence(data: Optional[str]) -> bool:
+    return data in _SHIFT_ENTER_SEQUENCES
+
+
+def _maybe_insert_newline_for_modified_enter(event: Any) -> bool:
+    if not _is_shift_enter_sequence(_last_key_sequence_data(event)):
+        return False
+    event.current_buffer.insert_text("\n")
+    return True
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -2494,7 +2526,7 @@ class HermesCLI:
                 )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Shift+Enter (if supported), Alt+Enter, or Ctrl+J{_RST}")
         _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
     def show_tools(self):
@@ -5893,6 +5925,9 @@ class HermesCLI:
             Commands (starting with /) always go to _pending_input so they're
             handled as commands, not sent as interrupt text to the agent.
             """
+            if _maybe_insert_newline_for_modified_enter(event):
+                return
+
             # --- Sudo password prompt: submit the typed password ---
             if self._sudo_state:
                 text = event.app.current_buffer.text
@@ -6279,7 +6314,7 @@ class HermesCLI:
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
-        # Create the input area with multiline (shift+enter), autocomplete, and paste handling
+        # Create the input area with multiline input, autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
         def _get_model_completer_info() -> dict:

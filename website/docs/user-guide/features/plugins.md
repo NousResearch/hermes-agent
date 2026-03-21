@@ -22,6 +22,8 @@ Drop a directory into `~/.hermes/plugins/` with a `plugin.yaml` and Python code:
 
 Start Hermes — your tools appear alongside built-in tools. The model can call them immediately.
 
+Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
+
 ## What plugins can do
 
 | Capability | How |
@@ -38,7 +40,7 @@ Start Hermes — your tools appear alongside built-in tools. The model can call 
 | Source | Path | Use case |
 |--------|------|----------|
 | User | `~/.hermes/plugins/` | Personal plugins |
-| Project | `.hermes/plugins/` | Project-specific plugins |
+| Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
 
 ## Available hooks

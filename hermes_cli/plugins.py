@@ -5,7 +5,8 @@ Hermes Plugin System
 Discovers, loads, and manages plugins from three sources:
 
 1. **User plugins**   – ``~/.hermes/plugins/<name>/``
-2. **Project plugins** – ``./.hermes/plugins/<name>/``
+2. **Project plugins** – ``./.hermes/plugins/<name>/`` (opt-in via
+   ``HERMES_ENABLE_PROJECT_PLUGINS``)
 3. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
 
@@ -60,6 +61,11 @@ VALID_HOOKS: Set[str] = {
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
+
+
+def _env_enabled(name: str) -> bool:
+    """Return True when an env var is set to a truthy opt-in value."""
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +192,9 @@ class PluginManager:
         manifests.extend(self._scan_directory(user_dir, source="user"))
 
         # 2. Project plugins (./.hermes/plugins/)
-        project_dir = Path.cwd() / ".hermes" / "plugins"
-        manifests.extend(self._scan_directory(project_dir, source="project"))
+        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+            project_dir = Path.cwd() / ".hermes" / "plugins"
+            manifests.extend(self._scan_directory(project_dir, source="project"))
 
         # 3. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())

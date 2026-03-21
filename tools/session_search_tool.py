@@ -251,13 +251,20 @@ def session_search(
                     break
             return sid
 
-        # Group by resolved (parent) session_id, dedup, skip current session
+        current_lineage_root = (
+            _resolve_to_parent(current_session_id) if current_session_id else None
+        )
+
+        # Group by resolved (parent) session_id, dedup, skip the current
+        # session lineage. Compression and delegation create child sessions
+        # that still belong to the same active conversation.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session — the agent already has that context
-            if current_session_id and resolved_sid == current_session_id:
+            # Skip the current session lineage — the agent already has that
+            # context, even if older turns live in parent fragments.
+            if current_lineage_root and resolved_sid == current_lineage_root:
                 continue
             if current_session_id and raw_sid == current_session_id:
                 continue

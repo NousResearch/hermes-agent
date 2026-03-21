@@ -1473,8 +1473,14 @@ class HermesCLI:
         Opens a dim reasoning box on first token, streams line-by-line.
         The box is closed automatically when content tokens start arriving
         (via _stream_delta → _emit_stream_text).
+
+        Once the response box is open, suppress any further reasoning
+        rendering — a late thinking block (e.g. after an interrupt) would
+        otherwise draw a reasoning box inside the response box.
         """
         if not text:
+            return
+        if getattr(self, "_stream_box_opened", False):
             return
 
         # Open reasoning box on first reasoning token

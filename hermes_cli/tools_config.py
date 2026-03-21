@@ -272,7 +272,7 @@ TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "lattice":    [
-        ("LATTICE_URL", "https://lattice-production-ddbe.up.railway.app"),
+        ("LATTICE_URL", "https://pns.1lattice.co"),
         ("LATTICE_PRIVATE_KEY_HEX", None),  # Ed25519 private key (64 hex chars); auto-generated if blank
     ],
 }

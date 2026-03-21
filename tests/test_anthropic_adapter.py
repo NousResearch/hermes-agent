@@ -718,7 +718,7 @@ class TestConvertMessages:
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ])
+        ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
         user_msg = [m for m in result if m["role"] == "user"][0]

@@ -18,7 +18,16 @@ def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
     content = msg.get("content")
 
     if role == "tool":
-        msg["cache_control"] = cache_marker
+        if isinstance(content, list) and content:
+            last = content[-1]
+            if isinstance(last, dict):
+                last["cache_control"] = cache_marker
+        elif isinstance(content, str) and content:
+            msg["content"] = [
+                {"type": "text", "text": content, "cache_control": cache_marker}
+            ]
+        else:
+            msg["cache_control"] = cache_marker
         return
 
     if content is None or content == "":

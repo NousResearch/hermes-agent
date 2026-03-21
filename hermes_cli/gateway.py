@@ -420,6 +420,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -434,7 +436,7 @@ Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=60
@@ -448,6 +450,8 @@ WantedBy=multi-user.target
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -457,7 +461,7 @@ Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=60

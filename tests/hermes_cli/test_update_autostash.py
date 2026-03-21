@@ -210,7 +210,8 @@ def test_restore_stashed_changes_keeps_going_when_drop_fails(monkeypatch, tmp_pa
     assert "git stash drop stash@{0}" in out
 
 
-def test_restore_stashed_changes_exits_cleanly_when_apply_fails(monkeypatch, tmp_path, capsys):
+def test_restore_stashed_changes_prompts_before_reset_on_conflict(monkeypatch, tmp_path, capsys):
+    """When conflicts occur interactively, user is prompted before reset."""
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -230,16 +231,43 @@ def test_restore_stashed_changes_exits_cleanly_when_apply_fails(monkeypatch, tmp
         hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
     out = capsys.readouterr().out
-    assert "Your changes are still preserved in git stash." in out
-    assert "git stash apply abc123" in out
-    assert "working tree has been reset to a clean state" in out
-    # Verify reset --hard was called to clean up conflict markers
+    assert "Conflicted files:" in out
+    assert "hermes_cli/main.py" in out
+    assert "stashed changes are preserved" in out
+    assert "Reset working tree to clean state" in out
+    assert "Working tree reset to clean state" in out
     reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
     assert len(reset_calls) == 1
 
 
-def test_restore_stashed_changes_resets_when_unmerged_files_detected(monkeypatch, tmp_path, capsys):
-    """Even if stash apply returns 0, conflict markers must be cleaned up."""
+def test_restore_stashed_changes_user_declines_reset(monkeypatch, tmp_path, capsys):
+    """When user declines reset, working tree is left as-is."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[1:3] == ["stash", "apply"]:
+            return SimpleNamespace(stdout="", stderr="conflict\n", returncode=1)
+        if cmd[1:3] == ["diff", "--name-only"]:
+            return SimpleNamespace(stdout="cli.py\n", stderr="", returncode=0)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    # First input: "y" to restore, second input: "n" to decline reset
+    inputs = iter(["y", "n"])
+    monkeypatch.setattr("builtins.input", lambda: next(inputs))
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    out = capsys.readouterr().out
+    assert "left as-is" in out
+    reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
+    assert len(reset_calls) == 0
+
+
+def test_restore_stashed_changes_auto_resets_non_interactive(monkeypatch, tmp_path, capsys):
+    """Non-interactive mode auto-resets without prompting."""
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -258,8 +286,9 @@ def test_restore_stashed_changes_resets_when_unmerged_files_detected(monkeypatch
         hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=False)
 
     out = capsys.readouterr().out
-    assert "working tree has been reset to a clean state" in out
-    assert "git stash apply abc123" in out
+    assert "Working tree reset to clean state" in out
+    reset_calls = [c for c, _ in calls if c[1:3] == ["reset", "--hard"]]
+    assert len(reset_calls) == 1
 
 
 def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch, tmp_path):

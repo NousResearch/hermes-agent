@@ -129,6 +129,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
+        self._polling_conflict_count: int = 0
+        self._polling_error_callback_ref = None
 
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
@@ -142,10 +144,49 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
+        # Track consecutive conflicts — transient 409s can occur when a
+        # previous gateway instance hasn't fully released its long-poll
+        # session on Telegram's server (e.g. during --replace handoffs or
+        # systemd Restart=on-failure respawns).  Retry a few times before
+        # giving up, so the old session has time to expire.
+        self._polling_conflict_count += 1
+
+        MAX_CONFLICT_RETRIES = 3
+        RETRY_DELAY = 10  # seconds
+
+        if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
+            logger.warning(
+                "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
+                self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                RETRY_DELAY, error,
+            )
+            try:
+                if self._app and self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+            except Exception:
+                pass
+            await asyncio.sleep(RETRY_DELAY)
+            try:
+                await self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                    error_callback=self._polling_error_callback_ref,
+                )
+                logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
+                self._polling_conflict_count = 0  # reset on success
+                return
+            except Exception as retry_err:
+                logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
+                # Don't fall through to fatal yet — wait for the next conflict
+                # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
+                return
+
+        # Exhausted retries — fatal
         message = (
             "Another Telegram bot poller is already using this token. "
-            "Hermes stopped Telegram polling to avoid endless retry spam. "
+            "Hermes stopped Telegram polling after %d retries. "
             "Make sure only one gateway instance is running for this bot token."
+            % MAX_CONFLICT_RETRIES
         )
         logger.error("[%s] %s Original error: %s", self.name, message, error)
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
@@ -241,6 +282,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 if self._polling_error_task and not self._polling_error_task.done():
                     return
                 self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+
+            # Store reference for retry use in _handle_polling_conflict
+            self._polling_error_callback_ref = _polling_error_callback
 
             await self._app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,

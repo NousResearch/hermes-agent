@@ -987,6 +987,8 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+        _obs_masking = str(_compression_cfg.get("observation_masking", True)).lower() in ("true", "1", "yes")
+        _obs_masking_window = int(_compression_cfg.get("observation_masking_window", 4))
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1033,6 +1035,8 @@ class AIAgent:
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
             provider=self.provider,
+            observation_masking=_obs_masking,
+            observation_masking_window=_obs_masking_window,
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
@@ -4338,6 +4342,10 @@ class AIAgent:
         """
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
+
+        # Observation masking: zero-cost first pass — replace old tool outputs
+        # with placeholders before LLM summarization (arXiv:2508.21433)
+        messages = self.context_compressor.mask_observations(messages)
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 

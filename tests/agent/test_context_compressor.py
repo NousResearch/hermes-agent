@@ -513,3 +513,224 @@ class TestCompressWithClient:
         for msg in result:
             if msg.get("role") == "tool" and msg.get("tool_call_id"):
                 assert msg["tool_call_id"] in called_ids
+
+
+class TestObservationMasking:
+    """Tests for the observation masking pre-pass."""
+
+    @pytest.fixture()
+    def masking_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                observation_masking=True,
+                observation_masking_window=2,
+            )
+
+    @pytest.fixture()
+    def disabled_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                observation_masking=False,
+            )
+
+    def test_disabled_returns_unchanged(self, disabled_compressor):
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},
+            {"role": "assistant", "content": "done"},
+        ]
+        result = disabled_compressor.mask_observations(msgs)
+        assert result == msgs
+
+    def test_all_within_window_unchanged(self, masking_compressor):
+        """When tool results <= window size, nothing is masked."""
+        msgs = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "result 1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c2", "content": "result 2"},
+        ]
+        result = masking_compressor.mask_observations(msgs)
+        assert result == msgs
+
+    def test_masks_old_tool_outputs(self, masking_compressor):
+        """Tool outputs outside the window are masked."""
+        msgs = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "search", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},  # old — should be masked
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c2", "content": "recent result 1"},  # in window
+            {"role": "user", "content": "q3"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c3", "type": "function", "function": {"name": "edit", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c3", "content": "recent result 2"},  # in window
+        ]
+        result = masking_compressor.mask_observations(msgs)
+
+        # Old tool output (c1) should be masked
+        tool_c1 = [m for m in result if m.get("tool_call_id") == "c1"][0]
+        assert "Observation masked" in tool_c1["content"]
+        assert "500 chars" in tool_c1["content"]
+
+        # Recent tool outputs (c2, c3) should be preserved
+        tool_c2 = [m for m in result if m.get("tool_call_id") == "c2"][0]
+        assert tool_c2["content"] == "recent result 1"
+        tool_c3 = [m for m in result if m.get("tool_call_id") == "c3"][0]
+        assert tool_c3["content"] == "recent result 2"
+
+    def test_preserves_tool_call_id(self, masking_compressor):
+        """Masked messages keep their tool_call_id for pair integrity."""
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c2", "content": "recent"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c3", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c3", "content": "recent2"},
+        ]
+        result = masking_compressor.mask_observations(msgs)
+        masked = [m for m in result if "Observation masked" in (m.get("content") or "")]
+        assert len(masked) == 1
+        assert masked[0]["tool_call_id"] == "c1"
+
+    def test_skips_short_outputs(self, masking_compressor):
+        """Tool outputs <= 100 chars are not masked even if old."""
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "short"},  # old but short
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c2", "content": "r1"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c3", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c3", "content": "r2"},
+        ]
+        result = masking_compressor.mask_observations(msgs)
+        tool_c1 = [m for m in result if m.get("tool_call_id") == "c1"][0]
+        assert tool_c1["content"] == "short"  # preserved
+
+    def test_message_count_unchanged(self, masking_compressor):
+        """Masking does not add or remove messages."""
+        msgs = [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c2", "content": "x" * 500},
+            {"role": "user", "content": "q3"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c3", "content": "x" * 500},
+        ]
+        result = masking_compressor.mask_observations(msgs)
+        assert len(result) == len(msgs)
+
+    def test_non_tool_messages_untouched(self, masking_compressor):
+        """User and assistant messages are never modified."""
+        msgs = [
+            {"role": "user", "content": "important question"},
+            {"role": "assistant", "content": "important answer " + "x" * 500},
+            {"role": "user", "content": "followup"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 500},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c2", "content": "x" * 500},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c3", "content": "recent"},
+        ]
+        result = masking_compressor.mask_observations(msgs)
+        assert result[0]["content"] == "important question"
+        assert result[1]["content"] == "important answer " + "x" * 500
+        assert result[2]["content"] == "followup"
+
+    def test_masking_then_compress_pipeline(self):
+        """Masking + compression work together: mask reduces content, compress summarizes."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary of earlier work"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True,
+                protect_first_n=2, protect_last_n=2,
+                observation_masking=True, observation_masking_window=2,
+            )
+
+        msgs = [
+            {"role": "user", "content": "task 1"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "x" * 2000},
+            {"role": "user", "content": "task 2"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function", "function": {"name": "search", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c2", "content": "y" * 2000},
+            {"role": "user", "content": "task 3"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c3", "type": "function", "function": {"name": "edit", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c3", "content": "recent 1"},
+            {"role": "user", "content": "task 4"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c4", "type": "function", "function": {"name": "test", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c4", "content": "recent 2"},
+        ]
+
+        # Step 1: mask old observations
+        masked = c.mask_observations(msgs)
+        # c1 and c2 should be masked (outside window of 2)
+        tool_c1 = [m for m in masked if m.get("tool_call_id") == "c1"][0]
+        assert "Observation masked" in tool_c1["content"]
+        assert len(tool_c1["content"]) < 100  # placeholder is short
+
+        # Step 2: compress the masked conversation
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            compressed = c.compress(masked)
+
+        # The compressed result should be shorter than the original
+        assert len(compressed) < len(msgs)
+        # The summary model received masked content (not 2000 chars of x's)
+        # Verify compression happened
+        assert c.compression_count == 1
+
+    def test_default_is_enabled(self):
+        """Observation masking defaults to True per issue #2046."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.observation_masking is True
+        assert c.observation_masking_window == 4

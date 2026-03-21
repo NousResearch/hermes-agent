@@ -48,6 +48,8 @@ class ContextCompressor:
         api_key: str = "",
         config_context_length: int | None = None,
         provider: str = "",
+        observation_masking: bool = True,
+        observation_masking_window: int = 4,
     ):
         self.model = model
         self.base_url = base_url
@@ -58,6 +60,8 @@ class ContextCompressor:
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
         self.quiet_mode = quiet_mode
+        self.observation_masking = observation_masking
+        self.observation_masking_window = observation_masking_window
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -279,6 +283,57 @@ Write only the summary body. Do not include any preamble or prefix; the system w
         if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
             idx = check
         return idx
+
+    def mask_observations(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace old tool outputs with short placeholders.
+
+        Lightweight first-pass context reduction before LLM summarization.
+        Tool result messages outside the recent window have their content
+        replaced with a size-annotated placeholder.  ``tool_call_id`` is
+        preserved so assistant/tool pairing stays valid.
+
+        See: JetBrains "The Complexity Trap" (arXiv:2508.21433) — observation
+        masking matches LLM summarization quality at ~52% cost reduction.
+        """
+        if not self.observation_masking:
+            return messages
+
+        tool_indices = [
+            i for i, m in enumerate(messages) if m.get("role") == "tool"
+        ]
+        if len(tool_indices) <= self.observation_masking_window:
+            return messages
+
+        to_mask = set(tool_indices[:-self.observation_masking_window])
+
+        result = []
+        chars_saved = 0
+        count = 0
+        for i, msg in enumerate(messages):
+            if i not in to_mask:
+                result.append(msg)
+                continue
+            content = msg.get("content") or ""
+            if len(content) <= 100:
+                result.append(msg)
+                continue
+            masked = msg.copy()
+            masked["content"] = (
+                f"[Observation masked — {len(content)} chars. "
+                f"Use session_search to retrieve if needed.]"
+            )
+            result.append(masked)
+            chars_saved += len(content)
+            count += 1
+
+        if count and not self.quiet_mode:
+            logger.info(
+                "Observation masking: replaced %d tool output(s), "
+                "~%d chars removed (window=%d)",
+                count, chars_saved, self.observation_masking_window,
+            )
+
+        return result
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.

@@ -98,6 +98,7 @@ def _check_disk_usage_warning():
         
         return False
     except Exception as e:
+        logger.debug("Disk usage warning check failed: %s", e, exc_info=True)
         return False
 
 

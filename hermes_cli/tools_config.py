@@ -367,13 +367,24 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
         default_ts = PLATFORMS[platform]["default_toolset"]
         toolset_names = [default_ts]
 
-    # Resolve to individual tool names, then map back to which
-    # configurable toolsets are covered
+    configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+
+    # If the saved list contains any configurable keys directly, the user
+    # has explicitly configured this platform — use direct membership.
+    # This avoids the subset-inference bug where composite toolsets like
+    # "hermes-cli" (which include all _HERMES_CORE_TOOLS) cause disabled
+    # toolsets to re-appear as enabled.
+    has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
+
+    if has_explicit_config:
+        return {ts for ts in toolset_names if ts in configurable_keys}
+
+    # No explicit config — fall back to resolving composite toolset names
+    # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
     all_tool_names = set()
     for ts_name in toolset_names:
         all_tool_names.update(resolve_toolset(ts_name))
 
-    # Map individual tool names back to configurable toolset keys
     enabled_toolsets = set()
     for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
         ts_tools = set(resolve_toolset(ts_key))
@@ -386,23 +397,37 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
 def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[str]):
     """Save the selected toolset keys for a platform to config.
 
-    Preserves any non-configurable toolset entries (like MCP server names)
-    that were already in the config for this platform.
+    Preserves any non-configurable, non-composite entries (like MCP server
+    names) that were already in the config for this platform.
+
+    Composite platform toolsets (hermes-cli, hermes-telegram, etc.) are
+    dropped once the user has explicitly configured individual toolsets —
+    keeping them would override the user's selections because they include
+    all tools via _HERMES_CORE_TOOLS.
     """
+    from toolsets import TOOLSETS
+
     config.setdefault("platform_toolsets", {})
 
-    # Get the set of all configurable toolset keys
+    # Keys the user can toggle in the checklist UI
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+
+    # Keys that are known composite/individual toolsets in toolsets.py
+    # (hermes-cli, hermes-telegram, homeassistant, web, terminal, etc.)
+    known_toolset_keys = set(TOOLSETS.keys())
 
     # Get existing toolsets for this platform
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
 
-    # Preserve any entries that are NOT configurable toolsets (i.e. MCP server names)
+    # Preserve entries that are neither configurable toolsets nor known
+    # composite toolsets — this keeps MCP server names and other custom
+    # entries while dropping composites like "hermes-cli" that would
+    # silently re-enable everything the user just disabled.
     preserved_entries = {
         entry for entry in existing_toolsets
-        if entry not in configurable_keys
+        if entry not in configurable_keys and entry not in known_toolset_keys
     }
 
     # Merge preserved entries with new enabled toolsets

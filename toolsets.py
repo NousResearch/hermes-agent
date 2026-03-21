@@ -355,24 +355,24 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
             all_tools.update(resolved)
         return list(all_tools)
 
-    # Check for cycles
+    # Check for cycles or already-resolved diamond dependencies
     if name in visited:
-        print(f"⚠️  Circular dependency detected in toolset '{name}'")
         return []
-    
+
     visited.add(name)
-    
+
     # Get toolset definition
     toolset = TOOLSETS.get(name)
     if not toolset:
         return []
-    
+
     # Collect direct tools
     tools = set(toolset.get("tools", []))
-    
-    # Recursively resolve included toolsets
+
+    # Recursively resolve included toolsets (share visited set so diamond
+    # dependencies are resolved once, not once per branch)
     for included_name in toolset.get("includes", []):
-        included_tools = resolve_toolset(included_name, visited.copy())
+        included_tools = resolve_toolset(included_name, visited)
         tools.update(included_tools)
     
     return list(tools)

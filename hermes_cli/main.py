@@ -2688,7 +2688,7 @@ def cmd_update(args):
 
         print("→ Pulling updates...")
         try:
-            subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+            subprocess.run(git_cmd + ["pull", "--ff-only", "origin", branch], cwd=PROJECT_ROOT, check=True)
         finally:
             if auto_stash_ref is not None:
                 _restore_stashed_changes(

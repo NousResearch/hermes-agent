@@ -577,7 +577,7 @@ clone_repo() {
 
             git fetch origin
             git checkout "$BRANCH"
-            git pull origin "$BRANCH"
+            git pull --ff-only origin "$BRANCH"
 
             if [ -n "$autostash_ref" ]; then
                 local restore_now="yes"

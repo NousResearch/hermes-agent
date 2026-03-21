@@ -1607,7 +1607,6 @@ def show_config():
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
-    print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
     # Display
     print()

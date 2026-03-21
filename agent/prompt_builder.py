@@ -457,22 +457,31 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
-    """Discover and load context files for the system prompt.
+def _load_hermes_md(cwd_path: Path) -> str:
+    """.hermes.md / HERMES.md — walk to git root."""
+    hermes_md_path = _find_hermes_md(cwd_path)
+    if not hermes_md_path:
+        return ""
+    try:
+        content = hermes_md_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _strip_yaml_frontmatter(content)
+        rel = hermes_md_path.name
+        try:
+            rel = str(hermes_md_path.relative_to(cwd_path))
+        except ValueError:
+            pass
+        content = _scan_context_content(content, rel)
+        result = f"## {rel}\n\n{content}"
+        return _truncate_content(result, ".hermes.md")
+    except Exception as e:
+        logger.debug("Could not read %s: %s", hermes_md_path, e)
+        return ""
 
-    Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
-    and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
 
-    When *skip_soul* is True, SOUL.md is not included here (it was already
-    loaded via ``load_soul_md()`` for the identity slot).
-    """
-    if cwd is None:
-        cwd = os.getcwd()
-
-    cwd_path = Path(cwd).resolve()
-    sections = []
-
-    # AGENTS.md (hierarchical, recursive)
+def _load_agents_md(cwd_path: Path) -> str:
+    """AGENTS.md — hierarchical, recursive directory walk."""
     top_level_agents = None
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
@@ -480,31 +489,51 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
             top_level_agents = candidate
             break
 
-    if top_level_agents:
-        agents_files = []
-        for root, dirs, files in os.walk(cwd_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
-            for f in files:
-                if f.lower() == "agents.md":
-                    agents_files.append(Path(root) / f)
-        agents_files.sort(key=lambda p: len(p.parts))
+    if not top_level_agents:
+        return ""
 
-        total_agents_content = ""
-        for agents_path in agents_files:
+    agents_files = []
+    for root, dirs, files in os.walk(cwd_path):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
+        for f in files:
+            if f.lower() == "agents.md":
+                agents_files.append(Path(root) / f)
+    agents_files.sort(key=lambda p: len(p.parts))
+
+    total_content = ""
+    for agents_path in agents_files:
+        try:
+            content = agents_path.read_text(encoding="utf-8").strip()
+            if content:
+                rel_path = agents_path.relative_to(cwd_path)
+                content = _scan_context_content(content, str(rel_path))
+                total_content += f"## {rel_path}\n\n{content}\n\n"
+        except Exception as e:
+            logger.debug("Could not read %s: %s", agents_path, e)
+
+    if not total_content:
+        return ""
+    return _truncate_content(total_content, "AGENTS.md")
+
+
+def _load_claude_md(cwd_path: Path) -> str:
+    """CLAUDE.md / claude.md — cwd only."""
+    for name in ["CLAUDE.md", "claude.md"]:
+        candidate = cwd_path / name
+        if candidate.exists():
             try:
-                content = agents_path.read_text(encoding="utf-8").strip()
+                content = candidate.read_text(encoding="utf-8").strip()
                 if content:
-                    rel_path = agents_path.relative_to(cwd_path)
-                    content = _scan_context_content(content, str(rel_path))
-                    total_agents_content += f"## {rel_path}\n\n{content}\n\n"
+                    content = _scan_context_content(content, name)
+                    result = f"## {name}\n\n{content}"
+                    return _truncate_content(result, "CLAUDE.md")
             except Exception as e:
-                logger.debug("Could not read %s: %s", agents_path, e)
+                logger.debug("Could not read %s: %s", candidate, e)
+    return ""
 
-        if total_agents_content:
-            total_agents_content = _truncate_content(total_agents_content, "AGENTS.md")
-            sections.append(total_agents_content)
 
-    # .cursorrules
+def _load_cursorrules(cwd_path: Path) -> str:
+    """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
@@ -528,31 +557,41 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
 
-    if cursorrules_content:
-        cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
-        sections.append(cursorrules_content)
+    if not cursorrules_content:
+        return ""
+    return _truncate_content(cursorrules_content, ".cursorrules")
 
-    # .hermes.md / HERMES.md — per-project agent config (walk to git root)
-    hermes_md_content = ""
-    hermes_md_path = _find_hermes_md(cwd_path)
-    if hermes_md_path:
-        try:
-            content = hermes_md_path.read_text(encoding="utf-8").strip()
-            if content:
-                content = _strip_yaml_frontmatter(content)
-                rel = hermes_md_path.name
-                try:
-                    rel = str(hermes_md_path.relative_to(cwd_path))
-                except ValueError:
-                    pass
-                content = _scan_context_content(content, rel)
-                hermes_md_content = f"## {rel}\n\n{content}"
-        except Exception as e:
-            logger.debug("Could not read %s: %s", hermes_md_path, e)
 
-    if hermes_md_content:
-        hermes_md_content = _truncate_content(hermes_md_content, ".hermes.md")
-        sections.append(hermes_md_content)
+def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+    """Discover and load context files for the system prompt.
+
+    Priority (first found wins — only ONE project context type is loaded):
+      1. .hermes.md / HERMES.md  (walk to git root)
+      2. AGENTS.md / agents.md   (recursive directory walk)
+      3. CLAUDE.md / claude.md   (cwd only)
+      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+
+    SOUL.md from HERMES_HOME is independent and always included when present.
+    Each context source is capped at 20,000 chars.
+
+    When *skip_soul* is True, SOUL.md is not included here (it was already
+    loaded via ``load_soul_md()`` for the identity slot).
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+
+    cwd_path = Path(cwd).resolve()
+    sections = []
+
+    # Priority-based project context: first match wins
+    project_context = (
+        _load_hermes_md(cwd_path)
+        or _load_agents_md(cwd_path)
+        or _load_claude_md(cwd_path)
+        or _load_cursorrules(cwd_path)
+    )
+    if project_context:
+        sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

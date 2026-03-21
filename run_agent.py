@@ -6887,11 +6887,10 @@ class AIAgent:
                 
                 if not pending_handled:
                     # Error happened before tool processing (e.g. response parsing).
-                    # Choose role to avoid consecutive same-role messages.
-                    last_role = messages[-1].get("role") if messages else None
-                    err_role = "assistant" if last_role == "user" else "user"
+                    # Always use assistant role for system error messages.
+                    # Using role="user" would misattribute system behavior to the user.
                     sys_err_msg = {
-                        "role": err_role,
+                        "role": "assistant",
                         "content": f"[System error during processing: {error_msg}]",
                     }
                     messages.append(sys_err_msg)

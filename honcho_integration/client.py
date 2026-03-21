@@ -112,6 +112,10 @@ class HonchoClientConfig:
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
+    # True when Honcho was explicitly configured for this host (hosts.hermes
+    # block exists or enabled was set explicitly), vs auto-enabled from a
+    # stray HONCHO_API_KEY env var.
+    explicitly_configured: bool = False
 
     @classmethod
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
@@ -148,6 +152,9 @@ class HonchoClientConfig:
             return cls.from_env()
 
         host_block = (raw.get("hosts") or {}).get(host, {})
+        # A hosts.hermes block or explicit enabled flag means the user
+        # intentionally configured Honcho for this host.
+        _explicitly_configured = bool(host_block) or raw.get("enabled") is True
 
         # Explicit host block fields win, then flat/global, then defaults
         workspace = (
@@ -253,6 +260,7 @@ class HonchoClientConfig:
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,
+            explicitly_configured=_explicitly_configured,
         )
 
     @staticmethod

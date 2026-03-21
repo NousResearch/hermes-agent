@@ -656,19 +656,21 @@ def refresh_hermes_oauth_token() -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def normalize_model_name(model: str) -> str:
+def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
     - Strips 'anthropic/' prefix (OpenRouter format, case-insensitive)
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
-      Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6)
+      Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
+      preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
-    # OpenRouter uses dots for version separators (claude-opus-4.6),
-    # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
-    model = model.replace(".", "-")
+    if not preserve_dots:
+        # OpenRouter uses dots for version separators (claude-opus-4.6),
+        # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
+        model = model.replace(".", "-")
     return model
 
 
@@ -1006,16 +1008,20 @@ def build_anthropic_kwargs(
     reasoning_config: Optional[Dict[str, Any]],
     tool_choice: Optional[str] = None,
     is_oauth: bool = False,
+    preserve_dots: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
     When *is_oauth* is True, applies Claude Code compatibility transforms:
     system prompt prefix, tool name prefixing, and prompt sanitization.
+
+    When *preserve_dots* is True, model name dots are not converted to hyphens
+    (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
     """
     system, anthropic_messages = convert_messages_to_anthropic(messages)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
-    model = normalize_model_name(model)
+    model = normalize_model_name(model, preserve_dots=preserve_dots)
     effective_max_tokens = max_tokens or 16384
 
     # ── OAuth: Claude Code identity ──────────────────────────────────

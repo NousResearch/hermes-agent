@@ -278,6 +278,33 @@ def _try_gh_cli_token() -> Optional[str]:
     return None
 
 
+_PLACEHOLDER_SECRET_VALUES = {
+    "*",
+    "**",
+    "***",
+    "changeme",
+    "your_api_key",
+    "your-api-key",
+    "placeholder",
+    "example",
+    "dummy",
+    "null",
+    "none",
+}
+
+
+def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
+    """Return True when a configured secret looks usable, not empty/placeholder."""
+    if not isinstance(value, str):
+        return False
+    cleaned = value.strip()
+    if len(cleaned) < min_length:
+        return False
+    if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
+        return False
+    return True
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -297,7 +324,7 @@ def _resolve_api_key_provider_secret(
 
     for env_var in pconfig.api_key_env_vars:
         val = os.getenv(env_var, "").strip()
-        if val:
+        if has_usable_secret(val):
             return val, env_var
 
     return "", ""
@@ -688,7 +715,7 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
-    if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
+    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
     # Auto-detect API-key providers by checking their env vars
@@ -701,7 +728,7 @@ def resolve_provider(
         if pid == "copilot":
             continue
         for env_var in pconfig.api_key_env_vars:
-            if os.getenv(env_var, "").strip():
+            if has_usable_secret(os.getenv(env_var, "")):
                 return pid
 
     return "openrouter"

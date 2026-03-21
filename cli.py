@@ -1028,6 +1028,8 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # show_timestamps: prepend HH:MM:SS to the separator between exchanges
+        self.show_timestamps = CLI_CONFIG["display"].get("show_timestamps", False)
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -5335,7 +5337,12 @@ class HermesCLI:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        if self.show_timestamps:
+            from datetime import datetime as _dt
+            _ts = _dt.now().strftime("%H:%M:%S")
+            ChatConsole().print(f"[dim]{_ts}[/dim] [{_accent_hex()}]{'─' * 32}[/]")
+        else:
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
         
         try:

@@ -107,7 +107,7 @@ class HonchoClientConfig:
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
     # Session resolution
-    session_strategy: str = "per-session"
+    session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
@@ -209,7 +209,7 @@ class HonchoClientConfig:
         # sessionStrategy / sessionPeerPrefix: host first, root fallback
         session_strategy = (
             host_block.get("sessionStrategy")
-            or raw.get("sessionStrategy", "per-session")
+            or raw.get("sessionStrategy", "per-directory")
         )
         host_prefix = host_block.get("sessionPeerPrefix")
         session_peer_prefix = (
@@ -318,7 +318,7 @@ class HonchoClientConfig:
                 return f"{self.peer_name}-{base}"
             return base
 
-        # per-directory: one Honcho session per working directory
+        # per-directory: one Honcho session per working directory (default)
         if self.session_strategy in ("per-directory", "per-session"):
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:

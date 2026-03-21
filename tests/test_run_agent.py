@@ -1877,6 +1877,56 @@ class TestHonchoActivation:
         assert "honcho_search" not in agent.valid_tool_names
         assert "honcho_conclude" not in agent.valid_tool_names
 
+    def test_recall_mode_tools_defers_honcho_session_init_until_tool_use(self):
+        """recallMode=tools should skip eager session creation on startup
+        and only initialize when a Honcho tool is actually invoked."""
+        hcfg = HonchoClientConfig(
+            enabled=True,
+            api_key="honcho-key",
+            memory_mode="hybrid",
+            peer_name="user",
+            ai_peer="hermes",
+            recall_mode="tools",
+        )
+        manager = MagicMock()
+        manager._config = hcfg
+        manager.get_or_create.return_value = SimpleNamespace(messages=[{"role": "user"}])
+        manager.get_peer_card.return_value = ["prefers concise responses"]
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                side_effect=[
+                    _make_tool_defs("web_search"),
+                    _make_tool_defs("web_search", "honcho_profile"),
+                ],
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                honcho_session_key="gateway-session",
+                honcho_manager=manager,
+                honcho_config=hcfg,
+            )
+
+        # Session should NOT have been created during init
+        manager.get_or_create.assert_not_called()
+        manager.get_prefetch_context.assert_not_called()
+
+        # Invoking a Honcho tool should lazily create the session
+        # (ensure_session is called via _resolve_session_context in the tool handler,
+        # and the manager/key are passed through handle_function_call kwargs)
+        result = json.loads(agent._invoke_tool("honcho_profile", {}, "task-1"))
+
+        assert result == {"result": ["prefers concise responses"]}
+        manager.ensure_session.assert_called_with("gateway-session")
+        manager.get_peer_card.assert_called_once_with("gateway-session")
+
     def test_inactive_honcho_strips_stale_honcho_tools(self):
         hcfg = HonchoClientConfig(
             enabled=False,

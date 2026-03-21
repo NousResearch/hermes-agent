@@ -1987,6 +1987,30 @@ class AIAgent:
             tool["function"]["name"] for tool in self.tools
         } if self.tools else set()
 
+    def _ensure_honcho_session_initialized(self) -> Any | None:
+        """Lazily create the Honcho session and run one-time migration when needed.
+
+        Idempotent — safe to call multiple times; get_or_create() returns
+        from cache after the first successful init.
+        """
+        if not self._honcho or not self._honcho_session_key:
+            return None
+
+        honcho_sess = self._honcho.get_or_create(self._honcho_session_key)
+        if not honcho_sess.messages:
+            try:
+                from hermes_cli.config import get_hermes_home
+
+                mem_dir = str(get_hermes_home() / "memories")
+                self._honcho.migrate_memory_files(
+                    self._honcho_session_key,
+                    mem_dir,
+                )
+            except Exception as exc:
+                logger.debug("Memory files migration failed (non-fatal): %s", exc)
+
+        return honcho_sess
+
     def _activate_honcho(
         self,
         hcfg,
@@ -2014,18 +2038,12 @@ class AIAgent:
                 or "hermes-default"
             )
 
-        honcho_sess = self._honcho.get_or_create(self._honcho_session_key)
-        if not honcho_sess.messages:
-            try:
-                from hermes_cli.config import get_hermes_home
+        recall_mode = hcfg.recall_mode
 
-                mem_dir = str(get_hermes_home() / "memories")
-                self._honcho.migrate_memory_files(
-                    self._honcho_session_key,
-                    mem_dir,
-                )
-            except Exception as exc:
-                logger.debug("Memory files migration failed (non-fatal): %s", exc)
+        # In tools mode, defer session creation until the first tool call
+        # to avoid a blocking HTTP round-trip on startup.
+        if recall_mode != "tools":
+            self._ensure_honcho_session_initialized()
 
         from tools.honcho_tools import set_session_context
 
@@ -2060,7 +2078,6 @@ class AIAgent:
             hcfg.memory_mode,
         )
 
-        recall_mode = hcfg.recall_mode
         if recall_mode != "tools":
             try:
                 ctx = self._honcho.get_prefetch_context(self._honcho_session_key)

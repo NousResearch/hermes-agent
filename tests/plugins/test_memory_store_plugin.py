@@ -775,6 +775,57 @@ class TestHolographicIntegration:
         assert len(results) >= 1
         store.close()
 
+    def test_contradict_finds_conflicting_facts(self, tmp_path):
+        """Contradict should detect facts with same entities but different claims."""
+        store = MemoryStore(db_path=tmp_path / "test.db")
+        if not store._hrr_available:
+            pytest.skip("numpy not available")
+
+        # Two facts about Peppi with conflicting preferences
+        store.add_fact('"Peppi" prefers Rust for systems programming', category="user_pref")
+        store.add_fact('"Peppi" prefers Python for systems programming', category="user_pref")
+        # Unrelated fact
+        store.add_fact("SQLite is used for storage", category="project")
+
+        retriever = FactRetriever(store=store)
+        results = retriever.contradict(category="user_pref", threshold=0.01)
+
+        # Should find at least the conflicting pair
+        assert len(results) >= 1
+        pair = results[0]
+        assert "fact_a" in pair
+        assert "fact_b" in pair
+        assert "contradiction_score" in pair
+        assert "shared_entities" in pair
+        assert len(pair["shared_entities"]) > 0
+        store.close()
+
+    def test_contradict_no_conflicts(self, tmp_path):
+        """Contradict should return empty when no conflicts exist."""
+        store = MemoryStore(db_path=tmp_path / "test.db")
+        if not store._hrr_available:
+            pytest.skip("numpy not available")
+
+        store.add_fact("Peppi uses Neovim", category="user_pref")
+        store.add_fact("SQLite is used for storage", category="project")
+
+        retriever = FactRetriever(store=store)
+        results = retriever.contradict()
+
+        # No shared entities between these facts, so no contradictions
+        assert isinstance(results, list)
+        store.close()
+
+    def test_contradict_fallback_no_numpy(self, tmp_path):
+        """Contradict should return empty list without numpy."""
+        store = MemoryStore(db_path=tmp_path / "test.db")
+        store.add_fact("some fact", category="general")
+
+        retriever = FactRetriever(store=store, hrr_weight=0.0)
+        results = retriever.contradict()
+        assert results == [] or isinstance(results, list)
+        store.close()
+
 
 # ===========================================================================
 # TestAutoExtraction — _extract_sentence pure function

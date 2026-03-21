@@ -40,6 +40,8 @@ FACT_STORE_SCHEMA = {
         "• related — What connects to an entity? Structural adjacency.\n"
         "• reason — Compositional: facts connected to MULTIPLE entities simultaneously. "
         "Vector-space JOIN — no keywords needed, just entity names.\n"
+        "• contradict — Memory hygiene: find facts that share entities but make "
+        "conflicting claims. Self-cleaning memory.\n"
         "• update/remove/list — CRUD operations.\n\n"
         "WHEN TO USE REASON vs SEARCH:\n"
         "• 'what language does peppi prefer?' → reason(entities=['peppi', 'language'])\n"
@@ -52,7 +54,7 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "update", "remove", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"],
                 "description": (
                     "Action to perform. 'search' for keywords, 'probe' for single-entity recall, "
                     "'related' for connections, 'reason' for multi-entity compositional queries."
@@ -283,6 +285,12 @@ def _make_fact_store_handler(
                 category = args.get("category")
                 limit = int(args.get("limit", 10))
                 results = retriever.reason(entities, category=category, limit=limit)
+                return json.dumps({"results": results, "count": len(results)})
+
+            elif action == "contradict":
+                category = args.get("category")
+                limit = int(args.get("limit", 10))
+                results = retriever.contradict(category=category, limit=limit)
                 return json.dumps({"results": results, "count": len(results)})
 
             else:

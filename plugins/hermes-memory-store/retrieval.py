@@ -347,6 +347,104 @@ class FactRetriever:
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
+    def contradict(
+        self,
+        category: str | None = None,
+        threshold: float = 0.3,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Find potentially contradictory facts via entity overlap + content divergence.
+
+        Two facts contradict when they share entities (same subject) but have
+        low content-vector similarity (different claims). This is automated
+        memory hygiene — no other memory system does this.
+
+        Returns pairs of facts with a contradiction score.
+        Falls back to empty list if numpy unavailable.
+        """
+        if not hrr._HAS_NUMPY:
+            return []
+
+        conn = self.store._conn
+
+        # Get all facts with vectors and their linked entities
+        where = "WHERE f.hrr_vector IS NOT NULL"
+        params: list = []
+        if category:
+            where += " AND f.category = ?"
+            params.append(category)
+
+        rows = conn.execute(
+            f"""
+            SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score,
+                   f.created_at, f.updated_at, f.hrr_vector
+            FROM facts f
+            {where}
+            """,
+            params,
+        ).fetchall()
+
+        if len(rows) < 2:
+            return []
+
+        # Build entity sets per fact
+        fact_entities: dict[int, set[str]] = {}
+        for row in rows:
+            fid = row["fact_id"]
+            entity_rows = conn.execute(
+                """
+                SELECT e.name FROM entities e
+                JOIN fact_entities fe ON fe.entity_id = e.entity_id
+                WHERE fe.fact_id = ?
+                """,
+                (fid,),
+            ).fetchall()
+            fact_entities[fid] = {r["name"].lower() for r in entity_rows}
+
+        # Compare all pairs: high entity overlap + low content similarity = contradiction
+        facts = [dict(r) for r in rows]
+        contradictions = []
+
+        for i in range(len(facts)):
+            for j in range(i + 1, len(facts)):
+                f1, f2 = facts[i], facts[j]
+                ents1 = fact_entities.get(f1["fact_id"], set())
+                ents2 = fact_entities.get(f2["fact_id"], set())
+
+                if not ents1 or not ents2:
+                    continue
+
+                # Entity overlap (Jaccard)
+                entity_overlap = len(ents1 & ents2) / len(ents1 | ents2) if (ents1 | ents2) else 0.0
+
+                if entity_overlap < 0.3:
+                    continue  # Not enough entity overlap to be contradictory
+
+                # Content similarity via HRR vectors
+                v1 = hrr.bytes_to_phases(f1["hrr_vector"])
+                v2 = hrr.bytes_to_phases(f2["hrr_vector"])
+                content_sim = hrr.similarity(v1, v2)
+
+                # High entity overlap + low content similarity = potential contradiction
+                # contradiction_score: higher = more contradictory
+                contradiction_score = entity_overlap * (1.0 - (content_sim + 1.0) / 2.0)
+
+                if contradiction_score >= threshold:
+                    # Strip hrr_vector from output (not JSON serializable)
+                    f1_clean = {k: v for k, v in f1.items() if k != "hrr_vector"}
+                    f2_clean = {k: v for k, v in f2.items() if k != "hrr_vector"}
+                    contradictions.append({
+                        "fact_a": f1_clean,
+                        "fact_b": f2_clean,
+                        "entity_overlap": round(entity_overlap, 3),
+                        "content_similarity": round(content_sim, 3),
+                        "contradiction_score": round(contradiction_score, 3),
+                        "shared_entities": sorted(ents1 & ents2),
+                    })
+
+        contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
+        return contradictions[:limit]
+
     def _score_facts_by_vector(
         self,
         target_vec: "np.ndarray",

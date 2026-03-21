@@ -125,3 +125,10 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_terminal_morph_image_syncs_to_env(self, _isolated_hermes_home):
+        set_config_value("terminal.morph_image_id", "morphvm-minimal")
+        config = _read_config(_isolated_hermes_home)
+        env = _read_env(_isolated_hermes_home)
+        assert "morph_image_id: morphvm-minimal" in config
+        assert "TERMINAL_MORPH_IMAGE_ID=morphvm-minimal" in env

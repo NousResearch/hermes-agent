@@ -115,6 +115,7 @@ def show_status(args):
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
+        "Morph": "MORPH_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
@@ -234,10 +235,24 @@ def show_status(args):
         docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
         print(f"  Docker Image: {docker_image}")
     elif terminal_env == "daytona":
-        daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
+        daytona_image = os.getenv(
+            "TERMINAL_DAYTONA_IMAGE",
+            "nikolaik/python-nodejs:python3.11-nodejs20",
+        )
         print(f"  Daytona Image: {daytona_image}")
-    
-    sudo_password = os.getenv("SUDO_PASSWORD", "")
+    elif terminal_env == "morph":
+        morph_image = (
+            get_env_value("TERMINAL_MORPH_IMAGE_ID")
+            or load_config().get("terminal", {}).get("morph_image_id", "")
+        )
+        morph_key = get_env_value("MORPH_API_KEY") or ""
+        print(f"  Morph Image: {morph_image or '(not set)'}")
+        print(
+            f"  Morph API Key: {check_mark(bool(morph_key))} "
+            f"{'configured' if morph_key else 'not set'}"
+        )
+
+    sudo_password = get_env_value("SUDO_PASSWORD") or ""
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
     
     # =========================================================================

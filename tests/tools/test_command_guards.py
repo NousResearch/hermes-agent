@@ -71,6 +71,10 @@ class TestContainerSkip:
         result = check_all_command_guards("rm -rf /", "daytona")
         assert result["approved"] is True
 
+    def test_morph_skips_both(self):
+        result = check_all_command_guards("rm -rf /", "morph")
+        assert result["approved"] is True
+
 
 # ---------------------------------------------------------------------------
 # tirith allow + safe command

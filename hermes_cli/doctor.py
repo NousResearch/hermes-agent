@@ -10,7 +10,13 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import (
+    get_project_root,
+    get_hermes_home,
+    get_env_path,
+    get_env_value,
+    load_config,
+)
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -458,6 +464,37 @@ def run_doctor(args):
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
 
+    if terminal_env == "morph":
+        morph_key = get_env_value("MORPH_API_KEY")
+        morph_image = (
+            get_env_value("TERMINAL_MORPH_IMAGE_ID")
+            or load_config().get("terminal", {}).get("morph_image_id", "")
+        )
+        if morph_key:
+            check_ok("Morph API key", "(configured)")
+        else:
+            check_fail("MORPH_API_KEY not set", "(required for TERMINAL_ENV=morph)")
+            issues.append("Set MORPH_API_KEY environment variable")
+
+        if morph_image:
+            check_ok("Morph base image", f"({morph_image})")
+        else:
+            check_fail(
+                "TERMINAL_MORPH_IMAGE_ID not set",
+                "(required for TERMINAL_ENV=morph)",
+            )
+            issues.append(
+                "Set TERMINAL_MORPH_IMAGE_ID in .env or terminal.morph_image_id in config"
+            )
+
+        try:
+            import morphcloud  # noqa: F401
+
+            check_ok("morphcloud SDK", "(installed)")
+        except ImportError:
+            check_fail("morphcloud SDK not installed", "(pip install morphcloud)")
+            issues.append("Install morphcloud SDK: pip install 'morphcloud>=0.1.106'")
+
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
         check_ok("Node.js")
@@ -703,7 +740,6 @@ def run_doctor(args):
     else:
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
-    from hermes_cli.config import get_env_value
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")

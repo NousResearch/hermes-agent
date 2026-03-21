@@ -100,7 +100,7 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
-_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
+_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona", "morph"})
 _secret_capture_callback = None
 
 

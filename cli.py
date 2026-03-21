@@ -170,6 +170,7 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://python:3.11",
             "modal_image": "python:3.11",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "morph_image_id": "morphvm-minimal",
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
         },
@@ -335,6 +336,7 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "morph_image_id": "TERMINAL_MORPH_IMAGE_ID",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
@@ -7194,7 +7196,7 @@ def main(
                     route_label=turn_route["label"],
                 ):
                     cli.agent.quiet_mode = True
-                    result = cli.agent.run_conversation(query)
+                    result = cli.agent.run_conversation(query, task_id=cli.session_id)
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     if response:
                         print(response)

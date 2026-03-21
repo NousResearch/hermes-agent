@@ -1427,8 +1427,19 @@ def call_llm(
             api_key=resolved_api_key,
         )
         if client is None:
-            # Fallback: try openrouter
-            if resolved_provider != "openrouter" and not resolved_base_url:
+            # The provider has no credentials. When the user explicitly chose
+            # a non-OpenRouter provider, silently falling back to OpenRouter
+            # hides the real problem (missing API key). Fail fast instead.
+            explicit = (resolved_provider or "").strip().lower()
+            if explicit and explicit not in ("auto", "openrouter", "custom"):
+                raise RuntimeError(
+                    f"Provider '{explicit}' has no API key configured "
+                    f"(tried: {', '.join(pconfig.api_key_env_vars)}). "
+                    f"Set the {explicit.upper()}_API_KEY environment variable, "
+                    f"or choose a different provider with 'hermes model'."
+                )
+            # For auto/custom, fall back to OpenRouter
+            if not resolved_base_url:
                 logger.warning("Provider %s unavailable, falling back to openrouter",
                                resolved_provider)
                 client, final_model = _get_cached_client(

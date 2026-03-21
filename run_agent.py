@@ -732,7 +732,19 @@ class AIAgent:
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
                 else:
-                    # Final fallback: try raw OpenRouter key
+                    # The provider router failed to find credentials.
+                    # When the user explicitly configured a non-OpenRouter provider,
+                    # silently falling back to OpenRouter hides the real problem
+                    # (missing API key). Fail fast with a clear message.
+                    explicit_provider = (self.provider or "").strip().lower()
+                    if explicit_provider and explicit_provider not in ("auto", "openrouter", "custom"):
+                        raise RuntimeError(
+                            f"Provider '{explicit_provider}' is configured in config.yaml "
+                            f"but no API key was found. "
+                            f"Set the {explicit_provider.upper()}_API_KEY environment variable, "
+                            f"or switch to a different provider with 'hermes model'."
+                        )
+                    # For auto/custom/OpenRouter, fall back to raw OpenRouter key
                     client_kwargs = {
                         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                         "base_url": OPENROUTER_BASE_URL,

@@ -7,6 +7,7 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
+    get_tool_definitions,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
@@ -101,3 +102,7 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+    def test_hermes_acp_includes_document_parse(self):
+        names = [entry["function"]["name"] for entry in get_tool_definitions(["hermes-acp"], quiet_mode=True)]
+        assert "document_parse" in names

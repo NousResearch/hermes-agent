@@ -148,6 +148,22 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
 
+    "documents": {
+        "parser_backend": "auto",  # auto | liteparse | basic
+        "liteparse": {
+            "ocr_enabled": True,
+            "ocr_server_url": "",
+            "ocr_language": "en",
+            "dpi": 150,
+            "target_pages": "",
+            "max_pages": 10000,
+            "no_precise_bbox": False,
+            "preserve_small_text": False,
+            "image_format": "png",
+            "screenshot_output_dir": "",
+        },
+    },
+
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once per
     # conversation turn (on first write_file/patch call).  Use /rollback to restore.
@@ -372,7 +388,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================

@@ -2413,6 +2413,7 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client = old_client
         agent._anthropic_api_key = "sk-ant-oat01-stale-token"
         agent._anthropic_base_url = "https://api.anthropic.com"
+        agent.provider = "anthropic"
 
         with (
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-oat01-fresh-token"),
@@ -2908,6 +2909,7 @@ class TestOAuthFlagAfterCredentialRefresh:
     def test_oauth_flag_updates_api_key_to_oauth(self, agent):
         """Refreshing from API key to OAuth token must set flag to True."""
         agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
         agent._anthropic_api_key = "sk-ant-api-old"
         agent._anthropic_client = MagicMock()
         agent._is_anthropic_oauth = False
@@ -2926,6 +2928,7 @@ class TestOAuthFlagAfterCredentialRefresh:
     def test_oauth_flag_updates_oauth_to_api_key(self, agent):
         """Refreshing from OAuth to API key must set flag to False."""
         agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
         agent._anthropic_api_key = "sk-ant-setup-old"
         agent._anthropic_client = MagicMock()
         agent._is_anthropic_oauth = True

@@ -12,13 +12,14 @@ import copy
 from typing import Any, Dict, List
 
 
-def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
+def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
     """Add cache_control to a single message, handling all format variations."""
     role = msg.get("role", "")
     content = msg.get("content")
 
     if role == "tool":
-        msg["cache_control"] = cache_marker
+        if native_anthropic:
+            msg["cache_control"] = cache_marker
         return
 
     if content is None or content == "":
@@ -40,6 +41,7 @@ def _apply_cache_marker(msg: dict, cache_marker: dict) -> None:
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
+    native_anthropic: bool = False,
 ) -> List[Dict[str, Any]]:
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
@@ -59,12 +61,12 @@ def apply_anthropic_cache_control(
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker)
+        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
     remaining = 4 - breakpoints_used
     non_sys = [i for i in range(len(messages)) if messages[i].get("role") != "system"]
     for idx in non_sys[-remaining:]:
-        _apply_cache_marker(messages[idx], marker)
+        _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages

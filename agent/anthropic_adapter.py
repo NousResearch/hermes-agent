@@ -42,7 +42,6 @@ def _supports_adaptive_thinking(model: str) -> bool:
 # Beta headers for enhanced features (sent with ALL auth types)
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
-    "fine-grained-tool-streaming-2025-05-14",
 ]
 
 # Additional beta headers required for OAuth/subscription auth.

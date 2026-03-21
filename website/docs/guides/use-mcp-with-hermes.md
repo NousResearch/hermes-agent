@@ -102,7 +102,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
     tools:
       include: [list_issues, create_issue, search_code]
 ```
@@ -116,7 +116,7 @@ mcp_servers:
   stripe:
     url: "https://mcp.stripe.com"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "Bearer ${STRIPE_API_KEY}"
     tools:
       exclude: [delete_customer, refund_payment]
 ```

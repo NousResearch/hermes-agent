@@ -801,6 +801,26 @@ class TestBuildSafeEnv:
         assert result["PATH"] == "/usr/bin"
         assert result["MY_CUSTOM_VAR"] == "hello"
 
+    def test_user_env_expands_brace_refs(self):
+        """User env values expand ${VAR} references from the process env."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict(
+            "os.environ",
+            {"PATH": "/usr/bin", "MCP_TOKEN": "secret123"},
+            clear=True,
+        ):
+            result = _build_safe_env(
+                {
+                    "API_KEY": "${MCP_TOKEN}",
+                    "MISSING": "${NOT_SET}",
+                }
+            )
+
+        assert result["PATH"] == "/usr/bin"
+        assert result["API_KEY"] == "secret123"
+        assert result["MISSING"] == "${NOT_SET}"
+
     def test_user_env_overrides_safe(self):
         """User env can override safe defaults."""
         from tools.mcp_tool import _build_safe_env
@@ -923,6 +943,49 @@ class TestHTTPConfig:
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
                 with pytest.raises(ImportError, match="HTTP transport"):
                     await server._run_http(config)
+
+        asyncio.run(_test())
+
+    def test_run_http_expands_header_env_refs(self):
+        """HTTP headers expand ${VAR} references before connecting."""
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("remote")
+        config = {
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer ${API_KEY}"},
+        }
+
+        mock_http_cm = MagicMock()
+        mock_http_cm.__aenter__ = AsyncMock(
+            return_value=(MagicMock(), MagicMock(), MagicMock())
+        )
+        mock_http_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+
+        mock_cs_cm = MagicMock()
+        mock_cs_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cs_cm.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_discover(self):
+            self._shutdown_event.set()
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("tools.mcp_tool.streamablehttp_client", return_value=mock_http_cm) as mock_http, \
+                 patch("tools.mcp_tool.ClientSession", return_value=mock_cs_cm), \
+                 patch.dict("os.environ", {"API_KEY": "secret123"}, clear=True), \
+                 patch.object(MCPServerTask, "_discover_tools", new=fake_discover):
+                await server._run_http(config)
+
+                mock_http.assert_called_once_with(
+                    "https://example.com/mcp",
+                    headers={"Authorization": "Bearer secret123"},
+                    timeout=60.0,
+                )
+                mock_session.initialize.assert_called_once()
 
         asyncio.run(_test())
 
@@ -2750,3 +2813,81 @@ class TestMCPSelectiveToolLoading:
 
         assert connect_called == []
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _expand_env_vars
+# ---------------------------------------------------------------------------
+
+class TestExpandEnvVars:
+    """Tests for _expand_env_vars() environment variable expansion."""
+
+    def test_expands_brace_syntax(self):
+        """${VAR} syntax is expanded when variable exists."""
+        from tools.mcp_tool import _expand_env_vars
+
+        with patch.dict("os.environ", {"MY_API_KEY": "secret123"}, clear=False):
+            result = _expand_env_vars("Bearer ${MY_API_KEY}")
+            assert result == "Bearer secret123"
+
+    def test_preserves_missing_vars(self):
+        """${VAR} is preserved literally when variable is missing."""
+        from tools.mcp_tool import _expand_env_vars
+
+        # Ensure the var doesn't exist
+        with patch.dict("os.environ", {}, clear=True):
+            result = _expand_env_vars("Bearer ${NONEXISTENT_KEY}")
+            assert result == "Bearer ${NONEXISTENT_KEY}"
+
+    def test_ignores_bare_dollar_syntax(self):
+        """Bare $VAR syntax is NOT expanded (opt-in safety)."""
+        from tools.mcp_tool import _expand_env_vars
+
+        with patch.dict("os.environ", {"VAR": "value"}, clear=False):
+            result = _expand_env_vars("$VAR")
+            assert result == "$VAR"  # unchanged
+
+    def test_expands_dict_values(self):
+        """Dict values are recursively expanded."""
+        from tools.mcp_tool import _expand_env_vars
+
+        with patch.dict("os.environ", {"API_KEY": "mykey"}, clear=False):
+            result = _expand_env_vars({
+                "Authorization": "Bearer ${API_KEY}",
+                "X-Other": "static"
+            })
+            assert result == {"Authorization": "Bearer mykey", "X-Other": "static"}
+
+    def test_expands_list_items(self):
+        """List items are recursively expanded."""
+        from tools.mcp_tool import _expand_env_vars
+
+        with patch.dict("os.environ", {"HOST": "example.com"}, clear=False):
+            result = _expand_env_vars(["${HOST}", "static"])
+            assert result == ["example.com", "static"]
+
+    def test_nested_structures(self):
+        """Nested dicts and lists are expanded recursively."""
+        from tools.mcp_tool import _expand_env_vars
+
+        with patch.dict("os.environ", {"KEY1": "val1", "KEY2": "val2"}, clear=False):
+            result = _expand_env_vars({
+                "headers": {"Auth": "${KEY1}"},
+                "urls": ["${KEY2}", "static"]
+            })
+            assert result == {"headers": {"Auth": "val1"}, "urls": ["val2", "static"]}
+
+    def test_non_string_passthrough(self):
+        """Non-string values pass through unchanged."""
+        from tools.mcp_tool import _expand_env_vars
+
+        result = _expand_env_vars({"count": 42, "enabled": True, "ratio": 3.14})
+        assert result == {"count": 42, "enabled": True, "ratio": 3.14}
+
+    def test_multiple_vars_in_one_string(self):
+        """Multiple ${VAR} occurrences in one string are all expanded."""
+        from tools.mcp_tool import _expand_env_vars
+
+        with patch.dict("os.environ", {"A": "1", "B": "2"}, clear=False):
+            result = _expand_env_vars("${A}-${B}-${A}")
+            assert result == "1-2-1"

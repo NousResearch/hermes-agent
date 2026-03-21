@@ -23,11 +23,13 @@ Example config::
         command: "npx"
         args: ["-y", "@modelcontextprotocol/server-github"]
         env:
-          GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+          # Use ${VAR} syntax to reference environment variables
+          GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
         headers:
-          Authorization: "Bearer sk-..."
+          # ${VAR} syntax works in headers too
+          Authorization: "Bearer ${MY_API_KEY}"
         timeout: 180
       analysis:
         command: "npx"
@@ -46,6 +48,7 @@ Features:
     - Stdio transport (command + args) and HTTP/StreamableHTTP transport (url)
     - Automatic reconnection with exponential backoff (up to 5 retries)
     - Environment variable filtering for stdio subprocesses (security)
+    - ${VAR} expansion in env and headers for referencing secrets from environment
     - Credential stripping in error messages returned to the LLM
     - Configurable per-server timeouts for tool calls and connections
     - Thread-safe architecture with dedicated background event loop
@@ -158,14 +161,63 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
 
     This prevents accidentally leaking secrets like API keys, tokens, or
     credentials to MCP server subprocesses.
+
+    Environment variable expansion (${VAR}) is applied to user_env values
+    so configs can reference secrets without hardcoding them.
     """
     env = {}
     for key, value in os.environ.items():
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):
             env[key] = value
     if user_env:
-        env.update(user_env)
+        # Expand ${VAR} references in user-provided env values
+        expanded_env = _expand_env_vars(user_env)
+        env.update(expanded_env)
     return env
+
+
+def _expand_env_vars(obj):
+    """Recursively expand ${VAR} environment variable references in strings.
+
+    This enables config.yaml to reference environment variables using the
+    standard ${VAR} syntax, e.g.:
+
+        headers:
+          Authorization: "Bearer ${MY_API_KEY}"
+        env:
+          API_KEY: "${MY_API_KEY}"
+
+    Security considerations:
+    - Only ${VAR} syntax is expanded (explicit opt-in), not $VAR
+    - If VAR is not set, the literal ${VAR} is preserved (aids debugging)
+    - Expanded values are never logged to prevent credential leakage
+    - This should NOT be used on command/args to prevent injection attacks
+
+    Args:
+        obj: A string, dict, list, or other value to process.
+
+    Returns:
+        A copy of obj with all ${VAR} references expanded in string values.
+    """
+    if isinstance(obj, str):
+        # Only expand ${VAR} syntax, leave unmatched refs as-is
+        def replace_var(match):
+            var_name = match.group(1)
+            value = os.environ.get(var_name)
+            if value is None:
+                # Preserve literal ${VAR} if not found - aids debugging
+                return match.group(0)
+            return value
+        return _ENV_VAR_PATTERN.sub(replace_var, obj)
+    elif isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    return obj
+
+
+# Pattern for ${VAR} environment variable references (not $VAR)
+_ENV_VAR_PATTERN = re.compile(r'\$\{(\w+)\}')
 
 
 def _sanitize_error(text: str) -> str:
@@ -750,6 +802,10 @@ class MCPServerTask:
         url = config["url"]
         headers = config.get("headers")
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+
+        # Expand ${VAR} references in headers so configs can reference secrets
+        if headers:
+            headers = _expand_env_vars(headers)
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         async with streamablehttp_client(

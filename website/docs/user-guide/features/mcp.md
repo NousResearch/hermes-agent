@@ -64,7 +64,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
 ```
 
 Use stdio servers when:
@@ -81,7 +81,7 @@ mcp_servers:
   remote_api:
     url: "https://mcp.example.com/mcp"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "Bearer ${MCP_API_KEY}"
 ```
 
 Use HTTP servers when:
@@ -99,9 +99,9 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 |---|---|---|
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
-| `env` | mapping | Environment variables passed to the stdio server |
+| `env` | mapping | Environment variables passed to the stdio server (`${VAR}` references are expanded from Hermes' process environment) |
 | `url` | string | HTTP MCP endpoint |
-| `headers` | mapping | HTTP headers for remote servers |
+| `headers` | mapping | HTTP headers for remote servers (`${VAR}` references are expanded from Hermes' process environment) |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
@@ -123,7 +123,7 @@ mcp_servers:
   company_api:
     url: "https://mcp.internal.example.com"
     headers:
-      Authorization: "Bearer ***"
+      Authorization: "Bearer ${INTERNAL_MCP_API_KEY}"
 ```
 
 ## How Hermes registers MCP tools
@@ -191,7 +191,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
     tools:
       include: [create_issue, list_issues]
 ```

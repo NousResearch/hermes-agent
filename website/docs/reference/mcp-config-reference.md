@@ -19,11 +19,13 @@ mcp_servers:
   <server_name>:
     command: "..."      # stdio servers
     args: []
-    env: {}
+    env:
+      API_KEY: "${MY_API_KEY}"
 
     # OR
     url: "..."          # HTTP servers
-    headers: {}
+    headers:
+      Authorization: "Bearer ${MY_API_KEY}"
 
     enabled: true
     timeout: 120
@@ -41,9 +43,9 @@ mcp_servers:
 |---|---|---|---|
 | `command` | string | stdio | Executable to launch |
 | `args` | list | stdio | Arguments for the subprocess |
-| `env` | mapping | stdio | Environment passed to the subprocess |
+| `env` | mapping | stdio | Environment passed to the subprocess; `${VAR}` references are expanded from Hermes' process environment |
 | `url` | string | HTTP | Remote MCP endpoint |
-| `headers` | mapping | HTTP | Headers for remote server requests |
+| `headers` | mapping | HTTP | Headers for remote server requests; `${VAR}` references are expanded from Hermes' process environment |
 | `enabled` | bool | both | Skip the server entirely when false |
 | `timeout` | number | both | Tool call timeout |
 | `connect_timeout` | number | both | Initial connection timeout |

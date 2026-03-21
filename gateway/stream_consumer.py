@@ -77,8 +77,19 @@ class GatewayStreamConsumer:
         return self._already_sent
 
     def on_delta(self, text: str) -> None:
-        """Thread-safe callback — called from the agent's worker thread."""
-        if text:
+        """Thread-safe callback — called from the agent's worker thread.
+
+        Passing None signals an iteration boundary (the agent finished
+        streaming one segment and is about to resume after tool calls).
+        A newline separator is injected so resumed text starts on a new line
+        instead of being concatenated directly onto the previous segment.
+        """
+        if text is None:
+            # Iteration boundary: inject a separator so the next streamed
+            # segment starts on a new line rather than running together.
+            if self._accumulated and not self._accumulated.endswith(chr(10)):
+                self._queue.put(chr(10))
+        elif text:
             self._queue.put(text)
 
     def finish(self) -> None:

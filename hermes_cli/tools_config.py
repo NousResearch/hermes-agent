@@ -100,7 +100,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "lattice"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
 
 # Platform display config
 PLATFORMS = {

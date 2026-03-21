@@ -460,6 +460,34 @@ def load_gateway_config() -> GatewayConfig:
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
                 gw_data["platforms"] = platforms_data
+
+            # Primary platform mapping in config.yaml (platforms.<name>).
+            # Merge over legacy gateway.json values so config.yaml wins.
+            yaml_platforms = yaml_cfg.get("platforms")
+            if isinstance(yaml_platforms, dict):
+                for platform_name, platform_data in yaml_platforms.items():
+                    if not isinstance(platform_data, dict):
+                        continue
+
+                    existing_platform_data = platforms_data.get(platform_name)
+                    if not isinstance(existing_platform_data, dict):
+                        existing_platform_data = {}
+
+                    merged_platform_data = dict(existing_platform_data)
+                    merged_platform_data.update(platform_data)
+
+                    existing_extra = existing_platform_data.get("extra")
+                    incoming_extra = platform_data.get("extra")
+                    if isinstance(existing_extra, dict) or isinstance(incoming_extra, dict):
+                        merged_extra: Dict[str, Any] = {}
+                        if isinstance(existing_extra, dict):
+                            merged_extra.update(existing_extra)
+                        if isinstance(incoming_extra, dict):
+                            merged_extra.update(incoming_extra)
+                        merged_platform_data["extra"] = merged_extra
+
+                    platforms_data[platform_name] = merged_platform_data
+
             for plat in Platform:
                 if plat == Platform.LOCAL:
                     continue

@@ -192,3 +192,28 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_loads_nested_platforms_mapping_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    extra:\n"
+            "      secret: test-secret\n"
+            "      routes:\n"
+            "        github-pr:\n"
+            "          deliver: log\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        webhook = config.platforms[Platform.WEBHOOK]
+        assert webhook.enabled is True
+        assert webhook.extra["secret"] == "test-secret"
+        assert webhook.extra["routes"]["github-pr"]["deliver"] == "log"

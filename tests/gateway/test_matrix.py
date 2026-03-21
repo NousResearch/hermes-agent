@@ -446,3 +446,108 @@ class TestMatrixRequirements:
         monkeypatch.delenv("MATRIX_HOMESERVER", raising=False)
         from gateway.platforms.matrix import check_matrix_requirements
         assert check_matrix_requirements() is False
+
+
+# ---------------------------------------------------------------------------
+# Event deduplication
+# ---------------------------------------------------------------------------
+
+class TestMatrixEventDeduplication:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_first_event_is_not_duplicate(self):
+        assert self.adapter._is_duplicate_event("$event1") is False
+
+    def test_same_event_is_duplicate(self):
+        self.adapter._is_duplicate_event("$event1")
+        assert self.adapter._is_duplicate_event("$event1") is True
+
+    def test_different_events_not_duplicate(self):
+        self.adapter._is_duplicate_event("$event1")
+        assert self.adapter._is_duplicate_event("$event2") is False
+
+    def test_none_event_id_is_not_duplicate(self):
+        """None event IDs should never be considered duplicates."""
+        assert self.adapter._is_duplicate_event(None) is False
+        assert self.adapter._is_duplicate_event(None) is False
+
+    def test_oldest_events_evicted_when_full(self):
+        """When the deque hits maxlen, the oldest entries should be evicted."""
+        # Fill up the deque
+        for i in range(1000):
+            self.adapter._is_duplicate_event(f"$evt_{i}")
+
+        # The oldest event should still be tracked
+        assert self.adapter._is_duplicate_event("$evt_0") is True
+
+        # Adding one more should evict $evt_0
+        self.adapter._is_duplicate_event("$evt_new")
+        assert self.adapter._is_duplicate_event("$evt_0") is False
+
+        # Recent events should still be tracked
+        assert self.adapter._is_duplicate_event("$evt_999") is True
+
+    def test_set_stays_in_sync_with_deque(self):
+        """The backing set should always match the deque contents."""
+        for i in range(1500):
+            self.adapter._is_duplicate_event(f"$evt_{i}")
+
+        assert len(self.adapter._processed_events_set) == len(self.adapter._processed_events)
+        assert self.adapter._processed_events_set == set(self.adapter._processed_events)
+
+    @pytest.mark.asyncio
+    async def test_on_room_message_deduplicates(self):
+        """_on_room_message should skip duplicate events."""
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._startup_ts = 0.0
+        self.adapter._dm_rooms = {}
+
+        mock_room = MagicMock()
+        mock_room.room_id = "!test:example.org"
+        mock_room.member_count = 2
+
+        mock_event = MagicMock()
+        mock_event.sender = "@alice:example.org"
+        mock_event.event_id = "$dedup_test_1"
+        mock_event.server_timestamp = 9999999999999
+        mock_event.body = "Hello"
+        mock_event.source = {"content": {}}
+
+        with patch.object(self.adapter, "handle_message", new_callable=AsyncMock) as mock_handle:
+            await self.adapter._on_room_message(mock_room, mock_event)
+            await self.adapter._on_room_message(mock_room, mock_event)
+            assert mock_handle.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_on_room_message_media_deduplicates(self):
+        """_on_room_message_media should skip duplicate events."""
+        import nio
+
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._startup_ts = 0.0
+        self.adapter._dm_rooms = {}
+        self.adapter._client = MagicMock()
+
+        mock_room = MagicMock()
+        mock_room.room_id = "!test:example.org"
+        mock_room.member_count = 2
+
+        mock_event = MagicMock(spec=nio.RoomMessageImage)
+        mock_event.sender = "@alice:example.org"
+        mock_event.event_id = "$media_dedup_1"
+        mock_event.server_timestamp = 9999999999999
+        mock_event.body = "image.png"
+        mock_event.url = "mxc://example.org/abc123"
+        mock_event.content = {"info": {"mimetype": "image/png"}}
+        mock_event.source = {"content": {}}
+
+        mock_download = MagicMock(spec=nio.DownloadResponse)
+        mock_download.body = b"fake image bytes"
+        self.adapter._client.download = AsyncMock(return_value=mock_download)
+
+        with patch.object(self.adapter, "handle_message", new_callable=AsyncMock) as mock_handle, \
+             patch("gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/cached.png"):
+            await self.adapter._on_room_message_media(mock_room, mock_event)
+            await self.adapter._on_room_message_media(mock_room, mock_event)
+            assert mock_handle.call_count == 1

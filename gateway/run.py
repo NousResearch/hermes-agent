@@ -142,6 +142,7 @@ if _config_path.exists():
                     "model": "AUXILIARY_VISION_MODEL",
                     "base_url": "AUXILIARY_VISION_BASE_URL",
                     "api_key": "AUXILIARY_VISION_API_KEY",
+                    "timeout": "AUXILIARY_VISION_TIMEOUT",
                 },
                 "web_extract": {
                     "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
@@ -172,6 +173,11 @@ if _config_path.exists():
                     os.environ[_env_map["base_url"]] = _base_url
                 if _api_key:
                     os.environ[_env_map["api_key"]] = _api_key
+                _timeout_env = _env_map.get("timeout")
+                if _timeout_env:
+                    _timeout = _task_cfg.get("timeout")
+                    if _timeout is not None:
+                        os.environ[_timeout_env] = str(_timeout)
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
@@ -1926,15 +1932,18 @@ class GatewayRunner:
         # Auto-analyze images sent by the user
         #
         # If the user attached image(s), we run the vision tool eagerly so
-        # the conversation model always receives a text description.  The
-        # local file path is also included so the model can re-examine the
-        # image later with a more targeted question via vision_analyze.
+        # the conversation model always receives a text description.
+        # Because the image has already been analyzed, the vision toolset
+        # is disabled for the subsequent agent run to avoid redundant
+        # calls (and deadlocks on single-slot backends like llama.cpp
+        # with --np 1).
         #
         # We filter to image paths only (by media_type) so that non-image
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
         message_text = event.text or ""
+        vision_enriched = False
         if event.media_urls:
             image_paths = []
             for i, path in enumerate(event.media_urls):
@@ -1950,6 +1959,7 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_vision(
                     message_text, image_paths
                 )
+                vision_enriched = True
         
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
@@ -2066,7 +2076,8 @@ class GatewayRunner:
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
-                session_key=session_key
+                session_key=session_key,
+                disabled_toolsets=["vision"] if vision_enriched else None,
             )
             
             response = agent_result.get("final_response") or ""
@@ -4118,22 +4129,18 @@ class GatewayRunner:
                 if result.get("success"):
                     description = result.get("analysis", "")
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        f"[The user sent an image. Here's what I can see:\n{description}]"
                     )
                 else:
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
+                        "[The user sent an image but vision analysis was "
+                        "unable to process it this time.]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    "[The user sent an image but vision analysis encountered "
+                    "an error.]"
                 )
 
         # Combine: vision descriptions first, then the user's original text
@@ -4333,6 +4340,7 @@ class GatewayRunner:
         session_id: str,
         session_key: str = None,
         _interrupt_depth: int = 0,
+        disabled_toolsets: List[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -4680,6 +4688,7 @@ class GatewayRunner:
                 quiet_mode=True,
                 verbose_logging=False,
                 enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._prefill_messages or None,
                 reasoning_config=reasoning_config,

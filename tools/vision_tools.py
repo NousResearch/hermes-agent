@@ -298,12 +298,20 @@ async def vision_analyze_tool(
         
         logger.info("Processing image with vision model...")
         
-        # Call the vision API via centralized router
+        # Call the vision API via centralized router.
+        # Timeout is configurable via auxiliary.vision.timeout in config.yaml
+        # or the AUXILIARY_VISION_TIMEOUT env var (default 300s for GPU models).
+        _timeout_str = os.getenv("AUXILIARY_VISION_TIMEOUT", "300")
+        try:
+            _vision_timeout = float(_timeout_str)
+        except ValueError:
+            _vision_timeout = 300.0
         call_kwargs = {
             "task": "vision",
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 2000,
+            "timeout": _vision_timeout,
         }
         if model:
             call_kwargs["model"] = model

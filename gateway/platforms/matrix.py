@@ -24,6 +24,7 @@ import os
 import re
 import time
 from pathlib import Path
+from collections import deque
 from typing import Any, Dict, List, Optional, Set
 
 from gateway.config import Platform, PlatformConfig
@@ -103,6 +104,23 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms: Dict[str, bool] = {}
         # Set of room IDs we've joined
         self._joined_rooms: Set[str] = set()
+        # Event deduplication (bounded deque keeps newest entries)
+        self._processed_events: deque[str] = deque(maxlen=1000)
+        self._processed_events_set: set[str] = set()
+
+    def _is_duplicate_event(self, event_id: str | None) -> bool:
+        """Return True if this event was already processed. Tracks the ID otherwise."""
+        if not event_id:
+            return False
+        if event_id in self._processed_events_set:
+            return True
+        # If the deque is full, the oldest entry gets evicted automatically.
+        if len(self._processed_events) == self._processed_events.maxlen:
+            evicted = self._processed_events[0]
+            self._processed_events_set.discard(evicted)
+        self._processed_events.append(event_id)
+        self._processed_events_set.add(event_id)
+        return False
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -188,7 +206,6 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Register event callbacks.
         client.add_event_callback(self._on_room_message, nio.RoomMessageText)
-        client.add_event_callback(self._on_room_message_media, nio.RoomMessageMedia)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageImage)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageAudio)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageVideo)
@@ -557,7 +574,15 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Ignore own messages.
         if event.sender == self._user_id:
+            logger.debug("Matrix: ignoring own message from %s", event.sender)
             return
+
+        # Deduplicate by event ID (nio can fire the same event more than once).
+        if self._is_duplicate_event(getattr(event, "event_id", None)):
+            logger.debug("Matrix: duplicate event %s, ignoring", event.event_id)
+            return
+
+        logger.debug("Matrix: processing message from %s in room %s", event.sender, room.room_id)
 
         # Startup grace: ignore old messages from initial sync.
         event_ts = getattr(event, "server_timestamp", 0) / 1000.0
@@ -646,6 +671,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Ignore own messages.
         if event.sender == self._user_id:
+            logger.debug("Matrix: ignoring own media message from %s", event.sender)
+            return
+
+        # Deduplicate by event ID.
+        if self._is_duplicate_event(getattr(event, "event_id", None)):
+            logger.debug("Matrix: duplicate media event %s, ignoring", event.event_id)
             return
 
         # Startup grace.
@@ -656,7 +687,7 @@ class MatrixAdapter(BasePlatformAdapter):
         body = getattr(event, "body", "") or ""
         url = getattr(event, "url", "")
 
-        # Convert mxc:// to HTTP URL for downstream processing.
+        # Convert mxc:// to HTTP URL for downloading.
         http_url = ""
         if url and url.startswith("mxc://"):
             http_url = self._mxc_to_http(url)
@@ -681,6 +712,30 @@ class MatrixAdapter(BasePlatformAdapter):
         elif event_mimetype:
             media_type = event_mimetype
 
+        # For images, download and cache to local file for vision tool access.
+        # This avoids authentication issues with the Matrix MXC URL.
+        cached_path = None
+        if msg_type == MessageType.PHOTO and url:  # Use the raw MXC URL
+            try:
+                # Determine file extension from MIME type
+                ext_map = {
+                    "image/jpeg": ".jpg",
+                    "image/png": ".png",
+                    "image/gif": ".gif",
+                    "image/webp": ".webp",
+                    "image/bmp": ".bmp",
+                }
+                ext = ext_map.get(event_mimetype, ".jpg")
+                
+                # Download the image using the authenticated Matrix client
+                download_resp = await self._client.download(url)
+                if isinstance(download_resp, nio.DownloadResponse):
+                    from gateway.platforms.base import cache_image_from_bytes
+                    cached_path = cache_image_from_bytes(download_resp.body, ext=ext)
+                    logger.info("[Matrix] Cached user image at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Matrix] Failed to cache image, falling back to HTTP URL: %s", e)
+
         is_dm = self._dm_rooms.get(room.room_id, False)
         if not is_dm and room.member_count == 2:
             is_dm = True
@@ -701,14 +756,18 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
+        # Use cached local path for images, HTTP URL for other media types
+        media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
+        media_types = [media_type] if media_urls else None
+
         msg_event = MessageEvent(
             text=body,
             message_type=msg_type,
             source=source,
             raw_message=getattr(event, "source", {}),
             message_id=event.event_id,
-            media_urls=[http_url] if http_url else None,
-            media_types=[media_type] if http_url else None,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
         await self.handle_message(msg_event)

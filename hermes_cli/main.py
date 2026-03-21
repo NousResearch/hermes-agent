@@ -54,6 +54,43 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# ---------------------------------------------------------------------------
+# Profile override — MUST happen before any hermes module import.
+#
+# Many modules cache HERMES_HOME at import time (module-level constants).
+# We intercept --profile/-p from sys.argv here and set the env var so that
+# every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
+# The flag is stripped from sys.argv so argparse never sees it.
+# ---------------------------------------------------------------------------
+def _apply_profile_override() -> None:
+    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        profile_name = None
+        consume = 0  # how many argv slots to remove
+
+        if arg in ("--profile", "-p") and i + 1 < len(argv):
+            profile_name = argv[i + 1]
+            consume = 2
+        elif arg.startswith("--profile="):
+            profile_name = arg.split("=", 1)[1]
+            consume = 1
+
+        if profile_name is not None:
+            from hermes_cli.profiles import resolve_profile_env
+            try:
+                hermes_home = resolve_profile_env(profile_name)
+            except (ValueError, FileNotFoundError) as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            os.environ["HERMES_HOME"] = hermes_home
+            # Strip the flag from argv so argparse/subcommands don't choke
+            start = i + 1  # +1 because argv is sys.argv[1:]
+            sys.argv = sys.argv[:start] + sys.argv[start + consume:]
+            return
+
+_apply_profile_override()
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
@@ -2941,7 +2978,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "sessions", "insights", "version", "update", "uninstall",
+        "sessions", "insights", "version", "update", "uninstall", "profile",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2985,6 +3022,10 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes -p work                Use the "work" profile
+    hermes -p work gateway start  Start gateway for "work" profile
+    hermes profile create work    Create a new profile
+    hermes profile list           List all profiles
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install gateway background service
@@ -3035,6 +3076,15 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Bypass all dangerous command approval prompts (use at your own risk)"
+    )
+    # NOTE: --profile/-p is pre-parsed before imports (see _apply_profile_override)
+    # and stripped from sys.argv.  We register it here only for --help visibility.
+    parser.add_argument(
+        "--profile", "-p",
+        metavar="NAME",
+        default=None,
+        help="Use a named profile (isolated config, memory, gateway). "
+             "See: hermes profile --help"
     )
     parser.add_argument(
         "--pass-session-id",
@@ -4017,7 +4067,170 @@ For more help on a command:
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
-    
+
+    # =========================================================================
+    # profile command
+    # =========================================================================
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Manage isolated Hermes profiles",
+        description=(
+            "Create, list, and manage isolated Hermes profiles. "
+            "Each profile has its own config, API keys, memory, sessions, "
+            "skills, and gateway — fully independent from other profiles."
+        ),
+    )
+    profile_sub = profile_parser.add_subparsers(dest="profile_action")
+
+    # profile list
+    profile_list_parser = profile_sub.add_parser(
+        "list", help="List all profiles"
+    )
+
+    # profile create
+    profile_create_parser = profile_sub.add_parser(
+        "create", help="Create a new profile"
+    )
+    profile_create_parser.add_argument(
+        "name", help="Profile name (lowercase, alphanumeric, hyphens, underscores)"
+    )
+    profile_create_parser.add_argument(
+        "--clone", metavar="SOURCE",
+        help="Clone config and .env from an existing profile (e.g. 'default')"
+    )
+    profile_create_parser.add_argument(
+        "--clone-data", action="store_true",
+        help="Also clone memories, skills, and skins (requires --clone)"
+    )
+
+    # profile delete
+    profile_delete_parser = profile_sub.add_parser(
+        "delete", help="Delete a profile"
+    )
+    profile_delete_parser.add_argument(
+        "name", help="Profile name to delete"
+    )
+    profile_delete_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt"
+    )
+
+    # profile show
+    profile_show_parser = profile_sub.add_parser(
+        "show", help="Show details of a profile"
+    )
+    profile_show_parser.add_argument(
+        "name", help="Profile name"
+    )
+
+    def cmd_profile(args):
+        """Manage isolated Hermes profiles."""
+        from hermes_cli.profiles import (
+            create_profile, delete_profile, list_profiles,
+            get_profile_dir, profile_exists, get_active_profile_name,
+        )
+
+        action = args.profile_action
+
+        if action == "list" or action is None:
+            profiles = list_profiles()
+            active = get_active_profile_name()
+            if not profiles:
+                print("No profiles found.")
+                return
+
+            print()
+            print("  Profiles:")
+            print()
+            for p in profiles:
+                marker = " ◆" if p.name == active else "  "
+                gw = " [gateway running]" if p.gateway_running else ""
+                model_str = p.model or "(no model set)"
+                env_str = "✓" if p.has_env else "✗"
+                print(f"  {marker} {p.name:<20s}  {model_str:<35s}  .env: {env_str}{gw}")
+            print()
+            if active != "default":
+                print(f"  Active profile: {active}")
+                print()
+            print("  Usage: hermes -p <name> [command]")
+            print()
+            return
+
+        if action == "create":
+            name = args.name
+            clone_from = args.clone
+            clone_data = args.clone_data
+            if clone_data and not clone_from:
+                print("Error: --clone-data requires --clone <source>")
+                sys.exit(1)
+            try:
+                profile_dir = create_profile(
+                    name, clone_from=clone_from, clone_data=clone_data,
+                )
+            except (ValueError, FileExistsError, FileNotFoundError) as exc:
+                print(f"Error: {exc}")
+                sys.exit(1)
+
+            print(f"\n  ✓ Profile '{name}' created at {profile_dir}\n")
+            if clone_from:
+                print(f"  Cloned config from '{clone_from}'")
+                if clone_data:
+                    print(f"  Cloned memories, skills, and skins")
+                print()
+
+            print("  Next steps:")
+            if not clone_from:
+                print(f"    hermes -p {name} setup           # Configure API keys and model")
+            print(f"    hermes -p {name}                 # Start chatting")
+            print(f"    hermes -p {name} gateway start   # Start a gateway for this profile")
+            print()
+            return
+
+        if action == "delete":
+            name = args.name
+            if not profile_exists(name):
+                print(f"Error: Profile '{name}' does not exist.")
+                sys.exit(1)
+            if name == "default":
+                print("Error: Cannot delete the default profile (~/.hermes).")
+                sys.exit(1)
+
+            if not args.yes:
+                profile_dir = get_profile_dir(name)
+                print(f"\n  This will permanently delete profile '{name}' at:")
+                print(f"    {profile_dir}")
+                print(f"\n  All config, memory, sessions, and skills for this profile will be lost.")
+                confirm = input(f"\n  Type '{name}' to confirm: ").strip()
+                if confirm != name:
+                    print("  Cancelled.")
+                    return
+
+            try:
+                path = delete_profile(name)
+            except (ValueError, FileNotFoundError, RuntimeError) as exc:
+                print(f"Error: {exc}")
+                sys.exit(1)
+            print(f"\n  ✓ Profile '{name}' deleted.\n")
+            return
+
+        if action == "show":
+            name = args.name
+            if not profile_exists(name):
+                print(f"Error: Profile '{name}' does not exist.")
+                sys.exit(1)
+            profile_dir = get_profile_dir(name)
+            print(f"\n  Profile: {name}")
+            print(f"  Path:    {profile_dir}")
+            print()
+            # Show what's inside
+            for item in sorted(profile_dir.iterdir()):
+                kind = "dir " if item.is_dir() else "file"
+                print(f"    {kind}  {item.name}")
+            print()
+            return
+
+    profile_parser.set_defaults(func=cmd_profile)
+
     # =========================================================================
     # Parse and execute
     # =========================================================================

@@ -27,7 +27,20 @@ from hermes_cli.colors import Colors, color
 # =============================================================================
 
 def find_gateway_pids() -> list:
-    """Find PIDs of running gateway processes."""
+    """Find the PID of the gateway process for the current HERMES_HOME.
+
+    Uses the HERMES_HOME-scoped PID file (``{HERMES_HOME}/gateway.pid``)
+    so that multiple profiles running gateways concurrently don't collide.
+    Falls back to a global ``ps aux`` scan only if no PID file exists.
+    """
+    from gateway.status import get_running_pid
+
+    # Primary: check the PID file scoped to this HERMES_HOME
+    pid = get_running_pid()
+    if pid is not None:
+        return [pid]
+
+    # Fallback: global scan (legacy — covers cases where PID file wasn't written)
     pids = []
     patterns = [
         "hermes_cli.main gateway",
@@ -38,12 +51,10 @@ def find_gateway_pids() -> list:
 
     try:
         if is_windows():
-            # Windows: use wmic to search command lines
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True, text=True
             )
-            # Parse WMIC LIST output: blocks of "CommandLine=...\nProcessId=...\n"
             current_cmd = ""
             for line in result.stdout.split('\n'):
                 line = line.strip()
@@ -66,7 +77,6 @@ def find_gateway_pids() -> list:
                 text=True
             )
             for line in result.stdout.split('\n'):
-                # Skip grep and current process
                 if 'grep' in line or str(os.getpid()) in line:
                     continue
                 for pattern in patterns:
@@ -87,7 +97,10 @@ def find_gateway_pids() -> list:
 
 
 def kill_gateway_processes(force: bool = False) -> int:
-    """Kill any running gateway processes. Returns count killed."""
+    """Kill the gateway process for the current HERMES_HOME. Returns count killed.
+
+    Uses the scoped PID file first (profile-safe), falling back to global scan.
+    """
     pids = find_gateway_pids()
     killed = 0
     

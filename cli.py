@@ -165,10 +165,10 @@ def load_cli_config() -> Dict[str, Any]:
             "cwd": ".",  # "." is resolved to os.getcwd() at runtime
             "timeout": 60,
             "lifetime_seconds": 300,
-            "docker_image": "python:3.11",
+            "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "docker_forward_env": [],
-            "singularity_image": "docker://python:3.11",
-            "modal_image": "python:3.11",
+            "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
+            "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
@@ -5751,12 +5751,14 @@ class HermesCLI:
         """Run the interactive CLI loop with persistent input at bottom."""
         self.show_banner()
 
-        # One-line Honcho session indicator (TTY-only, not captured by agent)
+        # One-line Honcho session indicator (TTY-only, not captured by agent).
+        # Only show when the user explicitly configured Honcho for Hermes
+        # (not auto-enabled from a stray HONCHO_API_KEY env var).
         try:
             from honcho_integration.client import HonchoClientConfig
             from agent.display import honcho_session_line, write_tty
             hcfg = HonchoClientConfig.from_global_config()
-            if hcfg.enabled and hcfg.api_key:
+            if hcfg.enabled and hcfg.api_key and hcfg.explicitly_configured:
                 sname = hcfg.resolve_session_name(session_id=self.session_id)
                 if sname:
                     write_tty(honcho_session_line(hcfg.workspace_id, sname) + "\n")

@@ -475,6 +475,7 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_called_once()
+        assert adapter._dm_user_by_channel.get("D123") == "U_USER"
 
     @pytest.mark.asyncio
     async def test_channel_message_requires_mention(self, adapter):
@@ -573,6 +574,65 @@ class TestSendTyping:
             thread_ts="fallback_ts",
             status="is thinking...",
         )
+
+
+# ---------------------------------------------------------------------------
+# TestDMReplyThreading
+# ---------------------------------------------------------------------------
+
+
+class TestDMReplyThreading:
+    """Top-level Slack DMs should reply inline, not in a thread."""
+
+    @pytest.mark.asyncio
+    async def test_top_level_dm_reply_prefers_user_id_channel(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        result = await adapter.send(
+            "D123",
+            "hello back",
+            reply_to="1234567890.000001",
+            metadata={"channel_type": "im", "user_id": "U_USER"},
+        )
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "U_USER"
+        assert kwargs["text"] == "hello back"
+        assert "thread_ts" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_top_level_dm_reply_falls_back_to_cached_mapping(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+        adapter._dm_user_by_channel["D123"] = "U_MAPPED"
+
+        result = await adapter.send(
+            "D123",
+            "hello via cached map",
+            reply_to="1234567890.000001",
+            metadata={"channel_type": "im"},
+        )
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "U_MAPPED"
+        assert "thread_ts" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_threaded_dm_reply_preserves_thread(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        result = await adapter.send(
+            "D123",
+            "hello in thread",
+            reply_to="1234567890.000001",
+            metadata={"channel_type": "im", "user_id": "U_USER", "thread_id": "parent_ts"},
+        )
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "U_USER"
+        assert kwargs["thread_ts"] == "parent_ts"
 
 
 # ---------------------------------------------------------------------------

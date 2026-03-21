@@ -894,7 +894,13 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _send_metadata: Dict[str, Any] = {
+            "channel_type": event.source.chat_type,
+            "user_id": event.source.user_id,
+        }
+        if event.source.thread_id:
+            _send_metadata["thread_id"] = event.source.thread_id
+        _thread_metadata = _send_metadata if _send_metadata else None
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
@@ -1103,7 +1109,12 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _error_metadata: Dict[str, Any] = {
+                    "channel_type": event.source.chat_type,
+                    "user_id": event.source.user_id,
+                }
+                if event.source.thread_id:
+                    _error_metadata["thread_id"] = event.source.thread_id
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
@@ -1111,7 +1122,7 @@ class BasePlatformAdapter(ABC):
                         f"{error_detail}\n"
                         "Try again or use /reset to start a fresh session."
                     ),
-                    metadata=_thread_metadata,
+                    metadata=_error_metadata,
                 )
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler

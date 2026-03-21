@@ -74,6 +74,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[AsyncSocketModeHandler] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._dm_user_by_channel: Dict[str, str] = {}  # DM channel_id (D...) -> user_id
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -166,9 +167,22 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
+            # Slack DM robustness:
+            # For IM contexts, prefer sending via user ID when available.
+            # This avoids stale/invalid DM channel IDs causing channel_not_found.
+            target_chat_id = chat_id
+            if metadata:
+                channel_type = str(metadata.get("channel_type", "")).lower()
+                dm_user_id = metadata.get("user_id")
+                if channel_type in ("im", "dm"):
+                    # Prefer explicit user_id, otherwise use cached channel->user mapping.
+                    if not dm_user_id and chat_id:
+                        dm_user_id = self._dm_user_by_channel.get(str(chat_id))
+                    if dm_user_id:
+                        target_chat_id = dm_user_id
             for i, chunk in enumerate(chunks):
                 kwargs = {
-                    "channel": chat_id,
+                    "channel": target_chat_id,
                     "text": chunk,
                 }
                 if thread_ts:
@@ -252,12 +266,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         Prefers metadata thread_id (the thread parent's ts, set by the
         gateway) over reply_to (which may be a child message's ts).
+
+        Important Slack DM rule:
+        - Top-level DMs should reply inline, not in a thread.
+        - Only actual threaded DMs should carry thread_ts.
         """
         if metadata:
             if metadata.get("thread_id"):
                 return metadata["thread_id"]
             if metadata.get("thread_ts"):
                 return metadata["thread_ts"]
+            if metadata.get("channel_type") == "im":
+                return None
         return reply_to
 
     async def _upload_file(
@@ -661,6 +681,10 @@ class SlackAdapter(BasePlatformAdapter):
                 return
             # Strip the bot mention from the text
             text = text.replace(f"<@{self._bot_user_id}>", "").strip()
+
+        # Cache DM channel -> user mapping for robust DM replies.
+        if is_dm and channel_id and user_id:
+            self._dm_user_by_channel[str(channel_id)] = str(user_id)
 
         # Determine message type
         msg_type = MessageType.TEXT

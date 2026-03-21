@@ -2498,8 +2498,22 @@ class GatewayRunner:
 
         # Parse provider:model syntax
         target_provider, new_model = parse_model_input(args, current_provider)
+
+        # Detect custom/local provider — skip auto-detection to prevent
+        # silently accepting an OpenRouter model name on a localhost endpoint.
+        # Users must use explicit provider:model syntax to switch away.
+        _resolved_base = ""
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider as _rtp
+            _resolved_base = _rtp(requested=current_provider).get("base_url", "")
+        except Exception:
+            pass
+        is_custom = current_provider == "custom" or (
+            "localhost" in _resolved_base or "127.0.0.1" in _resolved_base
+        )
+
         # Auto-detect provider when no explicit provider:model syntax was used
-        if target_provider == current_provider:
+        if target_provider == current_provider and not is_custom:
             from hermes_cli.models import detect_provider_for_model
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:
@@ -2580,7 +2594,18 @@ class GatewayRunner:
         # Clear fallback state since user explicitly chose a model
         self._effective_model = None
         self._effective_provider = None
-        return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}\n_(takes effect on next message)_"
+
+        # Helpful hint when staying on a custom/local endpoint
+        custom_hint = ""
+        if is_custom and not provider_changed:
+            endpoint = _resolved_base or "custom endpoint"
+            custom_hint = (
+                f"\n**Endpoint:** `{endpoint}`"
+                "\n_To switch providers, use_ `/model provider:model`"
+                "\n_e.g._ `/model openrouter:anthropic/claude-sonnet-4`"
+            )
+
+        return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}{custom_hint}\n_(takes effect on next message)_"
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""

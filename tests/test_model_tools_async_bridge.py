@@ -84,6 +84,102 @@ class TestRunAsyncLoopLifecycle:
         assert not loop.is_closed(), "Loop closed before second call"
 
 
+class TestRunAsyncWorkerThread:
+    """Verify worker threads get persistent per-thread loops (delegate_task fix)."""
+
+    def test_worker_thread_loop_not_closed(self):
+        """A worker thread's loop must stay open after _run_async returns,
+        so cached httpx/AsyncOpenAI clients don't crash on GC."""
+        from concurrent.futures import ThreadPoolExecutor
+        from model_tools import _run_async
+
+        def _run_on_worker():
+            loop = _run_async(_get_current_loop())
+            still_open = not loop.is_closed()
+            return loop, still_open
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            loop, still_open = pool.submit(_run_on_worker).result()
+
+        assert still_open, (
+            "Worker thread's event loop was closed after _run_async — "
+            "cached async clients will crash with 'Event loop is closed'"
+        )
+
+    def test_worker_thread_reuses_loop_across_calls(self):
+        """Multiple _run_async calls on the same worker thread should
+        reuse the same persistent loop (not create-and-destroy each time)."""
+        from concurrent.futures import ThreadPoolExecutor
+        from model_tools import _run_async
+
+        def _run_twice_on_worker():
+            loop1 = _run_async(_get_current_loop())
+            loop2 = _run_async(_get_current_loop())
+            return loop1, loop2
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            loop1, loop2 = pool.submit(_run_twice_on_worker).result()
+
+        assert loop1 is loop2, (
+            "Worker thread created different loops for consecutive calls — "
+            "cached clients from the first call would be orphaned"
+        )
+        assert not loop1.is_closed()
+
+    def test_parallel_workers_get_separate_loops(self):
+        """Different worker threads must get their own loops to avoid
+        contention (the original reason for the worker-thread branch)."""
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from model_tools import _run_async
+
+        barrier = threading.Barrier(3, timeout=5)
+
+        def _get_loop_id():
+            # Use a barrier to force all 3 threads to be alive simultaneously,
+            # ensuring the ThreadPoolExecutor actually uses 3 distinct threads.
+            loop = _run_async(_get_current_loop())
+            barrier.wait()
+            return id(loop), not loop.is_closed(), threading.current_thread().ident
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(_get_loop_id) for _ in range(3)]
+            results = [f.result() for f in as_completed(futures)]
+
+        loop_ids = {r[0] for r in results}
+        thread_ids = {r[2] for r in results}
+        all_open = all(r[1] for r in results)
+
+        assert all_open, "At least one worker thread's loop was closed"
+        # The barrier guarantees 3 distinct threads were used
+        assert len(thread_ids) == 3, f"Expected 3 threads, got {len(thread_ids)}"
+        # Each thread should have its own loop
+        assert len(loop_ids) == 3, (
+            f"Expected 3 distinct loops for 3 parallel workers, "
+            f"got {len(loop_ids)} — workers may be contending on a shared loop"
+        )
+
+    def test_worker_loop_separate_from_main_loop(self):
+        """Worker thread loops must be different from the main thread's
+        persistent loop to avoid cross-thread contention."""
+        from concurrent.futures import ThreadPoolExecutor
+        from model_tools import _run_async, _get_tool_loop
+
+        main_loop = _get_tool_loop()
+
+        def _get_worker_loop_id():
+            loop = _run_async(_get_current_loop())
+            return id(loop)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            worker_loop_id = pool.submit(_get_worker_loop_id).result()
+
+        assert worker_loop_id != id(main_loop), (
+            "Worker thread used the main thread's loop — this would cause "
+            "cross-thread contention on the event loop"
+        )
+
+
 class TestRunAsyncWithRunningLoop:
     """When a loop is already running, _run_async falls back to a thread."""
 

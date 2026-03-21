@@ -79,8 +79,8 @@ def _escape_mdv2(text: str) -> str:
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escape backslashes to produce clean plain text.
 
-    Also removes MarkdownV2 bold markers (*text* -> text) so the fallback
-    doesn't show stray asterisks from header/bold conversion.
+    Also removes MarkdownV2 formatting markers so the fallback
+    doesn't show stray syntax characters from format_message conversion.
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
@@ -89,6 +89,10 @@ def _strip_mdv2(text: str) -> str:
     # Remove MarkdownV2 italic markers that format_message converted from *italic*
     # Use word boundary (\b) to avoid breaking snake_case like my_variable_name
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)
+    # Remove MarkdownV2 strikethrough markers (~text~ → text)
+    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)
+    # Remove MarkdownV2 spoiler markers (||text|| → text)
+    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
     return cleaned
 
 
@@ -787,14 +791,30 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content
 
         # 1) Protect fenced code blocks (``` ... ```)
+        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
+        def _protect_fenced(m):
+            raw = m.group(0)
+            # Split off opening ``` (with optional language) and closing ```
+            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3
+            opening = raw[:open_end]
+            body_and_close = raw[open_end:]
+            body = body_and_close[:-3]
+            body = body.replace('\\', '\\\\').replace('`', '\\`')
+            return _ph(opening + body + '```')
+
         text = re.sub(
             r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            lambda m: _ph(m.group(0)),
+            _protect_fenced,
             text,
         )
 
         # 2) Protect inline code (`...`)
-        text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
+        #    Escape \ inside inline code per MarkdownV2 spec.
+        text = re.sub(
+            r'(`[^`]+`)',
+            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            text,
+        )
 
         # 3) Convert markdown links – escape the display text; inside the URL
         #    only ')' and '\' need escaping per the MarkdownV2 spec.
@@ -832,10 +852,32 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 7) Escape remaining special characters in plain text
+        # 7) Convert strikethrough: ~~text~~ → ~text~ (MarkdownV2)
+        text = re.sub(
+            r'~~(.+?)~~',
+            lambda m: _ph(f'~{_escape_mdv2(m.group(1))}~'),
+            text,
+        )
+
+        # 8) Convert spoiler: ||text|| → ||text|| (protect from | escaping)
+        text = re.sub(
+            r'\|\|(.+?)\|\|',
+            lambda m: _ph(f'||{_escape_mdv2(m.group(1))}||'),
+            text,
+        )
+
+        # 9) Convert blockquotes: > at line start → protect > from escaping
+        text = re.sub(
+            r'^(>{1,3}) (.+)$',
+            lambda m: _ph(m.group(1) + ' ' + _escape_mdv2(m.group(2))),
+            text,
+            flags=re.MULTILINE,
+        )
+
+        # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
 
-        # 8) Restore placeholders in reverse insertion order so that
+        # 11) Restore placeholders in reverse insertion order so that
         #    nested references (a placeholder inside another) resolve correctly.
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])

@@ -6044,7 +6044,6 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
-<<<<<<< Updated upstream
         @kb.add('tab', eager=True)
         def handle_tab(event):
             """Tab: accept completion, auto-suggestion, or start completions.
@@ -6081,7 +6080,6 @@ class HermesCLI:
             else:
                 # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
-=======
         @kb.add('s-enter')
         def handle_shift_enter(event):
             """Shift+Enter inserts a newline (standard terminals)."""
@@ -6093,7 +6091,6 @@ class HermesCLI:
         def handle_kitty_shift_enter(event):
             """Shift+Enter in Kitty keyboard protocol (Ghostty, WezTerm, etc.)."""
             event.current_buffer.insert_text('\n')
->>>>>>> Stashed changes
 
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 

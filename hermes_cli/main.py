@@ -464,7 +464,27 @@ def cmd_chat(args):
 
     # Resolve --resume by title if it's not a direct session ID
     resume_val = getattr(args, "resume", None)
-    if resume_val:
+    if resume_val is True:
+        # Bare --resume (no argument): auto-detect the most recent session for cwd
+        try:
+            from hermes_state import SessionDB
+            _db = SessionDB()
+            _cwd = os.getcwd()
+            _matched = _db.get_most_recent_session_by_dir(_cwd, source="cli")
+            if _matched:
+                args.resume = _matched["id"]
+                print(f"[resume] Found prior session for '{_cwd}': {_matched['id']}")
+                if _matched.get("title"):
+                    print(f"[resume] Session title: {_matched['title']}")
+            else:
+                print(f"[resume] No prior session found for '{_cwd}'.")
+                print(f"[resume] Starting a fresh session. Use --resume <session_id> to resume a specific session.")
+                args.resume = None
+        except Exception as _e:
+            print(f"[resume] Could not auto-detect session: {_e}")
+            print(f"[resume] Starting a fresh session.")
+            args.resume = None
+    elif resume_val:
         resolved = _resolve_session_by_name_or_id(resume_val)
         if resolved:
             args.resume = resolved
@@ -3005,9 +3025,14 @@ For more help on a command:
     )
     parser.add_argument(
         "--resume", "-r",
-        metavar="SESSION",
+        dest="resume",
+        nargs="?",
+        const=True,
         default=None,
-        help="Resume a previous session by ID or title"
+        metavar="SESSION",
+        help="Resume a session. With no argument: auto-detect the most recent "
+             "CLI session in the current working directory. "
+             "With an argument: resume that specific session ID or title."
     )
     parser.add_argument(
         "--continue", "-c",
@@ -3089,8 +3114,12 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--resume", "-r",
-        metavar="SESSION_ID",
-        help="Resume a previous session by ID (shown on exit)"
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="SESSION",
+        help="Resume a session. With no argument: auto-detect by working directory. "
+             "With an argument: resume that specific session ID or title."
     )
     chat_parser.add_argument(
         "--continue", "-c",

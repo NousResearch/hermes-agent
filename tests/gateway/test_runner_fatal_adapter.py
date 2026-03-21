@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -27,6 +29,23 @@ class _FatalAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class _RuntimeRetryableAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="token"), Platform.WHATSAPP)
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
 @pytest.mark.asyncio
 async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monkeypatch, tmp_path):
     config = GatewayConfig(
@@ -44,3 +63,31 @@ async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monk
     assert ok is True
     assert runner.should_exit_cleanly is True
     assert "already using this Telegram bot token" in runner.exit_reason
+
+
+@pytest.mark.asyncio
+async def test_runner_requests_failure_exit_for_retryable_runtime_fatal(monkeypatch, tmp_path):
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error(
+        "whatsapp_bridge_exited",
+        "WhatsApp bridge process exited unexpectedly (code 1).",
+        retryable=True,
+    )
+
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    assert runner.should_exit_cleanly is False
+    assert runner.should_exit_with_failure is True
+    assert "exited unexpectedly" in runner.exit_reason
+    runner.stop.assert_awaited_once()

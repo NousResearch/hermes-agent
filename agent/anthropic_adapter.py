@@ -42,7 +42,10 @@ def _supports_adaptive_thinking(model: str) -> bool:
 # Beta headers for enhanced features (sent with ALL auth types)
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
-    "fine-grained-tool-streaming-2025-05-14",
+    # fine-grained-tool-streaming-2025-05-14 removed: causes stream to hang on
+    # turn 2+ when tool_use/tool_result history is present. The extended event
+    # subtypes emitted by this beta are not consumed by the current streaming
+    # loop, causing stream.get_final_message() to block indefinitely. (#2356)
 ]
 
 # Additional beta headers required for OAuth/subscription auth.

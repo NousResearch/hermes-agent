@@ -115,6 +115,7 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._webhook_mode: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -157,7 +158,19 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._notify_fatal_error()
 
     async def connect(self) -> bool:
-        """Connect to Telegram and start polling for updates."""
+        """Connect to Telegram via polling or webhook.
+
+        By default, uses long polling (outbound connection to Telegram).
+        If TELEGRAM_WEBHOOK_URL is set, starts an HTTP webhook server instead.
+        Webhook mode is useful for cloud deployments (e.g. Fly.io, Railway)
+        where inbound HTTP requests can wake a suspended machine automatically.
+
+        Env vars for webhook mode:
+            TELEGRAM_WEBHOOK_URL: Public HTTPS URL Telegram sends updates to
+                                 (e.g. https://my-app.fly.dev/telegram)
+            TELEGRAM_WEBHOOK_PORT: Local port to listen on (default: 8443)
+            TELEGRAM_WEBHOOK_SECRET: Secret token for update verification
+        """
         if not TELEGRAM_AVAILABLE:
             logger.error(
                 "[%s] python-telegram-bot not installed. Run: pip install python-telegram-bot",
@@ -232,21 +245,51 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         raise
             await self._app.start()
-            loop = asyncio.get_running_loop()
 
-            def _polling_error_callback(error: Exception) -> None:
-                if not self._looks_like_polling_conflict(error):
-                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
-                    return
-                if self._polling_error_task and not self._polling_error_task.done():
-                    return
-                self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+            # Decide between webhook and polling mode
+            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                error_callback=_polling_error_callback,
-            )
+            if webhook_url:
+                # ── Webhook mode ─────────────────────────────────────
+                # Telegram pushes updates to our HTTP endpoint. This
+                # enables cloud platforms (Fly.io, Railway) to auto-wake
+                # suspended machines on inbound HTTP traffic.
+                webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT", "8443"))
+                webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None
+                from urllib.parse import urlparse
+                webhook_path = urlparse(webhook_url).path or "/telegram"
+
+                await self._app.updater.start_webhook(
+                    listen="0.0.0.0",
+                    port=webhook_port,
+                    url_path=webhook_path,
+                    webhook_url=webhook_url,
+                    secret_token=webhook_secret,
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,
+                )
+                self._webhook_mode = True
+                logger.info(
+                    "[%s] Webhook server listening on 0.0.0.0:%d%s",
+                    self.name, webhook_port, webhook_path,
+                )
+            else:
+                # ── Polling mode (default) ───────────────────────────
+                loop = asyncio.get_running_loop()
+
+                def _polling_error_callback(error: Exception) -> None:
+                    if not self._looks_like_polling_conflict(error):
+                        logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
+                        return
+                    if self._polling_error_task and not self._polling_error_task.done():
+                        return
+                    self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+
+                await self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,
+                    error_callback=_polling_error_callback,
+                )
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -266,7 +309,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             
             self._mark_connected()
-            logger.info("[%s] Connected and polling for Telegram updates", self.name)
+            mode = "webhook" if self._webhook_mode else "polling"
+            logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
             return True
             
         except Exception as e:
@@ -282,7 +326,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
     
     async def disconnect(self) -> None:
-        """Stop polling, cancel pending album flushes, and disconnect."""
+        """Stop polling/webhook, cancel pending album flushes, and disconnect."""
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()

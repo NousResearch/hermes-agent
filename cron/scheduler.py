@@ -159,15 +159,25 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
+    # Wrap the content so the user knows this is a cron delivery and that
+    # the interactive agent has no visibility into it.
+    task_name = job.get("name", job["id"])
+    wrapped = (
+        f"Cronjob Response: {task_name}\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"Note: The agent cannot see this message, and therefore cannot respond to it."
+    )
+
     # Run the async send in a fresh event loop (safe from any thread)
     try:
-        result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
+        result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
     except RuntimeError:
         # asyncio.run() fails if there's already a running loop in this thread;
         # spin up a new thread to avoid that.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -177,12 +187,6 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
     else:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
-        # Mirror the delivered content into the target's gateway session
-        try:
-            from gateway.mirror import mirror_to_session
-            mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
-        except Exception as e:
-            logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
 def _build_job_prompt(job: dict) -> str:

@@ -893,6 +893,15 @@ from agent.skill_commands import (
 _skill_commands = scan_skill_commands()
 
 
+def _get_plugin_cmd_handler_names() -> set:
+    """Return plugin command names (without slash prefix) for dispatch matching."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        return set(get_plugin_manager()._plugin_commands.keys())
+    except Exception:
+        return set()
+
+
 def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> list[str]:
     """Normalize a CLI skills flag into a deduplicated list of skill identifiers."""
     if not skills:
@@ -3759,6 +3768,18 @@ class HermesCLI:
                         self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
                     self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+            # Check for plugin-registered slash commands
+            elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
+                from hermes_cli.plugins import get_plugin_command_handler
+                plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
+                if plugin_handler:
+                    user_args = cmd_original[len(base_cmd):].strip()
+                    try:
+                        result = plugin_handler(user_args)
+                        if result:
+                            _cprint(str(result))
+                    except Exception as e:
+                        _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()

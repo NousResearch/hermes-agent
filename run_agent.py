@@ -2294,7 +2294,11 @@ class AIAgent:
         if self.pass_session_id and self.session_id:
             timestamp_line += f"\nSession ID: {self.session_id}"
         if self.model:
-            timestamp_line += f"\nModel: {self.model}"
+            timestamp_line += f"\nYou are powered by the model named {self.model}."
+            if self.provider:
+                timestamp_line += f" The exact model ID is {self.provider}/{self.model}."
+            else:
+                timestamp_line += f" The exact model ID is {self.model}."
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
         prompt_parts.append(timestamp_line)

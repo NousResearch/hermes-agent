@@ -1119,7 +1119,13 @@ class AIAgent:
         During tool execution (``_executing_tools`` is True), printing is
         allowed even with stream consumers registered because no tokens
         are being streamed at that point.
+
+        After the main response has been delivered and the remaining tool
+        calls are post-response housekeeping (``_mute_post_response``),
+        all non-forced output is suppressed.
         """
+        if not force and getattr(self, "_mute_post_response", False):
+            return
         if not force and self._has_stream_consumers() and not self._executing_tools:
             return
         self._safe_print(*args, **kwargs)
@@ -1366,29 +1372,30 @@ class AIAgent:
             prompt = self._SKILL_REVIEW_PROMPT
 
         def _run_review():
+            import contextlib, os as _os
             try:
-                # Full agent fork — same model, tools, context. Just a tighter
-                # iteration budget and quiet mode. No toolset filtering so we
-                # don't break prompt caching on the tool schema.
-                review_agent = AIAgent(
-                    model=self.model,
-                    max_iterations=8,
-                    quiet_mode=True,
-                    platform=self.platform,
-                    provider=self.provider,
-                )
-                # Share the memory store so writes persist to disk
-                review_agent._memory_store = self._memory_store
-                review_agent._memory_enabled = self._memory_enabled
-                review_agent._user_profile_enabled = self._user_profile_enabled
-                # Disable nudges in the review agent to prevent recursion
-                review_agent._memory_nudge_interval = 0
-                review_agent._skill_nudge_interval = 0
+                # Redirect stdout to devnull so spinners, cute messages,
+                # and any other print() calls from the review agent don't
+                # leak into the main CLI display.
+                with open(_os.devnull, "w") as _devnull, \
+                     contextlib.redirect_stdout(_devnull):
+                    review_agent = AIAgent(
+                        model=self.model,
+                        max_iterations=8,
+                        quiet_mode=True,
+                        platform=self.platform,
+                        provider=self.provider,
+                    )
+                    review_agent._memory_store = self._memory_store
+                    review_agent._memory_enabled = self._memory_enabled
+                    review_agent._user_profile_enabled = self._user_profile_enabled
+                    review_agent._memory_nudge_interval = 0
+                    review_agent._skill_nudge_interval = 0
 
-                review_agent.run_conversation(
-                    user_message=prompt,
-                    conversation_history=messages_snapshot,
-                )
+                    review_agent.run_conversation(
+                        user_message=prompt,
+                        conversation_history=messages_snapshot,
+                    )
             except Exception as e:
                 logger.debug("Background memory/skill review failed: %s", e)
 
@@ -5288,6 +5295,7 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._last_content_with_tools = None
+        self._mute_post_response = False
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
@@ -6634,8 +6642,13 @@ class AIAgent:
                     turn_content = assistant_message.content or ""
                     if turn_content and self._has_content_after_think_block(turn_content):
                         self._last_content_with_tools = turn_content
-                        # Show intermediate commentary so the user can follow along
-                        if self.quiet_mode:
+                        # The response was already streamed to the user in the
+                        # response box.  The remaining tool calls (memory, skill,
+                        # todo, etc.) are post-response housekeeping — mute all
+                        # subsequent CLI output so they run invisibly.
+                        if self._has_stream_consumers():
+                            self._mute_post_response = True
+                        elif self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
                                 self._vprint(f"  ┊ 💬 {clean}")

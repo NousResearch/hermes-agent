@@ -4,8 +4,9 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Configure litellm to use the given key
-os.environ["GEMINI_API_KEY"] = "AQ.Ab8RN6JQg5TLwJVPYsu1tlL5L3ccowm8TXWR8c70rljJqw4tFg"
+# Configure litellm to use the GEMINI_API_KEY from the environment.
+if not os.getenv("GEMINI_API_KEY"):
+    raise RuntimeError("GEMINI_API_KEY environment variable must be set before starting the proxy.")
 
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():

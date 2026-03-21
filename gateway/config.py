@@ -475,6 +475,13 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+
+                # Bridge nested extra keys (e.g. webhook.extra.routes, webhook.extra.secret)
+                # These are used directly as PlatformConfig.extra and must be passed through.
+                platform_extra = platform_cfg.get("extra")
+                if isinstance(platform_extra, dict):
+                    bridged.update(platform_extra)
+
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})

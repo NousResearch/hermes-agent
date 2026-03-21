@@ -232,6 +232,7 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
+- `ctx.register_command()` adds a slash command to `/help`, autocomplete, and gateway dispatch
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 ## Step 6: Test it

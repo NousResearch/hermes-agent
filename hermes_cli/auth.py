@@ -212,6 +212,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("KILOCODE_API_KEY",),
         base_url_env_var="KILOCODE_BASE_URL",
     ),
+    "featherless": ProviderConfig(
+        id="featherless",
+        name="Featherless",
+        auth_type="api_key",
+        inference_base_url="https://api.featherless.ai/v1",
+        api_key_env_vars=("FEATHERLESS_API_KEY",),
+        base_url_env_var="FEATHERLESS_BASE_URL",
+    ),
 }
 
 

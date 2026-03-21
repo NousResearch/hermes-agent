@@ -167,19 +167,20 @@ class TestShouldAllowInstall:
         assert allowed is True
         assert "agent-created" in reason
 
-    def test_dangerous_agent_created_blocked(self):
-        """Agent-created skills with dangerous verdict (critical findings) stay blocked."""
+    def test_dangerous_agent_created_asks(self):
+        """Agent-created skills with dangerous verdict (critical findings) return None (ask)."""
         f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
         allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
-        assert allowed is False
-        assert "Blocked" in reason
+        assert allowed is None  # Returns None to signal "ask"
+        assert "Requires confirmation" in reason
+        assert "agent-created" in reason
 
     def test_force_overrides_dangerous_for_agent_created(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("agent-created", "dangerous", f), force=True
         )
-        assert allowed is True
+        assert allowed is True  # force=True bypasses the ask
         assert "Force-installed" in reason
 
 
@@ -396,6 +397,14 @@ class TestFormatScanReport:
         assert "DANGEROUS" in report
         assert "BLOCKED" in report
         assert "curl $KEY" in report
+
+    def test_agent_created_dangerous_needs_confirmation(self):
+        """Agent-created dangerous skills should show NEEDS CONFIRMATION not BLOCKED."""
+        f = [Finding("x", "critical", "exfil", "f.py", 1, "curl $KEY", "exfil")]
+        result = ScanResult("dangerous-agent-skill", "test", "agent-created", "dangerous", findings=f)
+        report = format_scan_report(result)
+        assert "DANGEROUS" in report
+        assert "NEEDS CONFIRMATION" in report  # Not BLOCKED
 
 
 # ---------------------------------------------------------------------------

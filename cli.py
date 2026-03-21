@@ -760,7 +760,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
+_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — matches Rich Panel gold
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -4573,15 +4573,27 @@ class HermesCLI:
     # ====================================================================
 
     def _on_tool_progress(self, function_name: str, preview: str, function_args: dict):
-        """Called when a tool starts executing. Plays audio cue in voice mode."""
+        """Called when a tool starts executing.
+
+        Updates the TUI spinner widget so the user can see what the agent
+        is doing during tool execution (fills the gap between thinking
+        spinner and next response).  Also plays audio cue in voice mode.
+        """
+        if not function_name.startswith("_"):
+            from agent.display import get_tool_emoji
+            emoji = get_tool_emoji(function_name)
+            label = preview or function_name
+            if len(label) > 50:
+                label = label[:47] + "..."
+            self._spinner_text = f"{emoji} {label}"
+            self._invalidate()
+
         if not self._voice_mode:
             return
-        # Skip internal/thinking tools
         if function_name.startswith("_"):
             return
         try:
             from tools.voice_mode import play_beep
-            # Short, subtle tick sound (higher pitch, very brief)
             threading.Thread(
                 target=play_beep,
                 kwargs={"frequency": 1200, "duration": 0.06, "count": 1},

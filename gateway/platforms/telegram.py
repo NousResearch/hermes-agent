@@ -935,6 +935,45 @@ class TelegramAdapter(BasePlatformAdapter):
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])
 
+        # 12) Safety net: escape unescaped ( ) { } that slipped through
+        #     placeholder processing.  Split the text into code/non-code
+        #     segments so we never touch content inside ``` or ` spans.
+        _code_split = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
+        _safe_parts = []
+        for _idx, _seg in enumerate(_code_split):
+            if _idx % 2 == 1:
+                # Inside code span/block — leave untouched
+                _safe_parts.append(_seg)
+            else:
+                # Outside code — escape bare ( ) { }
+                def _esc_bare(m, _seg=_seg):
+                    s = m.start()
+                    ch = m.group(0)
+                    # Already escaped
+                    if s > 0 and _seg[s - 1] == '\\':
+                        return ch
+                    # ( that opens a MarkdownV2 link [text](url)
+                    if ch == '(' and s > 0 and _seg[s - 1] == ']':
+                        return ch
+                    # ) that closes a link URL
+                    if ch == ')':
+                        before = _seg[:s]
+                        if '](http' in before or '](' in before:
+                            # Check depth
+                            depth = 0
+                            for j in range(s - 1, max(s - 2000, -1), -1):
+                                if _seg[j] == '(':
+                                    depth -= 1
+                                    if depth < 0:
+                                        if j > 0 and _seg[j - 1] == ']':
+                                            return ch
+                                        break
+                                elif _seg[j] == ')':
+                                    depth += 1
+                    return '\\' + ch
+                _safe_parts.append(re.sub(r'[(){}]', _esc_bare, _seg))
+        text = ''.join(_safe_parts)
+
         return text
     
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

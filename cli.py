@@ -7267,7 +7267,10 @@ def main(
                     route_label=turn_route["label"],
                 ):
                     cli.agent.quiet_mode = True
-                    result = cli.agent.run_conversation(query)
+                    result = cli.agent.run_conversation(
+                        user_message=query,
+                        conversation_history=cli.conversation_history,
+                    )
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     if response:
                         print(response)

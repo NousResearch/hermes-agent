@@ -93,6 +93,14 @@ class ContextCompressor:
         )
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
+
+        if not quiet_mode:
+            logger.info(
+                "Context compressor initialized: model=%s context_length=%d "
+                "threshold=%d (%.0f%%) provider=%s base_url=%s",
+                model, self.context_length, self.threshold_tokens,
+                threshold_percent * 100, provider or "none", base_url or "none",
+            )
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0

@@ -15,6 +15,7 @@ from hermes_cli.auth import (
     resolve_codex_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
+    has_usable_secret,
 )
 from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
@@ -188,12 +189,13 @@ def _resolve_named_custom_runtime(
     if not base_url:
         return None
 
-    api_key = (
-        (explicit_api_key or "").strip()
-        or custom_provider.get("api_key", "")
-        or os.getenv("OPENAI_API_KEY", "").strip()
-        or os.getenv("OPENROUTER_API_KEY", "").strip()
-    )
+    api_key_candidates = [
+        (explicit_api_key or "").strip(),
+        str(custom_provider.get("api_key", "") or "").strip(),
+        os.getenv("OPENAI_API_KEY", "").strip(),
+        os.getenv("OPENROUTER_API_KEY", "").strip(),
+    ]
+    api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     return {
         "provider": "openrouter",
@@ -257,21 +259,23 @@ def _resolve_openrouter_runtime(
     # provider (issues #420, #560).
     _is_openrouter_url = "openrouter.ai" in base_url
     if _is_openrouter_url:
-        api_key = (
-            explicit_api_key
-            or os.getenv("OPENROUTER_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-            or ""
-        )
+        api_key_candidates = [
+            explicit_api_key,
+            os.getenv("OPENROUTER_API_KEY"),
+            os.getenv("OPENAI_API_KEY"),
+        ]
     else:
         # Custom endpoint: use api_key from config when using config base_url (#1760).
-        api_key = (
-            explicit_api_key
-            or (cfg_api_key if use_config_base_url else "")
-            or os.getenv("OPENAI_API_KEY")
-            or os.getenv("OPENROUTER_API_KEY")
-            or ""
-        )
+        api_key_candidates = [
+            explicit_api_key,
+            (cfg_api_key if use_config_base_url else ""),
+            os.getenv("OPENAI_API_KEY"),
+            os.getenv("OPENROUTER_API_KEY"),
+        ]
+    api_key = next(
+        (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),
+        "",
+    )
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 

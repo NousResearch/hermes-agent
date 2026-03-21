@@ -450,7 +450,7 @@ class AIAgent:
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
-            platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
+            platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp", "feishu").
                 Used to inject platform-specific formatting hints into the system prompt.
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid

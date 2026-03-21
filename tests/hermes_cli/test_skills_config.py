@@ -39,6 +39,11 @@ class TestGetDisabledSkills:
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"skills": {"disabled": []}}) == set()
 
+    def test_feishu_platform_disabled(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {"platform_disabled": {"feishu": ["skill-f"]}}}
+        assert get_disabled_skills(config, platform="feishu") == {"skill-f"}
+
 
 # ---------------------------------------------------------------------------
 # save_disabled_skills

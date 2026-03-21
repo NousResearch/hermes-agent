@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import _send_feishu, _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -33,6 +33,43 @@ def _install_telegram_mock(monkeypatch, bot):
 
 
 class TestSendMessageTool:
+    def test_feishu_target_routes_to_platform_sender(self):
+        feishu_cfg = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"app_id": "cli_app", "app_secret": "secret_app", "domain": "feishu"},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.FEISHU: feishu_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "feishu:oc_123",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.FEISHU,
+            feishu_cfg,
+            "oc_123",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with("feishu", "oc_123", "hello", source_label="cli", thread_id=None)
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
@@ -504,3 +541,85 @@ class TestSendTelegramHtmlDetection:
         assert bot.send_message.await_count == 2
         second_call = bot.send_message.await_args_list[1].kwargs
         assert second_call["parse_mode"] is None
+
+# ---------------------------------------------------------------------------
+# Media attaches in Feishu send
+# ---------------------------------------------------------------------------
+
+    def test_feishu_media_attaches_to_last_chunk(self):
+        sent_calls = []
+
+        async def fake_send(pconfig, chat_id, message, media_files=None, thread_id=None):
+            sent_calls.append(media_files or [])
+            return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": str(len(sent_calls))}
+
+        long_msg = "word " * 2000
+        media = [("/tmp/photo.png", False)]
+        with patch("tools.send_message_tool._send_feishu", fake_send):
+            asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token=None, extra={"app_id": "cli", "app_secret": "sec"}),
+                    "oc_123",
+                    long_msg,
+                    media_files=media,
+                )
+            )
+        assert len(sent_calls) >= 2
+        assert all(call == [] for call in sent_calls[:-1])
+        assert sent_calls[-1] == media
+
+
+class TestSendFeishuDelivery:
+    def test_send_feishu_text_message(self):
+        pconfig = SimpleNamespace(enabled=True, token=None, extra={"app_id": "cli_app", "app_secret": "secret"})
+        adapter = MagicMock()
+        adapter._domain_name = "feishu"
+        adapter._build_lark_client.return_value = object()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_text", error=None))
+
+        with patch("gateway.platforms.feishu.FeishuAdapter", return_value=adapter), \
+             patch("gateway.platforms.feishu.FEISHU_DOMAIN", object()), \
+             patch("gateway.platforms.feishu.LARK_DOMAIN", object()):
+            result = asyncio.run(_send_feishu(pconfig, "oc_123", "hello"))
+
+        assert result == {
+            "success": True,
+            "platform": "feishu",
+            "chat_id": "oc_123",
+            "message_id": "om_text",
+        }
+        adapter.send.assert_awaited_once_with("oc_123", "hello", metadata=None)
+
+    def test_send_feishu_media_message(self, tmp_path):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        pconfig = SimpleNamespace(enabled=True, token=None, extra={"app_id": "cli_app", "app_secret": "secret"})
+        adapter = MagicMock()
+        adapter._domain_name = "feishu"
+        adapter._build_lark_client.return_value = object()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_text", error=None))
+        adapter.send_image_file = AsyncMock(return_value=SimpleNamespace(success=True, message_id="om_image", error=None))
+
+        with patch("gateway.platforms.feishu.FeishuAdapter", return_value=adapter), \
+             patch("gateway.platforms.feishu.FEISHU_DOMAIN", object()), \
+             patch("gateway.platforms.feishu.LARK_DOMAIN", object()):
+            result = asyncio.run(
+                _send_feishu(
+                    pconfig,
+                    "oc_123",
+                    "hello",
+                    media_files=[(str(image_path), False)],
+                    thread_id="omt_1",
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "feishu",
+            "chat_id": "oc_123",
+            "message_id": "om_image",
+        }
+        adapter.send.assert_awaited_once_with("oc_123", "hello", metadata={"thread_id": "omt_1"})
+        adapter.send_image_file.assert_awaited_once_with("oc_123", str(image_path), metadata={"thread_id": "omt_1"})

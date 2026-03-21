@@ -860,6 +860,7 @@ class GatewayRunner:
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS",
+                       "FEISHU_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
@@ -1190,6 +1191,12 @@ class GatewayRunner:
                 logger.warning("API Server: aiohttp not installed")
                 return None
             return APIServerAdapter(config)
+        elif platform == Platform.FEISHU:
+            from gateway.platforms.feishu import FeishuAdapter, check_feishu_requirements
+            if not check_feishu_requirements():
+                logger.warning("Feishu: lark-oapi/websockets not installed. Run: pip install 'hermes-agent[feishu]'")
+                return None
+            return FeishuAdapter(config)
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
@@ -1236,6 +1243,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1248,6 +1256,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -1894,7 +1903,11 @@ class GatewayRunner:
             )
         
         # One-time prompt if no home channel is set for this platform
-        if not history and source.platform and source.platform != Platform.LOCAL:
+        if (
+            not history
+            and source.platform
+            and source.platform not in (Platform.LOCAL, Platform.FEISHU)
+        ):
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):
@@ -3279,6 +3292,7 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
                 Platform.DINGTALK: "hermes-dingtalk",
+                Platform.FEISHU: "hermes-feishu",
             }
             platform_toolsets_config = {}
             try:
@@ -3301,6 +3315,7 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "homeassistant",
                 Platform.EMAIL: "email",
                 Platform.DINGTALK: "dingtalk",
+                Platform.FEISHU: "feishu",
             }.get(source.platform, "telegram")
 
             config_toolsets = platform_toolsets_config.get(platform_config_key)
@@ -3383,13 +3398,39 @@ class GatewayRunner:
                     except Exception:
                         pass
 
-                # Send media files
-                for media_path in (media_files or []):
+                # Route background MEDIA attachments through the same platform
+                # abstraction used by the foreground reply path.
+                audio_exts = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+                video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+                image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+                for media_path, is_voice in (media_files or []):
                     try:
-                        await adapter.send_file(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                        )
+                        ext = Path(media_path).suffix.lower()
+                        if ext in audio_exts:
+                            await adapter.send_voice(
+                                chat_id=source.chat_id,
+                                audio_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif ext in video_exts:
+                            await adapter.send_video(
+                                chat_id=source.chat_id,
+                                video_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif ext in image_exts:
+                            await adapter.send_image_file(
+                                chat_id=source.chat_id,
+                                image_path=media_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=source.chat_id,
+                                file_path=media_path,
+                                metadata=_thread_metadata,
+                            )
                     except Exception:
                         pass
             else:
@@ -4386,6 +4427,7 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
             Platform.DINGTALK: "hermes-dingtalk",
+            Platform.FEISHU: "hermes-feishu",
         }
 
         # Try to load platform_toolsets from config
@@ -4411,6 +4453,7 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
             Platform.DINGTALK: "dingtalk",
+            Platform.FEISHU: "feishu",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

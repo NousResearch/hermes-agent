@@ -205,6 +205,14 @@ PLATFORM_HINTS = {
         "is preserved for threading. Do not include greetings or sign-offs unless "
         "contextually appropriate."
     ),
+    "feishu": (
+        "You are in a Feishu/Lark workspace communicating with your user. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) are uploaded as photo "
+        "attachments, audio and other files as file attachments, and videos "
+        "(.mp4) play inline when supported. You can also include image URLs "
+        "in markdown format ![alt](url) and they will be uploaded as attachments."
+    ),
     "cron": (
         "You are running as a scheduled cron job. There is no user present — you "
         "cannot ask questions, request clarification, or wait for follow-up. Execute "

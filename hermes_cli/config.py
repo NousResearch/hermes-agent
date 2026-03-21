@@ -1692,9 +1692,11 @@ def show_config():
     
     telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
     discord_token = get_env_value('DISCORD_BOT_TOKEN')
+    feishu_app_id = get_env_value('FEISHU_APP_ID')
     
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+    print(f"  Feishu/Lark:  {'configured' if feishu_app_id else color('not configured', Colors.DIM)}")
     
     print()
     print(color("─" * 60, Colors.DIM))

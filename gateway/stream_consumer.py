@@ -69,6 +69,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._needs_boundary = False  # True after a None delta (tool call pause)
 
     @property
     def already_sent(self) -> bool:
@@ -77,8 +78,21 @@ class GatewayStreamConsumer:
         return self._already_sent
 
     def on_delta(self, text: str) -> None:
-        """Thread-safe callback — called from the agent's worker thread."""
+        """Thread-safe callback — called from the agent's worker thread.
+
+        Receives ``None`` when the agent pauses streaming for tool execution.
+        When new text arrives after a pause, a line break is inserted so
+        the resumed text doesn't concatenate directly onto the prior text.
+        """
+        if text is None:
+            # Agent is about to execute tool calls — mark boundary
+            self._needs_boundary = True
+            return
         if text:
+            if self._needs_boundary:
+                self._needs_boundary = False
+                if self._accumulated and not self._accumulated.endswith("\n"):
+                    self._queue.put("\n\n")
             self._queue.put(text)
 
     def finish(self) -> None:

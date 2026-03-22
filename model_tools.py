@@ -22,7 +22,6 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
-import os
 import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple

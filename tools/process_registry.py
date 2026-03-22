@@ -799,6 +799,15 @@ class ProcessRegistry:
 process_registry = ProcessRegistry()
 
 
+def get_registry() -> ProcessRegistry:
+    """Get the global process registry instance.
+    
+    Used by CLI commands (e.g., /stop) to access the process registry
+    for listing and managing background processes.
+    """
+    return process_registry
+
+
 # ---------------------------------------------------------------------------
 # Registry -- the "process" tool schema + handler
 # ---------------------------------------------------------------------------

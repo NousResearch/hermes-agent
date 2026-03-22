@@ -161,6 +161,23 @@ class TestBuildFromSessions:
         assert "Alice" in names
         assert "Bob" in names
 
+    def test_builds_feishu_entries_from_sessions(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "session_1": {
+                "origin": {
+                    "platform": "feishu",
+                    "chat_id": "oc_12345",
+                    "chat_name": "Feishu Ops",
+                },
+                "chat_type": "group",
+            },
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("feishu")
+
+        assert entries == [{"id": "oc_12345", "name": "Feishu Ops", "type": "group", "thread_id": None}]
+
     def test_missing_sessions_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             entries = _build_from_sessions("telegram")
@@ -235,6 +252,18 @@ class TestFormatDirectoryForDisplay:
         assert "telegram:Alice" in result
         assert "telegram:Dev Group" in result
         assert "telegram:Coaching Chat / topic 17585" in result
+
+    def test_feishu_display(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "feishu": [
+                {"id": "oc_123", "name": "Product Chat", "type": "group"},
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            result = format_directory_for_display()
+
+        assert "Feishu:" in result
+        assert "feishu:Product Chat" in result
 
     def test_discord_grouped_by_guild(self, tmp_path):
         cache_file = _write_directory(tmp_path, {

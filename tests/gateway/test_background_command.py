@@ -232,6 +232,46 @@ class TestRunBackgroundTask:
         assert "Hello from background!" in content
 
     @pytest.mark.asyncio
+    async def test_background_video_media_uses_send_video(self):
+        """Background MEDIA mp4 attachments should route through send_video."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_video = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_image_file = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([("/tmp/clip.mp4", False)], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.FEISHU] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            user_id="ou_test",
+            chat_id="oc_test",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "done", "messages": []}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("send video", source, "bg_video")
+
+        mock_adapter.send_video.assert_awaited_once_with(
+            chat_id="oc_test",
+            video_path="/tmp/clip.mp4",
+            metadata=None,
+        )
+        mock_adapter.send_voice.assert_not_called()
+        mock_adapter.send_image_file.assert_not_called()
+        mock_adapter.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_exception_sends_error_message(self):
         """When the agent raises an exception, an error message is sent."""
         runner = _make_runner()

@@ -308,6 +308,7 @@ Each platform has its own toolset:
 | Signal | `hermes-signal` | Full tools including terminal |
 | SMS | `hermes-sms` | Full tools including terminal |
 | Email | `hermes-email` | Full tools including terminal |
+| Feishu / Lark | `hermes-feishu` | Full tools including terminal |
 | Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
@@ -324,6 +325,7 @@ Each platform has its own toolset:
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)
+- [Feishu / Lark Setup](feishu.md)
 - [Home Assistant Integration](homeassistant.md)
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)

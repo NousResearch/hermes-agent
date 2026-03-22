@@ -111,6 +111,7 @@ PLATFORMS = {
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
+    "feishu":   {"label": "🪽 Feishu",     "default_toolset": "hermes-feishu"},
 }
 
 

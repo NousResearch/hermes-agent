@@ -2763,6 +2763,67 @@ def setup_gateway(config: dict):
             if home_channel:
                 save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
+    # ── Feishu / Lark ──
+    existing_feishu = get_env_value("FEISHU_APP_ID")
+    if existing_feishu:
+        print_info("Feishu / Lark: already configured")
+        if prompt_yes_no("Reconfigure Feishu / Lark?", False):
+            existing_feishu = None
+
+    if not existing_feishu and prompt_yes_no("Set up Feishu / Lark?", False):
+        print_info("Steps to create a Feishu / Lark app:")
+        print_info("   1. Go to https://open.feishu.cn/ or https://open.larksuite.com/")
+        print_info("   2. Create an app and copy the App ID and App Secret")
+        print_info("   3. Enable the Bot capability")
+        print_info("   4. Add permissions")
+        print_info("      Required permissions: im:message, im:message:readonly,")
+        print_info("      im:message:update, im:message.reactions:read,")
+        print_info("      im:message.reactions:write_only,")
+        print_info("      admin:app.info:readonly")
+        print_info("      Alternative for app identity lookup: application:application:self_manage")
+        print_info("      Hermes uses app info to resolve the bot name for strict group @mention gating")
+        print_info("   5. Subscribe to events / callbacks")
+        print_info("      Required events: im.message.receive_v1, im.message.message_read_v1")
+        print_info("   6. Choose WebSocket mode unless you specifically need webhooks")
+        print()
+        app_id = prompt("Feishu / Lark App ID")
+        app_secret = prompt("Feishu / Lark App Secret", password=True)
+        if app_id and app_secret:
+            save_env_value("FEISHU_APP_ID", app_id)
+            save_env_value("FEISHU_APP_SECRET", app_secret)
+
+            domain = prompt("Domain (feishu or lark)", "feishu").strip().lower() or "feishu"
+            if domain not in {"feishu", "lark"}:
+                domain = "feishu"
+            save_env_value("FEISHU_DOMAIN", domain)
+
+            connection_mode = prompt("Connection mode (websocket or webhook)", "websocket").strip().lower() or "websocket"
+            if connection_mode not in {"websocket", "webhook"}:
+                connection_mode = "websocket"
+            save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
+            print_success("Feishu / Lark credentials saved")
+
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   Use FEISHU_ALLOWED_USERS to allow only specific open IDs or user IDs.")
+            print_info("   If you are unsure, leave this empty now and fill it after first test messages.")
+            print()
+            allowed_users = prompt(
+                "Allowed user IDs / open IDs (comma-separated, leave empty for open access)"
+            )
+            if allowed_users:
+                save_env_value("FEISHU_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("Feishu / Lark allowlist configured")
+            else:
+                print_info("⚠️  No allowlist set - anyone who can reach the bot may be able to use it!")
+
+            print()
+            print_info("📬 Home Chat: where Hermes delivers cron job results and notifications.")
+            print_info("   You can also set this later by typing /set-home in a Feishu/Lark chat.")
+            home_channel = prompt("Home chat ID (leave empty to set later with /set-home)")
+            if home_channel:
+                save_env_value("FEISHU_HOME_CHANNEL", home_channel)
+
     # ── WhatsApp ──
     existing_whatsapp = get_env_value("WHATSAPP_ENABLED")
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
@@ -2838,6 +2899,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATTERMOST_TOKEN")
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
+        or get_env_value("FEISHU_APP_ID")
         or get_env_value("WHATSAPP_ENABLED")
         or get_env_value("WEBHOOK_ENABLED")
     )
@@ -2858,6 +2920,8 @@ def setup_gateway(config: dict):
             missing_home.append("Discord")
         if get_env_value("SLACK_BOT_TOKEN") and not get_env_value("SLACK_HOME_CHANNEL"):
             missing_home.append("Slack")
+        if get_env_value("FEISHU_APP_ID") and not get_env_value("FEISHU_HOME_CHANNEL"):
+            missing_home.append("Feishu / Lark")
 
         if missing_home:
             print()

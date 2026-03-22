@@ -57,6 +57,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    FEISHU = "feishu"
 
 
 @dataclass
@@ -257,6 +258,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Webhook uses enabled flag only (secrets are per-route)
             elif platform == Platform.WEBHOOK:
+                connected.append(platform)
+            # Feishu uses extra dict for app credentials
+            elif platform == Platform.FEISHU and config.extra.get("app_id"):
                 connected.append(platform)
         return connected
     
@@ -770,6 +774,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
+    # Feishu / Lark
+    feishu_app_id = os.getenv("FEISHU_APP_ID")
+    feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    if feishu_app_id and feishu_app_secret:
+        if Platform.FEISHU not in config.platforms:
+            config.platforms[Platform.FEISHU] = PlatformConfig()
+        config.platforms[Platform.FEISHU].enabled = True
+        config.platforms[Platform.FEISHU].extra.update({
+            "app_id": feishu_app_id,
+            "app_secret": feishu_app_secret,
+            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+        })
+        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+        if feishu_home:
+            config.platforms[Platform.FEISHU].home_channel = HomeChannel(
+                platform=Platform.FEISHU,
+                chat_id=feishu_home,
+                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+            )
+            
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:
@@ -784,6 +809,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
-
-

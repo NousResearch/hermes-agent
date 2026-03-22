@@ -24,6 +24,7 @@ PLATFORMS = {
     "whatsapp": "📱 WhatsApp",
     "signal":   "📡 Signal",
     "email":    "📧 Email",
+    "feishu":   "🪽 Feishu",
 }
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────

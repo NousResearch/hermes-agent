@@ -28,6 +28,7 @@ Toolsets are named bundles of tools that you can enable with `hermes chat --tool
 | `hermes-sms` | platform | _(same as hermes-cli)_ |
 | `hermes-telegram` | platform | _(same as hermes-cli)_ |
 | `hermes-whatsapp` | platform | _(same as hermes-cli)_ |
+| `hermes-feishu` | platform | _(same as hermes-cli)_ |
 | `homeassistant` | core | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` |
 | `honcho` | core | `honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search` |
 | `image_gen` | core | `image_generate` |

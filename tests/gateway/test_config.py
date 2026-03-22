@@ -192,3 +192,18 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_load_gateway_config_reads_feishu_credentials_from_hermes_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_test_app")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test_app")
+        monkeypatch.setenv("FEISHU_DOMAIN", "feishu")
+
+        config = load_gateway_config()
+
+        assert Platform.FEISHU in config.platforms
+        assert config.platforms[Platform.FEISHU].enabled is True
+        assert config.platforms[Platform.FEISHU].extra["app_id"] == "cli_test_app"
+        assert config.platforms[Platform.FEISHU].extra["app_secret"] == "secret_test_app"

@@ -1195,6 +1195,37 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "feishu",
+        "label": "Feishu / Lark",
+        "emoji": "🪽",
+        "token_var": "FEISHU_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.feishu.cn/ or https://open.larksuite.com/ → Create app",
+            "2. Under Credentials & Basic Info, copy the App ID and App Secret",
+            "3. Enable the Bot capability for the app",
+            "4. Choose a connection mode:",
+            "   - WebSocket (recommended): no public webhook endpoint needed",
+            "   - Webhook: Hermes exposes /feishu/webhook on your gateway host",
+            "5. Add the bot to a group chat or message it directly",
+            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Feishu/Lark application."},
+            {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret from your Feishu/Lark application."},
+            {"name": "FEISHU_DOMAIN", "prompt": "Domain (feishu or lark)", "password": False,
+             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
+            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode (websocket or webhook)", "password": False,
+             "help": "websocket is recommended unless you specifically need webhook mode."},
+            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed open IDs or user IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which Feishu/Lark users can interact with the bot."},
+            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "Chat ID for scheduled results and notifications. Can be set later from chat."},
+        ],
+    },
 ]
 
 

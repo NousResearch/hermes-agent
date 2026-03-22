@@ -2795,6 +2795,17 @@ class HermesCLI:
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
+            # Tools-mode startup prewarm: fire in background so first turn
+            # gets lightweight personalization without blocking.
+            _hcfg = getattr(self.agent, "_honcho_config", None)
+            if (
+                _hcfg is not None
+                and getattr(_hcfg, "recall_mode", None) == "tools"
+                and getattr(_hcfg, "tools_startup_context", False)
+                and getattr(_hcfg, "peer_name", None)
+            ):
+                self.agent._schedule_honcho_startup_prewarm(_hcfg.peer_name)
+
             if self._session_db:
                 try:
                     self._session_db.create_session(

@@ -2070,8 +2070,73 @@ class AIAgent:
                     logger.debug("Honcho context pre-warmed for first turn")
             except Exception as exc:
                 logger.debug("Honcho context prefetch failed (non-fatal): %s", exc)
+        elif hcfg.tools_startup_context and hcfg.peer_name:
+            self._schedule_honcho_startup_prewarm(hcfg.peer_name)
 
         self._register_honcho_exit_hook()
+
+    def _schedule_honcho_startup_prewarm(self, peer_id: str) -> None:
+        """Fire a background fetch of user snapshot for tools-mode startup context.
+
+        Non-blocking. Result stored in self._honcho_startup_snapshot keyed by
+        peer_id. Consumed once on the first real user turn via _pop_startup_snapshot().
+        """
+        import threading as _threading
+
+        if not self._honcho:
+            return
+
+        def _run():
+            try:
+                snapshot = self._honcho.fetch_startup_snapshot(peer_id)
+                if snapshot:
+                    if not hasattr(self, "_honcho_startup_snapshot"):
+                        self._honcho_startup_snapshot = {}
+                    self._honcho_startup_snapshot[peer_id] = snapshot
+                    logger.debug(
+                        "Honcho tools startup snapshot ready for peer %s", peer_id
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Honcho tools startup prewarm failed (non-fatal): %s", exc
+                )
+
+        t = _threading.Thread(
+            target=_run, name="honcho-startup-prewarm", daemon=True
+        )
+        t.start()
+
+    def _pop_startup_snapshot(self) -> str:
+        """Return and clear the startup snapshot for the current session's peer.
+
+        Returns empty string if no snapshot is ready or feature is disabled.
+        Only consumes once — subsequent calls return "".
+        """
+        if not self._honcho_config or not self._honcho_config.tools_startup_context:
+            return ""
+        peer_id = getattr(self._honcho_config, "peer_name", None)
+        if not peer_id:
+            return ""
+        cache = getattr(self, "_honcho_startup_snapshot", {})
+        snapshot = cache.pop(peer_id, None)
+        if not snapshot:
+            return ""
+        parts = []
+        rep = snapshot.get("representation", "")
+        card = snapshot.get("card", "")
+        if rep:
+            parts.append("## User representation\n" + rep)
+        if card:
+            parts.append(card)
+        if not parts:
+            return ""
+        return (
+            "# Honcho Memory (startup context)\n"
+            "Lightweight cross-session personalization fetched at session start. "
+            "Use this for personalization on the first turn. "
+            "Call honcho_context or honcho_search for deeper recall.\n\n"
+            + "\n\n".join(parts)
+        )
 
     def _register_honcho_exit_hook(self) -> None:
         """Register a process-exit flush hook without clobbering signal handlers."""
@@ -5416,6 +5481,14 @@ class AIAgent:
                         self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+        elif _recall_mode == "tools" and not conversation_history:
+            try:
+                startup_ctx = self._pop_startup_snapshot()
+                if startup_ctx:
+                    self._honcho_turn_context = startup_ctx
+                    logger.debug("Honcho tools startup snapshot injected on first turn")
+            except Exception as e:
+                logger.debug("Honcho startup snapshot inject failed (non-fatal): %s", e)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}

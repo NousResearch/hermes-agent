@@ -450,6 +450,59 @@ class GatewayRunner:
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
     
+    def _schedule_gateway_honcho_startup_prewarm(self, session_key: str) -> None:
+        """Fire background Honcho startup prewarm for tools mode after session reset.
+
+        Non-blocking. Snapshot stored in self._honcho_startup_cache keyed by
+        peer_name (stable Honcho identity, not ephemeral session key).
+        Consumed on the first real turn of the new session via the RunAgent
+        instance created for that turn.
+        """
+        try:
+            from honcho_integration.client import HonchoClientConfig, get_honcho_client
+            from honcho_integration.session import HonchoSessionManager
+            import threading as _threading
+
+            hcfg = HonchoClientConfig.from_global_config()
+            if (
+                not hcfg.enabled
+                or not hcfg.api_key
+                or hcfg.recall_mode != "tools"
+                or not hcfg.tools_startup_context
+                or not hcfg.peer_name
+            ):
+                return
+
+            peer_id = hcfg.peer_name
+            if not hasattr(self, "_honcho_startup_cache"):
+                self._honcho_startup_cache: dict = {}
+
+            def _run():
+                try:
+                    client = get_honcho_client(hcfg)
+                    manager = HonchoSessionManager(
+                        honcho=client,
+                        config=hcfg,
+                        context_tokens=hcfg.context_tokens,
+                    )
+                    snapshot = manager.fetch_startup_snapshot(peer_id)
+                    if snapshot:
+                        self._honcho_startup_cache[peer_id] = snapshot
+                        logger.debug(
+                            "Gateway Honcho startup snapshot ready for peer %s", peer_id
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "Gateway Honcho startup prewarm failed (non-fatal): %s", exc
+                    )
+
+            t = _threading.Thread(
+                target=_run, name="honcho-gw-startup-prewarm", daemon=True
+            )
+            t.start()
+        except Exception as exc:
+            logger.debug("Gateway Honcho startup prewarm setup failed: %s", exc)
+
     # -- Setup skill availability ----------------------------------------
 
     def _has_setup_skill(self) -> bool:
@@ -2397,6 +2450,9 @@ class GatewayRunner:
         self._shutdown_gateway_honcho(session_key)
         self._evict_cached_agent(session_key)
         
+        # Tools-mode startup prewarm for next session
+        self._schedule_gateway_honcho_startup_prewarm(session_key)
+
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 

@@ -126,6 +126,10 @@ class HonchoClientConfig:
     # "context" — auto-injected context only, Honcho tools removed
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
+    # Optional lightweight cached startup context for recallMode=tools.
+    # When True, Hermes pre-fetches user representation + peer card in the
+    # background on /new or session reset and injects it on the first real turn.
+    tools_startup_context: bool = False
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -275,6 +279,11 @@ class HonchoClientConfig:
                 host_block.get("recallMode")
                 or raw.get("recallMode")
                 or "hybrid"
+            ),
+            tools_startup_context=bool(
+                host_block.get("toolsStartupContext")
+                if host_block.get("toolsStartupContext") is not None
+                else raw.get("toolsStartupContext", False)
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,

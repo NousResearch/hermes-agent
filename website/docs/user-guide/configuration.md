@@ -907,6 +907,7 @@ auxiliary:
     model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
     base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
+    timeout: 30                # seconds — increase for slow local vision models
 
   # Web page summarization + browser page text extraction
   web_extract:

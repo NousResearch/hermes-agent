@@ -469,3 +469,86 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     assert saved_env["OPENAI_BASE_URL"] == "http://localhost:8000/v1"
     assert saved_env["OPENAI_API_KEY"] == "local-key"
     assert saved_env["MODEL"] == "llm"
+
+
+def test_model_flow_custom_auto_detects_context_length_when_blank(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    saved_calls = []
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: saved_calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["llm"],
+            "probed_url": "http://localhost:8000/v1/models",
+            "resolved_base_url": "http://localhost:8000/v1",
+            "suggested_base_url": "http://localhost:8000/v1",
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "custom", "base_url": ""}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr(
+        "hermes_cli.main.get_model_context_length",
+        lambda model, base_url="", api_key="", provider="": 200000,
+    )
+
+    answers = iter(["http://localhost:8000", "local-key", "llm", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert "Context length auto-detected: 200,000 tokens" in output
+    assert saved_calls
+    assert saved_calls[0][0][2] == "llm"
+    assert saved_calls[0][1]["context_length"] == 200000
+
+
+def test_model_flow_custom_uses_default_context_length_when_detection_fails(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    saved_calls = []
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: saved_calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["llm"],
+            "probed_url": "http://localhost:8000/v1/models",
+            "resolved_base_url": "http://localhost:8000/v1",
+            "suggested_base_url": "http://localhost:8000/v1",
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "", "provider": "custom", "base_url": ""}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr(
+        "hermes_cli.main.get_model_context_length",
+        lambda model, base_url="", api_key="", provider="": None,
+    )
+
+    answers = iter(["http://localhost:8000", "local-key", "llm", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert "Using default of 128,000 tokens" in output
+    assert saved_calls
+    assert saved_calls[0][1]["context_length"] is None

@@ -70,6 +70,7 @@ from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
+from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
 
 logger = logging.getLogger(__name__)
 
@@ -1212,6 +1213,26 @@ def _model_flow_custom(config):
         if base_url or api_key:
             deactivate_provider()
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
+
+    # Auto-detect context length when the user leaves it blank.
+    # Persist the detected value alongside the custom provider entry so the
+    # next run can use it without probing again.
+    if context_length is None and model_name:
+        try:
+            detected_length = get_model_context_length(
+                model_name,
+                base_url=effective_url,
+                api_key=effective_key,
+                provider="custom",
+            )
+        except Exception:
+            detected_length = None
+
+        if detected_length:
+            context_length = detected_length
+            print(f"  💡 Context length auto-detected: {detected_length:,} tokens")
+        else:
+            print(f"  📏 Context length: Using default of {DEFAULT_FALLBACK_CONTEXT:,} tokens")
 
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length)

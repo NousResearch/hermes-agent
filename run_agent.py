@@ -1481,7 +1481,7 @@ class AIAgent:
         """
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
-        self._save_session_log(messages)
+        self._save_session_log(messages, conversation_history=conversation_history)
         self._flush_messages_to_session_db(messages, conversation_history)
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
@@ -1855,7 +1855,7 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
-    def _save_session_log(self, messages: List[Dict[str, Any]] = None):
+    def _save_session_log(self, messages: List[Dict[str, Any]] = None, conversation_history: List[Dict[str, Any]] = None):
         """
         Save the full raw session to a JSON file.
 
@@ -1866,15 +1866,28 @@ class AIAgent:
 
         REASONING_SCRATCHPAD tags are converted to <think> blocks for consistency.
         Overwritten after each turn so it always reflects the latest state.
+
+        NOTE: In gateway mode, each turn creates a fresh AIAgent with only
+        new messages in `messages` and the full prior history in
+        `conversation_history`. Both must be combined for a complete export.
         """
         messages = messages or self._session_messages
         if not messages:
             return
 
         try:
+            # Combine conversation_history + messages, deduplicating by object identity
+            # to avoid writing the same messages twice when history overlaps with messages.
+            if conversation_history:
+                history_ids = {id(m) for m in conversation_history}
+                new_msgs = [m for m in messages if id(m) not in history_ids]
+                all_messages = list(conversation_history) + new_msgs
+            else:
+                all_messages = list(messages)
+
             # Clean assistant content for session logs
             cleaned = []
-            for msg in messages:
+            for msg in all_messages:
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
@@ -1903,7 +1916,12 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
-    
+
+    # NOTE: The JSON session log (session_*.json) is a legacy export.
+    # JSONL files and SQLite DB are the authoritative sources of truth.
+    # Do not use JSON files for session resume or auditing — they may be
+    # incomplete in gateway mode (fixed by including conversation_history above).
+
     def interrupt(self, message: str = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.

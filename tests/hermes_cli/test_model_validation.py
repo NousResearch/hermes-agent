@@ -170,6 +170,19 @@ class TestProviderModelIds:
         assert "gpt-5.4" in ids
         assert "copilot-acp" not in ids
 
+    def test_copilot_uses_routed_base_url_for_live_catalog(self):
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.individual.githubcopilot.com",
+            },
+        ), patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4"]) as mock_fetch:
+            ids = provider_model_ids("copilot")
+
+        assert ids == ["gpt-5.4"]
+        assert mock_fetch.call_args.kwargs["base_url"] == "https://api.individual.githubcopilot.com"
+
 
 # -- fetch_api_models --------------------------------------------------------
 
@@ -220,11 +233,11 @@ class TestFetchApiModels:
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
-            probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
+            probe = probe_api_models("gh-token", "https://api.individual.githubcopilot.com")
 
-        assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
+        assert mock_urlopen.call_args[0][0].full_url == "https://api.individual.githubcopilot.com/models"
         assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6"]
-        assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
+        assert probe["resolved_base_url"] == "https://api.individual.githubcopilot.com"
         assert probe["used_fallback"] is False
 
     def test_fetch_github_model_catalog_filters_non_chat_models(self):
@@ -275,6 +288,18 @@ class TestCopilotNormalization:
     def test_normalize_old_github_models_slug(self):
         catalog = [{"id": "gpt-4.1"}, {"id": "gpt-5.4"}]
         assert normalize_copilot_model_id("openai/gpt-4.1-mini", catalog=catalog) == "gpt-4.1"
+
+    def test_normalize_direct_model_part_when_catalog_contains_match(self):
+        catalog = [{"id": "claude-sonnet-4.6"}]
+        assert normalize_copilot_model_id("anthropic/claude-sonnet-4.6", catalog=catalog) == "claude-sonnet-4.6"
+
+    def test_copilot_api_mode_messages_only_uses_anthropic_messages(self):
+        catalog = [{
+            "id": "claude-sonnet-4.6",
+            "supported_endpoints": ["/v1/messages"],
+            "capabilities": {"type": "chat"},
+        }]
+        assert copilot_model_api_mode("claude-sonnet-4.6", catalog=catalog) == "anthropic_messages"
 
     def test_copilot_api_mode_gpt5_uses_responses(self):
         """GPT-5+ models should use Responses API (matching opencode)."""
@@ -340,6 +365,16 @@ class TestValidateFormatChecks:
         result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
         assert result["accepted"] is True
         assert "not found" in result["message"]
+
+    def test_copilot_validation_normalizes_alias_before_lookup(self):
+        result = _validate(
+            "openai/gpt-4.1-mini",
+            provider="copilot",
+            api_key="copilot-api-token",
+            api_models=["gpt-4.1"],
+        )
+        assert result["accepted"] is True
+        assert result["recognized"] is True
 
 
 # -- validate — API found ----------------------------------------------------

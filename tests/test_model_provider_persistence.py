@@ -109,8 +109,9 @@ class TestProviderPersistsAfterModelSave:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
-                "api_key": "gh-cli-token",
-                "base_url": "https://api.githubcopilot.com",
+                "api_key": "copilot-api-token",
+                "github_token": "gh-cli-token",
+                "base_url": "https://api.individual.githubcopilot.com",
                 "source": "gh auth token",
             },
         ), patch(
@@ -144,7 +145,7 @@ class TestProviderPersistsAfterModelSave:
         model = config.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "copilot"
-        assert model.get("base_url") == "https://api.githubcopilot.com"
+        assert model.get("base_url") == "https://api.individual.githubcopilot.com"
         assert model.get("default") == "gpt-5.4"
         assert model.get("api_mode") == "codex_responses"
         assert config["agent"]["reasoning_effort"] == "high"
@@ -175,8 +176,9 @@ class TestProviderPersistsAfterModelSave:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             return_value={
                 "provider": "copilot",
-                "api_key": "gh-cli-token",
-                "base_url": "https://api.githubcopilot.com",
+                "api_key": "copilot-api-token",
+                "github_token": "gh-cli-token",
+                "base_url": "https://api.individual.githubcopilot.com",
                 "source": "gh auth token",
             },
         ), patch(

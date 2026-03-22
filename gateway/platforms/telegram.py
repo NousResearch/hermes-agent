@@ -130,6 +130,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
+        self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
 
     @staticmethod
@@ -140,6 +141,80 @@ class TelegramAdapter(BasePlatformAdapter):
             or "terminated by other getupdates request" in text
             or "another bot instance is running" in text
         )
+
+    @staticmethod
+    def _looks_like_network_error(error: Exception) -> bool:
+        """Return True for transient network errors that warrant a reconnect attempt."""
+        name = error.__class__.__name__.lower()
+        if name in ("networkerror", "timedout", "connectionerror"):
+            return True
+        try:
+            from telegram.error import NetworkError, TimedOut
+            if isinstance(error, (NetworkError, TimedOut)):
+                return True
+        except ImportError:
+            pass
+        return isinstance(error, OSError)
+
+    async def _handle_polling_network_error(self, error: Exception) -> None:
+        """Reconnect polling after a transient network interruption.
+
+        Triggered by NetworkError/TimedOut in the polling error callback, which
+        happen when the host loses connectivity (Mac sleep, WiFi switch, VPN
+        reconnect, etc.).  The gateway process stays alive but the long-poll
+        connection silently dies; without this handler the bot never recovers.
+
+        Strategy: exponential back-off (5s, 10s, 20s, 40s, 60s cap) up to
+        MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
+        the supervisor restarts the gateway process.
+        """
+        if self.has_fatal_error:
+            return
+
+        MAX_NETWORK_RETRIES = 10
+        BASE_DELAY = 5
+        MAX_DELAY = 60
+
+        self._polling_network_error_count += 1
+        attempt = self._polling_network_error_count
+
+        if attempt > MAX_NETWORK_RETRIES:
+            message = (
+                "Telegram polling could not reconnect after %d network error retries. "
+                "Restarting gateway." % MAX_NETWORK_RETRIES
+            )
+            logger.error("[%s] %s Last error: %s", self.name, message, error)
+            self._set_fatal_error("telegram_network_error", message, retryable=True)
+            await self._notify_fatal_error()
+            return
+
+        delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
+        logger.warning(
+            "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
+            self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
+        )
+        await asyncio.sleep(delay)
+
+        try:
+            if self._app and self._app.updater and self._app.updater.running:
+                await self._app.updater.stop()
+        except Exception:
+            pass
+
+        try:
+            await self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+                error_callback=self._polling_error_callback_ref,
+            )
+            logger.info(
+                "[%s] Telegram polling resumed after network error (attempt %d)",
+                self.name, attempt,
+            )
+            self._polling_network_error_count = 0
+        except Exception as retry_err:
+            logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
+            # The next network error will trigger another attempt.
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -276,12 +351,15 @@ class TelegramAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
 
             def _polling_error_callback(error: Exception) -> None:
-                if not self._looks_like_polling_conflict(error):
-                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
-                    return
                 if self._polling_error_task and not self._polling_error_task.done():
                     return
-                self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                if self._looks_like_polling_conflict(error):
+                    self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                elif self._looks_like_network_error(error):
+                    logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, error)
+                    self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
+                else:
+                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
 
             # Store reference for retry use in _handle_polling_conflict
             self._polling_error_callback_ref = _polling_error_callback

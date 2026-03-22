@@ -247,13 +247,16 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     else:
         response_format = "mp3"
 
+    speed = oai_config.get("speed", 1.0)
+
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url=base_url)
+    client = OpenAIClient(api_key=*** base_url=base_url)
     response = client.audio.speech.create(
         model=model,
         voice=voice,
         input=text,
         response_format=response_format,
+        speed=speed,
     )
 
     response.stream_to_file(output_path)

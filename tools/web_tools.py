@@ -72,7 +72,7 @@ import sqlite3
 import hashlib
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import contextmanager
 
 # Storage directory - use ~/.hermes/data for persistence
@@ -199,7 +199,7 @@ def store_page(
         return {"success": False, "error": "URL is required"}
     
     try:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         url_hash = _hash_url(url)
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         content_len = len(content) if content else 0

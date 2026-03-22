@@ -1,0 +1,6 @@
+name: hermes-memory-store
+version: 0.1.0
+description: Structured memory backend with SQLite storage, trust scoring, entity resolution, and hybrid keyword/BM25 retrieval.
+author: peppi
+hooks:
+  - on_session_end

@@ -158,6 +158,7 @@ def _discover_tools():
         "tools.process_registry",
         "tools.send_message_tool",
         "tools.honcho_tools",
+        "tools.hindsight_tools",
         "tools.homeassistant_tool",
     ]
     import importlib

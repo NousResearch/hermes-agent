@@ -1754,7 +1754,7 @@ class TestSystemPromptStability:
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
         ):
-            result = agent.run_conversation("synthetic flush turn", sync_honcho=False)
+            result = agent.run_conversation("synthetic flush turn", sync_memory=False)
 
         assert result["completed"] is True
         assert captured["messages"][-1]["content"] == "synthetic flush turn"

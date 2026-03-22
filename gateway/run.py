@@ -571,7 +571,7 @@ class GatewayRunner:
             tmp_agent.run_conversation(
                 user_message=flush_prompt,
                 conversation_history=msgs,
-                sync_honcho=False,
+                sync_memory=False,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
             # Flush any queued Honcho writes before the session is dropped

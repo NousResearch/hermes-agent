@@ -106,6 +106,12 @@ HONCHO_TOOL_NAMES = {
     "honcho_conclude",
 }
 
+HINDSIGHT_TOOL_NAMES = {
+    "hindsight_retain",
+    "hindsight_recall",
+    "hindsight_reflect",
+}
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -258,6 +264,18 @@ def _is_destructive_command(cmd: str) -> bool:
     if _REDIRECT_OVERWRITE.search(cmd):
         return True
     return False
+
+
+def _inject_hindsight_turn_context(content, turn_context: str):
+    """Append Hindsight recall to the current-turn user message without mutating history."""
+    if not turn_context:
+        return content
+    return (
+        content
+        + "\n\n[Hindsight memory context — relevant memories recalled for this turn. "
+        "Use to answer questions about prior sessions without calling tools.]\n\n"
+        f"{turn_context}"
+    )
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
@@ -981,6 +999,48 @@ class AIAgent:
         # stays inactive, remove any stale honcho_* tools from prior process state.
         if not self._honcho:
             self._strip_honcho_tools_from_surface()
+
+        # Hindsight long-term memory (cross-session knowledge graph).
+        # Reads ~/.hindsight/config.json as the single source of truth.
+        self._hindsight = None  # HindsightSessionManager | None
+        self._hindsight_config = None  # HindsightClientConfig | None
+        if not skip_memory:
+            try:
+                from hindsight_integration.client import HindsightClientConfig, get_hindsight_client
+                hscfg = HindsightClientConfig.from_global_config()
+                self._hindsight_config = hscfg
+                if self._hindsight_should_activate(hscfg):
+                    from hindsight_integration.session import HindsightSessionManager
+                    hs_client = get_hindsight_client(hscfg)
+                    self._hindsight = HindsightSessionManager(
+                        client=hs_client,
+                        config=hscfg,
+                    )
+                    self._activate_hindsight(
+                        hscfg,
+                        enabled_toolsets=enabled_toolsets,
+                        disabled_toolsets=disabled_toolsets,
+                    )
+                else:
+                    if not hscfg.enabled:
+                        logger.debug("Hindsight disabled in global config")
+                    elif hscfg.mode == "local" and not hscfg.llm_api_key:
+                        logger.debug("Hindsight local mode enabled but no LLM API key configured")
+                    elif hscfg.mode != "local" and not hscfg.api_key:
+                        logger.debug("Hindsight enabled but no API key configured")
+            except Exception as e:
+                logger.warning("Hindsight init failed — memory disabled: %s", e)
+                self._hindsight = None
+
+        if not self._hindsight:
+            self._strip_hindsight_tools_from_surface()
+        else:
+            # Hindsight owns long-term memory — disable local MEMORY.md/USER.md writes
+            # so the agent doesn't split facts across two stores (mirrors Honcho behaviour).
+            self._memory_flush_min_turns = 0
+            self._memory_enabled = False
+            self._user_profile_enabled = False
+            logger.debug("Hindsight active: local MEMORY.md and USER.md writes disabled")
 
         # Gate local memory writes based on per-peer memory modes.
         # AI peer governs MEMORY.md; user peer governs USER.md.
@@ -2016,6 +2076,120 @@ class AIAgent:
             tool["function"]["name"] for tool in self.tools
         } if self.tools else set()
 
+    # ── Hindsight integration helpers ──
+
+    def _hindsight_should_activate(self, hscfg) -> bool:
+        """Return True when Hindsight should be active."""
+        if not (hscfg and hscfg.enabled and hscfg.bank_id):
+            return False
+        if hscfg.mode == "local":
+            return bool(hscfg.llm_api_key)
+        return bool(hscfg.api_key)
+
+    def _strip_hindsight_tools_from_surface(self) -> None:
+        """Remove Hindsight tools from the active tool surface."""
+        if not self.tools:
+            self.valid_tool_names = set()
+            return
+        self.tools = [
+            tool for tool in self.tools
+            if tool.get("function", {}).get("name") not in HINDSIGHT_TOOL_NAMES
+        ]
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
+    def _activate_hindsight(
+        self,
+        hscfg,
+        *,
+        enabled_toolsets: Optional[List[str]],
+        disabled_toolsets: Optional[List[str]],
+    ) -> None:
+        """Finish Hindsight setup: ensure bank exists, inject session context, warm first turn."""
+        if not self._hindsight:
+            return
+
+        # Ensure the bank exists (idempotent)
+        try:
+            self._hindsight._client.create_bank(
+                bank_id=hscfg.bank_id, name=hscfg.bank_id
+            )
+        except Exception:
+            pass  # Already exists
+
+        from tools.hindsight_tools import set_session_context
+        set_session_context(self._hindsight)
+
+        # Rebuild tool surface so hindsight_* tools become available.
+        # Inject "hindsight" into the enabled list so the tools appear even
+        # when the user hasn't manually added the toolset to their config.
+        # Re-apply Honcho tool stripping afterwards if recall_mode=="context"
+        # so we don't accidentally re-add tools that _activate_honcho removed.
+        _ets = list(enabled_toolsets) if enabled_toolsets is not None else None
+        if _ets is not None and "hindsight" not in _ets:
+            _ets.append("hindsight")
+        self.tools = get_tool_definitions(
+            enabled_toolsets=_ets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+        if self._honcho_config and getattr(self._honcho_config, "recall_mode", None) == "context":
+            self._strip_honcho_tools_from_surface()
+
+        if not self.quiet_mode:
+            print(f"  Hindsight active — bank: {hscfg.bank_id}, budget: {hscfg.budget}")
+
+        logger.info(
+            "Hindsight active (bank: %s, budget: %s)",
+            hscfg.bank_id,
+            hscfg.budget,
+        )
+
+        # Pre-warm first-turn recall in a background thread so the main thread
+        # never touches the aiohttp event loop during init (which breaks httpx).
+        try:
+            self._hindsight.prefetch_recall("recent context and ongoing work")
+            logger.debug("Hindsight first-turn prefetch started in background")
+        except Exception as exc:
+            logger.debug("Hindsight first-turn prefetch failed (non-fatal): %s", exc)
+
+    def _hindsight_prefetch(self, user_message: str) -> str:
+        """Pop the cached Hindsight recall result for this turn."""
+        if not self._hindsight:
+            return ""
+        try:
+            result = self._hindsight.pop_recall_result()
+            if not result:
+                return ""
+            return f"## Hindsight Memory\n\n{result}"
+        except Exception as e:
+            logger.debug("Hindsight prefetch pop failed (non-fatal): %s", e)
+            return ""
+
+    def _queue_hindsight_prefetch(self, user_message: str) -> None:
+        """Queue a background recall for the next turn."""
+        if not self._hindsight:
+            return
+        try:
+            self._hindsight.prefetch_recall(user_message)
+        except Exception as exc:
+            logger.debug("Hindsight background prefetch failed (non-fatal): %s", exc)
+
+    def _hindsight_sync(self, user_content: str, assistant_content: str) -> None:
+        """Async-retain the user/assistant turn to build the knowledge graph."""
+        if not self._hindsight:
+            return
+        try:
+            combined = f"User: {user_content}\n\nAssistant: {assistant_content}"
+            self._hindsight.retain_async(combined, context="conversation")
+            logger.info("Hindsight retain queued (%d chars)", len(combined))
+        except Exception as e:
+            logger.warning("Hindsight sync failed: %s", e)
+
     def _activate_honcho(
         self,
         hcfg,
@@ -2317,6 +2491,22 @@ class AIAgent:
                 "  hermes honcho setup                     — full interactive wizard"
             )
             prompt_parts.append(honcho_block)
+
+        if self._hindsight and self._hindsight_config:
+            hscfg = self._hindsight_config
+            hindsight_block = (
+                "# Hindsight memory integration\n"
+                f"Active. Bank: {hscfg.bank_id}. Budget: {hscfg.budget}.\n"
+                "Relevant memories are injected into each turn automatically. "
+                "Use hindsight_recall or hindsight_reflect for on-demand retrieval. "
+                "Use hindsight_retain to store important facts, decisions, or preferences.\n"
+                "Management commands (refer users here):\n"
+                "  hermes hindsight status           — show config + connection\n"
+                "  hermes hindsight bank <id>        — show or change bank ID\n"
+                "  hermes hindsight budget <level>   — show or set recall budget\n"
+                "  hermes hindsight setup             — full interactive wizard"
+            )
+            prompt_parts.append(hindsight_block)
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
@@ -5350,7 +5540,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
-        sync_honcho: bool = True,
+        sync_memory: bool = True,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -5366,8 +5556,8 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
-            sync_honcho: When False, skip writing the final synthetic turn back
-                to Honcho or queuing follow-up prefetch work.
+            sync_memory: When False, skip writing the final synthetic turn back
+                to Honcho/Hindsight or queuing follow-up prefetch work.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -5451,6 +5641,19 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
+        self._hindsight_context = ""
+        self._hindsight_turn_context = ""
+        if self._hindsight:
+            try:
+                prefetched_hs = self._hindsight_prefetch(original_user_message)
+                if prefetched_hs:
+                    if not conversation_history:
+                        self._hindsight_context = prefetched_hs
+                    else:
+                        self._hindsight_turn_context = prefetched_hs
+            except Exception as e:
+                logger.debug("Hindsight prefetch failed (non-fatal): %s", e)
+
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
@@ -5493,6 +5696,11 @@ class AIAgent:
                 if self._honcho_context:
                     self._cached_system_prompt = (
                         self._cached_system_prompt + "\n\n" + self._honcho_context
+                    ).strip()
+                # Bake Hindsight recall context into the prompt for the first turn.
+                if self._hindsight_context:
+                    self._cached_system_prompt = (
+                        self._cached_system_prompt + "\n\n" + self._hindsight_context
                     ).strip()
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:
@@ -5612,6 +5820,11 @@ class AIAgent:
                 if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
                     api_msg["content"] = _inject_honcho_turn_context(
                         api_msg.get("content", ""), self._honcho_turn_context
+                    )
+
+                if idx == current_turn_user_idx and msg.get("role") == "user" and self._hindsight_turn_context:
+                    api_msg["content"] = _inject_hindsight_turn_context(
+                        api_msg.get("content", ""), self._hindsight_turn_context
                     )
 
                 # For ALL assistant messages, pass reasoning back to the API
@@ -7054,9 +7267,14 @@ class AIAgent:
         self._persist_session(messages, conversation_history)
 
         # Sync conversation to Honcho for user modeling
-        if final_response and not interrupted and sync_honcho:
+        if final_response and not interrupted and sync_memory:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
+
+        # Sync conversation to Hindsight for knowledge graph building
+        if final_response and not interrupted and sync_memory:
+            self._hindsight_sync(original_user_message, final_response)
+            self._queue_hindsight_prefetch(original_user_message)
 
         # Extract reasoning from the last assistant message (if any)
         last_reasoning = None

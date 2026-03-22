@@ -62,6 +62,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
+    # Hindsight long-term memory (gated on hindsight-client + env vars via check_fn)
+    "hindsight_retain", "hindsight_recall", "hindsight_reflect",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -199,6 +201,12 @@ TOOLSETS = {
     "honcho": {
         "description": "Honcho AI-native memory for persistent cross-session user modeling",
         "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],
+        "includes": []
+    },
+
+    "hindsight": {
+        "description": "Hindsight long-term memory with knowledge graph and multi-strategy retrieval",
+        "tools": ["hindsight_retain", "hindsight_recall", "hindsight_reflect"],
         "includes": []
     },
 

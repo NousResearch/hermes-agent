@@ -3699,6 +3699,48 @@ For more help on a command:
     honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
+    # hindsight command
+    # =========================================================================
+    hindsight_parser = subparsers.add_parser(
+        "hindsight",
+        help="Manage Hindsight long-term memory integration",
+        description=(
+            "Hindsight is a long-term memory layer that stores structured facts, "
+            "resolves entities, and builds a knowledge graph across sessions.\n\n"
+            "Memories are stored in a bank and retrieved via semantic search, "
+            "BM25, entity graph traversal, and cross-encoder reranking."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    hindsight_subparsers = hindsight_parser.add_subparsers(dest="hindsight_command")
+
+    hindsight_subparsers.add_parser("setup", help="Interactive setup wizard")
+    hindsight_subparsers.add_parser("status", help="Show config and connection status")
+
+    hindsight_bank = hindsight_subparsers.add_parser(
+        "bank", help="Show or set bank ID"
+    )
+    hindsight_bank.add_argument(
+        "bank_id", nargs="?", default=None,
+        help="Bank ID to set. Omit to show current.",
+    )
+
+    hindsight_budget = hindsight_subparsers.add_parser(
+        "budget", help="Show or set recall budget (low/mid/high)"
+    )
+    hindsight_budget.add_argument(
+        "budget", nargs="?", metavar="BUDGET",
+        choices=("low", "mid", "high"),
+        help="Budget level (low/mid/high). Omit to show current.",
+    )
+
+    def cmd_hindsight(args):
+        from hindsight_integration.cli import hindsight_command
+        hindsight_command(args)
+
+    hindsight_parser.set_defaults(func=cmd_hindsight)
+
+    # =========================================================================
     # tools command
     # =========================================================================
     tools_parser = subparsers.add_parser(

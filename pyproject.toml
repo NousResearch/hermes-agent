@@ -55,6 +55,8 @@ pty = [
   "ptyprocess>=0.7.0; sys_platform != 'win32'",
   "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
+hindsight = ["hindsight-client>=0.4.0"]
+hindsight-local = ["hindsight-all>=0.4.18"]
 honcho = ["honcho-ai>=2.0.1"]
 mcp = ["mcp>=1.2.0"]
 homeassistant = ["aiohttp>=3.9.0"]
@@ -79,6 +81,7 @@ all = [
   "hermes-agent[tts-premium]",
   "hermes-agent[slack]",
   "hermes-agent[pty]",
+  "hermes-agent[hindsight]",
   "hermes-agent[honcho]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
@@ -97,7 +100,7 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "mini_swe_runner", "minisweagent_path", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration", "acp_adapter"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "honcho_integration", "hindsight_integration", "acp_adapter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

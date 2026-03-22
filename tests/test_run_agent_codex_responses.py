@@ -921,6 +921,62 @@ def test_run_conversation_codex_continues_after_reasoning_only_response(monkeypa
     )
 
 
+def test_normalize_codex_response_think_only_message_is_incomplete(monkeypatch):
+    """A completed Codex message containing only hidden think-block text should
+    continue instead of hitting the empty-content retry loop."""
+    agent = _build_agent(monkeypatch)
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="<think>Internal reasoning only</think>")],
+                status="completed",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == "<think>Internal reasoning only</think>"
+
+
+def test_run_conversation_codex_continues_after_think_only_message(monkeypatch):
+    """End-to-end: a think-only Codex message should continue to the final answer."""
+    agent = _build_agent(monkeypatch)
+    think_only = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="<think>Inspecting...</think>")],
+                status="completed",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    responses = [
+        think_only,
+        _codex_message_response("hi"),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("Reply with exactly: hi")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "hi"
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and "Inspecting" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+
+
 def test_run_conversation_codex_preserves_encrypted_reasoning_in_interim(monkeypatch):
     """Encrypted codex_reasoning_items must be preserved in interim messages
     even when there is no visible reasoning text or content."""

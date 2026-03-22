@@ -3064,6 +3064,7 @@ class AIAgent:
             out_text = getattr(response, "output_text", "")
             if isinstance(out_text, str):
                 final_text = out_text.strip()
+        visible_final_text = self._strip_think_blocks(final_text).strip() if final_text else ""
 
         assistant_message = SimpleNamespace(
             content=final_text,
@@ -3078,13 +3079,19 @@ class AIAgent:
             finish_reason = "tool_calls"
         elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
             finish_reason = "incomplete"
-        elif reasoning_items_raw and not final_text:
+        elif reasoning_items_raw and not visible_final_text:
             # Response contains only reasoning (encrypted thinking state) with
             # no visible content or tool calls.  The model is still thinking and
             # needs another turn to produce the actual answer.  Marking this as
             # "stop" would send it into the empty-content retry loop which burns
             # 3 retries then fails — treat it as incomplete instead so the Codex
             # continuation path handles it correctly.
+            finish_reason = "incomplete"
+        elif final_text and not visible_final_text:
+            # Some Codex responses arrive as a completed message whose visible
+            # text is empty after stripping hidden <think>/<reasoning> blocks.
+            # Treat these like reasoning-only continuations instead of sending
+            # them into the empty-content retry loop.
             finish_reason = "incomplete"
         else:
             finish_reason = "stop"

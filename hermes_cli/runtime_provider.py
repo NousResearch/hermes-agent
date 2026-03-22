@@ -381,19 +381,6 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    # Alibaba Cloud / DashScope (Anthropic-compatible endpoint)
-    if provider == "alibaba":
-        creds = resolve_api_key_provider_credentials(provider)
-        base_url = creds.get("base_url", "").rstrip("/") or "https://dashscope-intl.aliyuncs.com/apps/anthropic"
-        return {
-            "provider": "alibaba",
-            "api_mode": "anthropic_messages",
-            "base_url": base_url,
-            "api_key": creds.get("api_key", ""),
-            "source": creds.get("source", "env"),
-            "requested_provider": requested_provider,
-        }
-
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":

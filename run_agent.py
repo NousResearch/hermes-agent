@@ -714,7 +714,7 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
-                elif "api.githubcopilot.com" in effective_base.lower():
+                elif self._is_copilot_base_url(effective_base):
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
@@ -3981,7 +3981,7 @@ class AIAgent:
 
             is_github_responses = (
                 "models.github.ai" in self.base_url.lower()
-                or "api.githubcopilot.com" in self.base_url.lower()
+                or self._is_copilot_base_url(self.base_url)
             )
 
             # Resolve reasoning effort: config > default (medium)
@@ -4090,7 +4090,7 @@ class AIAgent:
         _is_openrouter = "openrouter" in self._base_url_lower
         _is_github_models = (
             "models.github.ai" in self._base_url_lower
-            or "api.githubcopilot.com" in self._base_url_lower
+            or self._is_copilot_base_url(self._base_url_lower)
         )
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
@@ -4141,7 +4141,7 @@ class AIAgent:
             return True
         if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
-        if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:
+        if "models.github.ai" in self._base_url_lower or self._is_copilot_base_url(self._base_url_lower):
             try:
                 from hermes_cli.models import github_model_reasoning_efforts
 
@@ -4163,6 +4163,12 @@ class AIAgent:
             "qwen/qwen3",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    @staticmethod
+    def _is_copilot_base_url(base_url: str) -> bool:
+        from hermes_cli.copilot_auth import is_copilot_base_url
+
+        return is_copilot_base_url(base_url)
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""

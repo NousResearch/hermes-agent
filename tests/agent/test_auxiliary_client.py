@@ -590,8 +590,9 @@ class TestVisionClientFallback:
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={
                     "provider": "copilot",
-                    "api_key": "gh-cli-token",
-                    "base_url": "https://api.githubcopilot.com",
+                    "api_key": "copilot-api-token",
+                    "github_token": "gh-cli-token",
+                    "base_url": "https://api.individual.githubcopilot.com",
                     "source": "gh auth token",
                 },
             ),
@@ -602,8 +603,8 @@ class TestVisionClientFallback:
         assert client is not None
         assert model == "gpt-5.4"
         call_kwargs = mock_openai.call_args.kwargs
-        assert call_kwargs["api_key"] == "gh-cli-token"
-        assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
+        assert call_kwargs["api_key"] == "copilot-api-token"
+        assert call_kwargs["base_url"] == "https://api.individual.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
 
     def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):

@@ -906,6 +906,21 @@ _mcp_thread: Optional[threading.Thread] = None
 _lock = threading.Lock()
 
 
+def _mcp_loop_exception_handler(loop, context):
+    """Suppress benign 'Event loop is closed' noise during shutdown.
+
+    When the MCP event loop is stopped and closed, httpx/httpcore async
+    transports may fire __del__ finalizers that call call_soon() on the
+    dead loop.  asyncio catches that RuntimeError and routes it here.
+    We silence it because the connection is being torn down anyway; all
+    other exceptions are forwarded to the default handler.
+    """
+    exc = context.get("exception")
+    if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+        return  # benign shutdown race — suppress
+    loop.default_exception_handler(context)
+
+
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
@@ -913,6 +928,7 @@ def _ensure_mcp_loop():
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
         _mcp_loop = asyncio.new_event_loop()
+        _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
             target=_mcp_loop.run_forever,
             name="mcp-event-loop",

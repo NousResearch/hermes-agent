@@ -41,6 +41,7 @@ from toolset_distributions import (
 )
 from model_tools import TOOL_TO_TOOLSET_MAP
 
+logger = logging.getLogger(__name__)
 
 # Global configuration for worker processes
 _WORKER_CONFIG = {}

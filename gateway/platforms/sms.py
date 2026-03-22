@@ -22,7 +22,10 @@ import logging
 import os
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    import aiohttp
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (

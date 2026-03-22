@@ -1757,9 +1757,9 @@ class GatewayRunner:
         # Token source priority:
         # 1. Actual API-reported prompt_tokens from the last turn
         #    (stored in session_entry.last_prompt_tokens)
-        # 2. Rough char-based estimate (str(msg)//4) with a 1.4x
-        #    safety factor to account for overestimation on tool-heavy
-        #    conversations (code/JSON tokenizes at 5-7+ chars/token).
+        # 2. Rough char-based estimate (str(msg)//4). Overestimates
+        #    by 30-50% on code/JSON-heavy sessions, but that just
+        #    means hygiene fires a bit early — safe and harmless.
         # -----------------------------------------------------------------
         if history and len(history) >= 4:
             from agent.model_metadata import (
@@ -1845,29 +1845,20 @@ class GatewayRunner:
 
                 # Prefer actual API-reported tokens from the last turn
                 # (stored in session entry) over the rough char-based estimate.
-                # The rough estimate (str(msg)//4) overestimates by 30-50% on
-                # tool-heavy/code-heavy conversations, causing premature compression.
                 _stored_tokens = session_entry.last_prompt_tokens
                 if _stored_tokens > 0:
                     _approx_tokens = _stored_tokens
                     _token_source = "actual"
                 else:
                     _approx_tokens = estimate_messages_tokens_rough(history)
-                    # Apply safety factor only for rough estimates.
-                    # Cap the adjusted threshold at 95% of context length
-                    # so it never exceeds what the model can actually handle
-                    # (the 1.4x factor previously pushed the threshold above
-                    # the model's context limit for ~200K models like GLM-5).
-                    _max_safe_threshold = int(_hyg_context_length * 0.95)
-                    _compress_token_threshold = min(
-                        int(_compress_token_threshold * 1.4),
-                        _max_safe_threshold,
-                    )
-                    _warn_token_threshold = min(
-                        int(_warn_token_threshold * 1.4),
-                        _hyg_context_length,
-                    )
                     _token_source = "estimated"
+                    # Note: rough estimates overestimate by 30-50% for code/JSON-heavy
+                    # sessions, but that just means hygiene fires a bit early — which
+                    # is safe and harmless.  The 85% threshold already provides ample
+                    # headroom (agent's own compressor runs at 50%).  A previous 1.4x
+                    # multiplier tried to compensate by inflating the threshold, but
+                    # 85% * 1.4 = 119% of context — which exceeds the model's limit
+                    # and prevented hygiene from ever firing for ~200K models (GLM-5).
 
                 _needs_compress = _approx_tokens >= _compress_token_threshold
 

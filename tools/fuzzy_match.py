@@ -619,3 +619,65 @@ def _map_normalized_positions(original: str, normalized: str,
         original_matches.append((orig_start, min(orig_end, len(original))))
     
     return original_matches
+
+
+def find_closest_lines(old_string: str, content: str, context_lines: int = 2, max_results: int = 3) -> str:
+    """Find lines in content most similar to old_string for "did you mean?" feedback.
+
+    Returns a formatted string showing the closest matching lines with context,
+    or empty string if no useful match is found.
+    """
+    if not old_string or not content:
+        return ""
+
+    old_lines = old_string.splitlines()
+    content_lines = content.splitlines()
+
+    if not old_lines or not content_lines:
+        return ""
+
+    # Use first line of old_string as anchor for search
+    anchor = old_lines[0].strip()
+    if not anchor:
+        # Try second line if first is blank
+        candidates = [l.strip() for l in old_lines if l.strip()]
+        if not candidates:
+            return ""
+        anchor = candidates[0]
+
+    # Score each line in content by similarity to anchor
+    scored = []
+    for i, line in enumerate(content_lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ratio = SequenceMatcher(None, anchor, stripped).ratio()
+        if ratio > 0.3:
+            scored.append((ratio, i))
+
+    if not scored:
+        return ""
+
+    # Take top matches
+    scored.sort(key=lambda x: -x[0])
+    top = scored[:max_results]
+
+    parts = []
+    seen_ranges = set()
+    for _, line_idx in top:
+        start = max(0, line_idx - context_lines)
+        end = min(len(content_lines), line_idx + len(old_lines) + context_lines)
+        key = (start, end)
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        snippet = "\n".join(
+            f"{start + j + 1:4d}| {content_lines[start + j]}"
+            for j in range(end - start)
+        )
+        parts.append(snippet)
+
+    if not parts:
+        return ""
+
+    return "\n---\n".join(parts)

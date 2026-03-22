@@ -3931,45 +3931,10 @@ class HermesCLI:
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # Display result in the CLI (thread-safe via patch_stdout)
-                print()
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                _cprint(f"  ✅ Background task #{task_num} complete")
-                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                if response:
-                    try:
-                        from hermes_cli.skin_engine import get_active_skin
-                        _skin = get_active_skin()
-                        label = _skin.get_branding("response_label", "⚕ Hermes")
-                        _resp_color = _skin.get_color("response_border", "#CD7F32")
-                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
-                    except Exception:
-                        label = "⚕ Hermes"
-                        _resp_color = "#CD7F32"
-                        _resp_text = "#FFF8DC"
-
-                    _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
-                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        style=_resp_text,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
-                    ))
-                else:
-                    _cprint("  (No response generated)")
-
-                # Play bell if enabled
-                if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                self._display_background_result(task_num, prompt, response)
 
             except Exception as e:
-                print()
-                _cprint(f"  ❌ Background task #{task_num} failed: {e}")
+                self._background_fallback_write("", f"Background task #{task_num} failed: {e}")
             finally:
                 self._background_tasks.pop(task_id, None)
                 if self._app:
@@ -3978,6 +3943,64 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _background_fallback_write(self, *lines: str) -> None:
+        target = getattr(sys, "__stdout__", None) or sys.stdout
+        if not target or getattr(target, "closed", False):
+            return
+        for line in lines:
+            target.write(f"{line}\n")
+        target.flush()
+
+    def _display_background_result(self, task_num: int, prompt: str, response: str) -> None:
+        try:
+            print()
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            _cprint(f"  ✅ Background task #{task_num} complete")
+            _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            if response:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
+                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                except Exception:
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
+                    _resp_text = "#FFF8DC"
+
+                _chat_console = ChatConsole()
+                _chat_console.print(Panel(
+                    _rich_text_from_ansi(response),
+                    title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    style=_resp_text,
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 2),
+                ))
+            else:
+                _cprint("  (No response generated)")
+        except (OSError, ValueError):
+            preview = f"\"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\""
+            self._background_fallback_write(
+                "",
+                f"Background task #{task_num} complete",
+                f"Prompt: {preview}",
+            )
+            if response:
+                self._background_fallback_write(response)
+            else:
+                self._background_fallback_write("(No response generated)")
+
+        if self.bell_on_complete:
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except (OSError, ValueError):
+                pass
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -4438,9 +4461,14 @@ class HermesCLI:
                 if cost_result.status == "unknown":
                     session_lines.append(f"  Note:             Pricing unknown for {agent.model}")
 
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
-        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-        api_key = getattr(self, "api_key", None)
+        if agent:
+            provider = getattr(agent, "provider", None)
+            base_url = getattr(agent, "base_url", None)
+            api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+        else:
+            provider = getattr(self, "provider", None)
+            base_url = getattr(self, "base_url", None)
+            api_key = getattr(self, "api_key", None)
         account_snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
         account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
 
@@ -4468,6 +4496,7 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

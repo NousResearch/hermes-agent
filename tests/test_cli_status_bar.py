@@ -181,6 +181,33 @@ class TestCLIUsageReport:
         assert "Provider: openai-codex (Pro)" in output
         assert "Session: 85% remaining (15% used)" in output
 
+    def test_show_usage_does_not_fall_back_to_cli_provider_when_agent_provider_missing(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="glm-5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+        )
+        cli_obj.agent.provider = None
+        cli_obj.provider = "openrouter"
+
+        seen = {}
+
+        def _fake_fetch(provider, base_url=None, api_key=None):
+            seen["provider"] = provider
+            return None
+
+        monkeypatch.setattr("cli.fetch_account_usage", _fake_fetch)
+        monkeypatch.setattr("cli.render_account_usage_lines", lambda snapshot: [])
+
+        cli_obj._show_usage()
+
+        assert seen["provider"] is None
+
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(
             _make_cli(model="local/my-custom-model"),

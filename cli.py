@@ -2328,10 +2328,9 @@ class HermesCLI:
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
         """
-        from tools.process_registry import get_registry
+        from tools.process_registry import process_registry
 
-        registry = get_registry()
-        processes = registry.list_processes()
+        processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
         if not running:
@@ -2339,7 +2338,7 @@ class HermesCLI:
             return
 
         print(f"  Stopping {len(running)} background process(es)...")
-        killed = registry.kill_all()
+        killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_paste_command(self):

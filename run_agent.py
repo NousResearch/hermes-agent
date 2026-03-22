@@ -313,8 +313,11 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | 
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
-    # Avoid resolve(); the file may not exist yet.
-    return Path(raw_path).expanduser()
+    # Avoid resolve(); the file may not exist yet. But do collapse lexical
+    # aliases like "./" and "../" so same-target writes do not get
+    # misclassified as independent and run concurrently.
+    normalized = os.path.normpath(os.path.expanduser(raw_path.strip()))
+    return Path(normalized)
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:

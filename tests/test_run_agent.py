@@ -1086,6 +1086,27 @@ class TestPathsOverlap:
         assert not _paths_overlap(Path("src/a.py"), Path(""))
 
 
+class TestParallelScopeNormalization:
+    def test_extract_parallel_scope_path_normalizes_dotdot_segments(self):
+        from run_agent import _extract_parallel_scope_path
+
+        assert _extract_parallel_scope_path("write_file", {"path": "subdir/../notes.txt"}) == Path("notes.txt")
+
+    def test_same_effective_path_disables_parallel_batch(self):
+        from run_agent import _should_parallelize_tool_batch
+
+        tool_calls = [
+            _mock_tool_call("write_file", json.dumps({"path": "notes.txt", "content": "a"})),
+            _mock_tool_call("patch", json.dumps({
+                "path": "subdir/../notes.txt",
+                "old_string": "a",
+                "new_string": "b",
+            })),
+        ]
+
+        assert _should_parallelize_tool_batch(tool_calls) is False
+
+
 class TestHandleMaxIterations:
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")

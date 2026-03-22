@@ -29,6 +29,10 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
 
 
+async def _instant_sleep(*_args, **_kwargs):
+    await asyncio.get_running_loop().run_in_executor(None, lambda: None)
+
+
 @pytest.mark.asyncio
 async def test_connect_rejects_same_host_token_lock(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
@@ -86,7 +90,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
-    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
 
     ok = await adapter.connect()
 
@@ -159,7 +163,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
-    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
 
     ok = await adapter.connect()
     assert ok is True
@@ -182,6 +186,172 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     )
     assert adapter.has_fatal_error is True
     fatal_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_conflict_polling_error_restarts_polling(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["error_callback"] = kwargs["error_callback"]
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert callable(captured["error_callback"])
+
+    network_error = type("NetworkError", (Exception,), {})
+    captured["error_callback"](network_error("Temporary failure in name resolution"))
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert adapter.has_fatal_error is False
+    assert updater.stop.await_count == 1
+    assert updater.start_polling.await_count == 2
+    assert adapter._polling_runtime_error_count == 0
+
+
+@pytest.mark.asyncio
+async def test_non_conflict_polling_error_becomes_retryable_fatal_after_retries(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured = {}
+    call_count = {"n": 0}
+
+    async def failing_start_polling(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            captured["error_callback"] = kwargs["error_callback"]
+            return
+        raise RuntimeError("Network unreachable")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=failing_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    network_error = type("NetworkError", (Exception,), {})
+
+    for _ in range(11):
+        await adapter._handle_polling_network_error(network_error("Network unreachable"))
+
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "telegram_polling_reconnect_failed"
+    assert adapter.fatal_error_retryable is True
+    fatal_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_network_polling_error_is_logged_without_restart(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["error_callback"] = kwargs["error_callback"]
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("asyncio.sleep", _instant_sleep)
+
+    error_log = MagicMock()
+    monkeypatch.setattr("gateway.platforms.telegram.logger.error", error_log)
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    unknown_error = RuntimeError("unexpected parser failure")
+    captured["error_callback"](unknown_error)
+    await asyncio.sleep(0)
+
+    updater.stop.assert_not_awaited()
+    assert updater.start_polling.await_count == 1
+    assert adapter._polling_runtime_error_count == 0
+    assert adapter.has_fatal_error is False
+    error_log.assert_called()
 
 
 @pytest.mark.asyncio

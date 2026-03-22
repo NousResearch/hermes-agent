@@ -130,6 +130,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
+        self._polling_runtime_error_count: int = 0
         self._polling_error_callback_ref = None
 
     @staticmethod
@@ -139,6 +140,37 @@ class TelegramAdapter(BasePlatformAdapter):
             error.__class__.__name__.lower() == "conflict"
             or "terminated by other getupdates request" in text
             or "another bot instance is running" in text
+        )
+
+    @staticmethod
+    def _looks_like_network_error(error: Exception) -> bool:
+        if isinstance(error, (asyncio.TimeoutError, TimeoutError, OSError, ConnectionError)):
+            return True
+        error_name = error.__class__.__name__.lower()
+        if error_name in {"networkerror", "timedout"}:
+            return True
+        text = str(error).lower()
+        return any(
+            marker in text
+            for marker in (
+                "temporary failure in name resolution",
+                "network is unreachable",
+                "connection reset",
+                "connection aborted",
+                "connection refused",
+                "timed out",
+                "timeout",
+                "tls",
+                "ssl",
+                "reset by peer",
+            )
+        )
+
+    async def _restart_polling(self, *, drop_pending_updates: bool) -> None:
+        await self._app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=drop_pending_updates,
+            error_callback=self._polling_error_callback_ref,
         )
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
@@ -167,11 +199,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 pass
             await asyncio.sleep(RETRY_DELAY)
             try:
-                await self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=False,
-                    error_callback=self._polling_error_callback_ref,
-                )
+                await self._restart_polling(drop_pending_updates=False)
                 logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
                 self._polling_conflict_count = 0  # reset on success
                 return
@@ -195,6 +223,50 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.stop()
         except Exception as stop_error:
             logger.warning("[%s] Failed stopping Telegram polling after conflict: %s", self.name, stop_error, exc_info=True)
+        await self._notify_fatal_error()
+
+    async def _handle_polling_network_error(self, error: Exception) -> None:
+        if self.has_fatal_error:
+            return
+
+        self._polling_runtime_error_count += 1
+        max_retries = 10
+        retry_delay = min(60, 5 * (2 ** (self._polling_runtime_error_count - 1)))
+
+        logger.warning(
+            "[%s] Telegram polling network error (%d/%d), retrying in %ds. Error: %s",
+            self.name,
+            self._polling_runtime_error_count,
+            max_retries,
+            retry_delay,
+            error,
+        )
+
+        try:
+            if self._app and self._app.updater and self._app.updater.running:
+                await self._app.updater.stop()
+        except Exception as stop_error:
+            logger.warning("[%s] Failed stopping Telegram polling before restart: %s", self.name, stop_error, exc_info=True)
+
+        await asyncio.sleep(retry_delay)
+
+        try:
+            await self._restart_polling(drop_pending_updates=False)
+            logger.info("[%s] Telegram polling resumed after network error", self.name)
+            self._polling_runtime_error_count = 0
+            self._mark_connected()
+            return
+        except Exception as retry_err:
+            logger.warning("[%s] Telegram polling restart failed: %s", self.name, retry_err)
+
+        if self._polling_runtime_error_count <= max_retries:
+            return
+
+        message = (
+            "Telegram polling stopped after repeated network reconnect attempts. "
+            f"Last error: {error}"
+        )
+        self._set_fatal_error("telegram_polling_reconnect_failed", message, retryable=True)
         await self._notify_fatal_error()
 
     async def connect(self) -> bool:
@@ -276,21 +348,20 @@ class TelegramAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
 
             def _polling_error_callback(error: Exception) -> None:
-                if not self._looks_like_polling_conflict(error):
-                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
-                    return
                 if self._polling_error_task and not self._polling_error_task.done():
                     return
-                self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                if self._looks_like_polling_conflict(error):
+                    self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                    return
+                if self._looks_like_network_error(error):
+                    self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
+                    return
+                logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
 
             # Store reference for retry use in _handle_polling_conflict
             self._polling_error_callback_ref = _polling_error_callback
 
-            await self._app.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                error_callback=_polling_error_callback,
-            )
+            await self._restart_polling(drop_pending_updates=True)
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new

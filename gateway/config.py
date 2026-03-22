@@ -41,6 +41,16 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
+    """Coerce a config value to a non-negative integer, falling back safely."""
+    if value is None:
+        return default
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -225,6 +235,9 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
 
+    # Inbound message coalescing
+    debounce_ms: int = 0  # Quiet period before dispatching rapid inbound messages
+
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
@@ -305,6 +318,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
+            "debounce_ms": self.debounce_ms,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
         }
@@ -348,6 +362,7 @@ class GatewayConfig:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
 
         group_sessions_per_user = data.get("group_sessions_per_user")
+        debounce_ms = data.get("debounce_ms")
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -364,9 +379,23 @@ class GatewayConfig:
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
+            debounce_ms=_coerce_non_negative_int(debounce_ms, 0),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
+
+    def get_debounce_ms(self, platform: Optional[Platform] = None) -> int:
+        """Return the effective inbound debounce window in milliseconds."""
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            if platform_cfg:
+                raw = platform_cfg.extra.get("debounce_ms")
+                if raw is not None:
+                    try:
+                        return max(0, int(raw))
+                    except (TypeError, ValueError):
+                        logger.warning("Ignoring invalid %s debounce_ms=%r", platform.value, raw)
+        return max(0, int(self.debounce_ms or 0))
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
         """Return the effective unauthorized-DM behavior for a platform."""
@@ -436,6 +465,13 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
 
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict) and "debounce_ms" in gateway_cfg:
+                gw_data["debounce_ms"] = gateway_cfg["debounce_ms"]
+
+            if "debounce_ms" in yaml_cfg:
+                gw_data["debounce_ms"] = yaml_cfg["debounce_ms"]
+
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
 
@@ -471,6 +507,8 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    if "debounce_ms" in plat_block:
+                        merged_extra["debounce_ms"] = plat_block["debounce_ms"]
                     merged = {**existing, **plat_block}
                     if merged_extra:
                         merged["extra"] = merged_extra
@@ -489,6 +527,8 @@ def load_gateway_config() -> GatewayConfig:
                         platform_cfg.get("unauthorized_dm_behavior"),
                         gw_data.get("unauthorized_dm_behavior", "pair"),
                     )
+                if "debounce_ms" in platform_cfg:
+                    bridged["debounce_ms"] = platform_cfg["debounce_ms"]
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if not bridged:
@@ -784,6 +824,4 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
-
 

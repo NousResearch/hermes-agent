@@ -105,6 +105,7 @@ class TestGatewayConfigRoundtrip:
             reset_triggers=["/new"],
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
+            debounce_ms=5000,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -114,6 +115,7 @@ class TestGatewayConfigRoundtrip:
         assert restored.reset_triggers == ["/new"]
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
+        assert restored.debounce_ms == 5000
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
@@ -162,6 +164,57 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.group_sessions_per_user is False
+
+    def test_bridges_gateway_debounce_ms_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  debounce_ms: 5000\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.debounce_ms == 5000
+
+    def test_platform_debounce_ms_overrides_global(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  debounce_ms: 5000\n"
+            "discord:\n"
+            "  debounce_ms: 1500\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.get_debounce_ms() == 5000
+        assert config.get_debounce_ms(Platform.DISCORD) == 1500
+
+    def test_invalid_debounce_ms_falls_back_safely(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  debounce_ms: nope\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.debounce_ms == 0
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

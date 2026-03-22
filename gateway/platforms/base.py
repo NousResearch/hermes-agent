@@ -357,6 +357,8 @@ class BasePlatformAdapter(ABC):
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._pending_debounced_messages: Dict[str, MessageEvent] = {}
+        self._pending_debounce_tasks: Dict[str, asyncio.Task] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -827,6 +829,87 @@ class BasePlatformAdapter(ABC):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
         )
+
+        debounce_ms = self._get_inbound_debounce_ms()
+        if debounce_ms > 0 and self._should_debounce_event(event):
+            self._enqueue_debounced_message(session_key, event, debounce_ms)
+            return
+
+        await self._handle_message_now(event, session_key)
+
+    def _get_inbound_debounce_ms(self) -> int:
+        """Return the configured inbound debounce window in milliseconds."""
+        raw = self.config.extra.get("debounce_ms", 0)
+        try:
+            return max(0, int(raw or 0))
+        except (TypeError, ValueError):
+            logger.warning("[%s] Ignoring invalid debounce_ms=%r", self.name, raw)
+            return 0
+
+    @staticmethod
+    def _should_debounce_event(event: MessageEvent) -> bool:
+        """Return True when an inbound event should wait for a quiet period."""
+        return not event.is_command()
+
+    def _merge_debounced_event(self, existing: MessageEvent, incoming: MessageEvent) -> MessageEvent:
+        """Merge a follow-up inbound event into an existing pending batch."""
+        if incoming.text:
+            if existing.text:
+                incoming_text = incoming.text.strip()
+                if incoming_text:
+                    existing.text = f"{existing.text}\n\n{incoming_text}"
+            else:
+                existing.text = incoming.text
+
+        if incoming.media_urls:
+            existing.media_urls.extend(incoming.media_urls)
+            existing.media_types.extend(incoming.media_types)
+
+        if existing.message_type == MessageType.TEXT and incoming.message_type != MessageType.TEXT:
+            existing.message_type = incoming.message_type
+        existing.raw_message = incoming.raw_message or existing.raw_message
+        existing.message_id = incoming.message_id or existing.message_id
+        existing.reply_to_message_id = incoming.reply_to_message_id or existing.reply_to_message_id
+        existing.reply_to_text = incoming.reply_to_text or existing.reply_to_text
+        existing.timestamp = incoming.timestamp
+        return existing
+
+    def _enqueue_debounced_message(self, session_key: str, event: MessageEvent, debounce_ms: int) -> None:
+        """Buffer an inbound message until the session goes quiet."""
+        existing = self._pending_debounced_messages.get(session_key)
+        if existing is None:
+            self._pending_debounced_messages[session_key] = event
+        else:
+            self._merge_debounced_event(existing, event)
+
+        prior_task = self._pending_debounce_tasks.get(session_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_debounce_tasks[session_key] = asyncio.create_task(
+            self._flush_debounced_message(session_key, debounce_ms / 1000.0)
+        )
+
+    async def _flush_debounced_message(self, session_key: str, delay_seconds: float) -> None:
+        """Wait for the debounce window to expire, then dispatch the merged event."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(delay_seconds)
+            event = self._pending_debounced_messages.pop(session_key, None)
+            if not event:
+                return
+            logger.info(
+                "[%s] Flushing debounced inbound batch for %s (%d chars)",
+                self.name,
+                session_key,
+                len(event.text or ""),
+            )
+            await self._handle_message_now(event, session_key)
+        finally:
+            if self._pending_debounce_tasks.get(session_key) is current_task:
+                self._pending_debounce_tasks.pop(session_key, None)
+
+    async def _handle_message_now(self, event: MessageEvent, session_key: str) -> None:
+        """Dispatch an inbound event immediately using interrupt-aware session logic."""
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
@@ -1138,6 +1221,13 @@ class BasePlatformAdapter(ABC):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
+        debounce_tasks = [task for task in self._pending_debounce_tasks.values() if not task.done()]
+        for task in debounce_tasks:
+            task.cancel()
+        if debounce_tasks:
+            await asyncio.gather(*debounce_tasks, return_exceptions=True)
+        self._pending_debounce_tasks.clear()
+        self._pending_debounced_messages.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 

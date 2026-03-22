@@ -1124,6 +1124,10 @@ class GatewayRunner:
                 "group_sessions_per_user",
                 self.config.group_sessions_per_user,
             )
+            config.extra.setdefault(
+                "debounce_ms",
+                getattr(self.config, "get_debounce_ms", lambda _platform=None: 0)(platform),
+            )
 
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements

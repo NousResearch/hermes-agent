@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
+# Configurable HTTP download timeout for _download_image().
+# Separate from HERMES_VISION_TIMEOUT which governs the LLM API call timeout.
+_VISION_DOWNLOAD_TIMEOUT = float(os.getenv("HERMES_VISION_DOWNLOAD_TIMEOUT", "30"))
+
 
 def _validate_image_url(url: str) -> bool:
     """
@@ -97,7 +101,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
         try:
             # Download the image with appropriate headers using async httpx
             # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=_VISION_DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
                 response = await client.get(
                     image_url,
                     headers={
@@ -126,6 +130,10 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                     exc_info=True,
                 )
     
+    if last_error is None:
+        raise RuntimeError(
+            f"_download_image exited retry loop without attempting (max_retries={max_retries})"
+        )
     raise last_error
 
 

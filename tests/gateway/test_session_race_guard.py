@@ -265,3 +265,39 @@ async def test_shutdown_skips_sentinel():
     # Real agent should have been interrupted
     real_agent.interrupt.assert_called_once()
     # Should not have raised on the sentinel
+
+
+# ------------------------------------------------------------------
+# Test 8: /stop while a real agent is running fires interrupt and
+#          does NOT queue "/stop" as a pending message
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_stop_while_agent_running_does_not_queue():
+    """/stop while a real agent is running should:
+    1. Call agent.interrupt() immediately
+    2. Return a confirmation message
+    3. NOT queue "/stop" as a pending message (which would replay
+       as a new user prompt after the agent winds down)
+    """
+    runner = _make_runner()
+    event1 = _make_event(text="do something big")
+    session_key = build_session_key(event1.source)
+
+    # Simulate a real running agent (not the sentinel)
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+
+    stop_event = _make_event(text="/stop")
+    result = await runner._handle_message(stop_event)
+
+    # Should return confirmation
+    assert result is not None
+    assert "stopping" in result.lower()
+
+    # Should have fired interrupt on the agent
+    fake_agent.interrupt.assert_called_once()
+
+    # Critical: "/stop" must NOT be queued as a pending message
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert session_key not in adapter._pending_messages
+    assert session_key not in runner._pending_messages

@@ -1387,6 +1387,27 @@ class GatewayRunner:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
+            # /stop must bypass the running-agent guard just like /new.
+            # Without this, "/stop" falls through to the generic interrupt
+            # path which queues it as a pending message.  After the agent
+            # winds down, the gateway replays "/stop" as a *new* user
+            # prompt — so the agent keeps running (and typing) while it
+            # processes the stale "/stop" text.  Instead: fire the
+            # interrupt, clear pending state, and return the confirmation
+            # immediately so nothing else runs.
+            if _cmd_def_inner and _cmd_def_inner.name == "stop":
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    return "⏳ The agent is still starting up — nothing to stop yet."
+                if running_agent:
+                    running_agent.interrupt()
+                # Clear any pending messages so "/stop" doesn't replay
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, 'get_pending_message'):
+                    adapter.get_pending_message(_quick_key)  # consume and discard
+                self._pending_messages.pop(_quick_key, None)
+                return "⚡ Stopping the current task."
+
             # /queue <prompt> — queue without interrupting
             if event.get_command() in ("queue", "q"):
                 queued_text = event.get_command_args().strip()
@@ -2310,6 +2331,7 @@ class GatewayRunner:
                 cost_source=agent_result.get("cost_source"),
                 provider=agent_result.get("provider"),
                 base_url=agent_result.get("base_url"),
+                context_tokens=agent_result.get("context_length"),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -5068,6 +5090,8 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": getattr(_agent, "provider", None) if _agent else None,
+                    "context_length": getattr(_agent.context_compressor, "context_length", 0) if _agent and hasattr(_agent, "context_compressor") else 0,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -5148,6 +5172,8 @@ class GatewayRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None) if agent else None,
+                "context_length": getattr(agent.context_compressor, "context_length", 0) if agent and hasattr(agent, "context_compressor") else 0,
                 "session_id": effective_session_id,
             }
         

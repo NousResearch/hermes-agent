@@ -3,8 +3,7 @@
 Verifies that:
 1. _is_session_expired() works from a SessionEntry alone (no source needed)
 2. The sync callback is no longer called in get_or_create_session
-3. _pre_flushed_sessions tracking works correctly
-4. The background watcher can detect expired sessions
+3. The background watcher can detect expired sessions
 """
 
 import pytest
@@ -115,31 +114,24 @@ class TestIsSessionExpired:
 class TestGetOrCreateSessionNoCallback:
     """get_or_create_session should NOT call a sync flush callback."""
 
-    def test_auto_reset_cleans_pre_flushed_marker(self, idle_store):
-        """When a session auto-resets, the pre_flushed marker should be discarded."""
+    def test_auto_reset_creates_new_session(self, idle_store):
+        """When a session auto-resets, a new session_id should be created."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="123",
             chat_type="dm",
         )
-        # Create initial session
         entry1 = idle_store.get_or_create_session(source)
         old_sid = entry1.session_id
-
-        # Simulate the watcher having flushed it
-        idle_store._pre_flushed_sessions.add(old_sid)
 
         # Simulate the session going idle
         entry1.updated_at = datetime.now() - timedelta(minutes=120)
         idle_store._save()
 
-        # Next call should auto-reset
+        # Next call should auto-reset with a fresh session_id
         entry2 = idle_store.get_or_create_session(source)
         assert entry2.session_id != old_sid
         assert entry2.was_auto_reset is True
-
-        # The old session_id should be removed from pre_flushed
-        assert old_sid not in idle_store._pre_flushed_sessions
 
     def test_no_sync_callback_invoked(self, idle_store):
         """No synchronous callback should block during auto-reset."""
@@ -160,21 +152,3 @@ class TestGetOrCreateSessionNoCallback:
         assert entry2.was_auto_reset is True
 
 
-class TestPreFlushedSessionsTracking:
-    """The _pre_flushed_sessions set should prevent double-flushing."""
-
-    def test_starts_empty(self, idle_store):
-        assert len(idle_store._pre_flushed_sessions) == 0
-
-    def test_add_and_check(self, idle_store):
-        idle_store._pre_flushed_sessions.add("sid_old")
-        assert "sid_old" in idle_store._pre_flushed_sessions
-        assert "sid_other" not in idle_store._pre_flushed_sessions
-
-    def test_discard_on_reset(self, idle_store):
-        """discard should remove without raising if not present."""
-        idle_store._pre_flushed_sessions.add("sid_a")
-        idle_store._pre_flushed_sessions.discard("sid_a")
-        assert "sid_a" not in idle_store._pre_flushed_sessions
-        # discard on non-existent should not raise
-        idle_store._pre_flushed_sessions.discard("sid_nonexistent")

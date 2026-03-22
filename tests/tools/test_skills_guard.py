@@ -53,7 +53,9 @@ class TestResolveTrustLevel:
     def test_trusted_repos(self):
         assert _resolve_trust_level("openai/skills") == "trusted"
         assert _resolve_trust_level("anthropics/skills") == "trusted"
+        assert _resolve_trust_level("huggingface/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
+        assert _resolve_trust_level("huggingface/skills/hf-cli") == "trusted"
 
     def test_community_default(self):
         assert _resolve_trust_level("random-user/my-skill") == "community"

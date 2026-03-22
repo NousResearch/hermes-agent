@@ -277,11 +277,13 @@ Hermes can install directly from GitHub repositories and GitHub-based taps. This
 
 - OpenAI skills: [openai/skills](https://github.com/openai/skills)
 - Anthropic skills: [anthropics/skills](https://github.com/anthropics/skills)
+- Hugging Face skills: [huggingface/skills](https://github.com/huggingface/skills)
 - Example community tap source: [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
 - Example:
 
 ```bash
 hermes skills install openai/skills/k8s
+hermes skills install huggingface/skills/hf-cli
 hermes skills tap add myorg/skills-repo
 ```
 
@@ -340,7 +342,7 @@ Important behavior:
 |-------|--------|--------|
 | `builtin` | Ships with Hermes | Always trusted |
 | `official` | `optional-skills/` in the repo | Builtin trust, no third-party warning |
-| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills` | More permissive policy than community sources |
+| `trusted` | Trusted registries/repos such as `openai/skills`, `anthropics/skills`, `huggingface/skills` | More permissive policy than community sources |
 | `community` | Everything else (`skills.sh`, well-known endpoints, custom GitHub repos, most marketplaces) | Non-dangerous findings can be overridden with `--force`; `dangerous` verdicts stay blocked |
 
 ### Update lifecycle

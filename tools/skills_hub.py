@@ -249,6 +249,7 @@ class GitHubSource(SkillSource):
     DEFAULT_TAPS = [
         {"repo": "openai/skills", "path": "skills/"},
         {"repo": "anthropics/skills", "path": "skills/"},
+        {"repo": "huggingface/skills", "path": "skills/"},
         {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
     ]
 

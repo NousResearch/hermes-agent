@@ -375,6 +375,9 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
+            "was_auto_reset": self.was_auto_reset,
+            "auto_reset_reason": self.auto_reset_reason,
+            "reset_had_activity": self.reset_had_activity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -410,6 +413,9 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
+            was_auto_reset=data.get("was_auto_reset", False),
+            auto_reset_reason=data.get("auto_reset_reason"),
+            reset_had_activity=data.get("reset_had_activity", False),
         )
 
 

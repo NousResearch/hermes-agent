@@ -170,22 +170,16 @@ The default implementation returns:
 
 ## Layout diagram
 
-```
-┌─────────────────────────────────────────┐
-│ (output scrolls here)                   │
-│                                         │
-│                          spacer ────────│
-│ ★ Your extra widgets appear here ★      │
-├─────────────────────────────────────────┤
-│ ⚕ claude-sonnet-4 · 42% · 2m    status │
-├─────────────────────────────────────────┤
-│ 📎 2 images                    image bar│
-│ ❯ your input here           input area  │
-├─────────────────────────────────────────┤
-│ 🎤 Voice mode: listening   voice status │
-│ ▸ completions...         autocomplete   │
-└─────────────────────────────────────────┘
-```
+The default layout from top to bottom:
+
+1. **Output area** — scrolling conversation history
+2. **Spacer**
+3. **Extra widgets** — from `_get_extra_tui_widgets()`
+4. **Status bar** — model, context %, elapsed time
+5. **Image bar** — attached image count
+6. **Input area** — user prompt
+7. **Voice status** — recording indicator
+8. **Completions menu** — autocomplete suggestions
 
 ## Tips
 

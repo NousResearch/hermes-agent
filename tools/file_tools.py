@@ -15,8 +15,13 @@ logger = logging.getLogger(__name__)
 
 # Regex to match ANSI escape sequences (CSI codes, OSC codes, simple escapes).
 # Models occasionally copy these from terminal output into file content.
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-B012]|\x1b[=>]")
-
+_ANSI_ESCAPE_RE = re.compile(
+      r"\x1b\[[0-9;]*[a-zA-Z]"   # CSI sequences like ESC[m, ESC[31m
+      r"|\x1b\(.[A-Za-z]"        # GCI sequences like ESC(B, ESC)B
+      r"|\x1bP.*?\x1b\\"         # DCS sequences
+      r"|\x1b\].*?\x07"          # OSC sequences
+      r"|\x1b[=/>]?"             # DEC mode sequences
+)
 
 def _strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences from text destined for file writes."""

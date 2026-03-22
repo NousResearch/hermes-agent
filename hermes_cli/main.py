@@ -1201,9 +1201,9 @@ def _model_flow_custom(config):
             default_ctx = get_model_context_length("")  # get default
             if detected and detected != default_ctx:
                 context_length = detected
-                print(f"  🔍 Auto-detected context length: {context_length:,} tokens")
+                print(f"  💡 Context length auto-detected: {context_length:,} tokens")
             else:
-                print(f"  ℹ️  Using default context length: 128,000 tokens (could not auto-detect for {model_name!r})")
+                print(f"  📏 Context length: using default 128,000 tokens (could not auto-detect for {model_name!r})")
         except Exception:
             pass
 

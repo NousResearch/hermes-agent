@@ -504,6 +504,14 @@ class BasePlatformAdapter(ABC):
         metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
         """
         pass
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop a persistent typing indicator (if the platform uses one).
+
+        Override in subclasses that start background typing loops.
+        Default is a no-op for platforms with one-shot typing indicators.
+        """
+        pass
     
     async def send_image(
         self,

@@ -439,6 +439,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._bot_participated_threads: set = self._load_participated_threads()
+        # Persistent typing indicator loops per channel (DMs don't reliably
+        # show the standard typing gateway event for bots)
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
     
@@ -1239,14 +1242,48 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
     
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send typing indicator."""
-        if self._client:
+        """Start a persistent typing indicator for a channel.
+
+        Discord's TYPING_START gateway event is unreliable in DMs for bots.
+        Instead, start a background loop that hits the typing endpoint every
+        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
+        stop_typing() is called (after the response is sent).
+        """
+        if not self._client:
+            return
+        # Don't start a duplicate loop
+        if chat_id in self._typing_tasks:
+            return
+
+        async def _typing_loop() -> None:
             try:
-                channel = self._client.get_channel(int(chat_id))
-                if channel:
-                    await channel.typing()
-            except Exception:
-                pass  # Ignore typing indicator failures
+                while True:
+                    try:
+                        route = discord.http.Route(
+                            "POST", "/channels/{channel_id}/typing",
+                            channel_id=chat_id,
+                        )
+                        await self._client.http.request(route)
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
+                        return
+                    await asyncio.sleep(8)
+            except asyncio.CancelledError:
+                pass
+
+        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the persistent typing indicator for a channel."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""

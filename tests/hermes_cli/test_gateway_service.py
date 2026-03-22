@@ -354,3 +354,58 @@ class TestEnsureUserSystemdEnv:
         result = gateway_cli._systemctl_cmd(system=True)
         assert result == ["systemctl"]
         assert calls == []
+
+
+class TestFindVenvDir:
+    def test_finds_dot_venv(self, tmp_path, monkeypatch):
+        dot_venv = tmp_path / ".venv" / "bin"
+        dot_venv.mkdir(parents=True)
+        (dot_venv / "python").write_text("#!/bin/sh")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        result = gateway_cli._find_venv_dir()
+        assert result == tmp_path / ".venv"
+
+    def test_finds_venv(self, tmp_path, monkeypatch):
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("#!/bin/sh")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        result = gateway_cli._find_venv_dir()
+        assert result == tmp_path / "venv"
+
+    def test_prefers_dot_venv_over_venv(self, tmp_path, monkeypatch):
+        for name in (".venv", "venv"):
+            bin_dir = tmp_path / name / "bin"
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "python").write_text("#!/bin/sh")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        result = gateway_cli._find_venv_dir()
+        assert result == tmp_path / ".venv"
+
+    def test_returns_none_when_no_venv(self, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(gateway_cli.sys, "prefix", sys.base_prefix)
+        monkeypatch.setattr(gateway_cli.sys, "base_prefix", sys.base_prefix)
+        result = gateway_cli._find_venv_dir()
+        assert result is None
+
+
+class TestSystemdUnitVenvPath:
+    def test_unit_uses_dot_venv_when_present(self, tmp_path, monkeypatch):
+        dot_venv = tmp_path / ".venv" / "bin"
+        dot_venv.mkdir(parents=True)
+        (dot_venv / "python").write_text("#!/bin/sh")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert ".venv" in unit
+        assert "VIRTUAL_ENV=" in unit
+
+    def test_unit_uses_venv_when_only_venv_present(self, tmp_path, monkeypatch):
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("#!/bin/sh")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert "VIRTUAL_ENV=" in unit
+        assert ".venv" not in unit

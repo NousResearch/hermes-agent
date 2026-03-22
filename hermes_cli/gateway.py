@@ -371,13 +371,32 @@ def print_systemd_linger_guidance() -> None:
 def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
+def _find_venv_dir() -> Path | None:
+    """Return the active virtualenv directory under PROJECT_ROOT, or None.
+
+    Checks .venv first (setup-hermes.sh default), then venv, then falls
+    back to sys.prefix if it lives under PROJECT_ROOT (pip install -e).
+    """
+    for name in (".venv", "venv"):
+        candidate = PROJECT_ROOT / name
+        if (candidate / "bin" / "python").exists() or (candidate / "Scripts" / "python.exe").exists():
+            return candidate
+    # pip-installed editable: sys.prefix may point to a venv outside PROJECT_ROOT
+    prefix = Path(sys.prefix)
+    if prefix != Path(sys.base_prefix):  # we're inside a venv
+        return prefix
+    return None
+
+
 def get_python_path() -> str:
-    if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    venv_dir = _find_venv_dir()
+    if venv_dir is not None:
+        if is_windows():
+            venv_python = venv_dir / "Scripts" / "python.exe"
+        else:
+            venv_python = venv_dir / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
     return sys.executable
 
 def get_hermes_cli_path() -> str:
@@ -399,8 +418,9 @@ def get_hermes_cli_path() -> str:
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    _venv = _find_venv_dir()
+    venv_dir = str(_venv) if _venv else str(PROJECT_ROOT / "venv")
+    venv_bin = str(_venv / "bin") if _venv else str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]

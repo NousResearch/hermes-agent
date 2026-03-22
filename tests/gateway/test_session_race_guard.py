@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -265,3 +265,96 @@ async def test_shutdown_skips_sentinel():
     # Real agent should have been interrupted
     real_agent.interrupt.assert_called_once()
     # Should not have raised on the sentinel
+
+
+# ------------------------------------------------------------------
+# Test 8: /stop while agent running — interrupt, don't queue
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_stop_while_running_interrupts_without_queuing():
+    """/stop while an agent is running should fire interrupt and return
+    immediately — NOT queue "/stop" as a pending message for replay."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_event().source)
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+
+    result = await runner._handle_message(_make_event(text="/stop"))
+
+    assert result is not None
+    assert "stopping" in result.lower()
+    fake_agent.interrupt.assert_called_once_with()
+    assert session_key not in adapter._pending_messages
+    assert session_key not in runner._pending_messages
+
+
+# ------------------------------------------------------------------
+# Test 9: Adapter-level /stop — interrupt fires, nothing queued
+# ------------------------------------------------------------------
+class _ConcreteAdapter(BasePlatformAdapter):
+    """Minimal concrete adapter for testing BasePlatformAdapter.handle_message."""
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        return SendResult(success=True, message_id="1")
+
+    async def get_chat_info(self, chat_id):
+        return {"name": "test", "type": "dm"}
+
+
+@pytest.mark.asyncio
+async def test_adapter_stop_sets_interrupt_without_queuing():
+    """/stop through BasePlatformAdapter.handle_message() while a session
+    is active must fire the interrupt event but NOT store anything in
+    _pending_messages — preventing replay via monitor_for_interrupt,
+    _run_agent, or _process_message_background."""
+    config = PlatformConfig(enabled=True, token="***")
+    adapter = _ConcreteAdapter(config, Platform.TELEGRAM)
+    # Register a dummy message handler so handle_message doesn't bail early
+    adapter.set_message_handler(AsyncMock())
+
+    event = _make_event(text="/stop")
+    session_key = build_session_key(event.source)
+
+    # Simulate an active session with an interrupt event
+    interrupt_event = asyncio.Event()
+    adapter._active_sessions[session_key] = interrupt_event
+
+    await adapter.handle_message(event)
+
+    # Interrupt must have fired
+    assert interrupt_event.is_set(), "Interrupt event should be set for /stop"
+    # /stop must NOT be queued
+    assert session_key not in adapter._pending_messages, (
+        "/stop must not be stored in _pending_messages"
+    )
+
+
+@pytest.mark.asyncio
+async def test_adapter_non_stop_command_still_queued():
+    """Non-stop messages through the active-session branch should still be
+    queued in _pending_messages (regression guard)."""
+    config = PlatformConfig(enabled=True, token="***")
+    adapter = _ConcreteAdapter(config, Platform.TELEGRAM)
+    adapter.set_message_handler(AsyncMock())
+
+    event = _make_event(text="please continue")
+    session_key = build_session_key(event.source)
+
+    interrupt_event = asyncio.Event()
+    adapter._active_sessions[session_key] = interrupt_event
+
+    await adapter.handle_message(event)
+
+    assert interrupt_event.is_set(), "Interrupt event should be set for follow-up messages"
+    assert session_key in adapter._pending_messages, (
+        "Non-stop messages must still be queued in _pending_messages"
+    )
+    assert adapter._pending_messages[session_key] is event

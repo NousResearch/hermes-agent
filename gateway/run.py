@@ -1359,20 +1359,33 @@ class GatewayRunner:
         # let the adapter-level batching/queueing logic absorb them.
         _quick_key = self._session_key_for_source(source)
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
-                return await self._handle_status_command(event)
-
-            # /reset and /new must bypass the running-agent guard so they
-            # actually dispatch as commands instead of being queued as user
-            # text (which would be fed back to the agent with the same
-            # broken history — #2170).  Interrupt the agent first, then
-            # clear the adapter's pending queue so the stale "/reset" text
-            # doesn't get re-processed as a user message after the
-            # interrupt completes.
+            # Resolve the command once for all bypass checks below.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
-            if _cmd_def_inner and _cmd_def_inner.name == "new":
+            _canonical_inner = _cmd_def_inner.name if _cmd_def_inner else None
+
+            if _canonical_inner == "status":
+                return await self._handle_status_command(event)
+
+            # /stop: interrupt the agent and return immediately.
+            # Must not fall through to the generic interrupt path which
+            # queues the text as a pending message — "/stop" would be
+            # replayed as a user prompt after the agent winds down.
+            if _canonical_inner == "stop":
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    return "⏳ The agent is still starting up — nothing to stop yet."
+                if running_agent:
+                    running_agent.interrupt()
+                # Clear any pre-queued follow-up so it doesn't replay after stop.
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, 'get_pending_message'):
+                    adapter.get_pending_message(_quick_key)
+                self._pending_messages.pop(_quick_key, None)
+                return "⚡ Stopping the current task."
+
+            if _canonical_inner == "new":
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Session reset requested")
@@ -1428,9 +1441,7 @@ class GatewayRunner:
             running_agent = self._running_agents.get(_quick_key)
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Nothing to interrupt — agent hasn't started yet.
-                    return "⏳ The agent is still starting up — nothing to stop yet."
+                # Note: /stop is already intercepted above.
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
@@ -2310,6 +2321,7 @@ class GatewayRunner:
                 cost_source=agent_result.get("cost_source"),
                 provider=agent_result.get("provider"),
                 base_url=agent_result.get("base_url"),
+                context_tokens=agent_result.get("context_length"),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -2464,19 +2476,12 @@ class GatewayRunner:
         return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:
-        """Handle /stop command - interrupt a running agent."""
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
-        session_key = session_entry.session_key
-        
-        agent = self._running_agents.get(session_key)
-        if agent is _AGENT_PENDING_SENTINEL:
-            return "⏳ The agent is still starting up — nothing to stop yet."
-        if agent:
-            agent.interrupt()
-            return "⚡ Stopping the current task... The agent will finish its current step and respond."
-        else:
-            return "No active task to stop."
+        """Handle /stop when no agent is currently running.
+
+        When an agent IS running, /stop is intercepted earlier in
+        _handle_message() and never reaches this method.
+        """
+        return "No active task to stop."
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
@@ -5068,6 +5073,8 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": getattr(_agent, "provider", None) if _agent else None,
+                    "context_length": getattr(_agent.context_compressor, "context_length", 0) if _agent and hasattr(_agent, "context_compressor") else 0,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -5148,6 +5155,8 @@ class GatewayRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None) if agent else None,
+                "context_length": getattr(agent.context_compressor, "context_length", 0) if agent and hasattr(agent, "context_compressor") else 0,
                 "session_id": effective_session_id,
             }
         

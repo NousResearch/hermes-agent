@@ -10,6 +10,7 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.verbose = False
     return cli_obj
 
 
@@ -144,6 +145,68 @@ class TestCLIUsageReport:
         assert "0.064" in output
         assert "Session duration:" in output
         assert "Compressions:" in output
+
+    def test_show_usage_includes_account_section_when_available(self, capsys, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.3-codex"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+        )
+        cli_obj.agent.provider = "openai-codex"
+        cli_obj.agent.base_url = "https://chatgpt.com/backend-api/codex"
+        cli_obj.api_key = "unused"
+
+        monkeypatch.setattr(
+            "cli.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "cli.render_account_usage_lines",
+            lambda snapshot: [
+                "📈 Account limits",
+                "Provider: openai-codex (Pro)",
+                "Session: 85% remaining (15% used)",
+            ],
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "📈 Account limits" in output
+        assert "Provider: openai-codex (Pro)" in output
+        assert "Session: 85% remaining (15% used)" in output
+
+    def test_show_usage_does_not_fall_back_to_cli_provider_when_agent_provider_missing(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(model="glm-5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=1,
+        )
+        cli_obj.agent.provider = None
+        cli_obj.provider = "openrouter"
+
+        seen = {}
+
+        def _fake_fetch(provider, base_url=None, api_key=None):
+            seen["provider"] = provider
+            return None
+
+        monkeypatch.setattr("cli.fetch_account_usage", _fake_fetch)
+        monkeypatch.setattr("cli.render_account_usage_lines", lambda snapshot: [])
+
+        cli_obj._show_usage()
+
+        assert seen["provider"] is None
 
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(

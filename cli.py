@@ -13,6 +13,7 @@ Usage:
     python cli.py --list-tools             # List available tools and exit
 """
 
+import concurrent.futures
 import logging
 import os
 import shutil
@@ -64,6 +65,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
+from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -3928,45 +3930,10 @@ class HermesCLI:
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # Display result in the CLI (thread-safe via patch_stdout)
-                print()
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                _cprint(f"  ✅ Background task #{task_num} complete")
-                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                if response:
-                    try:
-                        from hermes_cli.skin_engine import get_active_skin
-                        _skin = get_active_skin()
-                        label = _skin.get_branding("response_label", "⚕ Hermes")
-                        _resp_color = _skin.get_color("response_border", "#CD7F32")
-                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
-                    except Exception:
-                        label = "⚕ Hermes"
-                        _resp_color = "#CD7F32"
-                        _resp_text = "#FFF8DC"
-
-                    _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
-                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        style=_resp_text,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 2),
-                    ))
-                else:
-                    _cprint("  (No response generated)")
-
-                # Play bell if enabled
-                if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                self._display_background_result(task_num, prompt, response)
 
             except Exception as e:
-                print()
-                _cprint(f"  ❌ Background task #{task_num} failed: {e}")
+                self._background_fallback_write("", f"Background task #{task_num} failed: {e}")
             finally:
                 self._background_tasks.pop(task_id, None)
                 if self._app:
@@ -3975,6 +3942,64 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _background_fallback_write(self, *lines: str) -> None:
+        target = getattr(sys, "__stdout__", None) or sys.stdout
+        if not target or getattr(target, "closed", False):
+            return
+        for line in lines:
+            target.write(f"{line}\n")
+        target.flush()
+
+    def _display_background_result(self, task_num: int, prompt: str, response: str) -> None:
+        try:
+            print()
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            _cprint(f"  ✅ Background task #{task_num} complete")
+            _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+            ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+            if response:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
+                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
+                except Exception:
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
+                    _resp_text = "#FFF8DC"
+
+                _chat_console = ChatConsole()
+                _chat_console.print(Panel(
+                    _rich_text_from_ansi(response),
+                    title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    style=_resp_text,
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 2),
+                ))
+            else:
+                _cprint("  (No response generated)")
+        except (OSError, ValueError):
+            preview = f"\"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\""
+            self._background_fallback_write(
+                "",
+                f"Background task #{task_num} complete",
+                f"Prompt: {preview}",
+            )
+            if response:
+                self._background_fallback_write(response)
+            else:
+                self._background_fallback_write("(No response generated)")
+
+        if self.bell_on_complete:
+            try:
+                sys.stdout.write("\a")
+                sys.stdout.flush()
+            except (OSError, ValueError):
+                pass
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -4368,73 +4393,106 @@ class HermesCLI:
             print(f"  ❌ Compression failed: {e}")
 
     def _show_usage(self):
-        """Show cumulative token usage for the current session."""
-        if not self.agent:
-            print("(._.) No active agent -- send a message first.")
-            return
-
+        """Show cumulative token usage for the current session plus account limits."""
         agent = self.agent
-        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-        output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
-        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
-        prompt = agent.session_prompt_tokens
-        completion = agent.session_completion_tokens
-        total = agent.session_total_tokens
-        calls = agent.session_api_calls
+        session_lines: list[str] = []
 
-        if calls == 0:
-            print("(._.) No API calls made yet in this session.")
-            return
+        if agent:
+            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
+            prompt = agent.session_prompt_tokens
+            completion = agent.session_completion_tokens
+            total = agent.session_total_tokens
+            calls = agent.session_api_calls
 
-        # Current context window state
-        compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
-        ctx_len = compressor.context_length
-        pct = (last_prompt / ctx_len * 100) if ctx_len else 0
-        compressions = compressor.compression_count
+            if calls > 0:
+                compressor = agent.context_compressor
+                last_prompt = compressor.last_prompt_tokens
+                ctx_len = compressor.context_length
+                pct = (last_prompt / ctx_len * 100) if ctx_len else 0
+                compressions = compressor.compression_count
 
-        msg_count = len(self.conversation_history)
-        cost_result = estimate_usage_cost(
-            agent.model,
-            CanonicalUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
-        elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
+                msg_count = len(self.conversation_history)
+                cost_result = estimate_usage_cost(
+                    agent.model,
+                    CanonicalUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                    ),
+                    provider=getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                )
+                elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
-        print(f"  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
-        print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {prompt:>10,}")
-        print(f"  Completion tokens:         {completion:>10,}")
-        print(f"  Total tokens:              {total:>10,}")
-        print(f"  API calls:                 {calls:>10,}")
-        print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
-        elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
+                session_lines.extend([
+                    "  📊 Session Token Usage",
+                    f"  {'─' * 40}",
+                    f"  Model:                     {agent.model}",
+                    f"  Input tokens:              {input_tokens:>10,}",
+                    f"  Cache read tokens:         {cache_read_tokens:>10,}",
+                    f"  Cache write tokens:        {cache_write_tokens:>10,}",
+                    f"  Output tokens:             {output_tokens:>10,}",
+                    f"  Prompt tokens (total):     {prompt:>10,}",
+                    f"  Completion tokens:         {completion:>10,}",
+                    f"  Total tokens:              {total:>10,}",
+                    f"  API calls:                 {calls:>10,}",
+                    f"  Session duration:          {elapsed:>10}",
+                    f"  Cost status:              {cost_result.status:>10}",
+                    f"  Cost source:              {cost_result.source:>10}",
+                ])
+                if cost_result.amount_usd is not None:
+                    prefix = "~" if cost_result.status == "estimated" else ""
+                    session_lines.append(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+                elif cost_result.status == "included":
+                    session_lines.append(f"  Total cost:              {'included':>10}")
+                else:
+                    session_lines.append(f"  Total cost:              {'n/a':>10}")
+                session_lines.extend([
+                    f"  {'─' * 40}",
+                    f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)",
+                    f"  Messages:         {msg_count}",
+                    f"  Compressions:     {compressions}",
+                ])
+                if cost_result.status == "unknown":
+                    session_lines.append(f"  Note:             Pricing unknown for {agent.model}")
+
+        if agent:
+            provider = getattr(agent, "provider", None)
+            base_url = getattr(agent, "base_url", None)
+            api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
         else:
-            print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
-        print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
-        if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
+            provider = getattr(self, "provider", None)
+            base_url = getattr(self, "base_url", None)
+            api_key = getattr(self, "api_key", None)
+
+        if session_lines:
+            for line in session_lines:
+                print(line)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage, provider, base_url=base_url, api_key=api_key,
+                ).result(timeout=10.0)
+            except (concurrent.futures.TimeoutError, Exception):
+                account_snapshot = None
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+
+        if account_lines:
+            if session_lines:
+                print()
+            for line in account_lines:
+                print(line)
+
+        if not session_lines and not account_lines:
+            if agent:
+                print("(._.) No API calls made yet in this session.")
+            else:
+                print("(._.) No active agent -- send a message first.")
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -4444,6 +4502,7 @@ class HermesCLI:
             logging.getLogger().setLevel(logging.INFO)
             for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
                 logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

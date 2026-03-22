@@ -138,3 +138,95 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
         provider=None,
         base_url=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_usage_command_includes_account_section(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    running_agent = MagicMock()
+    running_agent.provider = "openai-codex"
+    running_agent.base_url = "https://chatgpt.com/backend-api/codex"
+    running_agent.api_key = "unused"
+    running_agent.session_prompt_tokens = 100
+    running_agent.session_completion_tokens = 25
+    running_agent.session_total_tokens = 125
+    running_agent.session_api_calls = 2
+    running_agent.context_compressor = SimpleNamespace(
+        last_prompt_tokens=100,
+        context_length=1000,
+        compression_count=0,
+    )
+    runner._running_agents[build_session_key(_make_source())] = running_agent
+
+    monkeypatch.setattr(
+        "gateway.run.fetch_account_usage",
+        lambda provider, base_url=None, api_key=None: object(),
+    )
+    monkeypatch.setattr(
+        "gateway.run.render_account_usage_lines",
+        lambda snapshot, markdown=False: [
+            "📈 **Account limits**",
+            "Provider: openai-codex (Pro)",
+            "Session: 85% remaining (15% used)",
+        ],
+    )
+
+    result = await runner._handle_usage_command(_make_event("/usage"))
+
+    assert "📊 **Session Token Usage**" in result
+    assert "📈 **Account limits**" in result
+    assert "Provider: openai-codex (Pro)" in result
+
+
+@pytest.mark.asyncio
+async def test_usage_command_uses_persisted_provider_when_agent_not_running(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+    runner._session_db = MagicMock()
+    runner._session_db.get_session.return_value = {
+        "billing_provider": "openai-codex",
+        "billing_base_url": "https://chatgpt.com/backend-api/codex",
+    }
+
+    calls = {}
+
+    async def _fake_to_thread(fn, *args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        "gateway.run.fetch_account_usage",
+        lambda provider, base_url=None, api_key=None: object(),
+    )
+    monkeypatch.setattr(
+        "gateway.run.render_account_usage_lines",
+        lambda snapshot, markdown=False: [
+            "📈 **Account limits**",
+            "Provider: openai-codex (Pro)",
+        ],
+    )
+
+    result = await runner._handle_usage_command(_make_event("/usage"))
+
+    assert calls["args"] == ("openai-codex",)
+    assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert "📊 **Session Info**" in result
+    assert "📈 **Account limits**" in result

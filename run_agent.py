@@ -2443,18 +2443,6 @@ class AIAgent:
                 "Pre-call sanitizer: added %d stub tool result(s)",
                 len(missing_results),
             )
-        # 3. Strip trailing empty assistant messages to prevent prefill rejection.
-        # These can leak from Responses API reasoning-only turns (Codex/MiniMax)
-        # where an empty assistant message is required by the Responses API but
-        # must NOT be sent to Chat Completions or Anthropic Messages API providers.
-        while (
-            messages
-            and messages[-1].get("role") == "assistant"
-            and not (messages[-1].get("content") or "").strip()
-            and not messages[-1].get("tool_calls")
-        ):
-            logger.debug("Pre-call sanitizer: removed trailing empty assistant message")
-            messages = messages[:-1]
         return messages
 
     @staticmethod

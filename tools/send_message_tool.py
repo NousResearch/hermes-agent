@@ -128,6 +128,7 @@ def _handle_send(args):
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "wechat": Platform.WECHAT,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -343,6 +344,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
+        elif platform == Platform.WECHAT:
+            result = await _send_wechat(pconfig.token, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -664,6 +667,46 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_wechat(token: str, chat_id: str, message: str) -> dict:
+    """Send a message via WeixinClawBot REST API (one-shot, no polling needed).
+
+    Chunking is handled by _send_to_platform() before this is called.
+    """
+    if not token:
+        return {"error": "WeChat not configured (WECHAT_BOT_TOKEN required)"}
+
+    api_base = os.getenv("WECHAT_API_BASE", "https://api.weixinclawbot.com/v1")
+
+    # Strip markdown — WeChat plain-text chat doesn't render it
+    message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
+    message = re.sub(r"```[a-z]*\n?", "", message)
+    message = re.sub(r"`(.+?)`", r"\1", message)
+    message = re.sub(r"^#{1,6}\s+", "", message, flags=re.MULTILINE)
+    message = re.sub(r"\n{3,}", "\n\n", message)
+    message = message.strip()
+
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed. Run: pip install httpx"}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{api_base}/messages/send",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"chat_id": chat_id, "type": "text", "content": message},
+            )
+            if resp.status_code < 300:
+                data = resp.json()
+                return {"success": True, "platform": "wechat", "chat_id": chat_id,
+                        "message_id": data.get("id", "")}
+            return {"error": f"WeixinClawBot API error ({resp.status_code}): {resp.text[:200]}"}
+    except Exception as e:
+        return {"error": f"WeChat send failed: {e}"}
 
 
 def _check_send_message():

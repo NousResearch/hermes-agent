@@ -1187,6 +1187,12 @@ class GatewayRunner:
                 logger.warning("DingTalk: dingtalk-stream not installed or DINGTALK_CLIENT_ID/SECRET not set")
                 return None
             return DingTalkAdapter(config)
+        elif platform == Platform.WECHAT:
+            from gateway.platforms.wechat import WeChatAdapter, check_wechat_requirements
+            if not check_wechat_requirements():
+                logger.warning("WeChat: WECHAT_BOT_TOKEN not set or httpx not installed")
+                return None
+            return WeChatAdapter(config)
 
         elif platform == Platform.MATTERMOST:
             from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
@@ -1254,6 +1260,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.WECHAT: "WECHAT_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1266,6 +1273,7 @@ class GatewayRunner:
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.WECHAT: "WECHAT_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -3427,6 +3435,7 @@ class GatewayRunner:
                 Platform.HOMEASSISTANT: "hermes-homeassistant",
                 Platform.EMAIL: "hermes-email",
                 Platform.DINGTALK: "hermes-dingtalk",
+                Platform.WECHAT: "hermes-wechat",
             }
             platform_toolsets_config = {}
             try:
@@ -4587,6 +4596,7 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "hermes-homeassistant",
             Platform.EMAIL: "hermes-email",
             Platform.DINGTALK: "hermes-dingtalk",
+            Platform.WECHAT: "hermes-wechat",
         }
 
         # Try to load platform_toolsets from config
@@ -4612,6 +4622,7 @@ class GatewayRunner:
             Platform.HOMEASSISTANT: "homeassistant",
             Platform.EMAIL: "email",
             Platform.DINGTALK: "dingtalk",
+            Platform.WECHAT: "wechat",
         }.get(source.platform, "telegram")
         
         # Use config override if present (list of toolsets), otherwise hardcoded default

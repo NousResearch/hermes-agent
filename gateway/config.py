@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    WECHAT = "wechat"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -769,6 +770,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # WeChat (WeixinClawBot)
+    wechat_token = os.getenv("WECHAT_BOT_TOKEN")
+    if wechat_token:
+        if Platform.WECHAT not in config.platforms:
+            config.platforms[Platform.WECHAT] = PlatformConfig()
+        config.platforms[Platform.WECHAT].enabled = True
+        config.platforms[Platform.WECHAT].token = wechat_token
+        wechat_home = os.getenv("WECHAT_HOME_CHANNEL")
+        if wechat_home:
+            config.platforms[Platform.WECHAT].home_channel = HomeChannel(
+                platform=Platform.WECHAT,
+                chat_id=wechat_home,
+                name=os.getenv("WECHAT_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

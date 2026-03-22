@@ -254,6 +254,7 @@ def show_status(args):
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "WeChat": ("WECHAT_BOT_TOKEN", "WECHAT_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

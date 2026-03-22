@@ -1195,6 +1195,24 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "wechat",
+        "label": "WeChat",
+        "emoji": "💚",
+        "token_var": "WECHAT_BOT_TOKEN",
+        "setup_instructions": [
+            "1. Go to https://weixinclawbot.com → Create a new bot",
+            "2. Connect your WeChat account via QR code scan",
+            "3. Copy the Bot Token from the dashboard",
+            "4. Optionally set WECHAT_HOME_CHANNEL to a contact's OpenID",
+        ],
+        "vars": [
+            {"name": "WECHAT_BOT_TOKEN", "prompt": "WeixinClawBot Token", "password": True,
+             "help": "The bot token from your WeixinClawBot dashboard."},
+            {"name": "WECHAT_HOME_CHANNEL", "prompt": "Home Channel (OpenID, optional)", "password": False,
+             "help": "OpenID of the default contact or group to deliver cron messages to."},
+        ],
+    },
 ]
 
 

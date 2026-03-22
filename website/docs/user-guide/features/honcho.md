@@ -25,6 +25,33 @@ Hermes has two memory systems that can work together or be configured separately
 Set `memoryMode` to `honcho` to use Honcho exclusively. See [Memory Modes](#memory-modes) for per-peer configuration.
 
 
+## Self-hosted / Docker
+
+Hermes supports a local Honcho instance (e.g. via Docker) in addition to the hosted API. Point it at your instance using `HONCHO_BASE_URL` — no API key required.
+
+**Via `hermes config`:**
+
+```bash
+hermes config set HONCHO_BASE_URL http://localhost:8000
+```
+
+**Via `~/.honcho/config.json`:**
+
+```json
+{
+  "hosts": {
+    "hermes": {
+      "base_url": "http://localhost:8000",
+      "enabled": true
+    }
+  }
+}
+```
+
+Hermes auto-enables Honcho when either `apiKey` or `base_url` is present, so no further configuration is needed for a local instance.
+
+To run Honcho locally, refer to the [Honcho self-hosting docs](https://docs.honcho.dev).
+
 ## Setup
 
 ### Interactive Setup

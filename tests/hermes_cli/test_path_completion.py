@@ -228,6 +228,30 @@ class TestPathCompletions:
 
         assert any(c.text == f"@folder:{target}/" for c in completions)
 
+    def test_context_file_completions_exclude_directories(self, tmp_path):
+        (tmp_path / "main.py").touch()
+        (tmp_path / "main_dir").mkdir()
+
+        completions = list(
+            SlashCommandCompleter._path_completions(f"@file:{tmp_path}/ma")
+        )
+        texts = [c.text for c in completions]
+
+        assert f"@file:{tmp_path}/main.py" in texts
+        assert f"@file:{tmp_path}/main_dir/" not in texts
+
+    def test_context_folder_completions_exclude_files(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src.txt").touch()
+
+        completions = list(
+            SlashCommandCompleter._path_completions(f"@folder:{tmp_path}/sr")
+        )
+        texts = [c.text for c in completions]
+
+        assert f"@folder:{tmp_path}/src/" in texts
+        assert f"@folder:{tmp_path}/src.txt" not in texts
+
 
 class TestContextCompletions:
     def test_lists_static_context_references(self):

@@ -95,6 +95,17 @@ def test_parse_references_supports_quoted_and_escaped_paths():
     assert refs[1].target == "docs/My Folder/"
 
 
+def test_parse_quoted_file_reference_preserves_line_ranges():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references('review @file:"docs/Screen Shot.txt":10-20')
+
+    assert [ref.kind for ref in refs] == ["file"]
+    assert refs[0].target == "docs/Screen Shot.txt"
+    assert refs[0].line_start == 10
+    assert refs[0].line_end == 20
+
+
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 

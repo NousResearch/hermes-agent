@@ -17,7 +17,11 @@ REFERENCE_PATTERN = re.compile(
     r"""(?<![\w/])@(?:
     (?P<simple>diff|staged)\b|
     (?P<kind>file|folder|git|url):
-    (?P<value>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?:\\.|[^\s])+)
+    (?P<value>
+        "(?:[^"\\]|\\.)*"(?:\:\d+(?:-\d+)?)?|
+        '(?:[^'\\]|\\.)*'(?:\:\d+(?:-\d+)?)?|
+        (?:\\.|[^\s])+
+    )
     )""",
     re.VERBOSE,
 )
@@ -66,15 +70,18 @@ def parse_context_references(message: str) -> list[ContextReference]:
             continue
 
         kind = match.group("kind")
-        value = _decode_reference_value(_strip_trailing_punctuation(match.group("value") or ""))
+        raw_value = _strip_trailing_punctuation(match.group("value") or "")
         line_start = None
         line_end = None
-        target = value
+        target = _decode_reference_value(raw_value)
 
         if kind == "file":
-            range_match = re.match(r"^(?P<path>.+?):(?P<start>\d+)(?:-(?P<end>\d+))?$", value)
+            range_match = re.match(
+                r'^(?P<path>"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|.+?):(?P<start>\d+)(?:-(?P<end>\d+))?$',
+                raw_value,
+            )
             if range_match:
-                target = range_match.group("path")
+                target = _decode_reference_value(range_match.group("path"))
                 line_start = int(range_match.group("start"))
                 line_end = int(range_match.group("end") or range_match.group("start"))
 

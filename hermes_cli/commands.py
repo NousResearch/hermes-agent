@@ -342,6 +342,12 @@ class _PathToken:
     def lookup_word(self) -> str:
         return self.path or "."
 
+    def wants_directory(self) -> bool:
+        return self.reference_prefix == "@folder:"
+
+    def wants_file(self) -> bool:
+        return self.reference_prefix == "@file:"
+
     def render(self, path: str) -> str:
         rendered = path
         if self.keep_escaped:
@@ -576,6 +582,10 @@ class SlashCommandCompleter(Completer):
         for _score, entry, full_path, display_path, is_dir in (
             SlashCommandCompleter._list_matching_entries(parsed.lookup_word())[:limit]
         ):
+            if parsed.wants_directory() and not is_dir:
+                continue
+            if parsed.wants_file() and is_dir:
+                continue
             if is_dir:
                 display_path += "/"
 

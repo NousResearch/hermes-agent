@@ -62,6 +62,28 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_explicit_telegram_topic_target_with_thread_id(self):
+        """deliver: 'telegram:chat_id:thread_id' parses correctly."""
+        job = {
+            "deliver": "telegram:-1003724596514:17",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": "17",
+        }
+
+    def test_explicit_telegram_chat_id_without_thread_id(self):
+        """deliver: 'telegram:chat_id' sets thread_id to None."""
+        job = {
+            "deliver": "telegram:-1003724596514",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": None,
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",

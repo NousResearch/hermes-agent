@@ -523,6 +523,19 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Slack settings → env vars (env vars take precedence)
+            slack_cfg = yaml_cfg.get("slack", {})
+            if isinstance(slack_cfg, dict):
+                if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
+                    os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
+                frc = slack_cfg.get("free_response_channels")
+                if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
+                if "enable_reactions" in slack_cfg and not os.getenv("SLACK_ENABLE_REACTIONS"):
+                    os.environ["SLACK_ENABLE_REACTIONS"] = str(slack_cfg["enable_reactions"]).lower()
     except Exception:
         pass
 

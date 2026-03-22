@@ -655,12 +655,24 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned
+        # In channels, respect require_mention and free_response_channels settings
+        # Config (settable via slack.* in config.yaml):
+        #   slack.require_mention: Require @mention in channels (default: true)
+        #   slack.free_response_channels: Channel IDs where bot responds without mention
         if not is_dm and self._bot_user_id:
-            if f"<@{self._bot_user_id}>" not in text:
-                return
-            # Strip the bot mention from the text
-            text = text.replace(f"<@{self._bot_user_id}>", "").strip()
+            import os
+
+            require_mention = os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            free_channels_raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            is_free_channel = channel_id in free_channels
+
+            if require_mention and not is_free_channel:
+                if f"<@{self._bot_user_id}>" not in text:
+                    return
+            # Strip the bot mention from the text (if present)
+            if f"<@{self._bot_user_id}>" in text:
+                text = text.replace(f"<@{self._bot_user_id}>", "").strip()
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -774,14 +786,20 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
         )
 
+        # Check if reactions are enabled (default: true for backward compatibility)
+        import os
+        enable_reactions = os.getenv("SLACK_ENABLE_REACTIONS", "true").lower() not in ("false", "0", "no")
+
         # Add 👀 reaction to acknowledge receipt
-        await self._add_reaction(channel_id, ts, "eyes")
+        if enable_reactions:
+            await self._add_reaction(channel_id, ts, "eyes")
 
         await self.handle_message(msg_event)
 
         # Replace 👀 with ✅ when done
-        await self._remove_reaction(channel_id, ts, "eyes")
-        await self._add_reaction(channel_id, ts, "white_check_mark")
+        if enable_reactions:
+            await self._remove_reaction(channel_id, ts, "eyes")
+            await self._add_reaction(channel_id, ts, "white_check_mark")
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""

@@ -2612,10 +2612,14 @@ def setup_gateway(config: dict):
         print_info("      Optional for private channels: message.groups")
         print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
         print_warning("     not public channels.")
-        print_info("   5. Install to Workspace: Settings → Install App")
-        print_info("   6. Reinstall the app after any scope or event changes")
+        print_info("   5. Create Slash Command: Features → Slash Commands → Create New Command")
+        print_info("      • Command: /hermes")
+        print_info("      • Request URL: (can be empty for Socket Mode)")
+        print_info("      • Short Description: Hermes agent commands")
+        print_info("   6. Install to Workspace: Settings → Install App")
+        print_info("   7. Reinstall the app after any scope or event changes")
         print_info(
-            "   7. After installing, invite the bot to channels: /invite @YourBot"
+            "   8. After installing, invite the bot to channels: /invite @YourBot"
         )
         print()
         print_info(

@@ -333,6 +333,13 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
     },
 
+    # Slack platform settings (gateway mode)
+    "slack": {
+        "require_mention": True,       # Require @mention to respond in channels (default: true)
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "enable_reactions": True,      # Show 👀/✅ emoji reactions while processing (default: true)
+    },
+
     # WhatsApp platform settings (gateway mode)
     "whatsapp": {
         # Reply prefix prepended to every outgoing WhatsApp message.

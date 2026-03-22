@@ -235,6 +235,7 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "markdown": True,         # Render responses as styled markdown (bold, tables, code blocks)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
     },

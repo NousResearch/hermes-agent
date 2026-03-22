@@ -446,6 +446,7 @@ except Exception:
 
 from rich import box as rich_box
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
@@ -1048,6 +1049,9 @@ class HermesCLI:
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+
+        # markdown: render responses as styled markdown (display.markdown in config.yaml)
+        self.markdown_enabled = CLI_CONFIG["display"].get("markdown", True)
 
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
@@ -3968,9 +3972,11 @@ class HermesCLI:
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
 
+                    # Render as styled markdown when enabled, otherwise plain ANSI text
+                    _response_renderable = Markdown(response) if self.markdown_enabled else _rich_text_from_ansi(response)
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _response_renderable,
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -5669,8 +5675,10 @@ class HermesCLI:
                     pass
                 else:
                     _chat_console = ChatConsole()
+                    # Render as styled markdown when enabled, otherwise plain ANSI text
+                    _response_renderable = Markdown(response) if self.markdown_enabled else _rich_text_from_ansi(response)
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _response_renderable,
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,

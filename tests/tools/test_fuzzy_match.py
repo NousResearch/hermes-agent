@@ -230,3 +230,35 @@ class TestEscapeDriftGuard:
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None
         assert count == 1
+
+
+class TestFindClosestLines:
+    def setup_method(self):
+        from tools.fuzzy_match import find_closest_lines
+        self.find_closest_lines = find_closest_lines
+
+    def test_finds_similar_line(self):
+        content = "def foo():\n    pass\ndef bar():\n    return 1\n"
+        result = self.find_closest_lines("def baz():", content)
+        assert "def foo" in result or "def bar" in result
+
+    def test_returns_empty_for_no_match(self):
+        content = "completely different content here"
+        result = self.find_closest_lines("xyzzy_no_match_possible_!!!", content)
+        assert result == ""
+
+    def test_returns_empty_for_empty_inputs(self):
+        assert self.find_closest_lines("", "some content") == ""
+        assert self.find_closest_lines("old string", "") == ""
+
+    def test_includes_context_lines(self):
+        content = "line1\nline2\ndef target():\n    pass\nline5\n"
+        result = self.find_closest_lines("def target():", content)
+        assert "target" in result
+
+    def test_includes_line_numbers(self):
+        content = "line1\nline2\ndef foo():\n    pass\n"
+        result = self.find_closest_lines("def foo():", content)
+        # Should include line numbers in format "N| content"
+        assert "|" in result
+

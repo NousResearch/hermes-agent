@@ -681,7 +681,12 @@ class AIAgent:
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
-            effective_key = api_key or resolve_anthropic_token() or ""
+            # Third-party Anthropic-compatible providers (MiniMax, DashScope, etc.)
+            # must keep their own API key — never fall back to resolve_anthropic_token().
+            if self._uses_native_anthropic_auth():
+                effective_key = api_key or resolve_anthropic_token() or ""
+            else:
+                effective_key = api_key or ""
             self.api_key = effective_key
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
@@ -3195,6 +3200,9 @@ class AIAgent:
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
+        # Third-party Anthropic-compatible providers must not use Anthropic token refresh.
+        if not self._uses_native_anthropic_auth():
+            return False
 
         try:
             from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
@@ -3619,7 +3627,10 @@ class AIAgent:
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
-                effective_key = fb_client.api_key or resolve_anthropic_token() or ""
+                if self._uses_native_anthropic_auth():
+                    effective_key = fb_client.api_key or resolve_anthropic_token() or ""
+                else:
+                    effective_key = fb_client.api_key or ""
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = getattr(fb_client, "base_url", None)
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
@@ -3797,6 +3808,19 @@ class AIAgent:
                 str(msg.get("role", "user") or "user"),
             )
         return transformed
+
+    def _uses_native_anthropic_auth(self) -> bool:
+        """True only for native Anthropic endpoints that should use resolve_anthropic_token().
+
+        Third-party Anthropic-compatible providers (MiniMax, DashScope, custom /anthropic
+        endpoints) must use their own API keys and must never have credentials overwritten
+        by Anthropic OAuth/token resolution.
+        """
+        provider = (getattr(self, "provider", "") or "").lower()
+        if provider == "anthropic":
+            return True
+        base = (getattr(self, "_anthropic_base_url", None) or getattr(self, "base_url", "") or "").lower()
+        return "api.anthropic.com" in base
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""

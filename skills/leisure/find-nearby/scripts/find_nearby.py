@@ -70,10 +70,35 @@ def geocode(query: str) -> tuple[float, float]:
 def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, limit: int = 15) -> list[dict]:
     """Query Overpass for nearby amenities."""
     # Build Overpass QL query
-    type_filters = "".join(
-        f'nwr["amenity"="{t}"](around:{radius},{lat},{lon});' for t in types
-    )
-    query = f"[out:json][timeout:{TIMEOUT}];({type_filters});out center tags;"
+    # OSM uses different tag keys: amenity= for services, shop= for retail
+    # Map common types to their OSM tag keys
+    TAG_MAPPINGS = {
+        "bakery": ["shop", "amenity"],
+        "supermarket": ["shop"],
+        "convenience": ["shop"],
+        "cafe": ["amenity"],
+        "restaurant": ["amenity"],
+        "bar": ["amenity"],
+        "pub": ["amenity"],
+        "fast_food": ["amenity"],
+        "pharmacy": ["amenity"],
+        "hospital": ["amenity"],
+        "bank": ["amenity"],
+        "atm": ["amenity"],
+        "fuel": ["amenity"],
+        "parking": ["amenity"],
+        "hotel": ["tourism"],
+        "guest_house": ["tourism"],
+        "camp_site": ["tourism"],
+    }
+    
+    type_filters = []
+    for t in types:
+        tag_keys = TAG_MAPPINGS.get(t, ["amenity"])  # default to amenity
+        for tag_key in tag_keys:
+            type_filters.append(f'nwr["{tag_key}"="{t}"](around:{radius},{lat},{lon});')
+    
+    query = f"[out:json][timeout:{TIMEOUT}];({''.join(type_filters)});out center tags;"
 
     # Try each Overpass server
     data = None
@@ -105,7 +130,7 @@ def find_nearby(lat: float, lon: float, types: list[str], radius: int = 1500, li
 
         place = {
             "name": name,
-            "type": tags.get("amenity", ""),
+            "type": tags.get("amenity", tags.get("shop", tags.get("tourism", ""))),
             "distance_m": round(dist),
             "lat": plat,
             "lon": plon,

@@ -146,7 +146,6 @@ class TestLaunchdPlistPath:
             raise AssertionError("PATH key not found in plist")
 
 
-
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection
 # ---------------------------------------------------------------------------

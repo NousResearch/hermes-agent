@@ -325,6 +325,7 @@ class TestApiKeyProviderStatus:
 class TestResolveApiKeyProviderCredentials:
 
     def test_resolve_zai_with_key(self, monkeypatch):
+        monkeypatch.delenv("GLM_BASE_URL", raising=False)
         monkeypatch.setenv("GLM_API_KEY", "glm-secret-key")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["provider"] == "zai"
@@ -678,7 +679,8 @@ class TestKimiCodeCredentialAutoDetect:
 
     def test_non_kimi_providers_unaffected(self, monkeypatch):
         """Ensure the auto-detect logic doesn't leak to other providers."""
-        monkeypatch.setenv("GLM_API_KEY", "sk-kimi-looks-like-kimi-but-isnt")
+        monkeypatch.delenv("GLM_BASE_URL", raising=False)
+        monkeypatch.setenv("GLM_API_KEY", "sk-kim...isnt")
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
 

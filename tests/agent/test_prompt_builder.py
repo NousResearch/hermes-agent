@@ -4,6 +4,10 @@ import builtins
 import importlib
 import logging
 import sys
+import tempfile
+from pathlib import Path
+
+import pytest
 
 from agent.prompt_builder import (
     _scan_context_content,
@@ -21,6 +25,23 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
+)
+
+
+def _is_case_sensitive_filesystem():
+    """Check if the filesystem is case-sensitive."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir) / "TestCase.txt"
+        test_file.write_text("test")
+        # If we can access the file with different case, it's case-insensitive
+        case_changed = Path(tmpdir) / "testcase.txt"
+        return not case_changed.exists()
+
+
+# Skip marker for tests that require case-sensitive filesystems
+requires_case_sensitive_fs = pytest.mark.skipif(
+    not _is_case_sensitive_filesystem(),
+    reason="Requires case-sensitive filesystem"
 )
 
 
@@ -560,6 +581,7 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Lowercase claude rules" in result
 
+    @requires_case_sensitive_fs
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("From uppercase.")
         (tmp_path / "claude.md").write_text("From lowercase.")

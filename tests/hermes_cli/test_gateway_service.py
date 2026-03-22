@@ -290,19 +290,19 @@ class TestEnsureUserSystemdEnv:
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
         monkeypatch.setattr(os, "getuid", lambda: 42)
 
-        # Patch Path so /run/user/42 resolves to our tmp dir (which exists)
+        # Mock pathlib.Path.exists() to return True for /run/user/42
+        from unittest.mock import patch
         from pathlib import Path as RealPath
 
-        class FakePath(type(RealPath())):
-            def __new__(cls, *args):
-                p = str(args[0]) if args else ""
-                if p == "/run/user/42":
-                    return RealPath.__new__(cls, str(tmp_path))
-                return RealPath.__new__(cls, *args)
+        original_exists = RealPath.exists
 
-        monkeypatch.setattr(gateway_cli, "Path", FakePath)
+        def mock_exists(self):
+            if str(self) == "/run/user/42":
+                return True
+            return original_exists(self)
 
-        gateway_cli._ensure_user_systemd_env()
+        with patch.object(RealPath, "exists", mock_exists):
+            gateway_cli._ensure_user_systemd_env()
 
         # Function sets the canonical string, not the fake path
         assert os.environ.get("XDG_RUNTIME_DIR") == "/run/user/42"

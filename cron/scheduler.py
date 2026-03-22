@@ -46,6 +46,14 @@ SILENT_MARKER = "[SILENT]"
 _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
+# Note: _LOCK_DIR and _LOCK_FILE are computed lazily to respect HERMES_HOME changes in tests
+def _get_lock_paths():
+    """Get lock directory and file paths, respecting HERMES_HOME at call time."""
+    lock_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "cron"
+    lock_file = lock_dir / ".tick.lock"
+    return lock_dir, lock_file
+
+# Backwards compatibility - these may be stale if HERMES_HOME changes after import
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 

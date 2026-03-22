@@ -134,6 +134,92 @@ class TestUtilities:
 # remove_oauth_tokens
 # ---------------------------------------------------------------------------
 
+class TestPathTraversal:
+    """Verify server_name is sanitized to prevent path traversal."""
+
+    def test_path_traversal_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("../../.ssh/config")
+        path = storage._tokens_path()
+        # Should stay within mcp-tokens directory
+        assert "mcp-tokens" in str(path)
+        assert ".ssh" not in str(path.resolve())
+
+    def test_dots_and_slashes_sanitized(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("../../../etc/passwd")
+        path = storage._tokens_path()
+        resolved = path.resolve()
+        assert resolved.is_relative_to((tmp_path / "mcp-tokens").resolve())
+
+    def test_normal_name_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("my-mcp-server")
+        assert "my-mcp-server.json" in str(storage._tokens_path())
+
+    def test_special_chars_sanitized(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("server@host:8080/path")
+        path = storage._tokens_path()
+        assert "@" not in path.name
+        assert ":" not in path.name
+        assert "/" not in path.stem
+
+
+class TestCallbackHandlerIsolation:
+    """Verify concurrent OAuth flows don't share state."""
+
+    def test_independent_result_dicts(self):
+        from tools.mcp_oauth import _make_callback_handler
+        _, result_a = _make_callback_handler()
+        _, result_b = _make_callback_handler()
+
+        result_a["auth_code"] = "code_A"
+        result_b["auth_code"] = "code_B"
+
+        assert result_a["auth_code"] == "code_A"
+        assert result_b["auth_code"] == "code_B"
+
+    def test_handler_writes_to_own_result(self):
+        from tools.mcp_oauth import _make_callback_handler
+        from io import BytesIO
+        from unittest.mock import MagicMock
+
+        HandlerClass, result = _make_callback_handler()
+        assert result["auth_code"] is None
+
+        # Simulate a GET request
+        handler = HandlerClass.__new__(HandlerClass)
+        handler.path = "/callback?code=test123&state=mystate"
+        handler.wfile = BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.do_GET()
+
+        assert result["auth_code"] == "test123"
+        assert result["state"] == "mystate"
+
+
+class TestOAuthPortSharing:
+    """Verify build_oauth_auth and _wait_for_callback use the same port."""
+
+    def test_port_stored_globally(self):
+        import tools.mcp_oauth as mod
+        # Reset
+        mod._oauth_port = None
+
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        build_oauth_auth("test-port", "https://example.com/mcp")
+        assert mod._oauth_port is not None
+        assert isinstance(mod._oauth_port, int)
+        assert 1024 <= mod._oauth_port <= 65535
+
+
 class TestRemoveOAuthTokens:
     def test_removes_files(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

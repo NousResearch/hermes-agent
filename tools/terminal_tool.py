@@ -31,15 +31,12 @@ import json
 import logging
 import os
 import platform
-import signal
 import sys
 import time
 import threading
 import atexit
 import shutil
 import subprocess
-import tempfile
-import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -51,7 +48,7 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import set_interrupt as set_interrupt_event, is_interrupted, _interrupt_event
+from tools.interrupt import is_interrupted, _interrupt_event
 
 
 # Add mini-swe-agent to path if not installed. In git worktrees the populated
@@ -131,11 +128,8 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
-    detect_dangerous_command as _detect_dangerous_command,
     check_dangerous_command as _check_dangerous_command_impl,
     check_all_command_guards as _check_all_guards_impl,
-    load_permanent_allowlist as _load_permanent_allowlist,
-    DANGEROUS_PATTERNS,
 )
 
 

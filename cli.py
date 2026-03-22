@@ -448,7 +448,6 @@ from rich import box as rich_box
 from rich.console import Console
 from rich.markup import escape as _escape
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text as _RichText
 
 import fire
@@ -460,12 +459,12 @@ from model_tools import get_tool_definitions, get_toolset_for_tool
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import (
     cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    VERSION, RELEASE_DATE, HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
+    HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
     build_welcome_banner,
 )
 from hermes_cli.commands import COMMANDS, SlashCommandCompleter, SlashCommandAutoSuggest
 from hermes_cli import callbacks as _callbacks
-from toolsets import get_all_toolsets, get_toolset_info, resolve_toolset, validate_toolset
+from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
 from cron import get_job
@@ -884,7 +883,6 @@ def _build_compact_banner() -> str:
 
 from agent.skill_commands import (
     scan_skill_commands,
-    get_skill_commands,
     build_skill_invocation_message,
     build_plan_path,
     build_preloaded_skills_prompt,

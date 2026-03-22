@@ -1451,8 +1451,18 @@ def call_llm(
             api_key=resolved_api_key,
         )
         if client is None:
-            # Fallback: try openrouter
-            if resolved_provider != "openrouter" and not resolved_base_url:
+            # When the user explicitly chose a non-OpenRouter provider but no
+            # credentials were found, fail fast instead of silently routing
+            # through OpenRouter (which causes confusing 404s).
+            _explicit = (resolved_provider or "").strip().lower()
+            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                raise RuntimeError(
+                    f"Provider '{_explicit}' is set in config.yaml but no API key "
+                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                    f"variable, or switch to a different provider with `hermes model`."
+                )
+            # For auto/custom, fall back to OpenRouter
+            if not resolved_base_url:
                 logger.warning("Provider %s unavailable, falling back to openrouter",
                                resolved_provider)
                 client, final_model = _get_cached_client(
@@ -1534,7 +1544,14 @@ async def async_call_llm(
             api_key=resolved_api_key,
         )
         if client is None:
-            if resolved_provider != "openrouter" and not resolved_base_url:
+            _explicit = (resolved_provider or "").strip().lower()
+            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                raise RuntimeError(
+                    f"Provider '{_explicit}' is set in config.yaml but no API key "
+                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                    f"variable, or switch to a different provider with `hermes model`."
+                )
+            if not resolved_base_url:
                 logger.warning("Provider %s unavailable, falling back to openrouter",
                                resolved_provider)
                 client, final_model = _get_cached_client(

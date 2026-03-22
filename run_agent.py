@@ -2309,9 +2309,12 @@ class AIAgent:
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
             avail_toolsets = {ts for ts, avail in check_toolset_requirements().items() if avail}
+            from hermes_cli.config import CLI_CONFIG as _cli_cfg
+            _lazy_skills = _cli_cfg.get("display", {}).get("lazy_skills", False)
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
+                lazy=_lazy_skills,
             )
         else:
             skills_prompt = ""

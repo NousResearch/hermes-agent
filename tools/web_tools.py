@@ -10,6 +10,13 @@ Available tools:
 - web_extract_tool: Extract content from specific web pages
 - web_crawl_tool: Crawl websites with specific instructions (Firecrawl only)
 
+Page Storage tools (persistent storage for scraped pages):
+- web_page_search_tool: Full-text search over saved pages
+- web_page_list_tool: List all saved pages with optional filtering
+- web_page_get_tool: Retrieve a specific saved page by URL or ID
+- web_page_delete_tool: Delete a page from storage
+- web_page_stats_tool: Get storage statistics
+
 Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -18,6 +25,12 @@ LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
 - Extracts key excerpts and creates markdown summaries to reduce token usage
 
+Page Storage:
+- SQLite database stored at ~/.hermes/data/web_pages.db
+- Full-text search using SQLite FTS5
+- Automatic storage of pages extracted via web_extract_tool and web_crawl_tool
+- Set WEB_PAGES_DB_PATH env var for custom storage location
+
 Debug Mode:
 - Set WEB_TOOLS_DEBUG=true to enable detailed logging
 - Creates web_tools_debug_UUID.json in ./logs directory
@@ -25,6 +38,7 @@ Debug Mode:
 
 Usage:
     from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
+    from web_tools import web_page_search_tool, web_page_list_tool
     
     # Search the web
     results = web_search_tool("Python machine learning libraries", limit=3)
@@ -34,13 +48,522 @@ Usage:
     
     # Crawl a website
     crawl_data = web_crawl_tool("example.com", "Find contact information")
+    
+    # Search saved pages
+    saved = web_page_search_tool("machine learning")
+    
+    # List saved pages
+    pages = web_page_list_tool(limit=10)
 """
 
-#TODO: Search Capabilities over the scraped pages
-#TODO: Store the pages in something
-#TODO: Tool to see what pages are available/saved to search over
+# ─── Page Storage System ─────────────────────────────────────────────────────
+"""
+Persistent storage for scraped/extracted web pages with search capabilities.
+
+Features:
+- SQLite-based storage for efficient full-text search
+- Automatic page storage from web_extract and web_crawl operations
+- Search over saved page content
+- List and manage saved pages
+"""
 
 import json
+import sqlite3
+import hashlib
+import threading
+from pathlib import Path
+from datetime import datetime
+from contextlib import contextmanager
+
+# Storage directory - use ~/.hermes/data for persistence
+_STORAGE_DIR = Path.home() / ".hermes" / "data"
+_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+_PAGES_DB = _STORAGE_DIR / "web_pages.db"
+
+# Thread-local storage for database connections
+_local = threading.local()
+
+
+def _get_db_path() -> Path:
+    """Get the database path, checking for custom location via env var."""
+    custom_path = os.getenv("WEB_PAGES_DB_PATH", "").strip()
+    if custom_path:
+        return Path(custom_path)
+    return _PAGES_DB
+
+
+@contextmanager
+def _get_db_connection():
+    """Get a thread-local SQLite connection with proper configuration."""
+    if not hasattr(_local, 'connection') or _local.connection is None:
+        db_path = _get_db_path()
+        _local.connection = sqlite3.connect(str(db_path), check_same_thread=False)
+        _local.connection.row_factory = sqlite3.Row
+        # Enable FTS5 for full-text search
+        _local.connection.execute("PRAGMA journal_mode=WAL")
+        _local.connection.execute("PRAGMA synchronous=NORMAL")
+        _init_db(_local.connection)
+    try:
+        yield _local.connection
+    except Exception:
+        if _local.connection:
+            _local.connection.rollback()
+        raise
+
+
+def _init_db(conn: sqlite3.Connection) -> None:
+    """Initialize the database schema with FTS support."""
+    # Main pages table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL UNIQUE,
+            url_hash TEXT NOT NULL,
+            title TEXT,
+            content TEXT,
+            raw_content TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            source_tool TEXT,
+            content_length INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Full-text search virtual table
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
+            url,
+            title,
+            content,
+            content='pages',
+            content_rowid='id'
+        )
+    """)
+    
+    # Triggers to keep FTS in sync
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
+            INSERT INTO pages_fts(rowid, url, title, content)
+            VALUES (new.id, new.url, new.title, new.content);
+        END
+    """)
+    
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS pages_ad AFTER DELETE ON pages BEGIN
+            INSERT INTO pages_fts(pages_fts, rowid, url, title, content)
+            VALUES('delete', old.id, old.url, old.title, old.content);
+        END
+    """)
+    
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS pages_au AFTER UPDATE ON pages BEGIN
+            INSERT INTO pages_fts(pages_fts, rowid, url, title, content)
+            VALUES('delete', old.id, old.url, old.title, old.content);
+            INSERT INTO pages_fts(rowid, url, title, content)
+            VALUES (new.id, new.url, new.title, new.content);
+        END
+    """)
+    
+    conn.commit()
+
+
+def _hash_url(url: str) -> str:
+    """Create a hash of the URL for quick lookups."""
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def store_page(
+    url: str,
+    title: str = "",
+    content: str = "",
+    raw_content: str = "",
+    metadata: dict = None,
+    source_tool: str = "unknown"
+) -> dict:
+    """
+    Store a web page in persistent storage.
+    
+    Args:
+        url: The page URL (unique identifier)
+        title: Page title
+        content: Processed/summarized content
+        raw_content: Original content
+        metadata: Additional metadata dict
+        source_tool: Tool that extracted this page (web_extract, web_crawl)
+    
+    Returns:
+        dict with success status and page id
+    """
+    if not url:
+        return {"success": False, "error": "URL is required"}
+    
+    try:
+        now = datetime.utcnow().isoformat()
+        url_hash = _hash_url(url)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        content_len = len(content) if content else 0
+        
+        with _get_db_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO pages (url, url_hash, title, content, raw_content, metadata, 
+                                   created_at, updated_at, source_tool, content_length)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    raw_content = excluded.raw_content,
+                    metadata = excluded.metadata,
+                    updated_at = excluded.updated_at,
+                    source_tool = excluded.source_tool,
+                    content_length = excluded.content_length
+            """, (url, url_hash, title, content, raw_content, metadata_json,
+                  now, now, source_tool, content_len))
+            
+            conn.commit()
+            page_id = cursor.lastrowid
+            
+            logger.info("Stored page: %s (id=%d, %d chars)", url, page_id, content_len)
+            
+            return {
+                "success": True,
+                "page_id": page_id,
+                "url": url,
+                "content_length": content_len,
+                "stored_at": now
+            }
+            
+    except Exception as e:
+        logger.error("Failed to store page %s: %s", url, e)
+        return {"success": False, "error": str(e)}
+
+
+def store_pages_from_results(results: list, source_tool: str = "unknown") -> list:
+    """
+    Store multiple pages from web_extract or web_crawl results.
+    
+    Args:
+        results: List of result dicts with url, title, content, etc.
+        source_tool: Tool that extracted these pages
+    
+    Returns:
+        List of storage results
+    """
+    stored = []
+    for result in results:
+        if result.get("error") or result.get("blocked_by_policy"):
+            continue  # Skip failed extractions
+        
+        store_result = store_page(
+            url=result.get("url", ""),
+            title=result.get("title", ""),
+            content=result.get("content", ""),
+            raw_content=result.get("raw_content", ""),
+            metadata=result.get("metadata"),
+            source_tool=source_tool
+        )
+        stored.append(store_result)
+    
+    return stored
+
+
+def search_pages(query: str, limit: int = 10, include_content: bool = True) -> str:
+    """
+    Search over saved web pages using full-text search.
+    
+    Args:
+        query: Search query (supports SQLite FTS5 syntax)
+        limit: Maximum number of results
+        include_content: Whether to include full content in results
+    
+    Returns:
+        JSON string with search results
+    """
+    if not query or not query.strip():
+        return json.dumps({"error": "Search query is required", "results": []})
+    
+    try:
+        # Escape special FTS characters and build query
+        search_query = query.strip().replace('"', '""')
+        
+        with _get_db_connection() as conn:
+            # Use FTS5 for full-text search with ranking
+            if include_content:
+                columns = "p.id, p.url, p.title, p.content, p.created_at, p.updated_at, p.source_tool, p.content_length"
+            else:
+                columns = "p.id, p.url, p.title, p.created_at, p.updated_at, p.source_tool, p.content_length"
+            
+            cursor = conn.execute(f"""
+                SELECT {columns}, pages_fts.rank
+                FROM pages p
+                JOIN pages_fts ON p.id = pages_fts.rowid
+                WHERE pages_fts MATCH ?
+                ORDER BY pages_fts.rank
+                LIMIT ?
+            """, (search_query, limit))
+            
+            results = []
+            for row in cursor.fetchall():
+                result = {
+                    "id": row["id"],
+                    "url": row["url"],
+                    "title": row["title"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "source_tool": row["source_tool"],
+                    "content_length": row["content_length"],
+                    "relevance_score": -row["rank"] if row["rank"] else 0
+                }
+                if include_content:
+                    result["content"] = row["content"]
+                results.append(result)
+            
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results_count": len(results),
+                "results": results
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error("Search failed: %s", e)
+        return json.dumps({"error": f"Search failed: {str(e)}", "results": []})
+
+
+def list_pages(
+    limit: int = 50,
+    offset: int = 0,
+    source_tool: str = None,
+    min_length: int = None,
+    sort_by: str = "updated_at"
+) -> str:
+    """
+    List saved web pages with optional filtering.
+    
+    Args:
+        limit: Maximum number of results (default 50)
+        offset: Offset for pagination
+        source_tool: Filter by source tool (web_extract, web_crawl)
+        min_length: Minimum content length filter
+        sort_by: Sort field (updated_at, created_at, content_length, title)
+    
+    Returns:
+        JSON string with page list
+    """
+    try:
+        valid_sort_fields = {"updated_at", "created_at", "content_length", "title", "url"}
+        if sort_by not in valid_sort_fields:
+            sort_by = "updated_at"
+        
+        with _get_db_connection() as conn:
+            # Build query with filters
+            sql = """
+                SELECT id, url, title, created_at, updated_at, source_tool, content_length
+                FROM pages
+            """
+            params = []
+            conditions = []
+            
+            if source_tool:
+                conditions.append("source_tool = ?")
+                params.append(source_tool)
+            
+            if min_length is not None:
+                conditions.append("content_length >= ?")
+                params.append(min_length)
+            
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+            
+            sql += f" ORDER BY {sort_by} DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor = conn.execute(sql, params)
+            
+            # Get total count for pagination
+            count_sql = "SELECT COUNT(*) as total FROM pages"
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions[:-2] if not (limit or offset) else conditions)
+            count_params = params[:-2] if params else []
+            total = conn.execute(count_sql, count_params).fetchone()["total"]
+            
+            pages = []
+            for row in cursor.fetchall():
+                pages.append({
+                    "id": row["id"],
+                    "url": row["url"],
+                    "title": row["title"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "source_tool": row["source_tool"],
+                    "content_length": row["content_length"]
+                })
+            
+            return json.dumps({
+                "success": True,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "pages_count": len(pages),
+                "pages": pages
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error("List pages failed: %s", e)
+        return json.dumps({"error": f"Failed to list pages: {str(e)}", "pages": []})
+
+
+def get_page(url: str = None, page_id: int = None) -> str:
+    """
+    Retrieve a specific page by URL or ID.
+    
+    Args:
+        url: Page URL
+        page_id: Page ID
+    
+    Returns:
+        JSON string with page data
+    """
+    if not url and not page_id:
+        return json.dumps({"error": "Either url or page_id is required"})
+    
+    try:
+        with _get_db_connection() as conn:
+            if page_id:
+                cursor = conn.execute("""
+                    SELECT id, url, title, content, raw_content, metadata, 
+                           created_at, updated_at, source_tool, content_length
+                    FROM pages WHERE id = ?
+                """, (page_id,))
+            else:
+                cursor = conn.execute("""
+                    SELECT id, url, title, content, raw_content, metadata,
+                           created_at, updated_at, source_tool, content_length
+                    FROM pages WHERE url = ?
+                """, (url,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return json.dumps({"error": "Page not found", "success": False})
+            
+            return json.dumps({
+                "success": True,
+                "page": {
+                    "id": row["id"],
+                    "url": row["url"],
+                    "title": row["title"],
+                    "content": row["content"],
+                    "raw_content": row["raw_content"],
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "source_tool": row["source_tool"],
+                    "content_length": row["content_length"]
+                }
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error("Get page failed: %s", e)
+        return json.dumps({"error": f"Failed to get page: {str(e)}"})
+
+
+def delete_page(url: str = None, page_id: int = None) -> str:
+    """
+    Delete a page from storage.
+    
+    Args:
+        url: Page URL
+        page_id: Page ID
+    
+    Returns:
+        JSON string with result
+    """
+    if not url and not page_id:
+        return json.dumps({"error": "Either url or page_id is required"})
+    
+    try:
+        with _get_db_connection() as conn:
+            if page_id:
+                cursor = conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
+            else:
+                cursor = conn.execute("DELETE FROM pages WHERE url = ?", (url,))
+            
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                return json.dumps({"error": "Page not found", "success": False})
+            
+            return json.dumps({
+                "success": True,
+                "deleted": cursor.rowcount,
+                "url": url,
+                "page_id": page_id
+            })
+            
+    except Exception as e:
+        logger.error("Delete page failed: %s", e)
+        return json.dumps({"error": f"Failed to delete page: {str(e)}"})
+
+
+def get_storage_stats() -> dict:
+    """Get statistics about the page storage."""
+    try:
+        with _get_db_connection() as conn:
+            stats = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_pages,
+                    SUM(content_length) as total_bytes,
+                    AVG(content_length) as avg_content_length,
+                    MAX(updated_at) as last_updated
+                FROM pages
+            """).fetchone()
+            
+            by_tool = conn.execute("""
+                SELECT source_tool, COUNT(*) as count
+                FROM pages
+                GROUP BY source_tool
+            """).fetchall()
+            
+            return {
+                "success": True,
+                "total_pages": stats["total_pages"] or 0,
+                "total_bytes": stats["total_bytes"] or 0,
+                "total_size_mb": round((stats["total_bytes"] or 0) / 1024 / 1024, 2),
+                "avg_content_length": round(stats["avg_content_length"] or 0, 0),
+                "last_updated": stats["last_updated"],
+                "by_source_tool": {row["source_tool"]: row["count"] for row in by_tool},
+                "storage_path": str(_get_db_path())
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# Public tool functions (wrappers for registry)
+def web_page_search_tool(query: str, limit: int = 10) -> str:
+    """Search over saved web pages using full-text search."""
+    return search_pages(query, limit=limit, include_content=True)
+
+
+def web_page_list_tool(limit: int = 50, offset: int = 0, source: str = None) -> str:
+    """List saved web pages with optional filtering."""
+    return list_pages(limit=limit, offset=offset, source_tool=source)
+
+
+def web_page_get_tool(url: str = None, page_id: int = None) -> str:
+    """Retrieve a specific saved page by URL or ID."""
+    return get_page(url=url, page_id=page_id)
+
+
+def web_page_delete_tool(url: str = None, page_id: int = None) -> str:
+    """Delete a page from storage."""
+    return delete_page(url=url, page_id=page_id)
+
+
+def web_page_stats_tool() -> str:
+    """Get statistics about saved pages."""
+    return json.dumps(get_storage_stats(), indent=2)
+
+
 import logging
 import os
 import re
@@ -1107,6 +1630,12 @@ async def web_extract_tool(
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
         
+        # Store extracted pages in persistent storage
+        try:
+            store_pages_from_results(trimmed_results, source_tool="web_extract")
+        except Exception as store_err:
+            logger.debug("Failed to store pages: %s", store_err)
+        
         return cleaned_result
             
     except Exception as e:
@@ -1244,6 +1773,13 @@ async def web_crawl_tool(
             debug_call_data["final_response_size"] = len(cleaned_result)
             _debug.log_call("web_crawl_tool", debug_call_data)
             _debug.save()
+            
+            # Store crawled pages in persistent storage
+            try:
+                store_pages_from_results(trimmed_results, source_tool="web_crawl")
+            except Exception as store_err:
+                logger.debug("Failed to store crawled pages: %s", store_err)
+            
             return cleaned_result
 
         # web_crawl requires Firecrawl — Parallel has no crawl API
@@ -1501,6 +2037,12 @@ async def web_crawl_tool(
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
         
+        # Store crawled pages in persistent storage
+        try:
+            store_pages_from_results(trimmed_results, source_tool="web_crawl")
+        except Exception as store_err:
+            logger.debug("Failed to store crawled pages: %s", store_err)
+        
         return cleaned_result
         
     except Exception as e:
@@ -1698,4 +2240,142 @@ registry.register(
     requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     is_async=True,
     emoji="📄",
+)
+
+# ─── Page Storage Tools Registry ────────────────────────────────────────────
+
+WEB_PAGE_SEARCH_SCHEMA = {
+    "name": "web_page_search",
+    "description": "Search over previously extracted/saved web pages using full-text search. Use this to find information in pages you've previously extracted with web_extract or web_crawl.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query to find in saved pages"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default: 10)",
+                "default": 10
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+WEB_PAGE_LIST_SCHEMA = {
+    "name": "web_page_list",
+    "description": "List all saved web pages. Shows pages previously extracted with web_extract or web_crawl.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of pages to list (default: 50)",
+                "default": 50
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Offset for pagination (default: 0)",
+                "default": 0
+            },
+            "source": {
+                "type": "string",
+                "description": "Filter by source tool: 'web_extract' or 'web_crawl'"
+            }
+        }
+    }
+}
+
+WEB_PAGE_GET_SCHEMA = {
+    "name": "web_page_get",
+    "description": "Retrieve a specific saved page by URL or page ID. Returns full content and metadata.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "URL of the page to retrieve"
+            },
+            "page_id": {
+                "type": "integer",
+                "description": "ID of the page to retrieve"
+            }
+        }
+    }
+}
+
+WEB_PAGE_DELETE_SCHEMA = {
+    "name": "web_page_delete",
+    "description": "Delete a saved page from storage by URL or page ID.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "URL of the page to delete"
+            },
+            "page_id": {
+                "type": "integer",
+                "description": "ID of the page to delete"
+            }
+        }
+    }
+}
+
+WEB_PAGE_STATS_SCHEMA = {
+    "name": "web_page_stats",
+    "description": "Get statistics about saved web pages (count, size, storage location).",
+    "parameters": {
+        "type": "object",
+        "properties": {}
+    }
+}
+
+# Register page storage tools
+registry.register(
+    name="web_page_search",
+    toolset="web",
+    schema=WEB_PAGE_SEARCH_SCHEMA,
+    handler=lambda args, **kw: web_page_search_tool(
+        args.get("query", ""), limit=args.get("limit", 10)),
+    emoji="🔎",
+)
+
+registry.register(
+    name="web_page_list",
+    toolset="web",
+    schema=WEB_PAGE_LIST_SCHEMA,
+    handler=lambda args, **kw: web_page_list_tool(
+        limit=args.get("limit", 50),
+        offset=args.get("offset", 0),
+        source=args.get("source")),
+    emoji="📋",
+)
+
+registry.register(
+    name="web_page_get",
+    toolset="web",
+    schema=WEB_PAGE_GET_SCHEMA,
+    handler=lambda args, **kw: web_page_get_tool(
+        url=args.get("url"), page_id=args.get("page_id")),
+    emoji="📖",
+)
+
+registry.register(
+    name="web_page_delete",
+    toolset="web",
+    schema=WEB_PAGE_DELETE_SCHEMA,
+    handler=lambda args, **kw: web_page_delete_tool(
+        url=args.get("url"), page_id=args.get("page_id")),
+    emoji="🗑️",
+)
+
+registry.register(
+    name="web_page_stats",
+    toolset="web",
+    schema=WEB_PAGE_STATS_SCHEMA,
+    handler=lambda args, **kw: web_page_stats_tool(),
+    emoji="📊",
 )

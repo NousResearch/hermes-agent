@@ -179,6 +179,58 @@ async def _summarize_session(
                 return None
 
 
+def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+    """Return metadata for the most recent sessions (no LLM calls)."""
+    try:
+        sessions = db.list_sessions_rich(limit=limit + 5)  # fetch extra to skip current
+
+        # Resolve current session lineage to exclude it
+        current_root = None
+        if current_session_id:
+            try:
+                sid = current_session_id
+                visited = set()
+                while sid and sid not in visited:
+                    visited.add(sid)
+                    s = db.get_session(sid)
+                    parent = s.get("parent_session_id") if s else None
+                    sid = parent if parent else None
+                current_root = max(visited, key=len) if visited else current_session_id
+            except Exception:
+                current_root = current_session_id
+
+        results = []
+        for s in sessions:
+            sid = s.get("id", "")
+            if current_root and (sid == current_root or sid == current_session_id):
+                continue
+            # Skip child/delegation sessions (they have parent_session_id)
+            if s.get("parent_session_id"):
+                continue
+            results.append({
+                "session_id": sid,
+                "title": s.get("title") or None,
+                "source": s.get("source", ""),
+                "started_at": s.get("started_at", ""),
+                "last_active": s.get("last_active", ""),
+                "message_count": s.get("message_count", 0),
+                "preview": s.get("preview", ""),
+            })
+            if len(results) >= limit:
+                break
+
+        return json.dumps({
+            "success": True,
+            "mode": "recent",
+            "results": results,
+            "count": len(results),
+            "message": f"Showing {len(results)} most recent sessions. Use a keyword query to search specific topics.",
+        }, ensure_ascii=False)
+    except Exception as e:
+        logging.error("Error listing recent sessions: %s", e, exc_info=True)
+        return json.dumps({"success": False, "error": f"Failed to list recent sessions: {e}"}, ensure_ascii=False)
+
+
 def session_search(
     query: str,
     role_filter: str = None,
@@ -195,11 +247,14 @@ def session_search(
     if db is None:
         return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
 
+    limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
+
+    # Recent sessions mode: when query is empty, return metadata for recent sessions.
+    # No LLM calls — just DB queries for titles, previews, timestamps.
     if not query or not query.strip():
-        return json.dumps({"success": False, "error": "Query cannot be empty."}, ensure_ascii=False)
+        return _list_recent_sessions(db, limit, current_session_id)
 
     query = query.strip()
-    limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
 
     try:
         # Parse role filter
@@ -385,7 +440,7 @@ SESSION_SEARCH_SCHEMA = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query — keywords, phrases, or boolean expressions to find in past sessions.",
+                "description": "Search query — keywords, phrases, or boolean expressions to find in past sessions. Omit to list recent sessions instead (no search, just metadata).",
             },
             "role_filter": {
                 "type": "string",
@@ -397,7 +452,7 @@ SESSION_SEARCH_SCHEMA = {
                 "default": 3,
             },
         },
-        "required": ["query"],
+        "required": [],
     },
 }
 
@@ -410,7 +465,7 @@ registry.register(
     toolset="session_search",
     schema=SESSION_SEARCH_SCHEMA,
     handler=lambda args, **kw: session_search(
-        query=args.get("query", ""),
+        query=args.get("query") or "",
         role_filter=args.get("role_filter"),
         limit=args.get("limit", 3),
         db=kw.get("db"),

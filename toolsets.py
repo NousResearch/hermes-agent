@@ -366,6 +366,13 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     # Get toolset definition
     toolset = TOOLSETS.get(name)
     if not toolset:
+        # Fall back to tool registry for plugin-provided toolsets
+        if name in _get_plugin_toolset_names():
+            try:
+                from tools.registry import registry
+                return [e.name for e in registry._tools.values() if e.toolset == name]
+            except Exception:
+                pass
         return []
 
     # Collect direct tools
@@ -400,24 +407,60 @@ def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
     return list(all_tools)
 
 
+def _get_plugin_toolset_names() -> Set[str]:
+    """Return toolset names registered by plugins (from the tool registry).
+
+    These are toolsets that exist in the registry but not in the static
+    ``TOOLSETS`` dict — i.e. they were added by plugins at load time.
+    """
+    try:
+        from tools.registry import registry
+        return {
+            entry.toolset
+            for entry in registry._tools.values()
+            if entry.toolset not in TOOLSETS
+        }
+    except Exception:
+        return set()
+
+
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """
     Get all available toolsets with their definitions.
+
+    Includes both statically-defined toolsets and plugin-registered ones.
     
     Returns:
         Dict: All toolset definitions
     """
-    return TOOLSETS.copy()
+    result = TOOLSETS.copy()
+    # Add plugin-provided toolsets (synthetic entries)
+    for ts_name in _get_plugin_toolset_names():
+        if ts_name not in result:
+            try:
+                from tools.registry import registry
+                tools = [e.name for e in registry._tools.values() if e.toolset == ts_name]
+                result[ts_name] = {
+                    "description": f"Plugin toolset: {ts_name}",
+                    "tools": tools,
+                }
+            except Exception:
+                pass
+    return result
 
 
 def get_toolset_names() -> List[str]:
     """
     Get names of all available toolsets (excluding aliases).
+
+    Includes plugin-registered toolset names.
     
     Returns:
         List[str]: List of toolset names
     """
-    return list(TOOLSETS.keys())
+    names = set(TOOLSETS.keys())
+    names |= _get_plugin_toolset_names()
+    return sorted(names)
 
 
 
@@ -435,7 +478,10 @@ def validate_toolset(name: str) -> bool:
     # Accept special alias names for convenience
     if name in {"all", "*"}:
         return True
-    return name in TOOLSETS
+    if name in TOOLSETS:
+        return True
+    # Check tool registry for plugin-provided toolsets
+    return name in _get_plugin_toolset_names()
 
 
 def create_custom_toolset(

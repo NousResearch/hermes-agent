@@ -349,6 +349,74 @@ def _inject_honcho_turn_context(content, turn_context: str):
     return f"{text}\n\n{note}"
 
 
+# ---------------------------------------------------------------------------
+# Tool result trimming — insertion-time size management (Issue #415)
+# ---------------------------------------------------------------------------
+
+# Hard ceiling: absolute maximum chars for any single tool result.  This
+# exists as a safety net to prevent catastrophic context explosions (e.g.
+# accidental base64 image dumps).  Results exceeding this are head-truncated.
+_TOOL_RESULT_HARD_LIMIT = 100_000  # ~25K tokens
+
+# Soft trim: tool results longer than this get head+tail trimmed, preserving
+# both the start (context, headers) and end (exit codes, summaries).  The
+# middle is dropped with an indicator.  Set to 0 to disable soft trimming.
+_TOOL_RESULT_SOFT_LIMIT = 12_000   # ~3K tokens
+
+# How many chars to keep from the head and tail when soft-trimming.
+_TOOL_RESULT_HEAD_CHARS = 4_000
+_TOOL_RESULT_TAIL_CHARS = 4_000
+
+
+def _trim_tool_result(
+    result: str,
+    *,
+    soft_limit: int = _TOOL_RESULT_SOFT_LIMIT,
+    hard_limit: int = _TOOL_RESULT_HARD_LIMIT,
+    head_chars: int = _TOOL_RESULT_HEAD_CHARS,
+    tail_chars: int = _TOOL_RESULT_TAIL_CHARS,
+) -> str:
+    """Trim a tool result at insertion time, before it enters the message array.
+
+    Two-stage approach:
+    1. **Soft trim** (default 12K): preserve head + tail, drop middle.
+       Keeps file headers / command context (head) and exit codes /
+       error summaries (tail).
+    2. **Hard cap** (100K): emergency head-only truncation as safety net.
+
+    Messages are never modified after insertion, preserving prompt caching.
+    """
+    if not result:
+        return result
+
+    length = len(result)
+
+    # Stage 1: soft trim with head+tail preservation
+    if soft_limit > 0 and length > soft_limit:
+        # Ensure head + tail don't exceed soft limit
+        keep = min(head_chars, soft_limit // 2)
+        tail = min(tail_chars, soft_limit // 2)
+        dropped = length - keep - tail
+        result = (
+            result[:keep]
+            + f"\n\n[Truncated: showing first {keep:,} and last {tail:,} chars "
+            + f"of {length:,} total ({dropped:,} chars dropped)]\n\n"
+            + result[-tail:]
+        )
+        length = len(result)
+
+    # Stage 2: hard cap (safety net — should rarely fire after soft trim)
+    if length > hard_limit:
+        original_len = length
+        result = (
+            result[:hard_limit]
+            + f"\n\n[Truncated: tool response was {original_len:,} chars, "
+            f"exceeding the {hard_limit:,} char limit]"
+        )
+
+    return result
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -4780,15 +4848,8 @@ class AIAgent:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
-            # Truncate oversized results
-            MAX_TOOL_RESULT_CHARS = 100_000
-            if len(function_result) > MAX_TOOL_RESULT_CHARS:
-                original_len = len(function_result)
-                function_result = (
-                    function_result[:MAX_TOOL_RESULT_CHARS]
-                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
-                )
+            # Trim oversized results at insertion time (head+tail preserving)
+            function_result = _trim_tool_result(function_result)
 
             # Append tool result message in order
             tool_msg = {
@@ -5029,26 +5090,6 @@ class AIAgent:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
-            # Guard against tools returning absurdly large content that would
-            # blow up the context window. 100K chars ≈ 25K tokens — generous
-            # enough for any reasonable tool output but prevents catastrophic
-            # context explosions (e.g. accidental base64 image dumps).
-            MAX_TOOL_RESULT_CHARS = 100_000
-            if len(function_result) > MAX_TOOL_RESULT_CHARS:
-                original_len = len(function_result)
-                function_result = (
-                    function_result[:MAX_TOOL_RESULT_CHARS]
-                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
-                )
-
-            tool_msg = {
-                "role": "tool",
-                "content": function_result,
-                "tool_call_id": tool_call.id
-            }
-            messages.append(tool_msg)
-
             if not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -5056,6 +5097,16 @@ class AIAgent:
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+
+            # Trim oversized results at insertion time (head+tail preserving)
+            function_result = _trim_tool_result(function_result)
+
+            tool_msg = {
+                "role": "tool",
+                "content": function_result,
+                "tool_call_id": tool_call.id
+            }
+            messages.append(tool_msg)
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i

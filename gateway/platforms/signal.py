@@ -478,7 +478,7 @@ class SignalAdapter(BasePlatformAdapter):
             if any(mt.startswith("audio/") for mt in media_types):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.IMAGE
+                msg_type = MessageType.PHOTO
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -518,6 +518,13 @@ class SignalAdapter(BasePlatformAdapter):
 
         if not result:
             return None, ""
+
+        # Handle dict response (signal-cli returns {"data": "base64..."})
+        if isinstance(result, dict):
+            result = result.get("data")
+            if not result:
+                logger.warning("Signal: attachment response missing 'data' key")
+                return None, ""
 
         # Result is base64-encoded file content
         raw_data = base64.b64decode(result)

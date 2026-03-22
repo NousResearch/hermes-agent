@@ -129,6 +129,12 @@ terminal:
 #   docker_forward_env:
 #     - "GITHUB_TOKEN"
 #     - "NPM_TOKEN"
+#   # Optional: extra flags passed verbatim to docker run (appended after security defaults).
+#   # Useful for adding capabilities (e.g. apt installs needing SETUID) or custom options.
+#   # Example: add a Linux capability not included by default
+#   # docker_extra_args:
+#   #   - "--cap-add"
+#   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
 # OPTION 4: Singularity/Apptainer container
@@ -698,6 +704,14 @@ display:
   # line-by-line. Tool calls are still captured silently.
   # Stream tokens to the terminal in real-time. Disable to wait for full responses.
   streaming: true
+
+  # Show [HH:MM] timestamps on user input and assistant response labels.
+  # timestamps: false
+
+  # Lazy skill loading: instead of injecting the full skill index into the system
+  # prompt, only tell the model how many skills exist and let it call skills_list()
+  # on demand. Saves tokens when you have many skills but use few per session.
+  # lazy_skills: false
 
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme

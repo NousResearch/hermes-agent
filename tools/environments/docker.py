@@ -212,6 +212,7 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        extra_args: list = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -315,7 +316,16 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        # User-supplied extra docker run flags (docker_extra_args in config.yaml).
+        # Appended last so they can override defaults if needed.
+        validated_extra = []
+        for arg in (extra_args or []):
+            if not isinstance(arg, str):
+                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+                continue
+            validated_extra.append(arg)
+
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + validated_extra
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when

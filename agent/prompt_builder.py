@@ -312,6 +312,7 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    lazy: bool = False,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -362,6 +363,18 @@ def build_skills_system_prompt(
 
     if not skills_by_category:
         return ""
+
+    # Lazy mode: skip the full index, just tell the model to use skills_list
+    if lazy:
+        total = sum(len(v) for v in skills_by_category.values())
+        return (
+            "## Skills (mandatory)\n"
+            f"You have {total} skill(s) available. "
+            "Before replying to complex tasks, call skills_list() to discover relevant skills, "
+            "then load the matching one with skill_view(name) and follow its instructions.\n"
+            "If a skill you loaded was missing steps, had wrong commands, or needed "
+            "pitfalls you discovered, update it with skill_manage(action='patch') before finishing."
+        )
 
     # Read category-level descriptions from DESCRIPTION.md
     # Checks both the exact category path and parent directories

@@ -1042,6 +1042,8 @@ class HermesCLI:
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
+        # show_timestamps: prefix user and assistant labels with [HH:MM]
+        self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
 
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
@@ -1648,6 +1650,8 @@ class HermesCLI:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
+            if self.show_timestamps:
+                label = f"{label} {datetime.now().strftime('%H:%M')}"
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
             _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -7007,14 +7011,16 @@ class HermesCLI:
                             line_count = full_text.count('\n') + 1
                             print()
                             ChatConsole().print(_user_bar)
+                            _ts_suffix = f" [dim]{datetime.now().strftime('%H:%M')}[/]" if self.show_timestamps else ""
                             ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]"
+                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]{_ts_suffix}"
                             )
                             user_input = full_text
                         else:
                             print()
                             ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                            _ts_suffix = f" [dim]{datetime.now().strftime('%H:%M')}[/]" if self.show_timestamps else ""
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{_ts_suffix}")
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:
@@ -7022,14 +7028,16 @@ class HermesCLI:
                             line_count = user_input.count('\n') + 1
                             print()
                             ChatConsole().print(_user_bar)
+                            _ts_suffix = f" [dim]{datetime.now().strftime('%H:%M')}[/]" if self.show_timestamps else ""
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
-                                f"[dim](+{line_count - 1} lines)[/]"
+                                f"[dim](+{line_count - 1} lines)[/]{_ts_suffix}"
                             )
                         else:
                             print()
                             ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                            _ts_suffix = f" [dim]{datetime.now().strftime('%H:%M')}[/]" if self.show_timestamps else ""
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{_ts_suffix}")
                     
                     # Show image attachment count
                     if submit_images:

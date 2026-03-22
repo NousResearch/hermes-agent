@@ -48,6 +48,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -65,6 +66,7 @@ from agent.usage_pricing import (
     format_token_count_compact,
 )
 from hermes_cli.banner import _format_context_length
+from hermes_cli import terminal_keyboard as _tkbd
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -5995,6 +5997,7 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
+        _tkbd.register_word_delete_keybindings(kb)
         
         @kb.add('enter')
         def handle_enter(event):
@@ -7074,18 +7077,53 @@ class HermesCLI:
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
-        
+
+        terminal_keyboard_cleanup = None
+        pending_terminal_key_presses = []
+        try:
+            _tkbd.install_all()
+            terminal_keyboard_detection = _tkbd.detect_capabilities()
+            terminal_keyboard_mode = _tkbd.select_mode(
+                terminal_keyboard_detection.capabilities
+            )
+            pending_terminal_key_presses = _tkbd.parse_input_key_presses(
+                terminal_keyboard_detection.pending_input
+            )
+            if terminal_keyboard_mode:
+                _tkbd.set_mode(terminal_keyboard_mode, enable=True)
+
+                def terminal_keyboard_cleanup(
+                    mode=terminal_keyboard_mode,
+                ) -> None:
+                    _tkbd.set_mode(mode, enable=False)
+
+                # Safety net for signal-based exits where the finally block may not run
+                atexit.register(terminal_keyboard_cleanup)
+        except Exception:
+            terminal_keyboard_cleanup = None
+
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
+                if pending_terminal_key_presses:
+                    app.key_processor.feed_multiple(pending_terminal_key_presses, first=True)
                 app.run()
         except (EOFError, KeyboardInterrupt):
             pass
         finally:
             self._should_exit = True
+            if terminal_keyboard_cleanup is not None:
+                try:
+                    atexit.unregister(terminal_keyboard_cleanup)
+                except Exception:
+                    pass
+                try:
+                    terminal_keyboard_cleanup()
+                except Exception:
+                    pass
             # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:

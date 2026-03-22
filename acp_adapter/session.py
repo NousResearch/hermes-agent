@@ -270,7 +270,17 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        cwd_json = json.dumps({"cwd": state.cwd})
+        session_meta = {"cwd": state.cwd}
+        provider = getattr(state.agent, "provider", None)
+        base_url = getattr(state.agent, "base_url", None)
+        api_mode = getattr(state.agent, "api_mode", None)
+        if isinstance(provider, str) and provider.strip():
+            session_meta["provider"] = provider.strip()
+        if isinstance(base_url, str) and base_url.strip():
+            session_meta["base_url"] = base_url.strip()
+        if isinstance(api_mode, str) and api_mode.strip():
+            session_meta["api_mode"] = api_mode.strip()
+        cwd_json = json.dumps(session_meta)
 
         try:
             # Ensure the session record exists.
@@ -331,10 +341,18 @@ class SessionManager:
 
         # Extract cwd from model_config.
         cwd = "."
+        requested_provider = row.get("billing_provider")
+        restored_base_url = row.get("billing_base_url")
+        restored_api_mode = None
         mc = row.get("model_config")
         if mc:
             try:
-                cwd = json.loads(mc).get("cwd", ".")
+                meta = json.loads(mc)
+                if isinstance(meta, dict):
+                    cwd = meta.get("cwd", ".")
+                    requested_provider = meta.get("provider") or requested_provider
+                    restored_base_url = meta.get("base_url") or restored_base_url
+                    restored_api_mode = meta.get("api_mode") or restored_api_mode
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -348,7 +366,14 @@ class SessionManager:
             history = []
 
         try:
-            agent = self._make_agent(session_id=session_id, cwd=cwd, model=model)
+            agent = self._make_agent(
+                session_id=session_id,
+                cwd=cwd,
+                model=model,
+                requested_provider=requested_provider,
+                base_url=restored_base_url,
+                api_mode=restored_api_mode,
+            )
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
@@ -386,6 +411,9 @@ class SessionManager:
         session_id: str,
         cwd: str,
         model: str | None = None,
+        requested_provider: str | None = None,
+        base_url: str | None = None,
+        api_mode: str | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -397,10 +425,10 @@ class SessionManager:
         config = load_config()
         model_cfg = config.get("model")
         default_model = "anthropic/claude-opus-4.6"
-        requested_provider = None
+        config_provider = None
         if isinstance(model_cfg, dict):
             default_model = str(model_cfg.get("default") or default_model)
-            requested_provider = model_cfg.get("provider")
+            config_provider = model_cfg.get("provider")
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
@@ -413,12 +441,12 @@ class SessionManager:
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider)
+            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update(
                 {
                     "provider": runtime.get("provider"),
-                    "api_mode": runtime.get("api_mode"),
-                    "base_url": runtime.get("base_url"),
+                    "api_mode": api_mode or runtime.get("api_mode"),
+                    "base_url": base_url or runtime.get("base_url"),
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),

@@ -43,6 +43,8 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+import re
+
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -50,6 +52,8 @@ from gateway.platforms.base import (
     SendResult,
     cache_image_from_url,
     cache_audio_from_url,
+    cache_document_from_bytes,
+    SUPPORTED_DOCUMENT_TYPES,
 )
 
 
@@ -439,6 +443,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._bot_participated_threads: set = self._load_participated_threads()
+        # Persistent typing indicator loops per channel (DMs don't reliably
+        # show the standard typing gateway event for bots)
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
     
@@ -1242,14 +1249,48 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
     
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send typing indicator."""
-        if self._client:
+        """Start a persistent typing indicator for a channel.
+
+        Discord's TYPING_START gateway event is unreliable in DMs for bots.
+        Instead, start a background loop that hits the typing endpoint every
+        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
+        stop_typing() is called (after the response is sent).
+        """
+        if not self._client:
+            return
+        # Don't start a duplicate loop
+        if chat_id in self._typing_tasks:
+            return
+
+        async def _typing_loop() -> None:
             try:
-                channel = self._client.get_channel(int(chat_id))
-                if channel:
-                    await channel.typing()
-            except Exception:
-                pass  # Ignore typing indicator failures
+                while True:
+                    try:
+                        route = discord.http.Route(
+                            "POST", "/channels/{channel_id}/typing",
+                            channel_id=chat_id,
+                        )
+                        await self._client.http.request(route)
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
+                        return
+                    await asyncio.sleep(8)
+            except asyncio.CancelledError:
+                pass
+
+        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the persistent typing indicator for a channel."""
+        task = self._typing_tasks.pop(chat_id, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""
@@ -1503,7 +1544,17 @@ class DiscordAdapter(BasePlatformAdapter):
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
-        chat_type = "dm" if is_dm else "group"
+        is_thread = isinstance(interaction.channel, discord.Thread)
+        thread_id = None
+
+        if is_dm:
+            chat_type = "dm"
+        elif is_thread:
+            chat_type = "thread"
+            thread_id = str(interaction.channel_id)
+        else:
+            chat_type = "group"
+
         chat_name = ""
         if not is_dm and hasattr(interaction.channel, "name"):
             chat_name = interaction.channel.name
@@ -1519,6 +1570,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
+            thread_id=thread_id,
             chat_topic=chat_topic,
         )
 
@@ -1905,7 +1957,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("audio/"):
                         msg_type = MessageType.AUDIO
                     else:
-                        msg_type = MessageType.DOCUMENT
+                        doc_ext = ""
+                        if att.filename:
+                            _, doc_ext = os.path.splitext(att.filename)
+                            doc_ext = doc_ext.lower()
+                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
+                            msg_type = MessageType.DOCUMENT
                     break
         
         # When auto-threading kicked in, route responses to the new thread
@@ -1942,6 +1999,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # vision tool can access them reliably (Discord CDN URLs can expire).
         media_urls = []
         media_types = []
+        pending_text_injection: Optional[str] = None
         for att in message.attachments:
             content_type = att.content_type or "unknown"
             if content_type.startswith("image/"):
@@ -1973,12 +2031,70 @@ class DiscordAdapter(BasePlatformAdapter):
                     media_urls.append(att.url)
                     media_types.append(content_type)
             else:
-                # Other attachments: keep the original URL
-                media_urls.append(att.url)
-                media_types.append(content_type)
+                # Document attachments: download, cache, and optionally inject text
+                ext = ""
+                if att.filename:
+                    _, ext = os.path.splitext(att.filename)
+                    ext = ext.lower()
+                if not ext and content_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(content_type, "")
+                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    logger.warning(
+                        "[Discord] Unsupported document type '%s' (%s), skipping",
+                        ext or "unknown", content_type,
+                    )
+                else:
+                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    if att.size and att.size > MAX_DOC_BYTES:
+                        logger.warning(
+                            "[Discord] Document too large (%s bytes), skipping: %s",
+                            att.size, att.filename,
+                        )
+                    else:
+                        try:
+                            import aiohttp
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(
+                                    att.url,
+                                    timeout=aiohttp.ClientTimeout(total=30),
+                                ) as resp:
+                                    if resp.status != 200:
+                                        raise Exception(f"HTTP {resp.status}")
+                                    raw_bytes = await resp.read()
+                            cached_path = cache_document_from_bytes(
+                                raw_bytes, att.filename or f"document{ext}"
+                            )
+                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            media_urls.append(cached_path)
+                            media_types.append(doc_mime)
+                            logger.info("[Discord] Cached user document: %s", cached_path)
+                            # Inject text content for .txt/.md files (capped at 100 KB)
+                            MAX_TEXT_INJECT_BYTES = 100 * 1024
+                            if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                                try:
+                                    text_content = raw_bytes.decode("utf-8")
+                                    display_name = att.filename or f"document{ext}"
+                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                                    injection = f"[Content of {display_name}]:\n{text_content}"
+                                    if pending_text_injection:
+                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                    else:
+                                        pending_text_injection = injection
+                                except UnicodeDecodeError:
+                                    pass
+                        except Exception as e:
+                            logger.warning(
+                                "[Discord] Failed to cache document %s: %s",
+                                att.filename, e, exc_info=True,
+                            )
         
+        event_text = message.content
+        if pending_text_injection:
+            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
         event = MessageEvent(
-            text=message.content,
+            text=event_text,
             message_type=msg_type,
             source=source,
             raw_message=message,

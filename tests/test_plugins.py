@@ -67,6 +67,7 @@ class TestPluginDiscovery:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
         monkeypatch.chdir(project_dir)
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "true")
         plugins_dir = project_dir / ".hermes" / "plugins"
         _make_plugin_dir(plugins_dir, "proj_plugin")
 
@@ -75,6 +76,19 @@ class TestPluginDiscovery:
 
         assert "proj_plugin" in mgr._plugins
         assert mgr._plugins["proj_plugin"].enabled
+
+    def test_discover_project_plugins_skipped_by_default(self, tmp_path, monkeypatch):
+        """Project plugins are not discovered unless explicitly enabled."""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        monkeypatch.chdir(project_dir)
+        plugins_dir = project_dir / ".hermes" / "plugins"
+        _make_plugin_dir(plugins_dir, "proj_plugin")
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "proj_plugin" not in mgr._plugins
 
     def test_discover_is_idempotent(self, tmp_path, monkeypatch):
         """Calling discover_and_load() twice does not duplicate plugins."""
@@ -267,7 +281,7 @@ class TestPluginToolVisibility:
     """Plugin-registered tools appear in get_tool_definitions()."""
 
     def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch):
-        """Tools from plugins bypass the toolset filter."""
+        """Plugin tools are included when their toolset is in enabled_toolsets."""
         import hermes_cli.plugins as plugins_mod
 
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -290,9 +304,21 @@ class TestPluginToolVisibility:
         monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+
+        # Plugin tools are included when their toolset is explicitly enabled
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
         tool_names = [t["function"]["name"] for t in tools]
         assert "vis_tool" in tool_names
+
+        # Plugin tools are excluded when only other toolsets are enabled
+        tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+        tool_names2 = [t["function"]["name"] for t in tools2]
+        assert "vis_tool" not in tool_names2
+
+        # Plugin tools are included when no toolset filter is active (all enabled)
+        tools3 = get_tool_definitions(quiet_mode=True)
+        tool_names3 = [t["function"]["name"] for t in tools3]
+        assert "vis_tool" in tool_names3
 
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────
@@ -338,3 +364,10 @@ class TestPluginManagerList:
             assert "enabled" in p
             assert "tools" in p
             assert "hooks" in p
+
+
+
+# NOTE: TestPluginCommands removed – register_command() was never implemented
+# in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
+# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
+# integration — all of which are unimplemented features.

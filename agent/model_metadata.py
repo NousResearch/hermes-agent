@@ -151,22 +151,44 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not _is_openrouter_base_url(normalized)
 
 
-def _is_known_provider_base_url(base_url: str) -> bool:
+_URL_TO_PROVIDER: Dict[str, str] = {
+    "api.openai.com": "openai",
+    "chatgpt.com": "openai",
+    "api.anthropic.com": "anthropic",
+    "api.z.ai": "zai",
+    "api.moonshot.ai": "kimi-coding",
+    "api.kimi.com": "kimi-coding",
+    "api.minimax": "minimax",
+    "dashscope.aliyuncs.com": "alibaba",
+    "dashscope-intl.aliyuncs.com": "alibaba",
+    "openrouter.ai": "openrouter",
+    "inference-api.nousresearch.com": "nous",
+    "api.deepseek.com": "deepseek",
+    "api.githubcopilot.com": "copilot",
+    "models.github.ai": "copilot",
+}
+
+
+def _infer_provider_from_url(base_url: str) -> Optional[str]:
+    """Infer the models.dev provider name from a base URL.
+
+    This allows context length resolution via models.dev for custom endpoints
+    like DashScope (Alibaba), Z.AI, Kimi, etc. without requiring the user to
+    explicitly set the provider name in config.
+    """
     normalized = _normalize_base_url(base_url)
     if not normalized:
-        return False
+        return None
     parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
     host = parsed.netloc.lower() or parsed.path.lower()
-    known_hosts = (
-        "api.openai.com",
-        "chatgpt.com",
-        "api.anthropic.com",
-        "api.z.ai",
-        "api.moonshot.ai",
-        "api.kimi.com",
-        "api.minimax",
-    )
-    return any(known_host in host for known_host in known_hosts)
+    for url_part, provider in _URL_TO_PROVIDER.items():
+        if url_part in host:
+            return provider
+    return None
+
+
+def _is_known_provider_base_url(base_url: str) -> bool:
+    return _infer_provider_from_url(base_url) is not None
 
 
 def is_local_endpoint(base_url: str) -> bool:
@@ -240,9 +262,11 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
                         pass
             except Exception:
                 pass
-            # llama.cpp exposes /props
+            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
             try:
-                r = client.get(f"{server_url}/props")
+                r = client.get(f"{server_url}/v1/props")
+                if r.status_code != 200:
+                    r = client.get(f"{server_url}/props")  # fallback for older builds
                 if r.status_code == 200 and "default_generation_settings" in r.text:
                     return "llamacpp"
             except Exception:
@@ -435,8 +459,11 @@ def fetch_endpoint_model_metadata(
             )
             if is_llamacpp:
                 try:
-                    props_url = candidate.rstrip("/").replace("/v1", "") + "/props"
-                    props_resp = requests.get(props_url, headers=headers, timeout=5)
+                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
+                    base = candidate.rstrip("/").replace("/v1", "")
+                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
+                    if not props_resp.ok:
+                        props_resp = requests.get(base + "/props", headers=headers, timeout=5)
                     if props_resp.ok:
                         props = props_resp.json()
                         gen_settings = props.get("default_generation_settings", {})
@@ -763,8 +790,12 @@ def get_model_context_length(
         if cached is not None:
             return cached
 
-    # 2. Active endpoint metadata for explicit custom routes
-    if _is_custom_endpoint(base_url):
+    # 2. Active endpoint metadata for truly custom/unknown endpoints.
+    # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their
+    # /models endpoint may report a provider-imposed limit (e.g. Copilot
+    # returns 128k) instead of the model's full context (400k).  models.dev
+    # has the correct per-provider values and is checked at step 5+.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
         endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
         matched = endpoint_metadata.get(model)
         if not matched:
@@ -808,13 +839,21 @@ def get_model_context_length(
     # These are provider-specific and take priority over the generic OR cache,
     # since the same model can have different context limits per provider
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
-    if provider == "nous":
+    # If provider is generic (openrouter/custom/empty), try to infer from URL.
+    effective_provider = provider
+    if not effective_provider or effective_provider in ("openrouter", "custom"):
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
+    if effective_provider == "nous":
         ctx = _resolve_nous_context_length(model)
         if ctx:
             return ctx
-    if provider:
+    if effective_provider:
         from agent.models_dev import lookup_models_dev_context
-        ctx = lookup_models_dev_context(provider, model)
+        ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
             return ctx
 
@@ -827,10 +866,11 @@ def get_model_context_length(
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
+    model_lower = model.lower()
     for default_model, length in sorted(
         DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
     ):
-        if default_model in model:
+        if default_model in model_lower:
             return length
 
     # 9. Query local server as last resort

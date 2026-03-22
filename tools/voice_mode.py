@@ -81,8 +81,15 @@ def detect_audio_environment() -> dict:
                 warnings.append("No audio input/output devices detected")
         except Exception:
             warnings.append("Audio subsystem error (PortAudio cannot query devices)")
-    except (ImportError, OSError):
+    except ImportError:
         warnings.append("Audio libraries not installed (pip install sounddevice numpy)")
+    except OSError:
+        warnings.append(
+            "PortAudio system library not found -- install it first:\n"
+            "  Linux:  sudo apt-get install libportaudio2\n"
+            "  macOS:  brew install portaudio\n"
+            "Then retry /voice on."
+        )
 
     return {
         "available": len(warnings) == 0,

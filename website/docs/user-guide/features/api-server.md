@@ -18,6 +18,9 @@ Add to `~/.hermes/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
+API_SERVER_KEY=change-me-local-dev
+# Optional: only if a browser must call Hermes directly
+# API_SERVER_CORS_ORIGINS=http://localhost:3000
 ```
 
 ### 2. Start the gateway
@@ -39,6 +42,7 @@ Point any OpenAI-compatible client at `http://localhost:8642/v1`:
 ```bash
 # Test with curl
 curl http://localhost:8642/v1/chat/completions \
+  -H "Authorization: Bearer change-me-local-dev" \
   -H "Content-Type: application/json" \
   -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
@@ -168,12 +172,12 @@ Bearer token auth via the `Authorization` header:
 Authorization: Bearer ***
 ```
 
-Configure the key via `API_SERVER_KEY` env var. If no key is set, all requests are allowed (for local-only use).
+Configure the key via `API_SERVER_KEY` env var. If you need a browser to call Hermes directly, also set `API_SERVER_CORS_ORIGINS` to an explicit allowlist.
 
 :::warning Security
-The API server gives full access to hermes-agent's toolset, **including terminal commands**. If you change the bind address to `0.0.0.0` (network-accessible), **always set `API_SERVER_KEY`** — without it, anyone on your network can execute arbitrary commands on your machine.
+The API server gives full access to hermes-agent's toolset, **including terminal commands**. If you change the bind address to `0.0.0.0` (network-accessible), **always set `API_SERVER_KEY`** and keep `API_SERVER_CORS_ORIGINS` narrow — without that, remote callers may be able to execute arbitrary commands on your machine.
 
-The default bind address (`127.0.0.1`) is safe for local-only use.
+The default bind address (`127.0.0.1`) is for local-only use. Browser access is disabled by default; enable it only for explicit trusted origins.
 :::
 
 ## Configuration
@@ -186,6 +190,7 @@ The default bind address (`127.0.0.1`) is safe for local-only use.
 | `API_SERVER_PORT` | `8642` | HTTP server port |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address (localhost only by default) |
 | `API_SERVER_KEY` | _(none)_ | Bearer token for auth |
+| `API_SERVER_CORS_ORIGINS` | _(none)_ | Comma-separated allowed browser origins |
 
 ### config.yaml
 
@@ -196,7 +201,15 @@ The default bind address (`127.0.0.1`) is safe for local-only use.
 
 ## CORS
 
-The API server includes CORS headers on all responses (`Access-Control-Allow-Origin: *`), so browser-based frontends can connect directly.
+The API server does **not** enable browser CORS by default.
+
+For direct browser access, set an explicit allowlist:
+
+```bash
+API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+```
+
+Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 
 ## Compatible Frontends
 

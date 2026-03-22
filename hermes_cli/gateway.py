@@ -1195,6 +1195,26 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "weixin",
+        "label": "WeChat (Weixin)",
+        "emoji": "💬",
+        "token_var": "WEIXIN_TOKEN",
+        "setup_instructions": [
+            "WeChat uses QR code login via the iLink Bot API.",
+            "1. Run: python3 scripts/weixin_login.py",
+            "2. Scan the QR code with your WeChat app",
+            "3. Copy the bot token and account ID from the output below",
+        ],
+        "vars": [
+            {"name": "WEIXIN_TOKEN", "prompt": "Bot Token (from QR login)", "password": True,
+             "help": "The bot_token obtained from QR code login."},
+            {"name": "WEIXIN_ACCOUNT_ID", "prompt": "Account ID (from QR login)", "password": False,
+             "help": "The ilink_bot_id returned after login."},
+            {"name": "WEIXIN_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or leave blank for WEIXIN_ALLOW_ALL_USERS)", "password": False,
+             "help": "WeChat user IDs allowed to message the bot."},
+        ],
+    },
 ]
 
 

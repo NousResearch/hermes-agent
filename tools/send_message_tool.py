@@ -11,6 +11,7 @@ import os
 import re
 import ssl
 import time
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ def _handle_send(args):
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -279,6 +281,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.weixin import WeixinAdapter
 
     media_files = media_files or []
 
@@ -287,6 +290,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.WEIXIN: WeixinAdapter.MAX_MESSAGE_LENGTH,
     }
 
     # Smart-chunk the message to fit within platform limits.
@@ -297,7 +301,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     else:
         chunks = [message]
 
-    # --- Telegram: special handling for media attachments ---
+    # --- Platforms with native media support ---
     if platform == Platform.TELEGRAM:
         last_result = None
         for i, chunk in enumerate(chunks):
@@ -314,11 +318,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram platforms ---
+    if platform == Platform.WEIXIN:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_weixin(
+                pconfig, chat_id, chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- Platforms without native media support ---
+    _MEDIA_PLATFORMS = ("telegram", "weixin")
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
+                f"send_message MEDIA delivery is currently only supported for "
+                f"{', '.join(_MEDIA_PLATFORMS)}; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -326,7 +345,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            f"native send_message media delivery is supported for {', '.join(_MEDIA_PLATFORMS)}"
         )
 
     last_result = None
@@ -679,6 +698,132 @@ def _check_send_message():
 
 
 # --- Registry ---
+async def _send_weixin(pconfig, chat_id, message, media_files=None):
+    """Send a WeChat message via the iLink Bot API (best-effort standalone).
+
+    WeChat requires a context_token from prior inbound messages. This
+    function attempts to load a persisted token from disk. If unavailable
+    or expired, the send will fail gracefully.
+
+    Supports text + native media delivery. Media files are uploaded via
+    the WeChat CDN with AES-128-ECB encryption using the full adapter.
+
+    Chunking is handled by _send_to_platform() before this is called.
+    """
+    try:
+        import httpx
+        import base64
+        import struct
+        from pathlib import Path
+
+        token = pconfig.token or os.getenv("WEIXIN_TOKEN", "")
+        extra = pconfig.extra or {}
+        base_url = extra.get("base_url") or os.getenv("WEIXIN_BASE_URL", "https://ilinkai.weixin.qq.com")
+
+        if not token:
+            return {"error": "WeChat token not configured (WEIXIN_TOKEN)"}
+
+        # Load persisted context_token
+        context_token = None
+        try:
+            from hermes_cli.config import get_hermes_home
+            tokens_file = get_hermes_home() / "weixin" / "context_tokens.json"
+            if tokens_file.exists():
+                import json as _json
+                tokens = _json.loads(tokens_file.read_text("utf-8"))
+                context_token = tokens.get(chat_id)
+        except Exception:
+            pass
+
+        if not context_token:
+            return {"error": "No context_token for this WeChat user. They must message the bot first (WeChat requires a reply context)."}
+
+        # Share one HTTP client across text and media sends so the temporary
+        # adapter can reuse the same authenticated session for CDN/API calls.
+        last_result = None
+        from gateway.platforms.weixin import _markdown_to_plain
+        plain_text = _markdown_to_plain(message).strip()
+
+        async with httpx.AsyncClient() as client:
+            if plain_text:
+                rand_uint32 = struct.unpack(">I", os.urandom(4))[0]
+                uin_b64 = base64.b64encode(str(rand_uint32).encode()).decode()
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "AuthorizationType": "ilink_bot_token",
+                    "Authorization": f"Bearer {token}",
+                    "X-WECHAT-UIN": uin_b64,
+                }
+                body = {
+                    "msg": {
+                        "from_user_id": "",
+                        "to_user_id": chat_id,
+                        "client_id": f"hermes-send-{uuid.uuid4().hex[:12]}",
+                        "message_type": 2,
+                        "message_state": 2,
+                        "item_list": [{"type": 1, "text_item": {"text": plain_text}}],
+                        "context_token": context_token,
+                    },
+                    "base_info": {"channel_version": "hermes-0.1.0"},
+                }
+
+                resp = await client.post(
+                    f"{base_url.rstrip('/')}/ilink/bot/sendmessage",
+                    json=body, headers=headers, timeout=15,
+                )
+                if resp.status_code >= 400:
+                    return {"error": f"WeChat send failed: HTTP {resp.status_code}: {resp.text[:200]}"}
+                try:
+                    resp_data = resp.json()
+                    if resp_data.get("ret", 0) != 0:
+                        return {"error": f"WeChat send failed: ret={resp_data.get('ret')} {resp_data.get('errmsg', '')}"}
+                except Exception:
+                    pass
+                last_result = {"success": True, "message": f"Sent to WeChat user {chat_id}"}
+
+            # Send media attachments via the full adapter (CDN upload + AES)
+            if media_files:
+                try:
+                    from gateway.platforms.weixin import WeixinAdapter
+                    from gateway.config import PlatformConfig
+
+                    adapter = WeixinAdapter(PlatformConfig(
+                        enabled=True, token=token, extra=extra,
+                    ))
+                    adapter._http = client
+                    adapter._context_tokens[chat_id] = context_token
+
+                    _skipped = []
+                    for media_path, _is_voice in media_files:
+                        if not Path(media_path).is_file():
+                            _skipped.append(media_path)
+                            continue
+                        ext = Path(media_path).suffix.lower()
+                        if ext in _IMAGE_EXTS:
+                            result = await adapter.send_image_file(chat_id=chat_id, image_path=media_path)
+                        elif ext in _VIDEO_EXTS:
+                            result = await adapter.send_video(chat_id=chat_id, video_path=media_path)
+                        elif ext in _AUDIO_EXTS:
+                            result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path)
+                        else:
+                            result = await adapter.send_document(chat_id=chat_id, file_path=media_path)
+
+                        if result.success:
+                            last_result = {"success": True, "message": f"Sent {Path(media_path).name} to WeChat user {chat_id}"}
+                        else:
+                            return {"error": f"WeChat file send failed for {Path(media_path).name}: {result.error}"}
+                except Exception as e:
+                    return {"error": f"WeChat media delivery error: {e}"}
+
+                if _skipped and not last_result:
+                    return {"error": f"WeChat media files not found: {', '.join(_skipped)}"}
+
+        return last_result or {"error": "Nothing to send (no text and no valid media files)"}
+    except Exception as e:
+        return {"error": f"WeChat send error: {e}"}
+
+
 from tools.registry import registry
 
 registry.register(

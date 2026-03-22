@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    WEIXIN = "weixin"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -733,6 +734,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.SMS,
                 chat_id=sms_home,
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # WeChat (Weixin)
+    weixin_token = os.getenv("WEIXIN_TOKEN")
+    if weixin_token:
+        if Platform.WEIXIN not in config.platforms:
+            config.platforms[Platform.WEIXIN] = PlatformConfig()
+        config.platforms[Platform.WEIXIN].enabled = True
+        config.platforms[Platform.WEIXIN].token = weixin_token
+        extra = config.platforms[Platform.WEIXIN].extra
+        for key, env in [
+            ("base_url", "WEIXIN_BASE_URL"),
+            ("cdn_base_url", "WEIXIN_CDN_BASE_URL"),
+            ("account_id", "WEIXIN_ACCOUNT_ID"),
+        ]:
+            val = os.getenv(env)
+            if val:
+                extra[key] = val
+        weixin_home = os.getenv("WEIXIN_HOME_CHANNEL")
+        if weixin_home:
+            config.platforms[Platform.WEIXIN].home_channel = HomeChannel(
+                platform=Platform.WEIXIN,
+                chat_id=weixin_home,
+                name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
             )
 
     # API Server

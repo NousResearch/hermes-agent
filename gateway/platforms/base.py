@@ -1130,6 +1130,14 @@ class BasePlatformAdapter(ABC):
                 await typing_task
             except asyncio.CancelledError:
                 pass
+            # Stop any persistent platform-level typing loop (e.g. Discord's
+            # _typing_loop). Must happen AFTER cancelling _keep_typing to avoid
+            # a race where _keep_typing re-spawns the loop right before being
+            # cancelled.
+            try:
+                await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
             # Clean up session tracking
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]

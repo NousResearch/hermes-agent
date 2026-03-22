@@ -504,6 +504,22 @@ class BasePlatformAdapter(ABC):
         metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
         """
         pass
+
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
+        """
+        Stop a typing indicator if the platform requires an explicit stop call.
+
+        Platforms with expiring typing status can keep the default no-op.
+        """
+        pass
+
+    async def mark_read(self, chat_id: str, metadata=None) -> None:
+        """
+        Mark a chat as read when an inbound message has been accepted.
+
+        Override in subclasses for platforms with explicit read-receipt APIs.
+        """
+        pass
     
     async def send_image(
         self,
@@ -898,6 +914,11 @@ class BasePlatformAdapter(ABC):
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
+            try:
+                await self.mark_read(event.source.chat_id, metadata=_thread_metadata)
+            except Exception as mark_read_err:
+                logger.debug("[%s] Failed to mark chat as read: %s", self.name, mark_read_err)
+
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
@@ -1122,6 +1143,10 @@ class BasePlatformAdapter(ABC):
                 await typing_task
             except asyncio.CancelledError:
                 pass
+            try:
+                await self.stop_typing(event.source.chat_id, metadata=_thread_metadata)
+            except Exception as stop_typing_err:
+                logger.debug("[%s] Failed to stop typing indicator: %s", self.name, stop_typing_err)
             # Clean up session tracking
             if session_key in self._active_sessions:
                 del self._active_sessions[session_key]

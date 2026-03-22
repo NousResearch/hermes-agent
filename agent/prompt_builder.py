@@ -197,6 +197,18 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "blooio": (
+        "You are on a text messaging communication platform, Blooio. "
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Blooio uses "
+        "chat-based iMessage and SMS delivery, so keep responses concise when "
+        "appropriate. You can also include image URLs in markdown format "
+        "![alt](url) and they will be sent as attachments when supported. "
+        "When a lightweight acknowledgement or tapback would improve the interaction, "
+        "you may use the react_to_message tool to react to the user's message, but use "
+        "reactions sparingly and only when they add clear conversational value."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

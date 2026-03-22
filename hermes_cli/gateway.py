@@ -1125,6 +1125,29 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "blooio",
+        "label": "Blooio",
+        "emoji": "💬",
+        "token_var": "BLOOIO_API_KEY",
+        "setup_instructions": [
+            "1. Create a Blooio API key in the Blooio dashboard",
+            "2. Expose your Hermes gateway with a public HTTPS URL reachable by Blooio",
+            "3. Blooio webhooks and temporary media delivery use that public base URL",
+            "4. Set a home chat ID (phone number, email, or group chat) for cron delivery and notifications",
+        ],
+        "vars": [
+            {"name": "BLOOIO_API_KEY", "prompt": "Blooio API key", "password": True,
+             "help": "Paste the API key from your Blooio dashboard."},
+            {"name": "BLOOIO_PUBLIC_BASE_URL", "prompt": "Public HTTPS base URL", "password": False,
+             "help": "Base URL Blooio can call, e.g. https://bot.example.com . Hermes appends the instance-specific webhook path automatically."},
+            {"name": "BLOOIO_ALLOWED_USERS", "prompt": "Allowed user IDs / senders (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Optional allowlist of Blooio senders (phone numbers, emails, or sender IDs). Leave empty and use pairing or allow-all if preferred."},
+            {"name": "BLOOIO_HOME_CHANNEL", "prompt": "Home chat ID (phone number, email, or group chat; empty to set later with /set-home)", "password": False,
+             "help": "Chat ID used for cron job delivery and notifications."},
+        ],
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -1274,7 +1297,7 @@ def _runtime_health_lines() -> list[str]:
 
 
 def _setup_standard_platform(platform: dict):
-    """Interactive setup for Telegram, Discord, or Slack."""
+    """Interactive setup for standard token-based messaging platforms."""
     emoji = platform["emoji"]
     label = platform["label"]
     token_var = platform["token_var"]

@@ -687,8 +687,12 @@ class TestPromptBuilderConstants:
         assert "whatsapp" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
+        assert "blooio" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
+
+    def test_blooio_hint_mentions_reactions(self):
+        assert "react_to_message" in PLATFORM_HINTS["blooio"]
 
 
 # =========================================================================

@@ -127,7 +127,36 @@ def _deliver_result(job: dict, content: str) -> None:
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
-    from tools.send_message_tool import _send_to_platform
+    from tools.send_message_tool import _send_to_platform, _send_blooio
+
+    if platform_name.lower() == "blooio":
+        api_key = os.getenv("BLOOIO_API_KEY", "").strip()
+        if not api_key:
+            logger.warning("Job '%s': Blooio is not configured (BLOOIO_API_KEY missing)", job["id"])
+            return
+        base_url = os.getenv("BLOOIO_BASE_URL", "").strip() or None
+        try:
+            result = asyncio.run(_send_blooio(api_key, chat_id, content, base_url=base_url))
+        except RuntimeError:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, _send_blooio(api_key, chat_id, content, base_url=base_url))
+                result = future.result(timeout=30)
+        except Exception as e:
+            logger.error("Job '%s': delivery to blooio:%s failed: %s", job["id"], chat_id, e)
+            return
+
+        if result and result.get("error"):
+            logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
+        else:
+            logger.info("Job '%s': delivered to blooio:%s", job["id"], chat_id)
+            try:
+                from gateway.mirror import mirror_to_session
+                mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
+            except Exception as e:
+                logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
+        return
+
     from gateway.config import load_gateway_config, Platform
 
     platform_map = {

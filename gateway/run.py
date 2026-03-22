@@ -198,11 +198,21 @@ os.environ["HERMES_EXEC_ASK"] = "1"
 
 # Set terminal working directory for messaging platforms.
 # If the user set an explicit path in config.yaml (not "." or "auto"),
-# respect it. Otherwise use MESSAGING_CWD or default to home directory.
+# respect it. Otherwise:
+#   - local backend: use MESSAGING_CWD or the host home directory
+#   - remote/container backends: only use an explicit MESSAGING_CWD
+#     override; otherwise leave TERMINAL_CWD unset so terminal_tool.py can
+#     choose the backend-native default inside the sandbox/remote system.
 _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
-    messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
-    os.environ["TERMINAL_CWD"] = messaging_cwd
+    _backend = (os.environ.get("TERMINAL_ENV", "local") or "local").strip().lower()
+    _messaging_cwd = (os.getenv("MESSAGING_CWD") or "").strip()
+    if _backend == "local":
+        os.environ["TERMINAL_CWD"] = _messaging_cwd or str(Path.home())
+    elif _messaging_cwd:
+        os.environ["TERMINAL_CWD"] = _messaging_cwd
+    else:
+        os.environ.pop("TERMINAL_CWD", None)
 
 from gateway.config import (
     Platform,
@@ -876,6 +886,7 @@ class GatewayRunner:
         _any_allowlist = any(
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
+                       "BLOOIO_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
@@ -1131,6 +1142,13 @@ class GatewayRunner:
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
             return TelegramAdapter(config)
+
+        elif platform == Platform.BLOOIO:
+            from gateway.platforms.blooio import BlooioAdapter, check_blooio_requirements
+            if not check_blooio_requirements():
+                logger.warning("Blooio: aiohttp not installed or BLOOIO_API_KEY/BLOOIO_PUBLIC_BASE_URL not set")
+                return None
+            return BlooioAdapter(config)
         
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
@@ -1245,6 +1263,7 @@ class GatewayRunner:
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.BLOOIO: "BLOOIO_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
@@ -1257,6 +1276,7 @@ class GatewayRunner:
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.BLOOIO: "BLOOIO_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
@@ -1677,6 +1697,8 @@ class GatewayRunner:
         
         # Set environment variables for tools
         self._set_session_env(context)
+        if getattr(event, "message_id", None):
+            os.environ["HERMES_SESSION_MESSAGE_ID"] = str(event.message_id)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -3420,6 +3442,7 @@ class GatewayRunner:
             default_toolset_map = {
                 Platform.LOCAL: "hermes-cli",
                 Platform.TELEGRAM: "hermes-telegram",
+                Platform.BLOOIO: "hermes-blooio",
                 Platform.DISCORD: "hermes-discord",
                 Platform.WHATSAPP: "hermes-whatsapp",
                 Platform.SLACK: "hermes-slack",
@@ -3442,6 +3465,7 @@ class GatewayRunner:
             platform_config_key = {
                 Platform.LOCAL: "cli",
                 Platform.TELEGRAM: "telegram",
+                Platform.BLOOIO: "blooio",
                 Platform.DISCORD: "discord",
                 Platform.WHATSAPP: "whatsapp",
                 Platform.SLACK: "slack",
@@ -4259,7 +4283,7 @@ class GatewayRunner:
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID", "HERMES_SESSION_MESSAGE_ID"]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -4580,6 +4604,7 @@ class GatewayRunner:
         default_toolset_map = {
             Platform.LOCAL: "hermes-cli",
             Platform.TELEGRAM: "hermes-telegram",
+            Platform.BLOOIO: "hermes-blooio",
             Platform.DISCORD: "hermes-discord",
             Platform.WHATSAPP: "hermes-whatsapp",
             Platform.SLACK: "hermes-slack",
@@ -4605,6 +4630,7 @@ class GatewayRunner:
         platform_config_key = {
             Platform.LOCAL: "cli",
             Platform.TELEGRAM: "telegram",
+            Platform.BLOOIO: "blooio",
             Platform.DISCORD: "discord",
             Platform.WHATSAPP: "whatsapp",
             Platform.SLACK: "slack",

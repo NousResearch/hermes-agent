@@ -45,6 +45,7 @@ class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
     TELEGRAM = "telegram"
+    BLOOIO = "blooio"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SLACK = "slack"
@@ -543,6 +544,7 @@ def load_gateway_config() -> GatewayConfig:
     # won't connect and the cause can be confusing without a log line.
     _token_env_names = {
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+        Platform.BLOOIO: "BLOOIO_API_KEY",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
@@ -579,6 +581,41 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.TELEGRAM,
             chat_id=telegram_home,
             name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # Blooio
+    blooio_api_key = os.getenv("BLOOIO_API_KEY")
+    if blooio_api_key:
+        if Platform.BLOOIO not in config.platforms:
+            config.platforms[Platform.BLOOIO] = PlatformConfig()
+        config.platforms[Platform.BLOOIO].enabled = True
+        config.platforms[Platform.BLOOIO].api_key = blooio_api_key
+        extra = config.platforms[Platform.BLOOIO].extra
+        public_base_url = os.getenv("BLOOIO_PUBLIC_BASE_URL")
+        if public_base_url:
+            extra["public_base_url"] = public_base_url
+        bind_host = os.getenv("BLOOIO_BIND_HOST")
+        if bind_host:
+            extra["bind_host"] = bind_host
+        webhook_port = os.getenv("BLOOIO_WEBHOOK_PORT")
+        if webhook_port:
+            try:
+                extra["webhook_port"] = int(webhook_port)
+            except ValueError:
+                pass
+        from_number = os.getenv("BLOOIO_FROM_NUMBER")
+        if from_number:
+            extra["from_number"] = from_number
+        instance_id = os.getenv("BLOOIO_INSTANCE_ID")
+        if instance_id:
+            extra["instance_id"] = instance_id
+
+    blooio_home = os.getenv("BLOOIO_HOME_CHANNEL")
+    if blooio_home and Platform.BLOOIO in config.platforms:
+        config.platforms[Platform.BLOOIO].home_channel = HomeChannel(
+            platform=Platform.BLOOIO,
+            chat_id=blooio_home,
+            name=os.getenv("BLOOIO_HOME_CHANNEL_NAME", "Home"),
         )
     
     # Discord
@@ -784,6 +821,5 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 
 

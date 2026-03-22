@@ -53,11 +53,17 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             if isinstance(alias_val, str) and alias_val.strip():
                 env[alias_env] = alias_val.strip()
 
-    # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
+    # --- Replicate gateway/run.py messaging cwd fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
-        messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
-        env["TERMINAL_CWD"] = messaging_cwd
+        backend = (env.get("TERMINAL_ENV", "local") or "local").strip().lower()
+        messaging_cwd = (env.get("MESSAGING_CWD") or "").strip()
+        if backend == "local":
+            env["TERMINAL_CWD"] = messaging_cwd or "/root"  # Path.home() for root
+        elif messaging_cwd:
+            env["TERMINAL_CWD"] = messaging_cwd
+        else:
+            env.pop("TERMINAL_CWD", None)
 
     return env
 
@@ -107,6 +113,18 @@ class TestTopLevelCwdAlias:
         cfg = {}
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == "/root"  # Path.home() for root user
+
+    def test_remote_backend_without_messaging_cwd_leaves_terminal_cwd_unset(self):
+        cfg = {"backend": "daytona"}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_ENV"] == "daytona"
+        assert "TERMINAL_CWD" not in result
+
+    def test_remote_backend_uses_explicit_messaging_cwd_when_set(self):
+        cfg = {"backend": "daytona"}
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/workspace/project"})
+        assert result["TERMINAL_ENV"] == "daytona"
+        assert result["TERMINAL_CWD"] == "/workspace/project"
 
     def test_dot_cwd_triggers_messaging_fallback(self):
         """cwd: '.' should trigger MESSAGING_CWD fallback."""

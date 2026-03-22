@@ -1,5 +1,6 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 from unittest.mock import patch
 
@@ -357,6 +358,69 @@ class TestTruncateMessage:
             assert reopened_with_lang, (
                 "No continuation chunk reopened with language tag"
             )
+
+
+class TestReadAndTypingHooks:
+    def _adapter(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
+
+        from gateway.config import Platform, PlatformConfig
+
+        return StubAdapter(config=PlatformConfig(enabled=True, token="test"), platform=Platform.TELEGRAM)
+
+    def test_process_message_marks_read_and_stops_typing(self):
+        class StubAdapter(BasePlatformAdapter):
+            def __init__(self, config, platform):
+                super().__init__(config, platform)
+                self.marked = []
+                self.stopped = []
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                return None
+
+            async def get_chat_info(self, *a):
+                return {}
+
+            async def mark_read(self, chat_id: str, metadata=None) -> None:
+                self.marked.append((chat_id, metadata))
+
+            async def stop_typing(self, chat_id: str, metadata=None) -> None:
+                self.stopped.append((chat_id, metadata))
+
+        from gateway.config import Platform, PlatformConfig
+
+        adapter = StubAdapter(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+
+        async def _handler(event):
+            return None
+
+        adapter.set_message_handler(_handler)
+        event = MessageEvent(
+            text="hello",
+            source=adapter.build_source(chat_id="123", chat_type="dm", user_id="u1"),
+        )
+
+        asyncio.run(adapter._process_message_background(event, "telegram:dm:123"))
+
+        assert adapter.marked == [("123", None)]
+        assert adapter.stopped == [("123", None)]
 
     def test_continuation_chunks_have_balanced_fences(self):
         """Regression: continuation chunks must close reopened code blocks."""

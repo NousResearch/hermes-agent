@@ -17,8 +17,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
-from prompt_toolkit.completion import Completer, Completion
+try:
+    from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+    from prompt_toolkit.completion import Completer, Completion
+except Exception:  # pragma: no cover - test stubs may omit nested prompt_toolkit modules
+    class AutoSuggest:  # type: ignore[override]
+        pass
+
+    class Suggestion:  # type: ignore[override]
+        def __init__(self, text: str = ""):
+            self.text = text
+
+    class Completer:  # type: ignore[override]
+        pass
+
+    class Completion:  # type: ignore[override]
+        def __init__(self, text: str, start_position: int = 0, display: str | None = None):
+            self.text = text
+            self.start_position = start_position
+            self.display = display
 
 
 # ---------------------------------------------------------------------------

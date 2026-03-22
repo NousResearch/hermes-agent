@@ -370,7 +370,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, email, sms, or platform:chat_id"
+                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, blooio, matrix, mattermost, homeassistant, dingtalk, email, sms, or platform:chat_id"
             },
             "model": {
                 "type": "string",

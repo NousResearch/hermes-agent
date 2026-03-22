@@ -1,8 +1,9 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
 Sends a message to a user or channel on any connected messaging platform
-(Telegram, Discord, Slack). Supports listing available targets and resolving
-human-friendly channel names to IDs. Works in both CLI and gateway contexts.
+(Telegram, Discord, Slack, Blooio). Supports listing available targets and
+resolving human-friendly channel names to IDs. Works in both CLI and gateway
+contexts.
 """
 
 import json
@@ -11,6 +12,7 @@ import os
 import re
 import ssl
 import time
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'blooio:+15551234567'"
             },
             "message": {
                 "type": "string",
@@ -97,6 +99,9 @@ def _handle_send(args):
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            elif platform_name == "blooio":
+                chat_id = target_ref
+                is_explicit = True
             else:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
@@ -112,7 +117,52 @@ def _handle_send(args):
     if is_interrupted():
         return json.dumps({"error": "Interrupted"})
 
+    from gateway.platforms.base import BasePlatformAdapter
+    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
+
+    used_home_channel = False
+    if not chat_id and platform_name == "blooio":
+        chat_id = os.getenv("BLOOIO_HOME_CHANNEL", "").strip()
+        if chat_id:
+            used_home_channel = True
+        else:
+            return json.dumps({
+                "error": "No home chat ID set for blooio. Either specify a target directly with 'blooio:CHAT_ID' or set BLOOIO_HOME_CHANNEL."
+            })
+
     try:
+        from model_tools import _run_async
+
+        if platform_name == "blooio":
+            api_key = os.getenv("BLOOIO_API_KEY", "").strip()
+            if not api_key:
+                return json.dumps({"error": "Blooio is not configured. Set BLOOIO_API_KEY in ~/.hermes/config.yaml or environment variables."})
+
+            base_url = os.getenv("BLOOIO_BASE_URL", "").strip() or None
+            result = _run_async(
+                _send_blooio(
+                    api_key,
+                    chat_id,
+                    cleaned_message,
+                    media_files=media_files,
+                    base_url=base_url,
+                )
+            )
+            if used_home_channel and isinstance(result, dict) and result.get("success"):
+                result["note"] = f"Sent to blooio home channel (chat_id: {chat_id})"
+
+            if isinstance(result, dict) and result.get("success") and mirror_text:
+                try:
+                    from gateway.mirror import mirror_to_session
+                    source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
+                    if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
+                        result["mirrored"] = True
+                except Exception:
+                    pass
+
+            return json.dumps(result)
+
         from gateway.config import load_gateway_config, Platform
         config = load_gateway_config()
     except Exception as e:
@@ -140,12 +190,6 @@ def _handle_send(args):
     if not pconfig or not pconfig.enabled:
         return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables."})
 
-    from gateway.platforms.base import BasePlatformAdapter
-
-    media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
-
-    used_home_channel = False
     if not chat_id:
         home = config.get_home_channel(platform)
         if home:
@@ -163,7 +207,6 @@ def _handle_send(args):
         return json.dumps(duplicate_skip)
 
     try:
-        from model_tools import _run_async
         result = _run_async(
             _send_to_platform(
                 platform,
@@ -492,7 +535,7 @@ async def _send_discord(token, chat_id, message):
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json={"content": message}) as resp:
-                if resp.status not in (200, 201):
+                if resp.status not in (200, 201, 202):
                     body = await resp.text()
                     return {"error": f"Discord API error ({resp.status}): {body}"}
                 data = await resp.json()
@@ -666,10 +709,77 @@ async def _send_sms(auth_token, chat_id, message):
         return {"error": f"SMS send failed: {e}"}
 
 
+async def _send_blooio(api_key, chat_id, message, media_files=None, base_url=None):
+    """Send via the Blooio chat API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    media_files = media_files or []
+    if media_files and not message.strip():
+        return {
+            "error": (
+                "Blooio media delivery currently requires text content; "
+                "send_message MEDIA-only delivery is not supported for Blooio yet"
+            )
+        }
+
+    warning = None
+    if media_files:
+        warning = (
+            "MEDIA attachments were omitted for blooio; native send_message media delivery "
+            "is not yet implemented for Blooio"
+        )
+
+    api_base = (base_url or os.getenv("BLOOIO_BASE_URL") or "https://backend.blooio.com/v2/api").rstrip("/")
+    url = f"{api_base}/chats/{quote(str(chat_id), safe='')}/messages"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers=headers,
+                json={"text": message},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                body_text = await resp.text()
+                if resp.status not in (200, 201):
+                    return {"error": f"Blooio API error ({resp.status}): {body_text}"}
+                try:
+                    data = json.loads(body_text) if body_text else {}
+                except Exception:
+                    data = {}
+
+        result = {
+            "success": True,
+            "platform": "blooio",
+            "chat_id": str(chat_id),
+            "message_id": str(
+                data.get("message_id")
+                or data.get("id")
+                or data.get("messageId")
+                or data.get("external_id")
+                or ""
+            ),
+        }
+        if warning:
+            result["warnings"] = [warning]
+        return result
+    except Exception as e:
+        return {"error": f"Blooio send failed: {e}"}
+
+
 def _check_send_message():
     """Gate send_message on gateway running (always available on messaging platforms)."""
     platform = os.getenv("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
+        return True
+    if os.getenv("BLOOIO_API_KEY", "").strip():
         return True
     try:
         from gateway.status import is_gateway_running

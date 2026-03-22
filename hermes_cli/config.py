@@ -33,6 +33,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+    "BLOOIO_HOME_CHANNEL",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
@@ -722,6 +723,67 @@ OPTIONAL_ENV_VARS = {
         "url": "https://api.slack.com/apps",
         "password": True,
         "category": "messaging",
+    },
+    "BLOOIO_API_KEY": {
+        "description": "Blooio API key for the Blooio messaging gateway and direct send_message delivery",
+        "prompt": "Blooio API key",
+        "url": "https://docs.blooio.com/",
+        "tools": ["send_message"],
+        "password": True,
+        "category": "messaging",
+    },
+    "BLOOIO_PUBLIC_BASE_URL": {
+        "description": "Public HTTPS base URL Hermes exposes for Blooio webhooks and temporary media hosting",
+        "prompt": "Blooio public base URL",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "BLOOIO_ALLOWED_USERS": {
+        "description": "Comma-separated Blooio sender identifiers allowed to use the bot (phone numbers, emails, or sender IDs)",
+        "prompt": "Allowed Blooio users (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "BLOOIO_HOME_CHANNEL": {
+        "description": "Default Blooio chat ID for cron and send_message home delivery",
+        "prompt": "Blooio home chat ID",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "BLOOIO_WEBHOOK_PORT": {
+        "description": "Local port for the Blooio webhook/media listener (default: 8081)",
+        "prompt": "Blooio webhook port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "BLOOIO_BIND_HOST": {
+        "description": "Bind address for the Blooio webhook/media listener (default: 0.0.0.0)",
+        "prompt": "Blooio bind host",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "BLOOIO_FROM_NUMBER": {
+        "description": "Optional E.164 number to send Blooio messages from when your API key has multiple numbers",
+        "prompt": "Blooio from number",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "BLOOIO_INSTANCE_ID": {
+        "description": "Optional stable instance identifier for multi-instance Blooio webhook paths",
+        "prompt": "Blooio instance ID",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "MATTERMOST_URL": {
         "description": "Mattermost server URL (e.g. https://mm.example.com)",
@@ -1692,9 +1754,13 @@ def show_config():
     
     telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
     discord_token = get_env_value('DISCORD_BOT_TOKEN')
+    blooio_token = get_env_value('BLOOIO_API_KEY')
+    blooio_home = get_env_value('BLOOIO_HOME_CHANNEL')
     
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
+    print(f"  Blooio:       {'configured' if blooio_token else color('not configured', Colors.DIM)}"
+          f"{f' (home: {blooio_home})' if blooio_home else ''}")
     
     print()
     print(color("─" * 60, Colors.DIM))

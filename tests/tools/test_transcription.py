@@ -51,6 +51,7 @@ class TestGetProvider:
     def test_explicit_openai_no_key_returns_none(self, monkeypatch):
         """Explicit openai without key returns none — no cross-provider fallback."""
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
@@ -156,6 +157,7 @@ class TestTranscribeOpenAI:
 
     def test_no_key(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from tools.transcription_tools import _transcribe_openai
         result = _transcribe_openai("/tmp/test.ogg", "whisper-1")
         assert result["success"] is False

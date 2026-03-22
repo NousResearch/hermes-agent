@@ -62,8 +62,9 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
-    for plat_name in ("telegram", "whatsapp", "signal", "email", "sms"):
+    # Telegram, WhatsApp, Signal, Blooio, Email, and SMS can't enumerate chats here
+    # -- pull from session history as a fallback.
+    for plat_name in ("telegram", "whatsapp", "signal", "blooio", "email", "sms"):
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
 
@@ -182,7 +183,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     Matching strategy (case-insensitive, first match wins):
     - Discord: "bot-home", "#bot-home", "GuildName/bot-home"
-    - Telegram: display name or group name
+    - Telegram/Blooio: display name or group name
     - Slack: "engineering", "#engineering"
     """
     directory = load_directory()

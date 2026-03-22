@@ -59,7 +59,7 @@ _HERMES_CORE_TOOLS = [
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
+    "send_message", "react_to_message",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -131,8 +131,8 @@ TOOLSETS = {
     },
     
     "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, Blooio, SMS, etc.",
+        "tools": ["send_message", "react_to_message"],
         "includes": []
     },
     
@@ -286,6 +286,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-blooio": {
+        "description": "Blooio bot toolset - iMessage/SMS messaging platform (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-homeassistant": {
         "description": "Home Assistant bot toolset - smart home event monitoring and control",
         "tools": _HERMES_CORE_TOOLS,
@@ -307,7 +313,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-blooio", "hermes-homeassistant", "hermes-email", "hermes-sms"]
     }
 }
 

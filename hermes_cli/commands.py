@@ -362,6 +362,10 @@ class _PathToken:
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
+    _ignore_cache: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    _hermesignore_cache: dict[str, tuple[float, list[tuple[str, list[str]]]]] = {}
+    _git_root_cache: dict[str, tuple[float, str | None]] = {}
+
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
@@ -450,6 +454,12 @@ class SlashCommandCompleter(Completer):
         """
         if not entries:
             return set()
+
+        cache_key = (os.path.abspath(search_dir), tuple(sorted(entries)))
+        cached = SlashCommandCompleter._ignore_cache.get(cache_key)
+        if cached is not None:
+            return set(cached)
+
         paths = [os.path.join(search_dir, e) for e in entries]
         ignored: set[str] = set()
         try:
@@ -476,13 +486,23 @@ class SlashCommandCompleter(Completer):
                         ignored.add(entry)
                         break
 
+        SlashCommandCompleter._ignore_cache[cache_key] = set(ignored)
         return ignored
 
     @staticmethod
     def _hermesignore_patterns(search_dir: str) -> list[tuple[str, list[str]]]:
         """Collect ``.hermesignore`` patterns from ``search_dir`` and ancestors."""
-        patterns_by_dir: list[tuple[str, list[str]]] = []
         current = os.path.abspath(search_dir)
+        cache = SlashCommandCompleter._hermesignore_cache.get(current)
+        if cache is not None:
+            cached_mtime, cached_patterns = cache
+            try:
+                if os.path.getmtime(os.path.join(current, ".hermesignore")) == cached_mtime:
+                    return list(cached_patterns)
+            except OSError:
+                pass
+
+        patterns_by_dir: list[tuple[str, list[str]]] = []
         git_root = SlashCommandCompleter._find_git_root(search_dir)
         stop_dir = os.path.abspath(git_root) if git_root else os.path.abspath(os.sep)
 
@@ -505,11 +525,21 @@ class SlashCommandCompleter(Completer):
                 break
             current = parent
 
+        try:
+            mtime = os.path.getmtime(os.path.join(os.path.abspath(search_dir), ".hermesignore"))
+        except OSError:
+            mtime = 0.0
+        SlashCommandCompleter._hermesignore_cache[os.path.abspath(search_dir)] = (mtime, list(patterns_by_dir))
         return patterns_by_dir
 
     @staticmethod
     def _find_git_root(path: str) -> str | None:
         """Return the git repo root for *path*, or None."""
+        abspath = os.path.abspath(path)
+        cache = SlashCommandCompleter._git_root_cache.get(abspath)
+        if cache is not None:
+            _mtime, cached_root = cache
+            return cached_root
         try:
             result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
@@ -519,9 +549,12 @@ class SlashCommandCompleter(Completer):
                 cwd=path,
             )
             if result.returncode == 0:
-                return result.stdout.strip()
+                root = result.stdout.strip()
+                SlashCommandCompleter._git_root_cache[abspath] = (0.0, root)
+                return root
         except (OSError, subprocess.TimeoutExpired):
             pass
+        SlashCommandCompleter._git_root_cache[abspath] = (0.0, None)
         return None
 
     @staticmethod

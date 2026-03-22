@@ -11,7 +11,7 @@ import pytest
 import sys
 import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
 _tt_mod = sys.modules["tools.terminal_tool"]
-from tools.terminal_tool import get_active_environments_info
+from tools.terminal_tool import get_active_environments_info, _check_disk_usage_warning
 
 # 1 MiB of data so the rounded MB value is clearly distinguishable
 _1MB = b"x" * (1024 * 1024)
@@ -62,3 +62,12 @@ class TestDiskUsageGlob:
         # Should be ~2.0 MB total (1 MB per task).
         # With the bug, each task globs everything -> ~4.0 MB.
         assert info["total_disk_usage_mb"] == pytest.approx(2.0, abs=0.1)
+
+
+class TestDiskUsageWarningHardening:
+    def test_check_disk_usage_warning_logs_debug_on_unexpected_error(self):
+        with patch.object(_tt_mod, "_get_scratch_dir", side_effect=RuntimeError("boom")),              patch.object(_tt_mod.logger, "debug") as debug_mock:
+            result = _check_disk_usage_warning()
+
+        assert result is False
+        debug_mock.assert_called()

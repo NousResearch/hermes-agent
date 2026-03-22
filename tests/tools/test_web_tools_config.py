@@ -329,3 +329,23 @@ class TestCheckWebApiKey:
         }):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
+
+def test_firecrawl_api_key_whitespace_is_unset(monkeypatch):
+    """
+    FIRECRAWL_API_KEY with only whitespace should be treated as unset.
+    """
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "   ")
+
+    from tools.web_tools import _get_env_clean
+
+    assert _get_env_clean("FIRECRAWL_API_KEY") is None
+
+def test_backend_selection_ignores_whitespace_firecrawl_key(monkeypatch):
+    """
+    Backend detection should ignore whitespace-only FIRECRAWL_API_KEY.
+    """
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "   ")
+
+    from tools.web_tools import _has_env
+
+    assert _has_env("FIRECRAWL_API_KEY") is False

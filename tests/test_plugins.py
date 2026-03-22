@@ -19,7 +19,6 @@ from hermes_cli.plugins import (
     PluginManifest,
     get_plugin_manager,
     get_plugin_tool_names,
-    get_plugin_command_handler,
     discover_plugins,
     invoke_hook,
 )
@@ -365,148 +364,10 @@ class TestPluginManagerList:
             assert "enabled" in p
             assert "tools" in p
             assert "hooks" in p
-            assert "commands" in p
 
 
-# ── TestPluginCommands ────────────────────────────────────────────────────
 
-
-class TestPluginCommands:
-    """Tests for plugin slash command registration."""
-
-    def test_register_command_adds_to_registry(self, tmp_path, monkeypatch):
-        """PluginContext.register_command() adds a CommandDef to COMMAND_REGISTRY."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "cmd_plugin"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "cmd_plugin"}))
-        (plugin_dir / "__init__.py").write_text(
-            'def _greet(args):\n'
-            '    return f"Hello, {args or \'world\'}!"\n'
-            '\n'
-            'def register(ctx):\n'
-            '    ctx.register_command(\n'
-            '        name="greet",\n'
-            '        handler=_greet,\n'
-            '        description="Greet someone",\n'
-            '        args_hint="[name]",\n'
-            '        aliases=("hi",),\n'
-            '    )\n'
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        # Command handler is registered
-        assert "greet" in mgr._plugin_commands
-        assert "hi" in mgr._plugin_commands
-        assert mgr._plugin_commands["greet"]("Alice") == "Hello, Alice!"
-        assert mgr._plugin_commands["greet"]("") == "Hello, world!"
-
-        # CommandDef is in the registry
-        from hermes_cli.commands import resolve_command
-        cmd_def = resolve_command("greet")
-        assert cmd_def is not None
-        assert cmd_def.name == "greet"
-        assert cmd_def.description == "Greet someone"
-        assert cmd_def.category == "Plugins"
-        assert "hi" in cmd_def.aliases
-
-        # Alias resolves to same CommandDef
-        assert resolve_command("hi") is cmd_def
-
-    def test_register_command_appears_in_help(self, tmp_path, monkeypatch):
-        """Plugin commands appear in COMMANDS dict for /help display."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "help_plugin"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "help_plugin"}))
-        (plugin_dir / "__init__.py").write_text(
-            'def register(ctx):\n'
-            '    ctx.register_command(\n'
-            '        name="myhelpcmd",\n'
-            '        handler=lambda args: "ok",\n'
-            '        description="My help command",\n'
-            '    )\n'
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        from hermes_cli.commands import COMMANDS, COMMANDS_BY_CATEGORY
-        assert "/myhelpcmd" in COMMANDS
-        assert "Plugins" in COMMANDS_BY_CATEGORY
-        assert "/myhelpcmd" in COMMANDS_BY_CATEGORY["Plugins"]
-
-    def test_register_command_tracks_on_loaded_plugin(self, tmp_path, monkeypatch):
-        """LoadedPlugin.commands_registered tracks plugin commands."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "tracked_plugin"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "tracked_plugin"}))
-        (plugin_dir / "__init__.py").write_text(
-            'def register(ctx):\n'
-            '    ctx.register_command(\n'
-            '        name="tracked",\n'
-            '        handler=lambda args: "ok",\n'
-            '        aliases=("tr",),\n'
-            '    )\n'
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        loaded = mgr._plugins["tracked_plugin"]
-        assert "tracked" in loaded.commands_registered
-        assert "tr" in loaded.commands_registered
-
-    def test_get_plugin_command_handler(self, tmp_path, monkeypatch):
-        """get_plugin_command_handler() returns handler or None."""
-        import hermes_cli.plugins as plugins_mod
-
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "handler_plugin"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "handler_plugin"}))
-        (plugin_dir / "__init__.py").write_text(
-            'def register(ctx):\n'
-            '    ctx.register_command(\n'
-            '        name="dostuff",\n'
-            '        handler=lambda args: "did stuff",\n'
-            '    )\n'
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
-
-        handler = get_plugin_command_handler("dostuff")
-        assert handler is not None
-        assert handler("") == "did stuff"
-
-        assert get_plugin_command_handler("nonexistent") is None
-
-    def test_gateway_known_commands_updated(self, tmp_path, monkeypatch):
-        """Plugin commands appear in GATEWAY_KNOWN_COMMANDS for gateway dispatch."""
-        plugins_dir = tmp_path / "hermes_test" / "plugins"
-        plugin_dir = plugins_dir / "gw_plugin"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "gw_plugin"}))
-        (plugin_dir / "__init__.py").write_text(
-            'def register(ctx):\n'
-            '    ctx.register_command(\n'
-            '        name="gwcmd",\n'
-            '        handler=lambda args: "gw ok",\n'
-            '    )\n'
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        from hermes_cli import commands as cmd_mod
-        assert "gwcmd" in cmd_mod.GATEWAY_KNOWN_COMMANDS
+# NOTE: TestPluginCommands removed – register_command() was never implemented
+# in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
+# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
+# integration — all of which are unimplemented features.

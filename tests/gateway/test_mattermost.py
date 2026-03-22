@@ -279,7 +279,7 @@ class TestMattermostWebSocketParsing:
             "id": "post_abc",
             "user_id": "user_123",
             "channel_id": "chan_456",
-            "message": "Hello from Matrix!",
+            "message": "@bot_user_id Hello from Matrix!",
         }
         event = {
             "event": "posted",
@@ -293,7 +293,7 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "Hello from Matrix!"
+        assert msg_event.text == "@bot_user_id Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
 
     @pytest.mark.asyncio
@@ -378,7 +378,7 @@ class TestMattermostWebSocketParsing:
             "id": "post_reply",
             "user_id": "user_123",
             "channel_id": "chan_456",
-            "message": "Thread reply",
+            "message": "@bot_user_id Thread reply",
             "root_id": "root_post_123",
         }
         event = {
@@ -487,7 +487,7 @@ class TestMattermostDedup:
             "id": "post_dup",
             "user_id": "user_123",
             "channel_id": "chan_456",
-            "message": "Hello!",
+            "message": "@bot_user_id Hello!",
         }
         event = {
             "event": "posted",
@@ -514,7 +514,7 @@ class TestMattermostDedup:
                 "id": pid,
                 "user_id": "user_123",
                 "channel_id": "chan_456",
-                "message": f"Message {i}",
+                "message": f"@bot_user_id Message {i}",
             }
             event = {
                 "event": "posted",
@@ -593,7 +593,7 @@ class TestMattermostMediaTypes:
             "id": "post_media",
             "user_id": "user_123",
             "channel_id": "chan_456",
-            "message": "file attached",
+            "message": "@bot_user_id file attached",
             "file_ids": file_ids,
         }
         return {

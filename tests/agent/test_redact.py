@@ -1,10 +1,17 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
+import os
 
 import pytest
 
 from agent.redact import redact_sensitive_text, RedactingFormatter
+
+
+@pytest.fixture(autouse=True)
+def _ensure_redaction_enabled(monkeypatch):
+    """Ensure HERMES_REDACT_SECRETS is not disabled by prior test imports."""
+    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
 
 
 class TestKnownPrefixes:

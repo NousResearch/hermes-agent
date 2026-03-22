@@ -1020,8 +1020,29 @@ def get_async_text_auxiliary_client(task: str = ""):
     )
 
 
+def _try_kimi() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try to initialize Kimi (Moonshot AI) client for vision tasks."""
+    kimi_key = os.getenv("KIMI_API_KEY")
+    if not kimi_key:
+        return None, None
+    base_url = (
+        "https://api.kimi.com/coding/v1"
+        if kimi_key.startswith("sk-kimi-")
+        else "https://api.moonshot.ai/v1"
+    )
+    try:
+        return OpenAI(
+            api_key=kimi_key,
+            base_url=base_url,
+            default_headers={"User-Agent": "KimiCLI/1.0"},
+        ), "kimi-k2.5"
+    except Exception:
+        return None, None
+
+
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
+    "kimi-coding",
     "nous",
     "openai-codex",
     "anthropic",
@@ -1048,6 +1069,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_codex()
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "kimi-coding":
+        return _try_kimi()
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None

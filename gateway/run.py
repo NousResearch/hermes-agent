@@ -2317,9 +2317,11 @@ class GatewayRunner:
             # delivered without this.
             if agent_result.get("already_sent"):
                 if response:
-                    await self._deliver_media_from_response(
-                        response, event, adapter,
-                    )
+                    _media_adapter = self.adapters.get(source.platform)
+                    if _media_adapter:
+                        await self._deliver_media_from_response(
+                            response, event, _media_adapter,
+                        )
                 return None
 
             return response

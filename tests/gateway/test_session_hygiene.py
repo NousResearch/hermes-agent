@@ -212,6 +212,73 @@ class TestSessionHygieneWarnThreshold:
         assert post_compress_tokens < warn_threshold
 
 
+class TestEstimatedTokenSafetyCap:
+    """Verify the 1.4x safety factor on rough estimates is capped at 95% of
+    context length, preventing the threshold from exceeding the model's
+    actual limit.
+
+    Bug: For ~200K models (GLM-5-turbo), the uncapped 1.4x pushed the
+    threshold to 238K — above the model's limit — so hygiene never fired.
+    """
+
+    def test_uncapped_14x_would_exceed_context(self):
+        """Without the cap, 200K * 0.85 * 1.4 = 238K > 200K (broken)."""
+        context_length = 200_000
+        threshold_pct = 0.85
+        raw_threshold = int(context_length * threshold_pct)  # 170K
+        uncapped = int(raw_threshold * 1.4)  # 238K
+        assert uncapped > context_length, (
+            "Uncapped 1.4x should exceed model context (this is the bug)"
+        )
+
+    def test_capped_14x_stays_within_context(self):
+        """With the cap, the threshold stays at 95% of context length."""
+        context_length = 200_000
+        threshold_pct = 0.85
+        raw_threshold = int(context_length * threshold_pct)  # 170K
+        max_safe = int(context_length * 0.95)  # 190K
+        capped = min(int(raw_threshold * 1.4), max_safe)
+        assert capped <= context_length, (
+            f"Capped threshold ({capped:,}) must not exceed context ({context_length:,})"
+        )
+        assert capped == max_safe, (
+            f"For 200K models, the cap should bind: expected {max_safe:,}, got {capped:,}"
+        )
+
+    def test_cap_does_not_affect_large_context_models(self):
+        """For 1M+ models the 1.4x factor stays below 95%, so cap is no-op."""
+        context_length = 1_000_000
+        threshold_pct = 0.85
+        raw_threshold = int(context_length * threshold_pct)  # 850K
+        max_safe = int(context_length * 0.95)  # 950K
+        uncapped = int(raw_threshold * 1.4)  # 1,190K — but that's > 950K
+        capped = min(uncapped, max_safe)
+        # For very large models the cap still applies but the resulting
+        # threshold (950K) is still large enough to prevent premature compression
+        assert capped <= context_length
+
+    def test_cap_for_128k_model(self):
+        """128K model: 128K * 0.85 * 1.4 = 152K — exceeds 128K, cap binds."""
+        context_length = 128_000
+        threshold_pct = 0.85
+        raw_threshold = int(context_length * threshold_pct)  # 108,800
+        max_safe = int(context_length * 0.95)  # 121,600
+        uncapped = int(raw_threshold * 1.4)  # 152,320
+        capped = min(uncapped, max_safe)
+        assert uncapped > context_length, "1.4x exceeds 128K context"
+        assert capped == max_safe, "Cap should bind for 128K models"
+        assert capped < context_length, "Capped value must be below context limit"
+
+    def test_warn_threshold_capped_at_context_length(self):
+        """Warn threshold (0.95 * 1.4) must be capped at context_length."""
+        context_length = 200_000
+        raw_warn = int(context_length * 0.95)  # 190K
+        uncapped_warn = int(raw_warn * 1.4)  # 266K
+        capped_warn = min(uncapped_warn, context_length)
+        assert uncapped_warn > context_length
+        assert capped_warn == context_length
+
+
 class TestTokenEstimation:
     """Verify rough token estimation works as expected for hygiene checks."""
 

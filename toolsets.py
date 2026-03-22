@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Discord message fetching (gated on DISCORD_BOT_TOKEN via check_fn)
+    "discord_fetch_message",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -131,8 +133,8 @@ TOOLSETS = {
     },
     
     "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc. Also supports fetching Discord messages by ID.",
+        "tools": ["send_message", "discord_fetch_message"],
         "includes": []
     },
     

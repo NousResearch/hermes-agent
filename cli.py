@@ -1169,7 +1169,6 @@ class HermesCLI:
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
-        self._terminal_keyboard_mode: str | None = None
         
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
@@ -7084,23 +7083,23 @@ class HermesCLI:
         try:
             _tkbd.install_all()
             terminal_keyboard_detection = _tkbd.detect_capabilities()
-            self._terminal_keyboard_mode = _tkbd.select_mode(
+            terminal_keyboard_mode = _tkbd.select_mode(
                 terminal_keyboard_detection.capabilities
             )
             pending_terminal_key_presses = _tkbd.parse_input_key_presses(
                 terminal_keyboard_detection.pending_input
             )
-            if self._terminal_keyboard_mode:
-                _tkbd.set_mode(self._terminal_keyboard_mode, enable=True)
+            if terminal_keyboard_mode:
+                _tkbd.set_mode(terminal_keyboard_mode, enable=True)
 
                 def terminal_keyboard_cleanup(
-                    mode=self._terminal_keyboard_mode,
+                    mode=terminal_keyboard_mode,
                 ) -> None:
                     _tkbd.set_mode(mode, enable=False)
 
+                # Safety net for signal-based exits where the finally block may not run
                 atexit.register(terminal_keyboard_cleanup)
         except Exception:
-            self._terminal_keyboard_mode = None
             terminal_keyboard_cleanup = None
 
         # Register atexit cleanup so resources are freed even on unexpected exit
@@ -7125,7 +7124,6 @@ class HermesCLI:
                     terminal_keyboard_cleanup()
                 except Exception:
                     pass
-            self._terminal_keyboard_mode = None
             # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:

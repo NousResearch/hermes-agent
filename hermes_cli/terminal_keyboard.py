@@ -34,37 +34,15 @@ MODIFY_OTHER_KEYS_QUERY = "\x1b[?4m"
 MODIFY_OTHER_KEYS_ENABLE = "\x1b[>4;2m"
 MODIFY_OTHER_KEYS_DISABLE = "\x1b[>4;0m"
 DEVICE_ATTRIBUTES_QUERY = "\x1b[c"
+MODE_KITTY = "kitty"
+MODE_MODIFY_OTHER_KEYS = "modify_other_keys"
 QUERY_TIMEOUT_S = 0.25
 _KITTY_QUERY_RESPONSE_RE = re.compile(r"\x1b\[\?(\d+)u")
 _MODIFY_OTHER_KEYS_RESPONSE_RE = re.compile(r"\x1b\[>4;(\d+)m")
 _DEVICE_ATTRIBUTES_RESPONSE_RE = re.compile(r"\x1b\[\?(?:\d+)(?:;\d+)*c")
 _CONTROL_KEY_BY_ASCII = {
-    ord("a"): Keys.ControlA,
-    ord("b"): Keys.ControlB,
-    ord("c"): Keys.ControlC,
-    ord("d"): Keys.ControlD,
-    ord("e"): Keys.ControlE,
-    ord("f"): Keys.ControlF,
-    ord("g"): Keys.ControlG,
-    ord("h"): Keys.ControlH,
-    ord("i"): Keys.ControlI,
-    ord("j"): Keys.ControlJ,
-    ord("k"): Keys.ControlK,
-    ord("l"): Keys.ControlL,
-    ord("m"): Keys.ControlM,
-    ord("n"): Keys.ControlN,
-    ord("o"): Keys.ControlO,
-    ord("p"): Keys.ControlP,
-    ord("q"): Keys.ControlQ,
-    ord("r"): Keys.ControlR,
-    ord("s"): Keys.ControlS,
-    ord("t"): Keys.ControlT,
-    ord("u"): Keys.ControlU,
-    ord("v"): Keys.ControlV,
-    ord("w"): Keys.ControlW,
-    ord("x"): Keys.ControlX,
-    ord("y"): Keys.ControlY,
-    ord("z"): Keys.ControlZ,
+    ord(c): getattr(Keys, f"Control{c.upper()}")
+    for c in "abcdefghijklmnopqrstuvwxyz"
 }
 
 
@@ -125,9 +103,9 @@ def select_mode(
 ) -> str | None:
     """Pick the best keyboard enhancement mode supported by the terminal."""
     if capabilities.kitty_supported:
-        return "kitty"
+        return MODE_KITTY
     if capabilities.modify_other_keys_supported:
-        return "modify_other_keys"
+        return MODE_MODIFY_OTHER_KEYS
     return None
 
 
@@ -155,9 +133,9 @@ def set_mode(
     writer=None,
 ) -> None:
     """Enable or disable an enhanced terminal keyboard mode."""
-    if mode == "kitty":
+    if mode == MODE_KITTY:
         sequence = KITTY_KEYBOARD_ENABLE if enable else KITTY_KEYBOARD_DISABLE
-    elif mode == "modify_other_keys":
+    elif mode == MODE_MODIFY_OTHER_KEYS:
         sequence = MODIFY_OTHER_KEYS_ENABLE if enable else MODIFY_OTHER_KEYS_DISABLE
     else:
         return
@@ -209,7 +187,8 @@ def detect_capabilities(
             KITTY_KEYBOARD_QUERY + MODIFY_OTHER_KEYS_QUERY + DEVICE_ATTRIBUTES_QUERY
         )
 
-        chunks: list[bytes] = []
+        buf = bytearray()
+        decoded = ""
         deadline = time.monotonic() + max(0.0, timeout_s)
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -219,14 +198,12 @@ def detect_capabilities(
             chunk = os.read(stdin_fd, 1024)
             if not chunk:
                 break
-            chunks.append(chunk)
-            decoded = b"".join(chunks).decode("utf-8", errors="ignore")
+            buf.extend(chunk)
+            decoded = bytes(buf).decode("utf-8", errors="ignore")
             if _DEVICE_ATTRIBUTES_RESPONSE_RE.search(decoded):
                 break
 
-        return parse_detection_result(
-            b"".join(chunks).decode("utf-8", errors="ignore")
-        )
+        return parse_detection_result(decoded)
     except Exception:
         return TerminalKeyboardDetectionResult(TerminalKeyboardCapabilities())
     finally:

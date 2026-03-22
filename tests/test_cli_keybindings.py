@@ -68,7 +68,7 @@ def test_select_terminal_keyboard_mode_prefers_kitty():
         modify_other_keys_supported=True,
     )
 
-    assert tkbd.select_mode(capabilities) == "kitty"
+    assert tkbd.select_mode(capabilities) == tkbd.MODE_KITTY
 
 
 def test_select_terminal_keyboard_mode_falls_back_to_modify_other_keys():
@@ -77,7 +77,7 @@ def test_select_terminal_keyboard_mode_falls_back_to_modify_other_keys():
         modify_other_keys_supported=True,
     )
 
-    assert tkbd.select_mode(capabilities) == "modify_other_keys"
+    assert tkbd.select_mode(capabilities) == tkbd.MODE_MODIFY_OTHER_KEYS
 
 
 def test_select_terminal_keyboard_mode_returns_none_when_unsupported():
@@ -87,10 +87,10 @@ def test_select_terminal_keyboard_mode_returns_none_when_unsupported():
 @pytest.mark.parametrize(
     ("mode", "enable", "expected_sequence"),
     [
-        ("kitty", True, tkbd.KITTY_KEYBOARD_ENABLE),
-        ("kitty", False, tkbd.KITTY_KEYBOARD_DISABLE),
-        ("modify_other_keys", True, tkbd.MODIFY_OTHER_KEYS_ENABLE),
-        ("modify_other_keys", False, tkbd.MODIFY_OTHER_KEYS_DISABLE),
+        (tkbd.MODE_KITTY, True, tkbd.KITTY_KEYBOARD_ENABLE),
+        (tkbd.MODE_KITTY, False, tkbd.KITTY_KEYBOARD_DISABLE),
+        (tkbd.MODE_MODIFY_OTHER_KEYS, True, tkbd.MODIFY_OTHER_KEYS_ENABLE),
+        (tkbd.MODE_MODIFY_OTHER_KEYS, False, tkbd.MODIFY_OTHER_KEYS_DISABLE),
     ],
 )
 def test_set_terminal_keyboard_mode_emits_expected_sequence(

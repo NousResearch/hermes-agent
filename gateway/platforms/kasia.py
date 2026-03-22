@@ -92,11 +92,100 @@ class KasiaAdapter(BasePlatformAdapter):
         self._bridge_log_fh = None
         self._poll_task: Optional[asyncio.Task] = None
 
+    @staticmethod
+    def _format_sompi_balance(value: Any) -> Optional[str]:
+        """Render a sompi integer value as a KAS string with 8 decimals."""
+        try:
+            sompi = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        sign = "-" if sompi < 0 else ""
+        whole, fractional = divmod(abs(sompi), 100_000_000)
+        return f"{sign}{whole}.{fractional:08d}"
+
     def _unauthorized_dm_behavior(self) -> str:
         """Return how first-contact unauthorized DMs should be handled."""
         return str(
             self.config.extra.get("unauthorized_dm_behavior", "pair")
         ).strip().lower() or "pair"
+
+    def _looks_like_insufficient_funds_error(self, error: Exception) -> bool:
+        """Return True when a Kasia bridge error points to wallet funding issues."""
+        text = str(error or "").lower()
+        return (
+            "insufficient funds" in text
+            or "not have enough mature balance" in text
+            or "no transaction was produced" in text
+        )
+
+    def _build_wallet_funding_warning(self, health: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Build a human-friendly warning from Kasia health funding fields."""
+        data = health or {}
+        funding_state = str(data.get("walletFundingState", "")).strip().lower()
+        if funding_state not in {"low", "unfunded"}:
+            return None
+
+        wallet_address = str(data.get("walletAddress") or "").strip() or "<unknown>"
+        on_chain = self._format_sompi_balance(data.get("walletBalanceSompi"))
+        spendable = self._format_sompi_balance(data.get("availableMatureBalanceSompi"))
+        recommended = self._format_sompi_balance(data.get("recommendedMinBalanceSompi"))
+        balance_parts = []
+        if on_chain is not None:
+            balance_parts.append(f"{on_chain} KAS on-chain")
+        if spendable is not None:
+            balance_parts.append(f"{spendable} KAS spendable")
+        if recommended is not None:
+            balance_parts.append(f"recommended >= {recommended} KAS")
+        balance_text = ", ".join(balance_parts) if balance_parts else "balance unavailable"
+
+        if funding_state == "unfunded":
+            return (
+                f"Kasia wallet {wallet_address} has no usable funds ({balance_text}). "
+                "Pairing replies and outbound DMs will fail until the wallet is topped up."
+            )
+        return (
+            f"Kasia wallet {wallet_address} is low on funds ({balance_text}). "
+            "Pairing replies and outbound DMs may fail until the wallet is topped up."
+        )
+
+    async def _log_wallet_funding_warning(
+        self,
+        *,
+        context: str,
+        error: Optional[Exception] = None,
+        health: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Log a loud Kasia wallet funding warning when balances are too low."""
+        if health is None:
+            try:
+                health = await self._request_json("GET", "/health", total=5)
+            except Exception:
+                health = None
+
+        warning = self._build_wallet_funding_warning(health)
+        if not warning and error is None:
+            return
+
+        if warning:
+            if error is None:
+                logger.warning("[%s] %s", self.name, warning)
+            else:
+                logger.error(
+                    "[%s] %s Context: %s. Original error: %s",
+                    self.name,
+                    warning,
+                    context,
+                    error,
+                )
+            return
+
+        if error is not None:
+            logger.error(
+                "[%s] Kasia wallet funding appears insufficient during %s: %s",
+                self.name,
+                context,
+                error,
+            )
 
     def _build_handshake_event(self, data: Dict[str, Any]) -> MessageEvent:
         """Normalize a handshake request into a DM event for the gateway."""
@@ -208,6 +297,10 @@ class KasiaAdapter(BasePlatformAdapter):
                 try:
                     health = await self._request_json("GET", "/health", total=5)
                     if health.get("status") in {"connected", "starting"}:
+                        await self._log_wallet_funding_warning(
+                            context="gateway startup",
+                            health=health,
+                        )
                         self._mark_connected()
                         self._poll_task = asyncio.create_task(self._poll_messages())
                         print(f"[{self.name}] Bridge started on port {self._bridge_port}")
@@ -382,6 +475,11 @@ class KasiaAdapter(BasePlatformAdapter):
                     )
                     logger.info("[%s] Responded to Kasia handshake from %s", self.name, chat_id)
                 except Exception as error:
+                    if self._looks_like_insufficient_funds_error(error):
+                        await self._log_wallet_funding_warning(
+                            context=f"responding to authorized Kasia handshake from {chat_id}",
+                            error=error,
+                        )
                     logger.warning(
                         "[%s] Failed to respond to Kasia handshake from %s: %s",
                         self.name,
@@ -403,6 +501,11 @@ class KasiaAdapter(BasePlatformAdapter):
                     )
                     await self.handle_message(self._build_handshake_event(data))
                 except Exception as error:
+                    if self._looks_like_insufficient_funds_error(error):
+                        await self._log_wallet_funding_warning(
+                            context=f"responding to unauthorized Kasia handshake from {chat_id}",
+                            error=error,
+                        )
                     logger.warning(
                         "[%s] Failed to prepare Kasia pairing response for %s: %s",
                         self.name,

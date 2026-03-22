@@ -60,6 +60,26 @@ import {
 } from "./bridge_core_support.js";
 import { KaspaWalletClient } from "./kaspa_wallet.js";
 
+const RECOMMENDED_MIN_WALLET_BALANCE_SOMPI = MINIMUM_MESSAGE_AMOUNT_SOMPI * 2n;
+
+function toBigIntOrZero(value) {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return 0n;
+  }
+  try {
+    return BigInt(normalized);
+  } catch {
+    return 0n;
+  }
+}
+
 export class KasiaBridgeCore {
   constructor({
     stateDir,
@@ -202,9 +222,36 @@ export class KasiaBridgeCore {
     ).length;
     const indexerSnapshot = this.indexerPool.snapshot();
     const nodeSnapshot = this.nodePool.snapshot();
+    const balanceSnapshot = this.walletClient.getBalanceSnapshot?.() || {};
+    const onChainBalanceSompi = toBigIntOrZero(balanceSnapshot.onChainBalanceSompi);
+    const availableMatureBalanceSompi = toBigIntOrZero(
+      balanceSnapshot.availableMatureBalanceSompi
+    );
+    const availablePendingBalanceSompi = toBigIntOrZero(
+      balanceSnapshot.availablePendingBalanceSompi
+    );
+    let walletFundingState = "ready";
+    if (onChainBalanceSompi <= 0n) {
+      walletFundingState = "unfunded";
+    } else if (
+      availableMatureBalanceSompi < MINIMUM_MESSAGE_AMOUNT_SOMPI ||
+      onChainBalanceSompi < RECOMMENDED_MIN_WALLET_BALANCE_SOMPI
+    ) {
+      walletFundingState = "low";
+    }
     return {
       status: this.walletClient.isConnected ? "connected" : "starting",
       walletAddress: this.state.wallet.address,
+      walletBalanceSompi: String(onChainBalanceSompi),
+      availableMatureBalanceSompi: String(availableMatureBalanceSompi),
+      availablePendingBalanceSompi: String(availablePendingBalanceSompi),
+      recommendedMinBalanceSompi: String(RECOMMENDED_MIN_WALLET_BALANCE_SOMPI),
+      minimumMessageAmountSompi: String(MINIMUM_MESSAGE_AMOUNT_SOMPI),
+      walletFundingState,
+      matureUtxoCount: Number(balanceSnapshot.matureUtxoCount || 0),
+      pendingUtxoCount: Number(balanceSnapshot.pendingUtxoCount || 0),
+      trackedPendingUtxoCount: Number(balanceSnapshot.trackedPendingUtxoCount || 0),
+      walletBalanceUpdatedAtMs: Number(balanceSnapshot.updatedAtMs || 0),
       network: this.state.wallet.network || this.network,
       indexerUrl: indexerSnapshot.activeUrl,
       nodeUrl: nodeSnapshot.activeUrl || this.walletClient.getNodeUrl?.() || null,

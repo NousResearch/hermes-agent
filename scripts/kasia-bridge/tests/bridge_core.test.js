@@ -34,6 +34,16 @@ class FakeWalletClient {
       privateKeyHex: "11".repeat(32),
       network: "mainnet",
     };
+    this.balanceSnapshot = {
+      onChainBalanceSompi: 500000000n,
+      availableMatureBalanceSompi: 500000000n,
+      availablePendingBalanceSompi: 0n,
+      trackedPendingBalanceSompi: 0n,
+      matureUtxoCount: 1,
+      pendingUtxoCount: 0,
+      trackedPendingUtxoCount: 0,
+      updatedAtMs: 123,
+    };
   }
 
   async init() {
@@ -48,6 +58,10 @@ class FakeWalletClient {
 
   getNodeUrl() {
     return this.nodeUrl;
+  }
+
+  getBalanceSnapshot() {
+    return this.balanceSnapshot;
   }
 
   async switchNodeUrl(nextNodeUrl) {
@@ -1095,6 +1109,41 @@ test("indexer and node pools fail over and surface degraded health", async () =>
   assert.equal(bridge.health().nodePool.degraded, true);
   assert.equal(bridge.health().indexerPool.activeUrl, "http://indexer-secondary.invalid");
   assert.equal(bridge.health().nodePool.activeUrl, "ws://node-secondary.invalid");
+  assert.equal(bridge.health().walletFundingState, "ready");
+  assert.equal(bridge.health().walletBalanceSompi, "500000000");
+});
+
+test("health surfaces low Kasia wallet funding details", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "kasia-bridge-"));
+  const walletClient = new FakeWalletClient();
+  walletClient.balanceSnapshot = {
+    onChainBalanceSompi: 27881431n,
+    availableMatureBalanceSompi: 27881431n,
+    availablePendingBalanceSompi: 0n,
+    trackedPendingBalanceSompi: 0n,
+    matureUtxoCount: 1,
+    pendingUtxoCount: 0,
+    trackedPendingUtxoCount: 0,
+    updatedAtMs: 456,
+  };
+  const bridge = new KasiaBridgeCore({
+    stateDir,
+    indexerUrl: "http://indexer.invalid",
+    nodeUrl: "ws://node.invalid",
+    network: "mainnet",
+    seedPhrase: "seed",
+    walletClient,
+    fetchImpl: async () => response([]),
+  });
+
+  await bridge.init();
+
+  const health = bridge.health();
+  assert.equal(health.walletFundingState, "low");
+  assert.equal(health.walletBalanceSompi, "27881431");
+  assert.equal(health.availableMatureBalanceSompi, "27881431");
+  assert.equal(health.recommendedMinBalanceSompi, "40000000");
+  assert.equal(health.walletBalanceUpdatedAtMs, 456);
 });
 
 test("broadcast receive is deduplicated and unauthorized publish is rejected", async () => {

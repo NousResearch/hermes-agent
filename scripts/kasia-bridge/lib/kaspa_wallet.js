@@ -560,6 +560,16 @@ export class KaspaWalletClient {
       fetched_at_ms: 0,
     };
     this._lastResolvedFeeRate = getFallbackFeeRate(this.feePolicy);
+    this._balanceSnapshot = {
+      onChainBalanceSompi: 0n,
+      availableMatureBalanceSompi: 0n,
+      availablePendingBalanceSompi: 0n,
+      trackedPendingBalanceSompi: 0n,
+      matureUtxoCount: 0,
+      pendingUtxoCount: 0,
+      trackedPendingUtxoCount: 0,
+      updatedAtMs: 0,
+    };
   }
 
   loadSendState(sendState = {}) {
@@ -618,6 +628,12 @@ export class KaspaWalletClient {
 
   getLastResolvedFeeRate() {
     return this._lastResolvedFeeRate;
+  }
+
+  getBalanceSnapshot() {
+    return {
+      ...this._balanceSnapshot,
+    };
   }
 
   async switchNodeUrl(nextNodeUrl) {
@@ -1413,6 +1429,27 @@ export class KaspaWalletClient {
     }
   }
 
+  _updateBalanceSnapshot({
+    onChainBalanceSompi = 0n,
+    availableMatureUtxos = [],
+    availablePendingUtxos = [],
+    trackedPendingUtxos = [],
+  } = {}) {
+    const matureEntries = normalizeUtxoList(availableMatureUtxos);
+    const pendingEntries = normalizeUtxoList(availablePendingUtxos);
+    const trackedEntries = normalizeUtxoList(trackedPendingUtxos);
+    this._balanceSnapshot = {
+      onChainBalanceSompi: toBigInt(onChainBalanceSompi, 0n),
+      availableMatureBalanceSompi: sumUtxoAmounts(matureEntries),
+      availablePendingBalanceSompi: sumUtxoAmounts(pendingEntries),
+      trackedPendingBalanceSompi: sumUtxoAmounts(trackedEntries),
+      matureUtxoCount: matureEntries.length,
+      pendingUtxoCount: pendingEntries.length,
+      trackedPendingUtxoCount: trackedEntries.length,
+      updatedAtMs: this.nowFn(),
+    };
+  }
+
   async _rebuildUtxoContext() {
     try {
       await this.utxoContext?.clear?.();
@@ -1435,6 +1472,7 @@ export class KaspaWalletClient {
 
     const chainBalance = await this._getOnChainBalance();
     if (chainBalance <= 0n) {
+      this._updateBalanceSnapshot({ onChainBalanceSompi: chainBalance });
       return;
     }
 
@@ -1443,10 +1481,25 @@ export class KaspaWalletClient {
         this.utxoContext.matureLength > 0 ||
         normalizeUtxoList(this.utxoContext.getPending()).length > 0
       ) {
+        const context = this._loadSendContext();
+        this._updateBalanceSnapshot({
+          onChainBalanceSompi: chainBalance,
+          availableMatureUtxos: context.availableMatureUtxos,
+          availablePendingUtxos: context.availablePendingUtxos,
+          trackedPendingUtxos: context.trackedPendingUtxos,
+        });
         return;
       }
       await delay(500);
     }
+
+    const context = this._loadSendContext();
+    this._updateBalanceSnapshot({
+      onChainBalanceSompi: chainBalance,
+      availableMatureUtxos: context.availableMatureUtxos,
+      availablePendingUtxos: context.availablePendingUtxos,
+      trackedPendingUtxos: context.trackedPendingUtxos,
+    });
   }
 
   async _hydrateMempoolSendState() {

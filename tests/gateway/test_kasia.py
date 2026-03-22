@@ -1,5 +1,6 @@
 """Tests for Kasia gateway integration."""
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -672,3 +673,96 @@ class TestKasiaAdapter:
         assert result is True
         assert popen_calls["env"]["KASIA_FEE_POLICY"] == "normal"
         assert "KASIA_KNS_URL" not in popen_calls["env"]
+
+    @pytest.mark.asyncio
+    async def test_connect_warns_when_wallet_funding_is_low(self, tmp_path, caplog):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._bridge_script = bridge_script
+        adapter._request_json = AsyncMock(
+            return_value={
+                "status": "connected",
+                "walletAddress": "kaspa:qwallet",
+                "walletFundingState": "low",
+                "walletBalanceSompi": "27881431",
+                "availableMatureBalanceSompi": "27881431",
+                "recommendedMinBalanceSompi": "40000000",
+            }
+        )
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        def fake_create_task(coro):
+            coro.close()
+            return SimpleNamespace(cancel=lambda: None)
+
+        with caplog.at_level(logging.WARNING), patch(
+            "gateway.platforms.kasia.check_kasia_requirements",
+            return_value=True,
+        ), patch(
+            "gateway.platforms.kasia._is_local_port_in_use",
+            return_value=False,
+        ), patch(
+            "gateway.platforms.kasia.subprocess.Popen",
+            side_effect=fake_popen,
+        ), patch(
+            "gateway.platforms.kasia.asyncio.sleep",
+            new=AsyncMock(),
+        ), patch(
+            "gateway.platforms.kasia.asyncio.create_task",
+            side_effect=fake_create_task,
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        assert "Kasia wallet kaspa:qwallet is low on funds" in caplog.text
+        assert "recommended >= 0.40000000 KAS" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_handshake_funding_failure_logs_wallet_warning(self, caplog):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter.handle_message = AsyncMock()
+
+        async def fake_request_json(method, path, payload=None, total=None):
+            if method == "POST" and path == "/handshakes/respond":
+                raise RuntimeError(
+                    'Kasia bridge error (500) on /handshakes/respond: {"error":"Insufficient funds after fee"}'
+                )
+            if method == "GET" and path == "/health":
+                return {
+                    "walletAddress": "kaspa:qwallet",
+                    "walletFundingState": "low",
+                    "walletBalanceSompi": "27881431",
+                    "availableMatureBalanceSompi": "27881431",
+                    "recommendedMinBalanceSompi": "40000000",
+                }
+            raise AssertionError(f"Unexpected request: {method} {path}")
+
+        adapter._request_json = AsyncMock(side_effect=fake_request_json)
+
+        with caplog.at_level(logging.WARNING), patch.object(
+            adapter,
+            "_is_address_authorized",
+            return_value=False,
+        ):
+            await adapter._handle_bridge_event(
+                {
+                    "eventType": "handshake_request",
+                    "chatId": "kaspa:qpeeraddress",
+                    "senderId": "kaspa:qpeeraddress",
+                }
+            )
+
+        adapter.handle_message.assert_not_awaited()
+        assert "Kasia wallet kaspa:qwallet is low on funds" in caplog.text
+        assert "responding to unauthorized Kasia handshake from kaspa:qpeeraddress" in caplog.text

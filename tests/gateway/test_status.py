@@ -103,6 +103,34 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_clears_stale_platform_error_fields_on_recovery(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="telegram conflict",
+            platform="telegram",
+            platform_state="fatal",
+            error_code="telegram_token_lock",
+            error_message="another local Hermes gateway is already using this Telegram bot token",
+        )
+
+        status.write_runtime_status(
+            gateway_state="running",
+            exit_reason=None,
+            platform="telegram",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        assert "error_code" not in payload["platforms"]["telegram"]
+        assert "error_message" not in payload["platforms"]["telegram"]
+
 
 class TestScopedLocks:
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):

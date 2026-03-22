@@ -22,6 +22,7 @@ from typing import Any, Optional
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
+_UNSET = object()
 
 
 def _get_pid_path() -> Path:
@@ -185,14 +186,19 @@ def write_pid_file() -> None:
 
 def write_runtime_status(
     *,
-    gateway_state: Optional[str] = None,
-    exit_reason: Optional[str] = None,
+    gateway_state: Any = _UNSET,
+    exit_reason: Any = _UNSET,
     platform: Optional[str] = None,
-    platform_state: Optional[str] = None,
-    error_code: Optional[str] = None,
-    error_message: Optional[str] = None,
+    platform_state: Any = _UNSET,
+    error_code: Any = _UNSET,
+    error_message: Any = _UNSET,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status.
+
+    Parameters use an internal sentinel so callers can intentionally clear fields
+    by passing ``None``. This matters when a recovered platform transitions from
+    fatal -> connected/disconnected and stale error metadata must be removed.
+    """
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     payload.setdefault("platforms", {})
@@ -201,19 +207,25 @@ def write_runtime_status(
     payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
-    if gateway_state is not None:
+    if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
-    if exit_reason is not None:
+    if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
 
     if platform is not None:
         platform_payload = payload["platforms"].get(platform, {})
-        if platform_state is not None:
+        if platform_state is not _UNSET:
             platform_payload["state"] = platform_state
-        if error_code is not None:
-            platform_payload["error_code"] = error_code
-        if error_message is not None:
-            platform_payload["error_message"] = error_message
+        if error_code is not _UNSET:
+            if error_code is None:
+                platform_payload.pop("error_code", None)
+            else:
+                platform_payload["error_code"] = error_code
+        if error_message is not _UNSET:
+            if error_message is None:
+                platform_payload.pop("error_message", None)
+            else:
+                platform_payload["error_message"] = error_message
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
 

@@ -1193,6 +1193,20 @@ def _model_flow_custom(config):
     if api_key:
         save_env_value("OPENAI_API_KEY", api_key)
 
+    # Auto-detect context length if not provided
+    if not context_length and model_name:
+        try:
+            from agent.model_metadata import get_model_context_length
+            detected = get_model_context_length(model_name)
+            default_ctx = get_model_context_length("")  # get default
+            if detected and detected != default_ctx:
+                context_length = detected
+                print(f"  🔍 Auto-detected context length: {context_length:,} tokens")
+            else:
+                print(f"  ℹ️  Using default context length: 128,000 tokens (could not auto-detect for {model_name!r})")
+        except Exception:
+            pass
+
     if model_name:
         _save_model_choice(model_name)
 

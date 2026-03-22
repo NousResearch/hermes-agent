@@ -80,6 +80,7 @@ _CTRL_BACKSPACE_ESCAPE_SEQUENCES = (
     "\x1b[27;5;127~",
     "\x1b[27;5;8~",
 )
+_CTRL_ENTER_KEYS = Keys.ControlJ
 _KITTY_KEYBOARD_QUERY = "\x1b[?u"
 _KITTY_KEYBOARD_ENABLE = "\x1b[>1u"
 _KITTY_KEYBOARD_DISABLE = "\x1b[<u"
@@ -346,6 +347,11 @@ def _install_enhanced_keyboard_input_sequences(
     for codepoint, control_key in _CONTROL_KEY_BY_ASCII.items():
         sequences[_kitty_key_sequence(codepoint, 5)] = control_key
         sequences[_modify_other_keys_sequence(codepoint, 5)] = control_key
+
+    # Keep enhanced Ctrl+Enter on Hermes' existing multiline binding (`c-j`)
+    # instead of letting it collapse to the plain Enter/submit path.
+    sequences[_kitty_key_sequence(13, 5)] = _CTRL_ENTER_KEYS
+    sequences[_modify_other_keys_sequence(13, 5)] = _CTRL_ENTER_KEYS
 
     for codepoint in (8, 13, 127):
         alt_key = (Keys.Escape, Keys.ControlH if codepoint in (8, 127) else Keys.ControlM)

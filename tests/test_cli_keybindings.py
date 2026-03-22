@@ -165,6 +165,26 @@ def test_vt100_parser_maps_alt_enter_modify_other_keys_sequence():
     assert [press.key for press in key_presses] == [cli.Keys.Escape, cli.Keys.ControlM]
 
 
+def test_vt100_parser_maps_ctrl_enter_kitty_sequence_to_control_j():
+    key_presses = []
+    parser = Vt100Parser(key_presses.append)
+
+    parser.feed(cli._kitty_key_sequence(13, 5))
+    parser.flush()
+
+    assert [press.key for press in key_presses] == [cli.Keys.ControlJ]
+
+
+def test_vt100_parser_maps_ctrl_enter_modify_other_keys_sequence_to_control_j():
+    key_presses = []
+    parser = Vt100Parser(key_presses.append)
+
+    parser.feed(cli._modify_other_keys_sequence(13, 5))
+    parser.flush()
+
+    assert [press.key for press in key_presses] == [cli.Keys.ControlJ]
+
+
 def test_delete_previous_word_uses_prompt_toolkit_word_boundaries():
     buffer = Buffer()
     buffer.set_document(Document("alpha beta", cursor_position=len("alpha beta")))

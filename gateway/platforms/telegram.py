@@ -129,6 +129,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
+        self._polling_conflict_count: int = 0
+        self._polling_network_error_count: int = 0
+        self._polling_error_callback_ref = None
 
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
@@ -139,13 +142,126 @@ class TelegramAdapter(BasePlatformAdapter):
             or "another bot instance is running" in text
         )
 
+    @staticmethod
+    def _looks_like_network_error(error: Exception) -> bool:
+        """Return True for transient network errors that warrant a reconnect attempt."""
+        name = error.__class__.__name__.lower()
+        if name in ("networkerror", "timedout", "connectionerror"):
+            return True
+        try:
+            from telegram.error import NetworkError, TimedOut
+            if isinstance(error, (NetworkError, TimedOut)):
+                return True
+        except ImportError:
+            pass
+        return isinstance(error, OSError)
+
+    async def _handle_polling_network_error(self, error: Exception) -> None:
+        """Reconnect polling after a transient network interruption.
+
+        Triggered by NetworkError/TimedOut in the polling error callback, which
+        happen when the host loses connectivity (Mac sleep, WiFi switch, VPN
+        reconnect, etc.).  The gateway process stays alive but the long-poll
+        connection silently dies; without this handler the bot never recovers.
+
+        Strategy: exponential back-off (5s, 10s, 20s, 40s, 60s cap) up to
+        MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
+        the supervisor restarts the gateway process.
+        """
+        if self.has_fatal_error:
+            return
+
+        MAX_NETWORK_RETRIES = 10
+        BASE_DELAY = 5
+        MAX_DELAY = 60
+
+        self._polling_network_error_count += 1
+        attempt = self._polling_network_error_count
+
+        if attempt > MAX_NETWORK_RETRIES:
+            message = (
+                "Telegram polling could not reconnect after %d network error retries. "
+                "Restarting gateway." % MAX_NETWORK_RETRIES
+            )
+            logger.error("[%s] %s Last error: %s", self.name, message, error)
+            self._set_fatal_error("telegram_network_error", message, retryable=True)
+            await self._notify_fatal_error()
+            return
+
+        delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
+        logger.warning(
+            "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
+            self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
+        )
+        await asyncio.sleep(delay)
+
+        try:
+            if self._app and self._app.updater and self._app.updater.running:
+                await self._app.updater.stop()
+        except Exception:
+            pass
+
+        try:
+            await self._app.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+                error_callback=self._polling_error_callback_ref,
+            )
+            logger.info(
+                "[%s] Telegram polling resumed after network error (attempt %d)",
+                self.name, attempt,
+            )
+            self._polling_network_error_count = 0
+        except Exception as retry_err:
+            logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
+            # The next network error will trigger another attempt.
+
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
+        # Track consecutive conflicts — transient 409s can occur when a
+        # previous gateway instance hasn't fully released its long-poll
+        # session on Telegram's server (e.g. during --replace handoffs or
+        # systemd Restart=on-failure respawns).  Retry a few times before
+        # giving up, so the old session has time to expire.
+        self._polling_conflict_count += 1
+
+        MAX_CONFLICT_RETRIES = 3
+        RETRY_DELAY = 10  # seconds
+
+        if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
+            logger.warning(
+                "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
+                self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                RETRY_DELAY, error,
+            )
+            try:
+                if self._app and self._app.updater and self._app.updater.running:
+                    await self._app.updater.stop()
+            except Exception:
+                pass
+            await asyncio.sleep(RETRY_DELAY)
+            try:
+                await self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                    error_callback=self._polling_error_callback_ref,
+                )
+                logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
+                self._polling_conflict_count = 0  # reset on success
+                return
+            except Exception as retry_err:
+                logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
+                # Don't fall through to fatal yet — wait for the next conflict
+                # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
+                return
+
+        # Exhausted retries — fatal
         message = (
             "Another Telegram bot poller is already using this token. "
-            "Hermes stopped Telegram polling to avoid endless retry spam. "
+            "Hermes stopped Telegram polling after %d retries. "
             "Make sure only one gateway instance is running for this bot token."
+            % MAX_CONFLICT_RETRIES
         )
         logger.error("[%s] %s Original error: %s", self.name, message, error)
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
@@ -235,12 +351,18 @@ class TelegramAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
 
             def _polling_error_callback(error: Exception) -> None:
-                if not self._looks_like_polling_conflict(error):
-                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
-                    return
                 if self._polling_error_task and not self._polling_error_task.done():
                     return
-                self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                if self._looks_like_polling_conflict(error):
+                    self._polling_error_task = loop.create_task(self._handle_polling_conflict(error))
+                elif self._looks_like_network_error(error):
+                    logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, error)
+                    self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
+                else:
+                    logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
+
+            # Store reference for retry use in _handle_polling_conflict
+            self._polling_error_callback_ref = _polling_error_callback
 
             await self._app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
@@ -534,23 +656,26 @@ class TelegramAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
         try:
             import os
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=f"Image file not found: {image_path}")
-            
+
+            _thread = metadata.get("thread_id") if metadata else None
             with open(image_path, "rb") as image_file:
                 msg = await self._bot.send_photo(
                     chat_id=int(chat_id),
                     photo=image_file,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_thread) if _thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -569,6 +694,7 @@ class TelegramAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
@@ -580,6 +706,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
             display_name = file_name or os.path.basename(file_path)
+            _thread = metadata.get("thread_id") if metadata else None
 
             with open(file_path, "rb") as f:
                 msg = await self._bot.send_document(
@@ -588,6 +715,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     filename=display_name,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_thread) if _thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -600,6 +728,7 @@ class TelegramAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send a video natively as a Telegram video message."""
@@ -610,12 +739,14 @@ class TelegramAdapter(BasePlatformAdapter):
             if not os.path.exists(video_path):
                 return SendResult(success=False, error=f"Video file not found: {video_path}")
 
+            _thread = metadata.get("thread_id") if metadata else None
             with open(video_path, "rb") as f:
                 msg = await self._bot.send_video(
                     chat_id=int(chat_id),
                     video=f,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_thread) if _thread else None,
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -881,6 +1012,45 @@ class TelegramAdapter(BasePlatformAdapter):
         #    nested references (a placeholder inside another) resolve correctly.
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])
+
+        # 12) Safety net: escape unescaped ( ) { } that slipped through
+        #     placeholder processing.  Split the text into code/non-code
+        #     segments so we never touch content inside ``` or ` spans.
+        _code_split = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
+        _safe_parts = []
+        for _idx, _seg in enumerate(_code_split):
+            if _idx % 2 == 1:
+                # Inside code span/block — leave untouched
+                _safe_parts.append(_seg)
+            else:
+                # Outside code — escape bare ( ) { }
+                def _esc_bare(m, _seg=_seg):
+                    s = m.start()
+                    ch = m.group(0)
+                    # Already escaped
+                    if s > 0 and _seg[s - 1] == '\\':
+                        return ch
+                    # ( that opens a MarkdownV2 link [text](url)
+                    if ch == '(' and s > 0 and _seg[s - 1] == ']':
+                        return ch
+                    # ) that closes a link URL
+                    if ch == ')':
+                        before = _seg[:s]
+                        if '](http' in before or '](' in before:
+                            # Check depth
+                            depth = 0
+                            for j in range(s - 1, max(s - 2000, -1), -1):
+                                if _seg[j] == '(':
+                                    depth -= 1
+                                    if depth < 0:
+                                        if j > 0 and _seg[j - 1] == ']':
+                                            return ch
+                                        break
+                                elif _seg[j] == ')':
+                                    depth += 1
+                    return '\\' + ch
+                _safe_parts.append(re.sub(r'[(){}]', _esc_bare, _seg))
+        text = ''.join(_safe_parts)
 
         return text
     

@@ -230,7 +230,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data[0]:
+            if status == "OK" and data and data[0]:
                 for uid in data[0].split():
                     self._seen_uids.add(uid)
             imap.logout()
@@ -295,7 +295,7 @@ class EmailAdapter(BasePlatformAdapter):
             imap.select("INBOX")
 
             status, data = imap.uid("search", None, "UNSEEN")
-            if status != "OK" or not data[0]:
+            if status != "OK" or not data or not data[0]:
                 imap.logout()
                 return results
 

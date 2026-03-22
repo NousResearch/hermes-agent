@@ -355,6 +355,8 @@ class SessionEntry:
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
+    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
+    reset_had_activity: bool = False  # whether the expired session had any messages
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -570,16 +572,19 @@ class SessionStore:
 
         return False
 
-    def _should_reset(self, entry: SessionEntry, source: SessionSource) -> bool:
+    def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
         """
         Check if a session should be reset based on policy.
+        
+        Returns the reset reason ("idle" or "daily") if a reset is needed,
+        or None if the session is still valid.
         
         Sessions with active background processes are never reset.
         """
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
-                return False
+                return None
 
         policy = self.config.get_reset_policy(
             platform=source.platform,
@@ -587,14 +592,14 @@ class SessionStore:
         )
         
         if policy.mode == "none":
-            return False
+            return None
         
         now = datetime.now()
         
         if policy.mode in ("idle", "both"):
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
-                return True
+                return "idle"
         
         if policy.mode in ("daily", "both"):
             today_reset = now.replace(
@@ -607,9 +612,9 @@ class SessionStore:
                 today_reset -= timedelta(days=1)
             
             if entry.updated_at < today_reset:
-                return True
+                return "daily"
         
-        return False
+        return None
     
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
@@ -651,12 +656,16 @@ class SessionStore:
         if session_key in self._entries and not force_new:
             entry = self._entries[session_key]
             
-            if not self._should_reset(entry, source):
+            reset_reason = self._should_reset(entry, source)
+            if not reset_reason:
                 entry.updated_at = now
                 self._save()
                 return entry
             else:
                 was_auto_reset = True
+                auto_reset_reason = reset_reason
+                # Track whether the expired session had any real conversation
+                reset_had_activity = entry.total_tokens > 0
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")
@@ -664,6 +673,8 @@ class SessionStore:
                         logger.debug("Session DB operation failed: %s", e)
         else:
             was_auto_reset = False
+            auto_reset_reason = None
+            reset_had_activity = False
         
         # Create new session
         session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -678,6 +689,8 @@ class SessionStore:
             platform=source.platform,
             chat_type=source.chat_type,
             was_auto_reset=was_auto_reset,
+            auto_reset_reason=auto_reset_reason,
+            reset_had_activity=reset_had_activity,
         )
         
         self._entries[session_key] = entry

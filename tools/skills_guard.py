@@ -43,7 +43,7 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
-    "agent-created": ("allow",  "allow",   "block"),
+    "agent-created": ("allow",  "allow",   "ask"),
 }
 
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
@@ -659,8 +659,15 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
 
     if force:
         return True, (
-            f"Force-installed despite blocked {result.verdict} verdict "
+            f"Force-installed despite {result.verdict} verdict "
             f"({len(result.findings)} findings)"
+        )
+
+    if decision == "ask":
+        # Return None to signal "needs user confirmation"
+        return None, (
+            f"Requires confirmation ({result.trust_level} source + {result.verdict} verdict, "
+            f"{len(result.findings)} findings)"
         )
 
     return False, (
@@ -694,7 +701,12 @@ def format_scan_report(result: ScanResult) -> str:
         lines.append("")
 
     allowed, reason = should_allow_install(result)
-    status = "ALLOWED" if allowed else "BLOCKED"
+    if allowed is True:
+        status = "ALLOWED"
+    elif allowed is None:
+        status = "NEEDS CONFIRMATION"
+    else:
+        status = "BLOCKED"
     lines.append(f"Decision: {status} — {reason}")
 
     return "\n".join(lines)

@@ -47,8 +47,9 @@ async def test_connect_rejects_same_host_token_lock(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_polling_conflict_stops_polling_and_notifies_handler(monkeypatch):
-    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+async def test_polling_conflict_retries_before_fatal(monkeypatch):
+    """A single 409 should trigger a retry, not an immediate fatal error."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     fatal_handler = AsyncMock()
     adapter.set_fatal_error_handler(fatal_handler)
 
@@ -69,6 +70,7 @@ async def test_polling_conflict_stops_polling_and_notifies_handler(monkeypatch):
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=fake_start_polling),
         stop=AsyncMock(),
+        running=True,
     )
     bot = SimpleNamespace(set_my_commands=AsyncMock())
     app = SimpleNamespace(
@@ -83,20 +85,102 @@ async def test_polling_conflict_stops_polling_and_notifies_handler(monkeypatch):
     builder.build.return_value = app
     monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
+    # Speed up retries for testing
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
     ok = await adapter.connect()
 
     assert ok is True
     assert callable(captured["error_callback"])
 
     conflict = type("Conflict", (Exception,), {})
-    captured["error_callback"](conflict("Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"))
 
+    # First conflict: should retry, NOT be fatal
+    captured["error_callback"](conflict("Conflict: terminated by other getUpdates request"))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
+    # Give the scheduled task a chance to run
+    for _ in range(10):
+        await asyncio.sleep(0)
 
-    assert adapter.fatal_error_code == "telegram_polling_conflict"
+    assert adapter.has_fatal_error is False, "First conflict should not be fatal"
+    assert adapter._polling_conflict_count == 0, "Count should reset after successful retry"
+
+
+@pytest.mark.asyncio
+async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
+    """After exhausting retries, the conflict should become fatal."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["error_callback"] = kwargs["error_callback"]
+
+    # Make start_polling fail on retries to exhaust retries
+    call_count = {"n": 0}
+
+    async def failing_start_polling(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First call (initial connect) succeeds
+            captured["error_callback"] = kwargs["error_callback"]
+        else:
+            # Retry calls fail
+            raise Exception("Connection refused")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=failing_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+
+    # Speed up retries for testing
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    conflict = type("Conflict", (Exception,), {})
+
+    # Directly call _handle_polling_conflict to avoid event-loop scheduling
+    # complexity.  Each call simulates one 409 from Telegram.
+    for i in range(4):
+        await adapter._handle_polling_conflict(
+            conflict("Conflict: terminated by other getUpdates request")
+        )
+
+    # After 3 failed retries (count 1-3 each enter the retry branch but
+    # start_polling raises), the 4th conflict pushes count to 4 which
+    # exceeds MAX_CONFLICT_RETRIES (3), entering the fatal branch.
+    assert adapter.fatal_error_code == "telegram_polling_conflict", (
+        f"Expected fatal after 4 conflicts, got code={adapter.fatal_error_code}, "
+        f"count={adapter._polling_conflict_count}"
+    )
     assert adapter.has_fatal_error is True
-    updater.stop.assert_awaited()
     fatal_handler.assert_awaited_once()
 
 

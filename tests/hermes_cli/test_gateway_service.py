@@ -290,21 +290,17 @@ class TestEnsureUserSystemdEnv:
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
         monkeypatch.setattr(os, "getuid", lambda: 42)
 
-        # Patch Path so /run/user/42 resolves to our tmp dir (which exists)
-        from pathlib import Path as RealPath
-
-        class FakePath(type(RealPath())):
-            def __new__(cls, *args):
-                p = str(args[0]) if args else ""
-                if p == "/run/user/42":
-                    return RealPath.__new__(cls, str(tmp_path))
-                return RealPath.__new__(cls, *args)
-
-        monkeypatch.setattr(gateway_cli, "Path", FakePath)
+        # Patch Path.exists so /run/user/42 appears to exist.
+        # Using a FakePath subclass breaks on Python 3.12+ where
+        # PosixPath.__new__ ignores the redirected path argument.
+        _orig_exists = gateway_cli.Path.exists
+        monkeypatch.setattr(
+            gateway_cli.Path, "exists",
+            lambda self: True if str(self) == "/run/user/42" else _orig_exists(self),
+        )
 
         gateway_cli._ensure_user_systemd_env()
 
-        # Function sets the canonical string, not the fake path
         assert os.environ.get("XDG_RUNTIME_DIR") == "/run/user/42"
 
     def test_sets_dbus_address_when_bus_socket_exists(self, tmp_path, monkeypatch):

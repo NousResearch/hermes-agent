@@ -580,6 +580,24 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
+        # Mention-only mode: skip channel messages that don't @mention the bot.
+        # DMs (type "D") are always processed.
+        if channel_type_raw != "D":
+            mention_patterns = [
+                f"@{self._bot_username}",
+                f"@{self._bot_user_id}",
+            ]
+            has_mention = any(
+                pattern.lower() in message_text.lower()
+                for pattern in mention_patterns
+            )
+            if not has_mention:
+                logger.debug(
+                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                    channel_id,
+                )
+                return
+
         # Resolve sender info.
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
@@ -617,16 +635,16 @@ class MattermostAdapter(BasePlatformAdapter):
                         if mime.startswith("image/"):
                             local_path = cache_image_from_bytes(file_data, ext or ".png")
                             media_urls.append(local_path)
-                            media_types.append("image")
+                            media_types.append(mime)
                         elif mime.startswith("audio/"):
                             from gateway.platforms.base import cache_audio_from_bytes
                             local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
                             media_urls.append(local_path)
-                            media_types.append("audio")
+                            media_types.append(mime)
                         else:
                             local_path = cache_document_from_bytes(file_data, fname)
                             media_urls.append(local_path)
-                            media_types.append("document")
+                            media_types.append(mime)
                     else:
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
             except Exception as exc:

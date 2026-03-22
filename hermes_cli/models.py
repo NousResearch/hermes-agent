@@ -31,19 +31,20 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-haiku-4.5",      ""),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
-    ("openrouter/hunter-alpha",          "free"),
-    ("openrouter/healer-alpha",          "free"),
+    ("xiaomi/mimo-v2-pro",               ""),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
     ("google/gemini-3-flash-preview",   ""),
     ("qwen/qwen3.5-plus-02-15",         ""),
     ("qwen/qwen3.5-35b-a3b",            ""),
     ("stepfun/step-3.5-flash",          ""),
+    ("minimax/minimax-m2.7",            ""),
     ("minimax/minimax-m2.5",            ""),
     ("z-ai/glm-5",                      ""),
     ("z-ai/glm-5-turbo",                ""),
     ("moonshotai/kimi-k2.5",            ""),
     ("x-ai/grok-4.20-beta",             ""),
+    ("nvidia/nemotron-3-super-120b-a12b",      ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("arcee-ai/trinity-large-preview:free", "free"),
     ("openai/gpt-5.4-pro",              ""),
@@ -150,6 +151,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro",
         "gemini-3-pro",
         "gemini-3-flash",
+        "minimax-m2.7",
         "minimax-m2.5",
         "minimax-m2.5-free",
         "minimax-m2.1",
@@ -300,12 +302,15 @@ def list_available_providers() -> list[dict[str, str]]:
         # Check if this provider has credentials available
         has_creds = False
         try:
+            from hermes_cli.auth import get_auth_status, has_usable_secret
             if pid == "custom":
-                has_creds = bool(_get_custom_base_url())
+                custom_base_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                has_creds = bool(custom_base_url.strip())
+            elif pid == "openrouter":
+                has_creds = has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
             else:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                runtime = resolve_runtime_provider(requested=pid)
-                has_creds = bool(runtime.get("api_key"))
+                status = get_auth_status(pid)
+                has_creds = bool(status.get("logged_in") or status.get("configured"))
         except Exception:
             pass
         result.append({

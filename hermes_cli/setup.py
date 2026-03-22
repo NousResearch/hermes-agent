@@ -4,9 +4,9 @@ Interactive setup wizard for Hermes Agent.
 Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
   2. Terminal Backend — where your agent runs commands
-  3. Messaging Platforms — connect Telegram, Discord, etc.
-  4. Tools — configure TTS, web search, image generation, etc.
-  5. Agent Settings — iterations, compression, session reset
+  3. Agent Settings — iterations, compression, session reset
+  4. Messaging Platforms — connect Telegram, Discord, etc.
+  5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.hermes/ for easy access.
 """
@@ -2037,7 +2037,7 @@ def setup_terminal_backend(config: dict):
 
         # Docker image
         current_image = config.get("terminal", {}).get(
-            "docker_image", "python:3.11-slim"
+            "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
         image = prompt("  Docker image", current_image)
         config["terminal"]["docker_image"] = image
@@ -2059,7 +2059,7 @@ def setup_terminal_backend(config: dict):
             print_info(f"Found: {sing_bin}")
 
         current_image = config.get("terminal", {}).get(
-            "singularity_image", "docker://python:3.11-slim"
+            "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
         )
         image = prompt("  Container image", current_image)
         config["terminal"]["singularity_image"] = image
@@ -2261,7 +2261,7 @@ def setup_agent_settings(config: dict):
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
+    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
@@ -2303,7 +2303,7 @@ def setup_agent_settings(config: dict):
 
     config.setdefault("compression", {})["enabled"] = True
 
-    current_threshold = config.get("compression", {}).get("threshold", 0.85)
+    current_threshold = config.get("compression", {}).get("threshold", 0.50)
     threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
@@ -2313,7 +2313,7 @@ def setup_agent_settings(config: dict):
         pass
 
     print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.85)}"
+        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
     )
 
     # ── Session Reset Policy ──
@@ -3248,9 +3248,9 @@ def run_setup_wizard(args):
         print_info("We'll walk you through:")
         print_info("  1. Model & Provider — choose your AI provider and model")
         print_info("  2. Terminal Backend — where your agent runs commands")
-        print_info("  3. Messaging Platforms — connect Telegram, Discord, etc.")
-        print_info("  4. Tools — configure TTS, web search, image generation, etc.")
-        print_info("  5. Agent Settings — iterations, compression, session reset")
+        print_info("  3. Agent Settings — iterations, compression, session reset")
+        print_info("  4. Messaging Platforms — connect Telegram, Discord, etc.")
+        print_info("  5. Tools — configure TTS, web search, image generation, etc.")
         print()
         print_info("Press Enter to begin, or Ctrl+C to exit.")
         try:

@@ -129,6 +129,7 @@ const sidebars: SidebarsConfig = {
         'developer-guide/environments',
         'developer-guide/adding-tools',
         'developer-guide/creating-skills',
+        'developer-guide/extending-the-cli',
         'developer-guide/contributing',
       ],
     },

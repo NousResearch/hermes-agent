@@ -282,7 +282,7 @@ class TestPluginToolVisibility:
     """Plugin-registered tools appear in get_tool_definitions()."""
 
     def test_plugin_tools_in_definitions(self, tmp_path, monkeypatch):
-        """Tools from plugins bypass the toolset filter."""
+        """Plugin tools are included when their toolset is in enabled_toolsets."""
         import hermes_cli.plugins as plugins_mod
 
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -305,9 +305,21 @@ class TestPluginToolVisibility:
         monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
 
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+
+        # Plugin tools are included when their toolset is explicitly enabled
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
         tool_names = [t["function"]["name"] for t in tools]
         assert "vis_tool" in tool_names
+
+        # Plugin tools are excluded when only other toolsets are enabled
+        tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
+        tool_names2 = [t["function"]["name"] for t in tools2]
+        assert "vis_tool" not in tool_names2
+
+        # Plugin tools are included when no toolset filter is active (all enabled)
+        tools3 = get_tool_definitions(quiet_mode=True)
+        tool_names3 = [t["function"]["name"] for t in tools3]
+        assert "vis_tool" in tool_names3
 
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────

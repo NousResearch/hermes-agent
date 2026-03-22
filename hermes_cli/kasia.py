@@ -397,6 +397,25 @@ def _active_health_url(health: dict[str, Any] | None, pool_key: str, direct_key:
     return str(pool.get("activeUrl") or health.get(direct_key) or "").strip()
 
 
+def _kasia_paired_user_count() -> int:
+    """Return the number of approved Kasia DM pairings stored on disk."""
+    from hermes_cli.config import get_hermes_home
+
+    approved_path = get_hermes_home() / "pairing" / "kasia-approved.json"
+    if not approved_path.exists():
+        return 0
+
+    try:
+        approved_users = json.loads(approved_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+    if not isinstance(approved_users, dict):
+        return 0
+
+    return sum(1 for user_id in approved_users if str(user_id).strip())
+
+
 def run_kasia_doctor() -> bool:
     """Run Kasia-specific diagnostics without affecting shared Hermes status."""
     settings = load_kasia_settings(env=os.environ)
@@ -414,6 +433,7 @@ def run_kasia_doctor() -> bool:
 
     print()
     print("Configuration")
+    paired_user_count = _kasia_paired_user_count()
     config_lines = [
         ("Enabled", settings.enabled, "KASIA_ENABLED=true" if settings.enabled else "run `hermes kasia` to configure"),
         ("Seed phrase", bool(settings.seed_phrase), "configured" if settings.seed_phrase else "missing"),
@@ -423,15 +443,18 @@ def run_kasia_doctor() -> bool:
         ("Home channel", bool(settings.home_channel), settings.home_channel or "not configured"),
     ]
     if settings.allow_all_users:
-        allowlist_detail = "allowing all Kasia users"
-    elif settings.allowed_users:
-        allowlist_count = len([item for item in settings.allowed_users.split(",") if item.strip()])
-        allowlist_detail = f"{allowlist_count} allowed address(es)"
+        access_ok = True
+        access_detail = "allowing all Kasia users"
     else:
-        allowlist_detail = "no allowlist configured"
-    config_lines.append(
-        ("Access", settings.allow_all_users or bool(settings.allowed_users), allowlist_detail)
-    )
+        access_parts: list[str] = []
+        if settings.allowed_users:
+            allowlist_count = len([item for item in settings.allowed_users.split(",") if item.strip()])
+            access_parts.append(f"{allowlist_count} allowlisted address(es)")
+        if paired_user_count:
+            access_parts.append(f"{paired_user_count} paired user(s) approved")
+        access_ok = bool(access_parts)
+        access_detail = "; ".join(access_parts) if access_parts else "no allowlist or paired users configured"
+    config_lines.append(("Access", access_ok, access_detail))
 
     for label, ok, detail in config_lines:
         print(_doctor_line(label, ok, detail))

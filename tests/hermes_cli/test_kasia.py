@@ -1,4 +1,5 @@
 import os
+import json
 from types import SimpleNamespace
 
 import hermes_cli.kasia as kasia_mod
@@ -322,3 +323,92 @@ def test_run_kasia_doctor_fails_when_bridge_is_unreachable(monkeypatch, capsys, 
     assert "Bridge health" in output
     assert "Kasia doctor found configuration or dependency issues." in output
     assert "Kasia configuration looks good." not in output
+
+
+def test_run_kasia_doctor_counts_paired_users_as_access(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KASIA_ENABLED", "true")
+    monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
+    monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+    monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "wss://node.example.com")
+    monkeypatch.delenv("KASIA_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("KASIA_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    pairing_dir = tmp_path / "pairing"
+    pairing_dir.mkdir(parents=True)
+    (pairing_dir / "kasia-approved.json").write_text(
+        json.dumps(
+            {
+                "kaspa:qpeeraddress": {
+                    "user_name": "luke.kas",
+                    "approved_at": 1774153759.7806861,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda _port: {
+            "indexerPool": {"activeUrl": "https://indexer.example.com"},
+            "nodePool": {"activeUrl": "wss://node.example.com"},
+        },
+    )
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.1.0", stderr=""),
+    )
+
+    assert kasia_mod.run_kasia_doctor() is True
+
+    output = capsys.readouterr().out
+    assert "✓ Access" in output
+    assert "1 paired user(s) approved" in output
+    assert "no allowlist configured" not in output
+
+
+def test_run_kasia_doctor_reports_no_access_when_no_allowlist_or_pairing(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KASIA_ENABLED", "true")
+    monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
+    monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+    monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "wss://node.example.com")
+    monkeypatch.delenv("KASIA_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("KASIA_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda _port: {
+            "indexerPool": {"activeUrl": "https://indexer.example.com"},
+            "nodePool": {"activeUrl": "wss://node.example.com"},
+        },
+    )
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.1.0", stderr=""),
+    )
+
+    assert kasia_mod.run_kasia_doctor() is True
+
+    output = capsys.readouterr().out
+    assert "✗ Access" in output
+    assert "no allowlist or paired users configured" in output

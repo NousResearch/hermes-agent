@@ -298,6 +298,11 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Structured facts (Phase 1 -- opt-in, off by default)
+        "facts_enabled": False,
+        "facts_max_count": 50,
+        "facts_confidence_threshold": 0.7,
+        "memory_token_budget": 0,    # 0 = disabled; set e.g. 500 to cap memory tokens
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

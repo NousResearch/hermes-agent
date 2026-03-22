@@ -97,16 +97,30 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        facts_enabled: bool = False,
+        facts_max_count: int = 50,
+        facts_confidence_threshold: float = 0.7,
+        memory_token_budget: int = 0,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Facts store
+        self.facts_enabled = facts_enabled
+        self.facts_max_count = facts_max_count
+        self.facts_confidence_threshold = facts_confidence_threshold
+        self.memory_token_budget = memory_token_budget  # 0 = disabled
+        self.facts: List[Dict[str, Any]] = []
         # Frozen snapshot for system prompt -- set once at load_from_disk()
-        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": "", "facts": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """Load entries from MEMORY.md, USER.md, and memory.json, capture system prompt snapshot."""
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
@@ -116,10 +130,15 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Load structured facts from memory.json
+        if self.facts_enabled:
+            self.facts = self._load_facts_from_json()
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
+            "facts": self._render_facts_block(self.facts) if self.facts_enabled else "",
         }
 
     @staticmethod
@@ -330,6 +349,21 @@ class MemoryStore:
         Returns None if the snapshot is empty (no entries at load time).
         """
         block = self._system_prompt_snapshot.get(target, "")
+        if not block:
+            return None
+        if self.memory_token_budget > 0:
+            # Rough token estimate: 4 chars per token
+            approx_tokens = len(block) // 4
+            if approx_tokens > self.memory_token_budget:
+                target_chars = self.memory_token_budget * 4
+                block = block[:target_chars] + "\n..."
+        return block
+
+    def format_facts_for_system_prompt(self) -> Optional[str]:
+        """Return the frozen facts snapshot for system prompt injection."""
+        if not self.facts_enabled:
+            return None
+        block = self._system_prompt_snapshot.get("facts", "")
         return block if block else None
 
     # -- Internal helpers --
@@ -391,6 +425,125 @@ class MemoryStore:
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
+    def _load_facts_from_json(self) -> list:
+        """Load facts from memory.json. Returns empty list if file missing or corrupt."""
+        json_path = MEMORY_DIR / "memory.json"
+        if not json_path.exists():
+            return []
+        try:
+            import json as _json
+            data = _json.loads(json_path.read_text(encoding="utf-8"))
+            return data.get("facts", [])
+        except Exception as e:
+            logger.debug("Failed to load memory.json: %s", e)
+            return []
+
+    def _save_facts_to_json(self) -> None:
+        """Persist facts to memory.json using atomic temp+replace."""
+        import json as _json
+        import tempfile as _tempfile
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        json_path = MEMORY_DIR / "memory.json"
+        data = {"version": "1.0", "facts": self.facts}
+        content = _json.dumps(data, ensure_ascii=False, indent=2)
+        try:
+            fd, tmp = _tempfile.mkstemp(dir=str(MEMORY_DIR), suffix=".tmp", prefix=".mem_")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, str(json_path))
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(f"Failed to write memory.json: {e}")
+
+    def add_fact(self, content: str, category: str = "context", confidence: float = 0.8) -> Dict[str, Any]:
+        """Add a confidence-gated fact to memory.json.
+
+        Facts below facts_confidence_threshold are rejected.
+        When max_count is exceeded, lowest-confidence facts are pruned.
+
+        Args:
+            content: The fact to store.
+            category: One of preference|knowledge|context|behavior|goal.
+            confidence: 0.0-1.0. Facts below threshold are rejected.
+
+        Returns:
+            Standard success/error dict.
+        """
+        if not self.facts_enabled:
+            return {"success": False, "error": "Structured facts are not enabled. Use action=add instead."}
+
+        content = content.strip()
+        if not content:
+            return {"success": False, "error": "Content cannot be empty."}
+
+        scan_error = _scan_memory_content(content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
+
+        valid_categories = ("preference", "knowledge", "context", "behavior", "goal")
+        if category not in valid_categories:
+            category = "context"
+
+        confidence = max(0.0, min(1.0, float(confidence)))
+        if confidence < self.facts_confidence_threshold:
+            return {
+                "success": False,
+                "error": (
+                    f"Confidence {confidence:.2f} is below threshold "
+                    f"{self.facts_confidence_threshold:.2f}. Increase confidence or use action=add."
+                ),
+            }
+
+        import uuid as _uuid
+        from datetime import datetime as _dt
+        fact = {
+            "id": f"fact_{_uuid.uuid4().hex[:8]}",
+            "content": content,
+            "category": category,
+            "confidence": confidence,
+            "createdAt": _dt.now().isoformat(),
+        }
+        self.facts.append(fact)
+
+        # Prune to max_count keeping highest confidence
+        if len(self.facts) > self.facts_max_count:
+            self.facts = sorted(self.facts, key=lambda f: f.get("confidence", 0), reverse=True)[:self.facts_max_count]
+
+        self._save_facts_to_json()
+
+        return {
+            "success": True,
+            "fact_id": fact["id"],
+            "facts_count": len(self.facts),
+            "message": f"Fact added (confidence={confidence:.2f}, category={category}).",
+        }
+
+    def _render_facts_block(self, facts: list) -> str:
+        """Render facts as a system prompt block."""
+        if not facts:
+            return ""
+        lines = [f"FACTS [{len(facts)} entries]", "══════════════════════════════════════════════"]
+        by_category: Dict[str, list] = {}
+        for f in facts:
+            cat = f.get("category", "context")
+            by_category.setdefault(cat, []).append(f)
+        for cat in ("preference", "goal", "knowledge", "behavior", "context"):
+            entries = by_category.get(cat, [])
+            if entries:
+                lines.append(f"[{cat}]")
+                for f in entries:
+                    conf = f.get("confidence", 0)
+                    lines.append(f"  {f['content']} (conf={conf:.2f})")
+        return "\n".join(lines)
+
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
         """Write entries to a memory file using atomic temp-file + rename.
@@ -429,6 +582,7 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    args: Optional[dict] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -438,7 +592,7 @@ def memory_tool(
     if store is None:
         return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
 
-    if target not in ("memory", "user"):
+    if action != "add_fact" and target not in ("memory", "user"):
         return json.dumps({"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False)
 
     if action == "add":
@@ -458,8 +612,14 @@ def memory_tool(
             return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
         result = store.remove(target, old_text)
 
+    elif action == "add_fact":
+        if not content:
+            return json.dumps({"success": False, "error": "content is required for 'add_fact' action."}, ensure_ascii=False)
+        confidence = float(args.get("confidence", 0.8)) if args else 0.8
+        category = str(args.get("category", "context")) if args else "context"
+        result = store.add_fact(content, category=category, confidence=confidence)
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove, add_fact"}, ensure_ascii=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -503,8 +663,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "enum": ["add", "replace", "remove", "add_fact"],
+                "description": "The action to perform. Use add_fact for confidence-scored discrete facts (when facts are enabled)."
             },
             "target": {
                 "type": "string",
@@ -520,6 +680,15 @@ MEMORY_SCHEMA = {
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
         },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence score 0.0-1.0 for add_fact action. Facts below threshold are rejected."
+            },
+            "category": {
+                "type": "string",
+                "enum": ["preference", "knowledge", "context", "behavior", "goal"],
+                "description": "Category for add_fact action."
+            },
         "required": ["action", "target"],
     },
 }
@@ -537,7 +706,8 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        args=args),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )

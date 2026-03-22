@@ -899,6 +899,10 @@ class AIAgent:
                     self._memory_store = MemoryStore(
                         memory_char_limit=mem_config.get("memory_char_limit", 2200),
                         user_char_limit=mem_config.get("user_char_limit", 1375),
+                        facts_enabled=mem_config.get("facts_enabled", False),
+                        facts_max_count=int(mem_config.get("facts_max_count", 50)),
+                        facts_confidence_threshold=float(mem_config.get("facts_confidence_threshold", 0.7)),
+                        memory_token_budget=int(mem_config.get("memory_token_budget", 0)),
                     )
                     self._memory_store.load_from_disk()
             except Exception:
@@ -2305,6 +2309,10 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+            # Structured facts (confidence-gated, opt-in)
+            facts_block = self._memory_store.format_facts_for_system_prompt()
+            if facts_block:
+                prompt_parts.append(facts_block)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -4470,6 +4478,7 @@ class AIAgent:
                             content=args.get("content"),
                             old_text=args.get("old_text"),
                             store=self._memory_store,
+                            args=args,
                         )
                         if self._honcho and flush_target == "user" and args.get("action") == "add":
                             self._honcho_save_user_observation(args.get("content", ""))
@@ -4597,6 +4606,7 @@ class AIAgent:
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
+                args=function_args,
             )
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
@@ -4928,6 +4938,7 @@ class AIAgent:
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
+                    args=function_args,
                 )
                 # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":

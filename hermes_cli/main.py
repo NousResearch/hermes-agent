@@ -2139,30 +2139,47 @@ def _run_anthropic_oauth_flow(save_env_value):
         return False
 
     except FileNotFoundError:
-        # Claude CLI not installed — guide user through manual setup
+        # Claude CLI not installed — offer native OAuth or manual paste
         print()
-        print("  The 'claude' CLI is required for OAuth login.")
+        print("  The 'claude' CLI is not installed.")
         print()
-        print("  To install and authenticate:")
-        print()
-        print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
-        print("    2. Run:                  claude setup-token")
-        print("    3. Follow the browser prompts to authorize")
-        print("    4. Re-run:               hermes model")
-        print()
-        print("  Or paste an existing setup-token now (sk-ant-oat-...):")
+        print("  Choose an authentication method:")
+        print("    1. Authenticate via browser (no Claude CLI needed)")
+        print("    2. Paste a setup-token manually")
         print()
         try:
-            token = input("  Setup-token (or Enter to cancel): ").strip()
+            choice = input("  Choice [1]: ").strip() or "1"
         except (KeyboardInterrupt, EOFError):
             print()
             return False
-        if token:
-            save_anthropic_oauth_token(token, save_fn=save_env_value)
-            print("  ✓ Setup-token saved.")
-            return True
-        print("  Cancelled — install Claude Code and try again.")
-        return False
+
+        if choice == "1":
+            from agent.anthropic_adapter import run_hermes_oauth_login
+            token = run_hermes_oauth_login()
+            if token:
+                save_anthropic_oauth_token(token, save_fn=save_env_value)
+                print("  ✓ OAuth credentials saved.")
+                return True
+            print("  ⚠ Authentication failed or cancelled.")
+            return False
+        else:
+            print()
+            print("  To install Claude Code: npm install -g @anthropic-ai/claude-code")
+            print("  Then run: claude setup-token")
+            print()
+            print("  Or paste an existing setup-token now (sk-ant-oat-...):")
+            print()
+            try:
+                token = input("  Setup-token (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return False
+            if token:
+                save_anthropic_oauth_token(token, save_fn=save_env_value)
+                print("  ✓ Setup-token saved.")
+                return True
+            print("  Cancelled — install Claude Code and try again.")
+            return False
 
 
 def _model_flow_anthropic(config, current_model=""):

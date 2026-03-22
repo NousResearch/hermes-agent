@@ -528,10 +528,16 @@ def run_hermes_oauth_login() -> Optional[str]:
     code = splits[0]
     state = splits[1] if len(splits) > 1 else ""
 
+    # Validate CSRF state matches the original verifier
+    if state and state != verifier:
+        print("  State mismatch — possible CSRF. Aborting.")
+        return None
+
     # Exchange code for tokens
     try:
+        import urllib.parse
         import urllib.request
-        exchange_data = json.dumps({
+        exchange_data = urllib.parse.urlencode({
             "grant_type": "authorization_code",
             "client_id": _OAUTH_CLIENT_ID,
             "code": code,
@@ -544,7 +550,7 @@ def run_hermes_oauth_login() -> Optional[str]:
             _OAUTH_TOKEN_URL,
             data=exchange_data,
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
             },
             method="POST",
@@ -608,6 +614,7 @@ def refresh_hermes_oauth_token() -> Optional[str]:
     Returns the new access token, or None if refresh fails.
     """
     import time
+    import urllib.parse
     import urllib.request
 
     creds = read_hermes_oauth_credentials()
@@ -615,7 +622,7 @@ def refresh_hermes_oauth_token() -> Optional[str]:
         return None
 
     try:
-        data = json.dumps({
+        data = urllib.parse.urlencode({
             "grant_type": "refresh_token",
             "refresh_token": creds["refreshToken"],
             "client_id": _OAUTH_CLIENT_ID,
@@ -625,7 +632,7 @@ def refresh_hermes_oauth_token() -> Optional[str]:
             _OAUTH_TOKEN_URL,
             data=data,
             headers={
-                "Content-Type": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
             },
             method="POST",

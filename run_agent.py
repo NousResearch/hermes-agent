@@ -3338,7 +3338,7 @@ class AIAgent:
 
         return True
 
-    def _try_refresh_anthropic_client_credentials(self) -> bool:
+    def _try_refresh_anthropic_client_credentials(self, *, force: bool = False) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
         # Only refresh credentials for the native Anthropic provider.
@@ -3358,7 +3358,27 @@ class AIAgent:
             return False
         new_token = new_token.strip()
         if new_token == self._anthropic_api_key:
-            return False
+            if not force:
+                return False
+            # Force mode: try all OAuth credential sources regardless of current token type.
+            # The current token may be a stale API key while valid OAuth creds exist in files.
+            try:
+                from agent.anthropic_adapter import (
+                    refresh_hermes_oauth_token, _refresh_oauth_token,
+                    read_claude_code_credentials,
+                )
+                forced_token = refresh_hermes_oauth_token()
+                if not forced_token:
+                    cc_creds = read_claude_code_credentials()
+                    if cc_creds:
+                        forced_token = _refresh_oauth_token(cc_creds)
+                if forced_token and forced_token.strip() != self._anthropic_api_key:
+                    new_token = forced_token.strip()
+                else:
+                    return False
+            except Exception as exc:
+                logger.debug("Anthropic forced credential refresh failed: %s", exc)
+                return False
 
         try:
             self._anthropic_client.close()
@@ -6079,7 +6099,7 @@ class AIAgent:
                     ):
                         anthropic_auth_retry_attempted = True
                         from agent.anthropic_adapter import _is_oauth_token
-                        if self._try_refresh_anthropic_client_credentials():
+                        if self._try_refresh_anthropic_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                             continue
                         # Credential refresh didn't help — show diagnostic info

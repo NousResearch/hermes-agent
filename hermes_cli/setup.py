@@ -1322,18 +1322,33 @@ def setup_model_provider(config: dict):
                             print_warning("Skipped — agent won't work without credentials")
                 except FileNotFoundError:
                     print()
-                    print_info("The 'claude' CLI is required for OAuth login.")
+                    print_info("The 'claude' CLI is not installed.")
                     print()
-                    print_info("To install: npm install -g @anthropic-ai/claude-code")
-                    print_info("Then run:   claude setup-token")
-                    print_info("Or paste an existing setup-token below:")
-                    print()
-                    token = prompt("Setup-token (sk-ant-oat-...)", password=True)
-                    if token:
-                        save_anthropic_oauth_token(token, save_fn=save_env_value)
-                        print_success("Setup-token saved")
+                    native_choices = [
+                        "Authenticate via browser (no Claude CLI needed)",
+                        "Paste a setup-token manually",
+                    ]
+                    native_idx = prompt_choice("Choose an option:", native_choices, 0)
+                    if native_idx == 0:
+                        from agent.anthropic_adapter import run_hermes_oauth_login
+                        token = run_hermes_oauth_login()
+                        if token:
+                            save_anthropic_oauth_token(token, save_fn=save_env_value)
+                            print_success("OAuth credentials saved")
+                        else:
+                            print_warning("Authentication failed or cancelled")
                     else:
-                        print_warning("Skipped — install Claude Code and re-run setup")
+                        print()
+                        print_info("To install Claude Code: npm install -g @anthropic-ai/claude-code")
+                        print_info("Then run: claude setup-token")
+                        print_info("Or paste an existing setup-token below:")
+                        print()
+                        token = prompt("Setup-token (sk-ant-oat-...)", password=True)
+                        if token:
+                            save_anthropic_oauth_token(token, save_fn=save_env_value)
+                            print_success("Setup-token saved")
+                        else:
+                            print_warning("Skipped — install Claude Code and re-run setup")
             else:
                 print()
                 print_info("Get an API key at: https://console.anthropic.com/settings/keys")

@@ -449,9 +449,136 @@ class SlashCommandCompleter(Completer):
             )
             count += 1
 
+    @staticmethod
+    def _extract_context_word(text: str) -> str | None:
+        """Extract a bare ``@`` token for context reference completions."""
+        if not text:
+            return None
+        # Walk backwards to find the start of the current word
+        i = len(text) - 1
+        while i >= 0 and text[i] != " ":
+            i -= 1
+        word = text[i + 1:]
+        if not word.startswith("@"):
+            return None
+        return word
+
+    @staticmethod
+    def _context_completions(word: str, limit: int = 30):
+        """Yield Claude Code-style @ context completions.
+
+        Bare ``@`` or ``@partial`` shows static references and matching
+        files/folders.  ``@file:path`` and ``@folder:path`` are handled
+        by the existing path completion path.
+        """
+        lowered = word.lower()
+
+        # Static context references
+        _STATIC_REFS = (
+            ("@diff", "Git working tree diff"),
+            ("@staged", "Git staged diff"),
+            ("@file:", "Attach a file"),
+            ("@folder:", "Attach a folder"),
+            ("@git:", "Git log with diffs (e.g. @git:5)"),
+            ("@url:", "Fetch web content"),
+        )
+        for candidate, meta in _STATIC_REFS:
+            if candidate.lower().startswith(lowered) and candidate.lower() != lowered:
+                yield Completion(
+                    candidate,
+                    start_position=-len(word),
+                    display=candidate,
+                    display_meta=meta,
+                )
+
+        # If the user typed @file: or @folder:, delegate to path completions
+        for prefix in ("@file:", "@folder:"):
+            if word.startswith(prefix):
+                path_part = word[len(prefix):] or "."
+                expanded = os.path.expanduser(path_part)
+                if expanded.endswith("/"):
+                    search_dir, match_prefix = expanded, ""
+                else:
+                    search_dir = os.path.dirname(expanded) or "."
+                    match_prefix = os.path.basename(expanded)
+
+                try:
+                    entries = os.listdir(search_dir)
+                except OSError:
+                    return
+
+                count = 0
+                prefix_lower = match_prefix.lower()
+                for entry in sorted(entries):
+                    if match_prefix and not entry.lower().startswith(prefix_lower):
+                        continue
+                    if count >= limit:
+                        break
+                    full_path = os.path.join(search_dir, entry)
+                    is_dir = os.path.isdir(full_path)
+                    display_path = os.path.relpath(full_path)
+                    suffix = "/" if is_dir else ""
+                    kind = "folder" if is_dir else "file"
+                    meta = "dir" if is_dir else _file_size_label(full_path)
+                    completion = f"@{kind}:{display_path}{suffix}"
+                    yield Completion(
+                        completion,
+                        start_position=-len(word),
+                        display=entry + suffix,
+                        display_meta=meta,
+                    )
+                    count += 1
+                return
+
+        # Bare @ or @partial — show matching files/folders from cwd
+        query = word[1:]  # strip the @
+        if not query:
+            search_dir, match_prefix = ".", ""
+        else:
+            expanded = os.path.expanduser(query)
+            if expanded.endswith("/"):
+                search_dir, match_prefix = expanded, ""
+            else:
+                search_dir = os.path.dirname(expanded) or "."
+                match_prefix = os.path.basename(expanded)
+
+        try:
+            entries = os.listdir(search_dir)
+        except OSError:
+            return
+
+        count = 0
+        prefix_lower = match_prefix.lower()
+        for entry in sorted(entries):
+            if match_prefix and not entry.lower().startswith(prefix_lower):
+                continue
+            if entry.startswith("."):
+                continue  # skip hidden files in bare @ mode
+            if count >= limit:
+                break
+            full_path = os.path.join(search_dir, entry)
+            is_dir = os.path.isdir(full_path)
+            display_path = os.path.relpath(full_path)
+            suffix = "/" if is_dir else ""
+            kind = "folder" if is_dir else "file"
+            meta = "dir" if is_dir else _file_size_label(full_path)
+            completion = f"@{kind}:{display_path}{suffix}"
+            yield Completion(
+                completion,
+                start_position=-len(word),
+                display=entry + suffix,
+                display_meta=meta,
+            )
+            count += 1
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
+            # Try @ context completion (Claude Code-style)
+            ctx_word = self._extract_context_word(text)
+            if ctx_word is not None:
+                yield from self._context_completions(ctx_word)
+                return
             # Try file path completion for non-slash input
             path_word = self._extract_path_word(text)
             if path_word is not None:

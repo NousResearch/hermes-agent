@@ -1159,8 +1159,8 @@ class HermesCLI:
         self._provider_data_collection = pr.get("data_collection")
         
         # Fallback model config — tried when primary provider fails after retries
-        fb = CLI_CONFIG.get("fallback_model") or {}
-        self._fallback_model = fb if fb.get("provider") and fb.get("model") else None
+        fb = CLI_CONFIG.get("fallback_providers") or CLI_CONFIG.get("fallback_model") or []
+        self._fallback_model = fb
 
         # Optional cheap-vs-strong routing for simple turns
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}

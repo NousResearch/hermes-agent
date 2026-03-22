@@ -20,15 +20,25 @@ When your main LLM provider encounters errors — rate limits, server overload, 
 
 ### Configuration
 
-Add a `fallback_model` section to `~/.hermes/config.yaml`:
+Add a `fallback_providers` list to `~/.hermes/config.yaml`:
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+# Single fallback
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+
+# Multiple fallbacks — tried in order until one succeeds
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+  - provider: openai
+    model: gpt-4o
+  - provider: zai
+    model: glm-4.7
 ```
 
-Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+Each entry requires `provider` and `model`. Invalid entries are skipped automatically.
 
 ### Supported Providers
 
@@ -51,11 +61,11 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 For a custom OpenAI-compatible endpoint, add `base_url` and optionally `api_key_env`:
 
 ```yaml
-fallback_model:
-  provider: custom
-  model: my-local-model
-  base_url: http://localhost:8000/v1
-  api_key_env: MY_LOCAL_KEY          # env var name containing the API key
+fallback_providers:
+  - provider: custom
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+    api_key_env: MY_LOCAL_KEY          # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -77,48 +87,43 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-:::info One-Shot
-Fallback activates **at most once** per session. If the fallback provider also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops.
+:::info Fallback Sequence
+Hermes tries each fallback provider in order. If all providers in the list fail, normal error handling takes over (retries, then error message). This prevents infinite failover loops.
 :::
 
 ### Examples
 
-**OpenRouter as fallback for Anthropic native:**
+**Single fallback — OpenRouter for Anthropic:**
 ```yaml
 model:
   provider: anthropic
   default: claude-sonnet-4-6
 
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
-**Nous Portal as fallback for OpenRouter:**
+**Multiple fallbacks — cloud chain:**
 ```yaml
-model:
-  provider: openrouter
-  default: anthropic/claude-opus-4
-
-fallback_model:
-  provider: nous
-  model: nous-hermes-3
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+  - provider: nous
+    model: nous-hermes-3
+  - provider: openai-codex
+    model: gpt-5.3-codex
 ```
 
-**Local model as fallback for cloud:**
+**Local-first with cloud fallbacks:**
 ```yaml
-fallback_model:
-  provider: custom
-  model: llama-3.1-70b
-  base_url: http://localhost:8000/v1
-  api_key_env: LOCAL_API_KEY
-```
-
-**Codex OAuth as fallback:**
-```yaml
-fallback_model:
-  provider: openai-codex
-  model: gpt-5.3-codex
+fallback_providers:
+  - provider: custom
+    model: llama-3.1-70b
+    base_url: http://localhost:8000/v1
+    api_key_env: LOCAL_API_KEY
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
 ### Where Fallback Works
@@ -311,7 +316,7 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_model` in config.yaml — one-shot failover on errors | `fallback_model:` (top-level) |
+| Main agent model | `fallback_providers` list — tries each in order on errors | `fallback_providers:` (top-level) |
 | Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` or `compression.summary_provider` |

@@ -767,13 +767,26 @@ class AIAgent:
         # Provider fallback — a single backup model/provider tried when the
         # primary is exhausted (rate-limit, overload, connection failure).
         # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
-        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        # Provider fallback sequence — ordered list of backup providers tried
+        # when the primary is exhausted (rate-limit, overload, connection failure).
+        # Supports both legacy single-dict and new list format.
+        # Config shape: [{"provider": "openrouter", "model": "claude-sonnet-4"}, ...]
+        if isinstance(fallback_model, list):
+            self._fallback_chain = [f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")]
+        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+            self._fallback_chain = [fallback_model]
+        else:
+            self._fallback_chain = []
+        self._fallback_index = 0
         self._fallback_activated = False
-        if self._fallback_model:
-            fb_p = self._fallback_model.get("provider", "")
-            fb_m = self._fallback_model.get("model", "")
-            if fb_p and fb_m and not self.quiet_mode:
-                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        if self._fallback_chain and not self.quiet_mode:
+            if len(self._fallback_chain) == 1:
+                fb = self._fallback_chain[0]
+                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            else:
+                print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
+                      " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -3727,15 +3740,15 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if self._fallback_activated or not self._fallback_model:
+        if self._fallback_index >= len(self._fallback_chain):
             return False
-
-        fb = self._fallback_model
+        fb = self._fallback_chain[self._fallback_index]
+        self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
-            return False
-
+            return self._try_activate_fallback()
+            
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.

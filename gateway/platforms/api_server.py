@@ -96,7 +96,6 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
 }
@@ -105,11 +104,23 @@ _CORS_HEADERS = {
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def cors_middleware(request, handler):
-        """Add CORS headers to every response; handle OPTIONS preflight."""
+        """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
+        adapter = request.app.get("api_server_adapter")
+        origin = request.headers.get("Origin", "")
+        cors_headers = None
+        if adapter is not None:
+            if not adapter._origin_allowed(origin):
+                return web.Response(status=403)
+            cors_headers = adapter._cors_headers_for_origin(origin)
+
         if request.method == "OPTIONS":
-            return web.Response(status=200, headers=_CORS_HEADERS)
+            if cors_headers is None:
+                return web.Response(status=403)
+            return web.Response(status=200, headers=cors_headers)
+
         response = await handler(request)
-        response.headers.update(_CORS_HEADERS)
+        if cors_headers is not None:
+            response.headers.update(cors_headers)
         return response
 else:
     cors_middleware = None  # type: ignore[assignment]
@@ -129,12 +140,58 @@ class APIServerAdapter(BasePlatformAdapter):
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
+            extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
         # Conversation name → latest response_id mapping
         self._conversations: Dict[str, str] = {}
+
+    @staticmethod
+    def _parse_cors_origins(value: Any) -> tuple[str, ...]:
+        """Normalize configured CORS origins into a stable tuple."""
+        if not value:
+            return ()
+
+        if isinstance(value, str):
+            items = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [str(value)]
+
+        return tuple(str(item).strip() for item in items if str(item).strip())
+
+    def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
+        """Return CORS headers for an allowed browser origin."""
+        if not origin or not self._cors_origins:
+            return None
+
+        if "*" in self._cors_origins:
+            headers = dict(_CORS_HEADERS)
+            headers["Access-Control-Allow-Origin"] = "*"
+            return headers
+
+        if origin not in self._cors_origins:
+            return None
+
+        headers = dict(_CORS_HEADERS)
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Vary"] = "Origin"
+        return headers
+
+    def _origin_allowed(self, origin: str) -> bool:
+        """Allow non-browser clients and explicitly configured browser origins."""
+        if not origin:
+            return True
+
+        if not self._cors_origins:
+            return False
+
+        return "*" in self._cors_origins or origin in self._cors_origins
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -903,6 +960,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             self._app = web.Application(middlewares=[cors_middleware])
+            self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

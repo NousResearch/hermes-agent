@@ -30,7 +30,7 @@ CTRL_ENTER_KEYS = Keys.ControlJ
 KITTY_KEYBOARD_QUERY = "\x1b[?u"
 KITTY_KEYBOARD_ENABLE = "\x1b[>1u"
 KITTY_KEYBOARD_DISABLE = "\x1b[<u"
-MODIFY_OTHER_KEYS_QUERY = "\x1b[>4;?m"
+MODIFY_OTHER_KEYS_QUERY = "\x1b[?4m"
 MODIFY_OTHER_KEYS_ENABLE = "\x1b[>4;2m"
 MODIFY_OTHER_KEYS_DISABLE = "\x1b[>4;0m"
 DEVICE_ATTRIBUTES_QUERY = "\x1b[c"
@@ -95,9 +95,11 @@ def parse_capabilities(data: str) -> TerminalKeyboardCapabilities:
         int(match.group(1))
         for match in _MODIFY_OTHER_KEYS_RESPONSE_RE.finditer(data)
     ]
+    # Any response (including level 0) proves the terminal understands the
+    # protocol; we will explicitly enable level 2 via set_mode().
     return TerminalKeyboardCapabilities(
         kitty_supported=kitty_supported,
-        modify_other_keys_supported=any(level >= 2 for level in modify_levels),
+        modify_other_keys_supported=bool(modify_levels),
     )
 
 
@@ -162,6 +164,19 @@ def set_mode(
     write_sequence(sequence, writer=writer)
 
 
+def _get_real_stream(name: str):
+    """Return the real stdin/stdout if it is a usable TTY, else None."""
+    stream = getattr(sys, f"__{name}__", None) or getattr(sys, name, None)
+    if stream is None or not hasattr(stream, "isatty"):
+        return None
+    try:
+        if not stream.isatty():
+            return None
+    except Exception:
+        return None
+    return stream
+
+
 def detect_capabilities(
     *,
     timeout_s: float = QUERY_TIMEOUT_S,
@@ -170,13 +185,9 @@ def detect_capabilities(
     if os.name == "nt":
         return TerminalKeyboardDetectionResult(TerminalKeyboardCapabilities())
 
-    stdin = getattr(sys, "__stdin__", None) or sys.stdin
-    stdout = getattr(sys, "__stdout__", None) or sys.stdout
+    stdin = _get_real_stream("stdin")
+    stdout = _get_real_stream("stdout")
     if stdin is None or stdout is None:
-        return TerminalKeyboardDetectionResult(TerminalKeyboardCapabilities())
-    if not hasattr(stdin, "isatty") or not hasattr(stdout, "isatty"):
-        return TerminalKeyboardDetectionResult(TerminalKeyboardCapabilities())
-    if not stdin.isatty() or not stdout.isatty():
         return TerminalKeyboardDetectionResult(TerminalKeyboardCapabilities())
 
     try:
@@ -240,6 +251,34 @@ def _detect_terminfo_backspace() -> bytes | None:
         return None
 
 
+def _detect_tty_erase() -> bytes | None:
+    """Return the current TTY erase byte, if it is available."""
+    if os.name == "nt":
+        return None
+
+    stdin = _get_real_stream("stdin")
+    if stdin is None or not hasattr(stdin, "fileno"):
+        return None
+
+    try:
+        import termios
+
+        erase = termios.tcgetattr(stdin.fileno())[6][termios.VERASE]
+    except Exception:
+        return None
+
+    if isinstance(erase, int):
+        erase_byte = bytes([erase])
+    elif isinstance(erase, (bytes, bytearray)):
+        erase_byte = bytes(erase[:1])
+    elif isinstance(erase, str):
+        erase_byte = erase.encode("latin-1", errors="ignore")[:1]
+    else:
+        return None
+
+    return erase_byte if erase_byte in (b"\x08", b"\x7f") else None
+
+
 def install_ctrl_backspace_sequences(
     ansi_sequences: dict[str, Keys | tuple[Keys, ...]] | None = None,
     *,
@@ -261,8 +300,15 @@ def install_ctrl_backspace_sequences(
     if terminfo_backspace is None:
         terminfo_backspace = _detect_terminfo_backspace()
 
-    if terminfo_backspace == b"\x08":
+    tty_erase = _detect_tty_erase()
+
+    # DEL is a common plain Backspace byte in xterm/tmux sessions even when
+    # terminfo advertises ^H. Only remap DEL when the active TTY confirms that
+    # Backspace is actually ^H.
+    if tty_erase == b"\x08":
         sequences["\x7f"] = CTRL_BACKSPACE_KEYS
+    elif tty_erase == b"\x7f":
+        sequences["\x08"] = CTRL_BACKSPACE_KEYS
     elif terminfo_backspace == b"\x7f":
         sequences["\x08"] = CTRL_BACKSPACE_KEYS
 
@@ -333,6 +379,3 @@ def install_all() -> None:
     """Install all keyboard sequence mappings into prompt_toolkit's parser."""
     install_ctrl_backspace_sequences()
     install_enhanced_sequences()
-
-
-install_all()

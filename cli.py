@@ -7082,6 +7082,7 @@ class HermesCLI:
         terminal_keyboard_cleanup = None
         pending_terminal_key_presses = []
         try:
+            _tkbd.install_all()
             terminal_keyboard_detection = _tkbd.detect_capabilities()
             self._terminal_keyboard_mode = _tkbd.select_mode(
                 terminal_keyboard_detection.capabilities

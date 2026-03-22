@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +15,11 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from hermes_cli import terminal_keyboard as tkbd
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _install_sequences():
+    tkbd.install_all()
 
 
 def test_register_word_delete_keybindings_wires_terminal_sequences():
@@ -37,6 +43,12 @@ def test_parse_terminal_keyboard_capabilities_detects_kitty_and_modify_other_key
     )
 
     assert capabilities.kitty_supported is True
+    assert capabilities.modify_other_keys_supported is True
+
+
+def test_parse_terminal_keyboard_capabilities_treats_modify_other_keys_level_zero_as_supported():
+    capabilities = tkbd.parse_capabilities("\x1b[>4;0m")
+
     assert capabilities.modify_other_keys_supported is True
 
 
@@ -97,6 +109,28 @@ def test_set_terminal_keyboard_mode_emits_expected_sequence(
     assert written == [expected_sequence]
 
 
+def test_detect_capabilities_uses_xtqmodkeys_query_syntax():
+    fake_stdin = SimpleNamespace(isatty=lambda: True, fileno=lambda: 5)
+    fake_stdout = SimpleNamespace(isatty=lambda: True)
+    written = []
+
+    with (
+        patch.object(sys, "__stdin__", fake_stdin),
+        patch.object(sys, "__stdout__", fake_stdout),
+        patch.object(tkbd, "write_sequence", side_effect=written.append),
+        patch("termios.tcgetattr", return_value=["orig"]),
+        patch("termios.tcsetattr"),
+        patch("tty.setcbreak"),
+        patch("select.select", return_value=([5], [], [])),
+        patch("os.read", return_value=b"\x1b[?64;1;2c"),
+    ):
+        tkbd.detect_capabilities(timeout_s=0.01)
+
+    assert written == [
+        tkbd.KITTY_KEYBOARD_QUERY + tkbd.MODIFY_OTHER_KEYS_QUERY + tkbd.DEVICE_ATTRIBUTES_QUERY
+    ]
+
+
 def test_install_ctrl_backspace_sequences_registers_modified_keycodes():
     sequences = {}
 
@@ -109,25 +143,42 @@ def test_install_ctrl_backspace_sequences_registers_modified_keycodes():
         assert sequences[sequence] == tkbd.CTRL_BACKSPACE_KEYS
 
 
-@pytest.mark.parametrize(
-    ("terminfo_backspace", "ctrl_backspace_byte"),
-    [
-        (b"\x08", "\x7f"),
-        (b"\x7f", "\x08"),
-    ],
-)
-def test_install_ctrl_backspace_sequences_uses_terminfo_backspace_swap(
-    terminfo_backspace,
-    ctrl_backspace_byte,
-):
+def test_install_ctrl_backspace_sequences_uses_tty_erase_to_avoid_remapping_del():
     sequences = {}
 
-    tkbd.install_ctrl_backspace_sequences(
-        sequences,
-        terminfo_backspace=terminfo_backspace,
-    )
+    with patch.object(tkbd, "_detect_tty_erase", return_value=b"\x7f", create=True):
+        tkbd.install_ctrl_backspace_sequences(
+            sequences,
+            terminfo_backspace=b"\x08",
+        )
 
-    assert sequences[ctrl_backspace_byte] == tkbd.CTRL_BACKSPACE_KEYS
+    assert sequences["\x08"] == tkbd.CTRL_BACKSPACE_KEYS
+    assert "\x7f" not in sequences
+
+
+def test_install_ctrl_backspace_sequences_remaps_del_when_tty_erase_is_ctrl_h():
+    sequences = {}
+
+    with patch.object(tkbd, "_detect_tty_erase", return_value=b"\x08", create=True):
+        tkbd.install_ctrl_backspace_sequences(
+            sequences,
+            terminfo_backspace=b"\x7f",
+        )
+
+    assert sequences["\x7f"] == tkbd.CTRL_BACKSPACE_KEYS
+    assert "\x08" not in sequences
+
+
+def test_install_ctrl_backspace_sequences_does_not_remap_del_from_terminfo_alone():
+    sequences = {}
+
+    with patch.object(tkbd, "_detect_tty_erase", return_value=None, create=True):
+        tkbd.install_ctrl_backspace_sequences(
+            sequences,
+            terminfo_backspace=b"\x08",
+        )
+
+    assert "\x7f" not in sequences
 
 
 def test_vt100_parser_maps_ctrl_backspace_csi_u_sequence():

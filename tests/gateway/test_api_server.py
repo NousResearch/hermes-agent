@@ -30,6 +30,8 @@ from gateway.platforms.api_server import (
     cors_middleware,
 )
 
+from gateway.session import SessionSource
+
 
 # ---------------------------------------------------------------------------
 # check_api_server_requirements
@@ -206,6 +208,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_post("/v1/message", adapter._handle_message)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
     return app
@@ -219,6 +222,21 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+@pytest.fixture
+def session_adapter():
+    """Create an adapter with a mocked SessionStore."""
+    mock_store = MagicMock()
+    mock_store.get_or_create_session.return_value = MagicMock(
+        session_id="test_session_001",
+        was_auto_reset=False,
+    )
+    mock_store.load_transcript.return_value = []
+    mock_store._save = MagicMock()
+    config = PlatformConfig(enabled=True)
+    adapter = APIServerAdapter(config, session_store=mock_store)
+    return adapter
+
 
 
 # ---------------------------------------------------------------------------
@@ -1297,3 +1315,201 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert "ephemeral-chat" not in adapter._conversations
+
+
+# ---------------------------------------------------------------------------
+# /v1/message endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestMessageEndpoint:
+    @pytest.mark.asyncio
+    async def test_message_missing_text_returns_400(self, session_adapter):
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/message", json={"chat_id": "123"})
+            assert resp.status == 400
+            data = await resp.json()
+            assert "text" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_message_missing_chat_id_returns_400(self, session_adapter):
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/message", json={"text": "hello"})
+            assert resp.status == 400
+            data = await resp.json()
+            assert "chat_id" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_message_invalid_platform_returns_400(self, session_adapter):
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/message",
+                json={"text": "hello", "chat_id": "123", "platform": "nope"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "Unknown platform" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_message_defaults_platform_to_webhook_and_user_id_to_chat_id(
+        self, session_adapter
+    ):
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                session_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "Hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/message",
+                    json={"text": "hello", "chat_id": "chat_123"},
+                )
+                assert resp.status == 200
+                # Verify SessionSource was created with defaults
+                call_args = (
+                    session_adapter._session_store.get_or_create_session.call_args
+                )
+                source = call_args[0][0]
+                assert source.platform == Platform.WEBHOOK
+                assert source.user_id == "chat_123"
+
+    @pytest.mark.asyncio
+    async def test_message_without_session_store_returns_500(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/message",
+                json={"text": "hello", "chat_id": "123"},
+            )
+            assert resp.status == 500
+            data = await resp.json()
+            assert "Session store not available" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_message_persists_transcript_and_reuses_session_id_across_requests(
+        self, session_adapter
+    ):
+        mock_messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        session_adapter._session_store.load_transcript.return_value = mock_messages
+
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                session_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "Hello!",
+                        "messages": mock_messages,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+                resp1 = await cli.post(
+                    "/v1/message",
+                    json={"text": "hi", "chat_id": "c1"},
+                )
+                assert resp1.status == 200
+                data1 = await resp1.json()
+                assert data1["ok"] is True
+
+                # Second request should reuse same session
+                resp2 = await cli.post(
+                    "/v1/message",
+                    json={"text": "follow up", "chat_id": "c1"},
+                )
+                assert resp2.status == 200
+                data2 = await resp2.json()
+                assert data2["session_id"] == data1["session_id"]
+
+                # Second agent call should have received conversation history
+                second_call_kwargs = mock_run.call_args_list[1].kwargs
+                assert len(second_call_kwargs["conversation_history"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_message_filters_session_meta_before_offset_slicing(
+        self, session_adapter
+    ):
+        transcript = [
+            {"role": "session_meta", "source": "telegram", "timestamp": "t"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        session_adapter._session_store.load_transcript.return_value = transcript
+
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                session_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "Hello!",
+                        "messages": transcript,
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/message",
+                    json={"text": "hi", "chat_id": "c1"},
+                )
+                assert resp.status == 200
+                # Verify conversation_history passed to agent has no session_meta
+                call_kwargs = mock_run.call_args.kwargs
+                history = call_kwargs["conversation_history"]
+                assert all(m.get("role") != "session_meta" for m in history)
+
+    @pytest.mark.asyncio
+    async def test_message_falls_back_to_final_response_when_new_messages_have_no_assistant_text(
+        self, session_adapter
+    ):
+        # Agent returns messages but new_messages have no assistant text
+        session_adapter._session_store.load_transcript.return_value = [
+            {"role": "user", "content": "hi"},
+        ]
+
+        app = _create_app(session_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                session_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "Final answer",
+                        "messages": [
+                            {"role": "tool", "tool_call_id": "x", "content": "result"},
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/message",
+                    json={"text": "hi", "chat_id": "c1"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["response"] == "Final answer"
+
+    @pytest.mark.asyncio
+    async def test_message_requires_auth(self):
+        auth_store = MagicMock()
+        config = PlatformConfig(enabled=True, extra={"key": "sk-secret"})
+        adapter = APIServerAdapter(config, session_store=auth_store)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/message",
+                json={"text": "hello", "chat_id": "123"},
+            )
+            assert resp.status == 401

@@ -3,6 +3,7 @@ OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
 - POST /v1/chat/completions        — OpenAI Chat Completions format (stateless)
+- POST /v1/message                 — Session-backed message endpoint
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
@@ -24,6 +25,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 try:
@@ -38,6 +40,8 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
+
+from gateway.session import SessionSource, SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +127,7 @@ class APIServerAdapter(BasePlatformAdapter):
     and routes them through hermes-agent's AIAgent.
     """
 
-    def __init__(self, config: PlatformConfig):
+    def __init__(self, config: PlatformConfig, session_store: Optional[SessionStore] = None):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
@@ -133,6 +137,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._session_store: Optional[SessionStore] = session_store
         # Conversation name → latest response_id mapping
         self._conversations: Dict[str, str] = {}
 
@@ -170,6 +175,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        platform_hint: str = "api_server",
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -193,10 +199,52 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             session_id=session_id,
-            platform="api_server",
+            platform=platform_hint,
             stream_delta_callback=stream_delta_callback,
         )
         return agent
+
+    # History normalization helper
+    # ------------------------------------------------------------------
+
+    def _normalize_history(self, history: List[Dict]) -> List[Dict]:
+        """
+        Normalize transcript history for agent consumption.
+
+        Copies the same logic used in the gateway runner:
+        - skip entries without ``role``
+        - skip ``role == "session_meta"``
+        - skip ``role == "system"``
+        - preserve rich tool messages (``tool_calls``, ``tool_call_id``,
+          or ``role == "tool"``) after removing only ``timestamp``
+        - reduce simple messages to ``{"role": role, "content": content}``
+          only when content is a non-empty string
+        """
+        agent_history: List[Dict] = []
+        for msg in history:
+            role = msg.get("role")
+            if not role:
+                continue
+
+            if role == "session_meta":
+                continue
+
+            if role == "system":
+                continue
+
+            has_tool_calls = "tool_calls" in msg
+            has_tool_call_id = "tool_call_id" in msg
+            is_tool_message = role == "tool"
+
+            if has_tool_calls or has_tool_call_id or is_tool_message:
+                clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
+                agent_history.append(clean_msg)
+            else:
+                content = msg.get("content")
+                if content:
+                    agent_history.append({"role": role, "content": content})
+
+        return agent_history
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -693,6 +741,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        platform_hint: str = "api_server",
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -707,11 +756,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                platform_hint=platform_hint,
             )
             result = agent.run_conversation(
                 user_message=user_message,
                 conversation_history=conversation_history,
             )
+            result["session_id"] = getattr(agent, "session_id", session_id)
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -720,6 +771,215 @@ class APIServerAdapter(BasePlatformAdapter):
             return result, usage
 
         return await loop.run_in_executor(None, _run)
+
+
+    # Session-backed message handler
+    # ------------------------------------------------------------------
+
+    async def _handle_message(self, request: "web.Request") -> "web.Response":
+        """POST /v1/message — session-backed message endpoint."""
+        # 1. Auth check
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        # 2. Session store availability
+        if self._session_store is None:
+            return web.json_response(
+                {
+                    "error": {
+                        "type": "server_error",
+                        "message": "Session store not available",
+                    }
+                },
+                status=500,
+            )
+
+        # 3. Parse JSON body
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Invalid JSON in request body",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+
+        # 4. Require text — non-empty string after strip
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Missing or empty 'text' field",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+        text = text.strip()
+
+        # 5. Require chat_id
+        chat_id_raw = body.get("chat_id")
+        if not chat_id_raw:
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Missing 'chat_id' field",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+        chat_id = str(chat_id_raw).strip()
+        if not chat_id:
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Missing 'chat_id' field",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+
+        # 6. Default user_id to normalized chat_id if not provided
+        user_id = str(body.get("user_id", chat_id)).strip() or chat_id
+
+        # 7. Default platform to "webhook" if not provided
+        platform_name = body.get("platform", "webhook")
+
+        # 8. Convert platform with Platform()
+        try:
+            platform_enum = Platform(platform_name)
+        except (ValueError, KeyError):
+            return web.json_response(
+                {
+                    "error": {
+                        "message": f"Unknown platform: {platform_name}",
+                        "type": "invalid_request_error",
+                    }
+                },
+                status=400,
+            )
+
+        # 9. Construct SessionSource
+        source = SessionSource(
+            platform=platform_enum,
+            chat_id=chat_id,
+            chat_type="dm",
+            user_id=user_id,
+        )
+
+        # 10. Get or create session
+        session_entry = self._session_store.get_or_create_session(source)
+
+        # 11. Load transcript
+        history = self._session_store.load_transcript(session_entry.session_id)
+
+        # 12. Normalize history
+        agent_history = self._normalize_history(history)
+
+        # 13. Record offset
+        history_offset = len(agent_history)
+
+        # 14. Run agent
+        try:
+            result, usage = await self._run_agent(
+                user_message=text,
+                conversation_history=agent_history,
+                session_id=session_entry.session_id,
+                platform_hint=platform_enum.value,
+            )
+        except Exception as e:
+            logger.error(
+                "Error running agent for message endpoint: %s", e, exc_info=True
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": f"Internal server error: {e}",
+                        "type": "server_error",
+                    }
+                },
+                status=500,
+            )
+
+        # 15. Handle session-id rollover
+        effective_session_id = session_entry.session_id
+        result_session_id = result.get("session_id")
+        if result_session_id and result_session_id != session_entry.session_id:
+            session_entry.session_id = result_session_id
+            effective_session_id = result_session_id
+            self._session_store._save()
+
+        # 16. Extract new messages
+        all_messages = result.get("messages", [])
+        if len(all_messages) > history_offset:
+            new_messages = all_messages[history_offset:]
+        else:
+            new_messages = []
+
+        # 17. Compute reply_text
+        reply_text = None
+        for msg in reversed(new_messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, str) and content:
+                    reply_text = content
+                    break
+        if reply_text is None:
+            reply_text = (
+                result.get("final_response")
+                or result.get("error")
+                or "(No response generated)"
+            )
+
+        # 18. Timestamp
+        ts = datetime.now().isoformat()
+
+        # 19-20. Append to transcript
+        if not new_messages:
+            self._session_store.append_to_transcript(
+                effective_session_id,
+                {
+                    "role": "user",
+                    "content": text,
+                    "timestamp": ts,
+                },
+            )
+            self._session_store.append_to_transcript(
+                effective_session_id,
+                {
+                    "role": "assistant",
+                    "content": reply_text,
+                    "timestamp": ts,
+                },
+            )
+        else:
+            for msg in new_messages:
+                if msg.get("role") == "system":
+                    continue
+                self._session_store.append_to_transcript(
+                    effective_session_id,
+                    {
+                        **msg,
+                        "timestamp": ts,
+                    },
+                )
+
+        # 21. Return response
+        return web.json_response(
+            {
+                "response": reply_text,
+                "session_id": effective_session_id,
+                "ok": True,
+            }
+        )
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
@@ -737,6 +997,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
+            self._app.router.add_post("/v1/message", self._handle_message)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
 

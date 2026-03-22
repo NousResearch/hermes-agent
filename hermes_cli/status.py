@@ -12,6 +12,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from gateway.kasia_config import DEFAULT_KASIA_BRIDGE_PORT, load_kasia_settings
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
@@ -258,6 +259,8 @@ def show_status(args):
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
     }
     
+    kasia_settings = load_kasia_settings()
+
     for name, (token_var, home_var) in platforms.items():
         token = os.getenv(token_var, "")
         has_token = bool(token)
@@ -267,6 +270,9 @@ def show_status(args):
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
+        if name == "Kasia":
+            has_token = kasia_settings.enabled
+            home_channel = kasia_settings.home_channel
         
         status = "configured" if has_token else "not configured"
         if home_channel:
@@ -274,19 +280,19 @@ def show_status(args):
 
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
         if name == "Kasia" and has_token:
-            kns_url = os.getenv("KASIA_KNS_URL", "").strip()
-            if kns_url:
-                print(f"    KNS:        {kns_url}")
-            indexer_urls = [value.strip() for value in os.getenv("KASIA_INDEXER_URLS", "").split(",") if value.strip()]
-            node_urls = [value.strip() for value in os.getenv("KASIA_NODE_WBORSH_URLS", "").split(",") if value.strip()]
-            if indexer_urls:
-                print(f"    Indexers:   {len(indexer_urls)} configured")
-            if node_urls:
-                print(f"    Nodes:      {len(node_urls)} configured")
-            broadcast_channels = [value.strip() for value in os.getenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "").split(",") if value.strip()]
+            if kasia_settings.kns_url:
+                print(f"    KNS:        {kasia_settings.kns_url}")
+            if kasia_settings.indexer_urls:
+                print(f"    Indexers:   {len(kasia_settings.indexer_urls)} configured")
+            if kasia_settings.node_wborsh_urls:
+                print(f"    Nodes:      {len(kasia_settings.node_wborsh_urls)} configured")
+            broadcast_channels = list(kasia_settings.allowed_broadcast_channels)
             if broadcast_channels:
-                print(f"    Broadcasts: publish allowlist for {', '.join('#' + c for c in broadcast_channels)}")
-            bridge_port = os.getenv("KASIA_BRIDGE_PORT", "").strip() or "3010"
+                print(
+                    "    Broadcasts: publish allowlist for "
+                    + ", ".join(f"#{channel}" for channel in broadcast_channels)
+                )
+            bridge_port = kasia_settings.bridge_port or DEFAULT_KASIA_BRIDGE_PORT
             try:
                 from urllib.request import urlopen
                 with urlopen(f"http://127.0.0.1:{bridge_port}/health", timeout=1.5) as response:

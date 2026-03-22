@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from gateway.kasia_config import load_kasia_settings
 
 logger = logging.getLogger(__name__)
 
@@ -169,42 +170,20 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
 
 def _build_kasia_broadcast_channels() -> List[Dict[str, str]]:
-    import os
-
     entries = []
     seen_ids = set()
 
-    raw_subscriptions = os.getenv("KASIA_BROADCAST_SUBSCRIPTIONS", "").strip()
-    if raw_subscriptions:
-        for segment in raw_subscriptions.split(";"):
-            trimmed = segment.strip()
-            if not trimmed or "=" not in trimmed:
-                continue
-            channel_name = trimmed.split("=", 1)[0].strip().lower()
-            if not channel_name:
-                continue
-            channel_id = f"broadcast:{channel_name}"
-            if channel_id in seen_ids:
-                continue
-            seen_ids.add(channel_id)
-            entries.append({
-                "id": channel_id,
-                "name": f"#{channel_name}",
-                "type": "channel",
-            })
-
-    allowed_channels = os.getenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "").strip()
-    if allowed_channels:
-        for channel_name in [value.strip().lower() for value in allowed_channels.split(",") if value.strip()]:
-            channel_id = f"broadcast:{channel_name}"
-            if channel_id in seen_ids:
-                continue
-            seen_ids.add(channel_id)
-            entries.append({
-                "id": channel_id,
-                "name": f"#{channel_name}",
-                "type": "channel",
-            })
+    kasia_settings = load_kasia_settings()
+    for channel_name in kasia_settings.configured_broadcast_channels():
+        channel_id = f"broadcast:{channel_name}"
+        if channel_id in seen_ids:
+            continue
+        seen_ids.add(channel_id)
+        entries.append({
+            "id": channel_id,
+            "name": f"#{channel_name}",
+            "type": "channel",
+        })
 
     return entries
 

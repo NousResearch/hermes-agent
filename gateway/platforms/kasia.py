@@ -25,6 +25,12 @@ _IS_WINDOWS = platform.system() == "Windows"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.kasia_config import (
+    DEFAULT_KASIA_BRIDGE_PORT,
+    DEFAULT_KASIA_SEND_WAIT_MS,
+    is_kasia_address_authorized,
+    load_kasia_settings,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -42,55 +48,14 @@ def _is_local_port_in_use(port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.2)
             return sock.connect_ex(("127.0.0.1", int(port))) == 0
-    except Exception:
+    except OSError:
         return False
 
 
 def check_kasia_requirements(config: Optional[PlatformConfig] = None) -> bool:
     """Check whether Kasia can be launched in the current environment."""
-    extra = config.extra if config else {}
-    seed_phrase = extra.get("seed_phrase") or os.getenv("KASIA_SEED_PHRASE", "")
-    indexer_url = (
-        extra.get("indexer_url")
-        or os.getenv("KASIA_INDEXER_URL", "")
-        or next(
-            (
-                value.strip()
-                for value in (extra.get("indexer_urls", []) or [])
-                if str(value).strip()
-            ),
-            "",
-        )
-        or next(
-            (
-                value.strip()
-                for value in os.getenv("KASIA_INDEXER_URLS", "").split(",")
-                if value.strip()
-            ),
-            "",
-        )
-    )
-    node_url = (
-        extra.get("node_wborsh_url")
-        or os.getenv("KASIA_NODE_WBORSH_URL", "")
-        or next(
-            (
-                value.strip()
-                for value in (extra.get("node_wborsh_urls", []) or [])
-                if str(value).strip()
-            ),
-            "",
-        )
-        or next(
-            (
-                value.strip()
-                for value in os.getenv("KASIA_NODE_WBORSH_URLS", "").split(",")
-                if value.strip()
-            ),
-            "",
-        )
-    )
-    if not all([seed_phrase, indexer_url, node_url]):
+    kasia_settings = load_kasia_settings(extra=config.extra if config else None)
+    if not kasia_settings.has_required_connection_fields:
         return False
 
     try:
@@ -101,7 +66,7 @@ def check_kasia_requirements(config: Optional[PlatformConfig] = None) -> bool:
             timeout=5,
         )
         return result.returncode == 0
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return False
 
 
@@ -109,28 +74,19 @@ class KasiaAdapter(BasePlatformAdapter):
     """Bridge-backed Kasia adapter."""
 
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "kasia-bridge"
-    _DEFAULT_SEND_WAIT_MS = 5000
+    _DEFAULT_SEND_WAIT_MS = DEFAULT_KASIA_SEND_WAIT_MS
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.KASIA)
-        self._bridge_port = int(config.extra.get("bridge_port", 3010))
+        self._kasia_settings = load_kasia_settings(extra=config.extra)
+        self._bridge_port = self._kasia_settings.bridge_port or DEFAULT_KASIA_BRIDGE_PORT
         self._bridge_script = Path(
             config.extra.get("bridge_script", self._DEFAULT_BRIDGE_DIR / "bridge.js")
         )
         self._state_dir = Path(
             config.extra.get("state_dir", get_hermes_home() / "kasia")
         )
-        self._seed_phrase = config.extra.get("seed_phrase", "")
-        self._indexer_url = config.extra.get("indexer_url", "")
-        self._indexer_urls = config.extra.get("indexer_urls", []) or []
-        self._node_url = config.extra.get("node_wborsh_url", "")
-        self._node_urls = config.extra.get("node_wborsh_urls", []) or []
-        self._network = config.extra.get("network", "mainnet") or "mainnet"
-        self._kns_url = config.extra.get("kns_url", "")
-        self._fee_policy = str(config.extra.get("fee_policy", "priority") or "priority")
-        self._send_wait_ms = int(
-            config.extra.get("send_wait_ms", self._DEFAULT_SEND_WAIT_MS)
-        )
+        self._send_wait_ms = self._kasia_settings.send_wait_ms or self._DEFAULT_SEND_WAIT_MS
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_log: Optional[Path] = None
         self._bridge_log_fh = None
@@ -164,7 +120,7 @@ class KasiaAdapter(BasePlatformAdapter):
                     text=True,
                     timeout=120,
                 )
-            except Exception as error:
+            except (OSError, subprocess.SubprocessError) as error:
                 logger.error("[%s] npm install failed: %s", self.name, error)
                 return False
             if result.returncode != 0:
@@ -189,39 +145,7 @@ class KasiaAdapter(BasePlatformAdapter):
             self._bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
 
             env = os.environ.copy()
-            env["KASIA_SEED_PHRASE"] = self._seed_phrase
-            env["KASIA_INDEXER_URL"] = self._indexer_url
-            if self._indexer_urls:
-                env["KASIA_INDEXER_URLS"] = ",".join(
-                    str(value).strip() for value in self._indexer_urls if str(value).strip()
-                )
-            env["KASIA_NODE_WBORSH_URL"] = self._node_url
-            if self._node_urls:
-                env["KASIA_NODE_WBORSH_URLS"] = ",".join(
-                    str(value).strip() for value in self._node_urls if str(value).strip()
-                )
-            env["KASIA_NETWORK"] = self._network
-            if self._kns_url:
-                env["KASIA_KNS_URL"] = self._kns_url
-            env["KASIA_FEE_POLICY"] = self._fee_policy
-            if "broadcast_subscriptions" in self.config.extra:
-                env["KASIA_BROADCAST_SUBSCRIPTIONS"] = str(
-                    self.config.extra["broadcast_subscriptions"]
-                )
-            if "allowed_broadcast_channels" in self.config.extra:
-                env["KASIA_ALLOWED_BROADCAST_CHANNELS"] = ",".join(
-                    [
-                        str(value).strip()
-                        for value in self.config.extra["allowed_broadcast_channels"]
-                        if str(value).strip()
-                    ]
-                )
-            if self.config.extra.get("allow_all_broadcast_channels"):
-                env["KASIA_ALLOW_ALL_BROADCAST_CHANNELS"] = "true"
-            if "max_multipart_parts" in self.config.extra:
-                env["KASIA_MAX_MULTIPARTS"] = str(
-                    self.config.extra["max_multipart_parts"]
-                )
+            env.update(self._kasia_settings.bridge_env())
 
             self._bridge_process = subprocess.Popen(
                 [
@@ -490,28 +414,7 @@ class KasiaAdapter(BasePlatformAdapter):
 
     def _is_address_authorized(self, address: Optional[str]) -> bool:
         """Apply Kasia's address allowlist / allow-all rules for handshake responses."""
-        normalized = str(address or "").strip().lower()
-        if not normalized:
-            return False
-
-        if os.getenv("KASIA_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
-            return True
-
-        platform_allowlist = os.getenv("KASIA_ALLOWED_USERS", "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-        if not platform_allowlist and not global_allowlist:
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
-
-        allowed_ids = {
-            item.strip().lower()
-            for value in (platform_allowlist, global_allowlist)
-            for item in value.split(",")
-            if item.strip()
-        }
-        check_ids = {normalized}
-        if normalized.startswith(("kaspa:", "kaspatest:", "kaspasim:")):
-            check_ids.add(normalized.split(":", 1)[1])
-        return bool(check_ids & allowed_ids)
+        return is_kasia_address_authorized(address)
 
     async def _request_json(
         self,
@@ -546,6 +449,6 @@ class KasiaAdapter(BasePlatformAdapter):
         if self._bridge_log_fh:
             try:
                 self._bridge_log_fh.close()
-            except Exception:
+            except OSError:
                 pass
             self._bridge_log_fh = None

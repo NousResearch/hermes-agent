@@ -244,6 +244,55 @@ class TestSendMessageTool:
             thread_id=None,
         )
 
+    def test_kasia_send_mirrors_to_resolved_chat_id(self):
+        kasia_cfg = SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3010})
+        config = SimpleNamespace(
+            platforms={Platform.KASIA: kasia_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(
+                     return_value={
+                         "success": True,
+                         "platform": "kasia",
+                         "chat_id": "kaspa:qresolvedfriend",
+                         "message_id": "job-1",
+                     }
+                 ),
+             ) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "kasia:friend.kas",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.KASIA,
+            kasia_cfg,
+            "friend.kas",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with(
+            "kasia",
+            "kaspa:qresolvedfriend",
+            "hello",
+            source_label="cli",
+            thread_id=None,
+        )
+
 
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
@@ -587,6 +636,78 @@ class TestSendToPlatformKasia:
                 "",
                 action="initiate",
                 display_name="Friend",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "kaspa:qresolvedfriend"
+        assert calls[0][0] == "get"
+        assert calls[1][0] == "post"
+        assert calls[1][2]["chatId"] == "kaspa:qresolvedfriend"
+
+    def test_kasia_send_resolves_kns_before_delivery(self, monkeypatch):
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, status, payload):
+                self.status = status
+                self._payload = payload
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return self._payload
+
+            async def text(self):
+                return json.dumps(self._payload)
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, url, **kwargs):
+                calls.append(("get", url))
+                assert url.endswith("/resolve-target/friend.kas")
+                return FakeResponse(
+                    200,
+                    {
+                        "kind": "dm",
+                        "chatId": "kaspa:qresolvedfriend",
+                        "peerAddress": "kaspa:qresolvedfriend",
+                        "knsName": "friend.kas",
+                    },
+                )
+
+            def post(self, url, **kwargs):
+                calls.append(("post", url, kwargs.get("json")))
+                assert url.endswith("/send")
+                return FakeResponse(
+                    200,
+                    {
+                        "status": "submitted",
+                        "jobId": "job-1",
+                        "chatId": "kaspa:qresolvedfriend",
+                    },
+                )
+
+        fake_aiohttp = SimpleNamespace(
+            ClientSession=lambda: FakeSession(),
+            ClientTimeout=lambda total: SimpleNamespace(total=total),
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+
+        result = asyncio.run(
+            _send_kasia(
+                {"bridge_port": 3010},
+                "friend.kas",
+                "hello",
             )
         )
 

@@ -41,11 +41,11 @@ export class KnsClient {
     cacheTtlMs = DEFAULT_CACHE_TTL_MS,
     negativeCacheTtlMs = DEFAULT_NEGATIVE_CACHE_TTL_MS,
   } = {}) {
-    this.baseUrl = String(baseUrl || defaultKnsUrlForNetwork(network)).trim();
     this.fetchImpl = fetchImpl || fetch;
     this.nowFn = nowFn;
     this.cacheTtlMs = cacheTtlMs;
     this.negativeCacheTtlMs = negativeCacheTtlMs;
+    this.baseUrl = String(baseUrl || defaultKnsUrlForNetwork(network)).trim();
   }
 
   isEnabled() {

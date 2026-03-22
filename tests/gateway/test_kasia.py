@@ -77,6 +77,24 @@ class TestKasiaConfigLoading:
 
         assert Platform.KASIA in config.get_connected_platforms()
 
+    def test_load_kasia_settings_prefers_explicit_config_endpoints(self, monkeypatch):
+        monkeypatch.setenv("KASIA_INDEXER_URLS", "https://env-a.example.com,https://env-b.example.com")
+        monkeypatch.setenv("KASIA_NODE_WBORSH_URLS", "ws://env-a.example.com,ws://env-b.example.com")
+
+        from gateway.kasia_config import load_kasia_settings
+
+        settings = load_kasia_settings(
+            extra={
+                "indexer_url": "https://config.example.com",
+                "node_wborsh_url": "ws://config.example.com:17110",
+            }
+        )
+
+        assert settings.indexer_url == "https://config.example.com"
+        assert settings.indexer_urls == ("https://config.example.com",)
+        assert settings.node_wborsh_url == "ws://config.example.com:17110"
+        assert settings.node_wborsh_urls == ("ws://config.example.com:17110",)
+
 
 class TestKasiaRequirements:
     def test_check_requirements(self):
@@ -220,6 +238,13 @@ class TestKasiaAdapter:
         adapter = KasiaAdapter(self._make_config())
         assert adapter._is_address_authorized("kaspa:qpeeraddress") is True
         assert adapter._is_address_authorized("kaspa:qunknownaddress") is False
+
+    def test_allowlist_matches_bare_address_variant(self, monkeypatch):
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "qpeeraddress")
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        assert adapter._is_address_authorized("kaspa:qpeeraddress") is True
 
     def test_build_message_event(self):
         from gateway.platforms.kasia import KasiaAdapter
@@ -478,3 +503,4 @@ class TestKasiaAdapter:
 
         assert result is True
         assert popen_calls["env"]["KASIA_FEE_POLICY"] == "normal"
+        assert "KASIA_KNS_URL" not in popen_calls["env"]

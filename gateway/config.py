@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from gateway.kasia_config import load_kasia_settings
 
 logger = logging.getLogger(__name__)
 
@@ -658,75 +659,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
 
     # Kasia
-    kasia_enabled = os.getenv("KASIA_ENABLED", "").lower() in ("true", "1", "yes")
-    if kasia_enabled:
+    kasia_settings = load_kasia_settings(env=os.environ, logger=logger)
+    if kasia_settings.enabled:
         if Platform.KASIA not in config.platforms:
             config.platforms[Platform.KASIA] = PlatformConfig()
-        config.platforms[Platform.KASIA].enabled = True
-        kasia_indexer_urls = [
-            value.strip()
-            for value in os.getenv("KASIA_INDEXER_URLS", "").split(",")
-            if value.strip()
-        ]
-        kasia_node_urls = [
-            value.strip()
-            for value in os.getenv("KASIA_NODE_WBORSH_URLS", "").split(",")
-            if value.strip()
-        ]
-        config.platforms[Platform.KASIA].extra.update({
-            "seed_phrase": os.getenv("KASIA_SEED_PHRASE", ""),
-            "indexer_url": os.getenv("KASIA_INDEXER_URL", ""),
-            "indexer_urls": kasia_indexer_urls,
-            "node_wborsh_url": os.getenv("KASIA_NODE_WBORSH_URL", ""),
-            "node_wborsh_urls": kasia_node_urls,
-            "network": os.getenv("KASIA_NETWORK", ""),
-            "kns_url": os.getenv("KASIA_KNS_URL", ""),
-        })
-        kasia_fee_policy = os.getenv("KASIA_FEE_POLICY", "").strip()
-        if kasia_fee_policy:
-            config.platforms[Platform.KASIA].extra["fee_policy"] = kasia_fee_policy
-        kasia_bridge_port = os.getenv("KASIA_BRIDGE_PORT", "").strip()
-        if kasia_bridge_port:
-            try:
-                config.platforms[Platform.KASIA].extra["bridge_port"] = int(kasia_bridge_port)
-            except ValueError:
-                logger.warning("Invalid KASIA_BRIDGE_PORT=%r (expected integer)", kasia_bridge_port)
-        kasia_send_wait_ms = os.getenv("KASIA_SEND_WAIT_MS", "").strip()
-        if kasia_send_wait_ms:
-            try:
-                config.platforms[Platform.KASIA].extra["send_wait_ms"] = int(kasia_send_wait_ms)
-            except ValueError:
-                logger.warning("Invalid KASIA_SEND_WAIT_MS=%r (expected integer)", kasia_send_wait_ms)
-        kasia_max_multipart = os.getenv("KASIA_MAX_MULTIPARTS", "").strip()
-        if kasia_max_multipart:
-            try:
-                config.platforms[Platform.KASIA].extra["max_multipart_parts"] = int(kasia_max_multipart)
-            except ValueError:
-                logger.warning("Invalid KASIA_MAX_MULTIPARTS=%r (expected integer)", kasia_max_multipart)
-        kasia_broadcast_subscriptions = os.getenv("KASIA_BROADCAST_SUBSCRIPTIONS", "").strip()
-        if kasia_broadcast_subscriptions:
-            config.platforms[Platform.KASIA].extra["broadcast_subscriptions"] = (
-                kasia_broadcast_subscriptions
-            )
-        kasia_allowed_broadcasts = os.getenv("KASIA_ALLOWED_BROADCAST_CHANNELS", "").strip()
-        if kasia_allowed_broadcasts:
-            config.platforms[Platform.KASIA].extra["allowed_broadcast_channels"] = [
-                value.strip()
-                for value in kasia_allowed_broadcasts.split(",")
-                if value.strip()
-            ]
-        if os.getenv("KASIA_ALLOW_ALL_BROADCAST_CHANNELS", "").lower() in (
-            "true",
-            "1",
-            "yes",
-        ):
-            config.platforms[Platform.KASIA].extra["allow_all_broadcast_channels"] = True
-        kasia_home = os.getenv("KASIA_HOME_CHANNEL")
-        if kasia_home:
-            config.platforms[Platform.KASIA].home_channel = HomeChannel(
+        kasia_config = config.platforms[Platform.KASIA]
+        kasia_config.enabled = True
+        kasia_config.extra.update(kasia_settings.platform_extra())
+        if kasia_settings.home_channel:
+            kasia_config.home_channel = HomeChannel(
                 platform=Platform.KASIA,
-                chat_id=kasia_home,
-                name=os.getenv("KASIA_HOME_CHANNEL_NAME", "Home"),
+                chat_id=kasia_settings.home_channel,
+                name=kasia_settings.home_channel_name,
             )
 
     # Mattermost

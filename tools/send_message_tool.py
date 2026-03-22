@@ -5,6 +5,7 @@ Sends a message to a user or channel on any connected messaging platform
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -13,6 +14,8 @@ import ssl
 import time
 from urllib.parse import quote
 
+from gateway.kasia_config import is_kasia_address_authorized
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
@@ -20,6 +23,35 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
 _VOICE_EXTS = {".ogg", ".opus"}
+
+
+class SendMessageError(RuntimeError):
+    """Raised when send_message cannot resolve or deliver a target."""
+
+
+@dataclass(slots=True)
+class ParsedSendTarget:
+    platform_name: str
+    target_ref: str | None
+    chat_id: str | None
+    thread_id: str | None
+    is_explicit: bool
+
+
+@dataclass(slots=True)
+class SendContext:
+    platform_name: str
+    platform: object
+    pconfig: object
+    chat_id: str
+    thread_id: str | None
+    cleaned_message: str
+    media_files: list[tuple[str, bool]]
+    mirror_text: str
+    used_home_channel: bool
+    action: str
+    display_name: str | None
+    retry: bool
 
 
 SEND_MESSAGE_SCHEMA = {
@@ -83,51 +115,104 @@ def _handle_list():
 
 def _handle_send(args, action="send"):
     """Send a message to a platform target."""
-    target = args.get("target", "")
-    message = args.get("message", "")
-    if not target:
-        return json.dumps({"error": "A 'target' is required"})
-    if action == "send" and not message:
-        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
-
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
-
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
-    else:
-        is_explicit = False
-
-    # Resolve human-friendly channel names to numeric IDs
-    if target_ref and not is_explicit:
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
-            else:
-                return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                })
-        except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
-
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return json.dumps({"error": "Interrupted"})
 
     try:
-        from gateway.config import load_gateway_config, Platform
-        config = load_gateway_config()
-    except Exception as e:
-        return json.dumps({"error": f"Failed to load gateway config: {e}"})
+        send_context = _build_send_context(args, action)
+    except SendMessageError as error:
+        return json.dumps({"error": str(error)})
+
+    duplicate_skip = _maybe_skip_cron_duplicate_send(
+        send_context.platform_name,
+        send_context.chat_id,
+        send_context.thread_id,
+    )
+    if duplicate_skip:
+        return json.dumps(duplicate_skip)
+
+    try:
+        result = _dispatch_send(send_context)
+        _annotate_send_result(result, send_context)
+        _maybe_mirror_send_result(result, send_context)
+        return json.dumps(result)
+    except SendMessageError as error:
+        return json.dumps({"error": str(error)})
+
+
+def _build_send_context(args, action: str) -> SendContext:
+    """Resolve tool args into a concrete platform send request."""
+    target = _require_send_target(args)
+    message = _require_send_message(args, action)
+    parsed_target = _parse_send_target(target)
+    gateway_config, platform, pconfig = _load_send_platform(parsed_target.platform_name)
+    media_files, cleaned_message, mirror_text = _extract_send_message_parts(message)
+    chat_id, thread_id, used_home_channel = _resolve_send_destination(
+        parsed_target,
+        platform,
+        gateway_config,
+    )
+    return SendContext(
+        platform_name=parsed_target.platform_name,
+        platform=platform,
+        pconfig=pconfig,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        cleaned_message=cleaned_message,
+        media_files=media_files,
+        mirror_text=mirror_text,
+        used_home_channel=used_home_channel,
+        action=action,
+        display_name=args.get("display_name"),
+        retry=bool(args.get("retry")),
+    )
+
+
+def _require_send_target(args) -> str:
+    target = str(args.get("target", "")).strip()
+    if not target:
+        raise SendMessageError("A 'target' is required")
+    return target
+
+
+def _require_send_message(args, action: str) -> str:
+    message = str(args.get("message", ""))
+    if action == "send" and not message:
+        raise SendMessageError(
+            "Both 'target' and 'message' are required when action='send'"
+        )
+    return message
+
+
+def _parse_send_target(target: str) -> ParsedSendTarget:
+    platform_name, _, raw_target_ref = target.partition(":")
+    normalized_platform = platform_name.strip().lower()
+    normalized_target_ref = raw_target_ref.strip() or None
+    chat_id = None
+    thread_id = None
+    is_explicit = False
+
+    if normalized_target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            normalized_platform,
+            normalized_target_ref,
+        )
+
+    return ParsedSendTarget(
+        platform_name=normalized_platform,
+        target_ref=normalized_target_ref,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        is_explicit=is_explicit,
+    )
+
+
+def _load_send_platform(platform_name: str):
+    try:
+        from gateway.config import Platform, load_gateway_config
+    except ImportError as error:
+        raise SendMessageError(f"Failed to load gateway config: {error}") from error
 
     platform_map = {
         "telegram": Platform.TELEGRAM,
@@ -145,72 +230,153 @@ def _handle_send(args, action="send"):
     }
     platform = platform_map.get(platform_name)
     if not platform:
-        avail = ", ".join(platform_map.keys())
-        return json.dumps({"error": f"Unknown platform: {platform_name}. Available: {avail}"})
+        available_platforms = ", ".join(platform_map.keys())
+        raise SendMessageError(
+            f"Unknown platform: {platform_name}. Available: {available_platforms}"
+        )
 
-    pconfig = config.platforms.get(platform)
-    if not pconfig or not pconfig.enabled:
-        return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables."})
+    try:
+        gateway_config = load_gateway_config()
+    except Exception as error:
+        raise SendMessageError(f"Failed to load gateway config: {error}") from error
 
+    platform_config = gateway_config.platforms.get(platform)
+    if not platform_config or not platform_config.enabled:
+        raise SendMessageError(
+            f"Platform '{platform_name}' is not configured. "
+            "Set up credentials in ~/.hermes/config.yaml or environment variables."
+        )
+
+    return gateway_config, platform, platform_config
+
+
+def _extract_send_message_parts(message: str):
     from gateway.platforms.base import BasePlatformAdapter
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
+    return media_files, cleaned_message, mirror_text
+
+
+def _resolve_send_destination(parsed_target: ParsedSendTarget, platform, gateway_config):
+    chat_id = parsed_target.chat_id
+    thread_id = parsed_target.thread_id
+
+    if parsed_target.target_ref and not parsed_target.is_explicit:
+        chat_id, thread_id = _resolve_named_target(
+            parsed_target.platform_name,
+            parsed_target.target_ref,
+        )
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
-        else:
-            return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
-            })
+        home_channel = gateway_config.get_home_channel(platform)
+        if not home_channel:
+            raise SendMessageError(
+                f"No home channel set for {parsed_target.platform_name} to determine where to send the message. "
+                f"Either specify a channel directly with '{parsed_target.platform_name}:CHANNEL_NAME', "
+                f"or set a home channel via: hermes config set {parsed_target.platform_name.upper()}_HOME_CHANNEL <channel_id>"
+            )
+        chat_id = home_channel.chat_id
+        used_home_channel = True
 
-    duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
-    if duplicate_skip:
-        return json.dumps(duplicate_skip)
+    return str(chat_id), thread_id, used_home_channel
 
+
+def _resolve_named_target(platform_name: str, target_ref: str):
     try:
-        from model_tools import _run_async
-        result = _run_async(
+        from gateway.channel_directory import resolve_channel_name
+    except ImportError as error:
+        raise SendMessageError(
+            f"Could not resolve '{target_ref}' on {platform_name}. "
+            "Channel directory support is unavailable."
+        ) from error
+
+    resolved_target = resolve_channel_name(platform_name, target_ref)
+    if not resolved_target:
+        raise SendMessageError(
+            f"Could not resolve '{target_ref}' on {platform_name}. "
+            "Use send_message(action='list') to see available targets."
+        )
+
+    resolved_chat_id, resolved_thread_id, _ = _parse_target_ref(
+        platform_name,
+        resolved_target,
+    )
+    return resolved_chat_id, resolved_thread_id
+
+
+def _dispatch_send(send_context: SendContext) -> dict:
+    from model_tools import _run_async
+
+    dispatch_kwargs = _send_action_kwargs(send_context)
+    try:
+        return _run_async(
             _send_to_platform(
-                platform,
-                pconfig,
-                chat_id,
-                cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                **(
-                    {
-                        "action": action,
-                        "display_name": args.get("display_name"),
-                        "retry": bool(args.get("retry")),
-                    }
-                    if action != "send" or args.get("display_name") or args.get("retry")
-                    else {}
-                ),
+                send_context.platform,
+                send_context.pconfig,
+                send_context.chat_id,
+                send_context.cleaned_message,
+                thread_id=send_context.thread_id,
+                media_files=send_context.media_files,
+                **dispatch_kwargs,
             )
         )
-        if used_home_channel and isinstance(result, dict) and result.get("success"):
-            result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+    except Exception as error:
+        raise SendMessageError(f"Send failed: {error}") from error
 
-        # Mirror the sent message into the target's gateway session
-        if isinstance(result, dict) and result.get("success") and mirror_text:
-            try:
-                from gateway.mirror import mirror_to_session
-                source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
-                if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
-                    result["mirrored"] = True
-            except Exception:
-                pass
 
-        return json.dumps(result)
-    except Exception as e:
-        return json.dumps({"error": f"Send failed: {e}"})
+def _send_action_kwargs(send_context: SendContext) -> dict:
+    if (
+        send_context.action == "send"
+        and not send_context.display_name
+        and not send_context.retry
+    ):
+        return {}
+    return {
+        "action": send_context.action,
+        "display_name": send_context.display_name,
+        "retry": send_context.retry,
+    }
+
+
+def _annotate_send_result(result: dict, send_context: SendContext) -> None:
+    if (
+        send_context.used_home_channel
+        and isinstance(result, dict)
+        and result.get("success")
+    ):
+        result["note"] = (
+            f"Sent to {send_context.platform_name} home channel "
+            f"(chat_id: {send_context.chat_id})"
+        )
+
+
+def _maybe_mirror_send_result(result: dict, send_context: SendContext) -> None:
+    if not (
+        isinstance(result, dict)
+        and result.get("success")
+        and send_context.mirror_text
+    ):
+        return
+
+    try:
+        from gateway.mirror import mirror_to_session
+    except ImportError as error:
+        logger.debug("Mirror unavailable for %s: %s", send_context.platform_name, error)
+        return
+
+    source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
+    mirror_chat_id = str(result.get("chat_id") or send_context.chat_id)
+    mirrored = mirror_to_session(
+        send_context.platform_name,
+        mirror_chat_id,
+        send_context.mirror_text,
+        source_label=source_label,
+        thread_id=send_context.thread_id,
+    )
+    if mirrored:
+        result["mirrored"] = True
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -644,107 +810,178 @@ async def _send_kasia(extra, chat_id, message, action="send", display_name=None,
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
     try:
-        bridge_port = extra.get("bridge_port", 3010)
-        send_wait_ms = int(extra.get("send_wait_ms", 5000))
+        bridge_port = _read_kasia_int_setting(extra, "bridge_port", 3010)
+        send_wait_ms = _read_kasia_int_setting(extra, "send_wait_ms", 5000)
+    except ValueError as error:
+        return {"error": str(error)}
+
+    try:
         async with aiohttp.ClientSession() as session:
             resolved_chat_id = chat_id
+            should_resolve_target = action == "initiate" or _is_kasia_kns_target(chat_id)
+            if should_resolve_target:
+                resolved_target = await _resolve_kasia_target(
+                    session,
+                    bridge_port,
+                    chat_id,
+                    aiohttp,
+                )
+                if "error" in resolved_target:
+                    return resolved_target
+                resolved_chat_id = resolved_target.get("chatId") or chat_id
             if action == "initiate":
-                async with session.get(
-                    f"http://127.0.0.1:{bridge_port}/resolve-target/{quote(str(chat_id), safe='')}",
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resolve_resp:
-                    if resolve_resp.status != 200:
-                        body = await resolve_resp.text()
-                        return {
-                            "error": f"Kasia target resolution failed ({resolve_resp.status}): {body}"
-                        }
-                    resolved = await resolve_resp.json()
-                resolved_chat_id = resolved.get("chatId") or chat_id
+                if resolved_target.get("kind") != "dm":
+                    return {
+                        "error": "Handshake initiation is only supported for direct Kasia conversations"
+                    }
                 if not _is_kasia_target_authorized(resolved_chat_id):
                     return {
                         "error": f"Kasia initiation is not authorized for {resolved_chat_id}"
                     }
 
-            endpoint = "/send"
-            payload = {"chatId": chat_id, "message": message, "waitMs": send_wait_ms}
-            timeout_total = max(10, int(send_wait_ms / 1000) + 10)
-            if action == "initiate":
-                endpoint = "/handshakes/initiate"
-                payload = {
-                    "chatId": resolved_chat_id,
-                    "displayName": display_name,
-                    "retry": retry,
-                }
-                timeout_total = 30
-            elif str(chat_id).startswith("broadcast:"):
-                endpoint = "/broadcasts/send"
-                payload = {
-                    "channelName": str(chat_id).split(":", 1)[1],
-                    "message": message,
-                    "waitMs": send_wait_ms,
-                }
+            endpoint, payload, timeout_total = _build_kasia_request(
+                chat_id=resolved_chat_id if should_resolve_target else chat_id,
+                message=message,
+                action=action,
+                display_name=display_name,
+                retry=retry,
+                send_wait_ms=send_wait_ms,
+            )
+            data = await _post_kasia_request(
+                session,
+                bridge_port,
+                endpoint,
+                payload,
+                timeout_total,
+                aiohttp,
+            )
+            if "error" in data:
+                return data
 
-            async with session.post(
-                f"http://127.0.0.1:{bridge_port}{endpoint}",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=timeout_total),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("status") in {"failed", "rejected"}:
-                        return {"error": data.get("error") or "Kasia send failed"}
-                    if action == "initiate":
-                        return {
-                            "success": True,
-                            "platform": "kasia",
-                            "chat_id": data.get("chatId") or resolved_chat_id,
-                            "message_id": data.get("txId"),
-                            "status": data.get("status"),
-                        }
-                    return {
-                        "success": True,
-                        "platform": "kasia",
-                        "chat_id": chat_id,
-                        "message_id": data.get("jobId") or data.get("txId") or data.get("messageId"),
-                        "job_id": data.get("jobId"),
-                        "status": data.get("status"),
-                        "status_message": data.get("statusMessage"),
-                        "part_count": data.get("partCount"),
-                        "completed_parts": data.get("completedParts"),
-                        "indexed_parts": data.get("indexedParts"),
-                        "submitted_ms": data.get("submittedMs"),
-                        "indexed_ms": data.get("indexedMs"),
-                    }
-                body = await resp.text()
-                return {"error": f"Kasia bridge error ({resp.status}): {body}"}
+            return _build_kasia_result(
+                data,
+                action=action,
+                fallback_chat_id=resolved_chat_id if should_resolve_target else chat_id,
+            )
     except Exception as e:
         return {"error": f"Kasia send failed: {e}"}
 
 
-def _is_kasia_target_authorized(address: str) -> bool:
-    normalized = str(address or "").strip().lower()
-    if not normalized:
-        return False
+def _read_kasia_int_setting(extra, key: str, default: int) -> int:
+    raw_value = extra.get(key, default)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid Kasia {key}: {raw_value!r}") from error
 
-    if os.getenv("KASIA_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
-        return True
 
-    platform_allowlist = os.getenv("KASIA_ALLOWED_USERS", "").strip()
-    global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-    if not platform_allowlist and not global_allowlist:
-        return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+def _is_kasia_kns_target(chat_id: str) -> bool:
+    return str(chat_id or "").strip().lower().endswith(".kas")
 
-    allowed_ids = {
-        item.strip().lower()
-        for value in (platform_allowlist, global_allowlist)
-        for item in value.split(",")
-        if item.strip()
+
+async def _resolve_kasia_target(session, bridge_port: int, chat_id: str, aiohttp):
+    async with session.get(
+        f"http://127.0.0.1:{bridge_port}/resolve-target/{quote(str(chat_id), safe='')}",
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as resolve_resp:
+        if resolve_resp.status != 200:
+            body = await resolve_resp.text()
+            return {
+                "error": f"Kasia target resolution failed ({resolve_resp.status}): {body}"
+            }
+        return await resolve_resp.json()
+
+
+def _build_kasia_request(
+    *,
+    chat_id: str,
+    message: str,
+    action: str,
+    display_name,
+    retry: bool,
+    send_wait_ms: int,
+):
+    if action == "initiate":
+        return (
+            "/handshakes/initiate",
+            {
+                "chatId": chat_id,
+                "displayName": display_name,
+                "retry": retry,
+            },
+            30,
+        )
+    if str(chat_id).startswith("broadcast:"):
+        return (
+            "/broadcasts/send",
+            {
+                "channelName": str(chat_id).split(":", 1)[1],
+                "message": message,
+                "waitMs": send_wait_ms,
+            },
+            max(10, int(send_wait_ms / 1000) + 10),
+        )
+    return (
+        "/send",
+        {
+            "chatId": chat_id,
+            "message": message,
+            "waitMs": send_wait_ms,
+        },
+        max(10, int(send_wait_ms / 1000) + 10),
+    )
+
+
+async def _post_kasia_request(
+    session,
+    bridge_port: int,
+    endpoint: str,
+    payload: dict,
+    timeout_total: int,
+    aiohttp,
+):
+    async with session.post(
+        f"http://127.0.0.1:{bridge_port}{endpoint}",
+        json=payload,
+        timeout=aiohttp.ClientTimeout(total=timeout_total),
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            return {"error": f"Kasia bridge error ({resp.status}): {body}"}
+        return await resp.json()
+
+
+def _build_kasia_result(data: dict, *, action: str, fallback_chat_id: str) -> dict:
+    if data.get("status") in {"failed", "rejected"}:
+        return {"error": data.get("error") or "Kasia send failed"}
+    if action == "initiate":
+        return {
+            "success": True,
+            "platform": "kasia",
+            "chat_id": data.get("chatId") or fallback_chat_id,
+            "message_id": data.get("txId"),
+            "status": data.get("status"),
+        }
+    return {
+        "success": True,
+        "platform": "kasia",
+        "chat_id": data.get("chatId") or fallback_chat_id,
+        "message_id": data.get("jobId") or data.get("txId") or data.get("messageId"),
+        "job_id": data.get("jobId"),
+        "status": data.get("status"),
+        "status_message": data.get("statusMessage"),
+        "part_count": data.get("partCount"),
+        "completed_parts": data.get("completedParts"),
+        "indexed_parts": data.get("indexedParts"),
+        "submitted_ms": data.get("submittedMs"),
+        "indexed_ms": data.get("indexedMs"),
     }
-    check_ids = {normalized}
-    if normalized.startswith(("kaspa:", "kaspatest:", "kaspasim:")):
-        check_ids.add(normalized.split(":", 1)[1])
-    return bool(check_ids & allowed_ids)
+
+
+def _is_kasia_target_authorized(address: str) -> bool:
+    return is_kasia_address_authorized(address)
 
 
 async def _send_email(extra, chat_id, message):

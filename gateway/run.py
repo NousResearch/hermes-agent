@@ -1362,8 +1362,9 @@ class GatewayRunner:
             from gateway.platforms.kasia import KasiaAdapter, check_kasia_requirements
             if not check_kasia_requirements(config):
                 logger.warning(
-                    "Kasia: KASIA_ENABLED requires KASIA_SEED_PHRASE, "
-                    "KASIA_INDEXER_URL, and KASIA_NODE_WBORSH_URL"
+                    "Kasia: KASIA_ENABLED requires KASIA_SEED_PHRASE plus either "
+                    "KASIA_INDEXER_URL or KASIA_INDEXER_URLS and either "
+                    "KASIA_NODE_WBORSH_URL or KASIA_NODE_WBORSH_URLS"
                 )
                 return None
             return KasiaAdapter(config)

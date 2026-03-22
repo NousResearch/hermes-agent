@@ -226,7 +226,6 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools. Messaging platforms add
     # All platforms share the same core tools (including send_message,
     # which is gated on gateway running via its check_fn).
     # ==========================================================================
@@ -535,33 +534,6 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
     }
 
 
-def print_toolset_tree(name: str, indent: int = 0) -> None:
-    """
-    Print a tree view of a toolset and its composition.
-    
-    Args:
-        name (str): Toolset name
-        indent (int): Current indentation level
-    """
-    prefix = "  " * indent
-    toolset = get_toolset(name)
-    
-    if not toolset:
-        print(f"{prefix}❌ Unknown toolset: {name}")
-        return
-    
-    # Print toolset name and description
-    print(f"{prefix}📦 {name}: {toolset['description']}")
-    
-    # Print direct tools
-    if toolset["tools"]:
-        print(f"{prefix}  🔧 Tools: {', '.join(toolset['tools'])}")
-    
-    # Print included toolsets
-    if toolset["includes"]:
-        print(f"{prefix}  📂 Includes:")
-        for included in toolset["includes"]:
-            print_toolset_tree(included, indent + 2)
 
 
 if __name__ == "__main__":

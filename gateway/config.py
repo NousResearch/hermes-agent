@@ -101,12 +101,16 @@ class SessionResetPolicy:
     mode: str = "both"  # "daily", "idle", "both", or "none"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
+    notify: bool = True  # Send a notification to the user when auto-reset occurs
+    notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
             "at_hour": self.at_hour,
             "idle_minutes": self.idle_minutes,
+            "notify": self.notify,
+            "notify_exclude_platforms": list(self.notify_exclude_platforms),
         }
     
     @classmethod
@@ -115,10 +119,14 @@ class SessionResetPolicy:
         mode = data.get("mode")
         at_hour = data.get("at_hour")
         idle_minutes = data.get("idle_minutes")
+        notify = data.get("notify")
+        exclude = data.get("notify_exclude_platforms")
         return cls(
             mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
+            notify=notify if notify is not None else True,
+            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
         )
 
 

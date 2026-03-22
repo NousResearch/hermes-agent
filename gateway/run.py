@@ -5226,22 +5226,31 @@ class GatewayRunner:
                     self._effective_model = None
                     self._effective_provider = None
 
-            # Check if we were interrupted and have a pending message
+            # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
             
-            # Get pending message from adapter if interrupted.
+            # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
-            if result and result.get("interrupted") and adapter:
-                pending_event = adapter.get_pending_message(session_key) if session_key else None
-                if pending_event:
-                    pending = pending_event.text
-                elif result.get("interrupt_message"):
-                    pending = result.get("interrupt_message")
+            if result and adapter and session_key:
+                if result.get("interrupted"):
+                    # Interrupted — consume the interrupt message
+                    pending_event = adapter.get_pending_message(session_key)
+                    if pending_event:
+                        pending = pending_event.text
+                    elif result.get("interrupt_message"):
+                        pending = result.get("interrupt_message")
+                else:
+                    # Normal completion — check for /queue'd messages that were
+                    # stored without triggering an interrupt.
+                    pending_event = adapter.get_pending_message(session_key)
+                    if pending_event:
+                        pending = pending_event.text
+                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
             
             if pending:
-                logger.debug("Processing interrupted message: '%s...'", pending[:40])
+                logger.debug("Processing pending message: '%s...'", pending[:40])
                 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
@@ -5263,11 +5272,25 @@ class GatewayRunner:
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}
 
-                # Don't send the interrupted response to the user — it's just noise
-                # like "Operation interrupted." They already know they sent a new
-                # message, so go straight to processing it.
-                
-                # Now process the pending message with updated history
+                was_interrupted = result.get("interrupted")
+                if not was_interrupted:
+                    # Queued message after normal completion — deliver the first
+                    # response before processing the queued follow-up.
+                    # Skip if streaming already delivered it.
+                    _sc = stream_consumer_holder[0]
+                    _already_streamed = _sc and getattr(_sc, "already_sent", False)
+                    first_response = result.get("final_response", "")
+                    if first_response and not _already_streamed:
+                        try:
+                            await adapter.send(source.chat_id, first_response,
+                                               metadata=getattr(event, "metadata", None))
+                        except Exception as e:
+                            logger.warning("Failed to send first response before queued message: %s", e)
+                # else: interrupted — discard the interrupted response ("Operation
+                # interrupted." is just noise; the user already knows they sent a
+                # new message).
+
+                # Process the pending message with updated history
                 updated_history = result.get("messages", history)
                 return await self._run_agent(
                     message=pending,

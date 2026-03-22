@@ -64,6 +64,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
+from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -4370,73 +4371,94 @@ class HermesCLI:
             print(f"  ❌ Compression failed: {e}")
 
     def _show_usage(self):
-        """Show cumulative token usage for the current session."""
-        if not self.agent:
-            print("(._.) No active agent -- send a message first.")
-            return
-
+        """Show cumulative token usage for the current session plus account limits."""
         agent = self.agent
-        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-        output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
-        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
-        prompt = agent.session_prompt_tokens
-        completion = agent.session_completion_tokens
-        total = agent.session_total_tokens
-        calls = agent.session_api_calls
+        session_lines: list[str] = []
 
-        if calls == 0:
-            print("(._.) No API calls made yet in this session.")
+        if agent:
+            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
+            prompt = agent.session_prompt_tokens
+            completion = agent.session_completion_tokens
+            total = agent.session_total_tokens
+            calls = agent.session_api_calls
+
+            if calls > 0:
+                compressor = agent.context_compressor
+                last_prompt = compressor.last_prompt_tokens
+                ctx_len = compressor.context_length
+                pct = (last_prompt / ctx_len * 100) if ctx_len else 0
+                compressions = compressor.compression_count
+
+                msg_count = len(self.conversation_history)
+                cost_result = estimate_usage_cost(
+                    agent.model,
+                    CanonicalUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                    ),
+                    provider=getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                )
+                elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
+
+                session_lines.extend([
+                    "  📊 Session Token Usage",
+                    f"  {'─' * 40}",
+                    f"  Model:                     {agent.model}",
+                    f"  Input tokens:              {input_tokens:>10,}",
+                    f"  Cache read tokens:         {cache_read_tokens:>10,}",
+                    f"  Cache write tokens:        {cache_write_tokens:>10,}",
+                    f"  Output tokens:             {output_tokens:>10,}",
+                    f"  Prompt tokens (total):     {prompt:>10,}",
+                    f"  Completion tokens:         {completion:>10,}",
+                    f"  Total tokens:              {total:>10,}",
+                    f"  API calls:                 {calls:>10,}",
+                    f"  Session duration:          {elapsed:>10}",
+                    f"  Cost status:              {cost_result.status:>10}",
+                    f"  Cost source:              {cost_result.source:>10}",
+                ])
+                if cost_result.amount_usd is not None:
+                    prefix = "~" if cost_result.status == "estimated" else ""
+                    session_lines.append(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+                elif cost_result.status == "included":
+                    session_lines.append(f"  Total cost:              {'included':>10}")
+                else:
+                    session_lines.append(f"  Total cost:              {'n/a':>10}")
+                session_lines.extend([
+                    f"  {'─' * 40}",
+                    f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)",
+                    f"  Messages:         {msg_count}",
+                    f"  Compressions:     {compressions}",
+                ])
+                if cost_result.status == "unknown":
+                    session_lines.append(f"  Note:             Pricing unknown for {agent.model}")
+
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        api_key = getattr(self, "api_key", None)
+        account_snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+
+        if not session_lines and not account_lines:
+            if agent:
+                print("(._.) No API calls made yet in this session.")
+            else:
+                print("(._.) No active agent -- send a message first.")
             return
 
-        # Current context window state
-        compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
-        ctx_len = compressor.context_length
-        pct = (last_prompt / ctx_len * 100) if ctx_len else 0
-        compressions = compressor.compression_count
-
-        msg_count = len(self.conversation_history)
-        cost_result = estimate_usage_cost(
-            agent.model,
-            CanonicalUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
-        elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
-
-        print(f"  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
-        print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {prompt:>10,}")
-        print(f"  Completion tokens:         {completion:>10,}")
-        print(f"  Total tokens:              {total:>10,}")
-        print(f"  API calls:                 {calls:>10,}")
-        print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
-        elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
-        else:
-            print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
-        print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
-        if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
+        if session_lines:
+            for line in session_lines:
+                print(line)
+        if account_lines:
+            if session_lines:
+                print()
+            for line in account_lines:
+                print(line)
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)

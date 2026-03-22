@@ -29,6 +29,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -3850,6 +3852,14 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
 
         agent = self._running_agents.get(session_key)
+        account_lines: list[str] = []
+        provider = getattr(agent, "provider", None)
+        base_url = getattr(agent, "base_url", None)
+        api_key = getattr(agent, "api_key", None)
+        account_snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+        if account_snapshot:
+            account_lines = render_account_usage_lines(account_snapshot, markdown=True)
+
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = [
                 "📊 **Session Token Usage**",
@@ -3864,6 +3874,8 @@ class GatewayRunner:
                 lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
             if ctx.compression_count:
                 lines.append(f"Compressions: {ctx.compression_count}")
+            if account_lines:
+                lines.extend(["", *account_lines])
             return "\n".join(lines)
 
         # No running agent -- check session history for a rough count
@@ -3873,12 +3885,17 @@ class GatewayRunner:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in ("user", "assistant") and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
-            return (
-                f"📊 **Session Info**\n"
-                f"Messages: {len(msgs)}\n"
-                f"Estimated context: ~{approx:,} tokens\n"
-                f"_(Detailed usage available during active conversations)_"
-            )
+            lines = [
+                "📊 **Session Info**",
+                f"Messages: {len(msgs)}",
+                f"Estimated context: ~{approx:,} tokens",
+                "_(Detailed usage available during active conversations)_",
+            ]
+            if account_lines:
+                lines.extend(["", *account_lines])
+            return "\n".join(lines)
+        if account_lines:
+            return "\n".join(account_lines)
         return "No usage data available for this session."
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

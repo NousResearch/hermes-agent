@@ -1101,11 +1101,13 @@ class GatewayRunner:
         self._pending_messages.clear()
         self._pending_approvals.clear()
         # Cancel any pending debounce timers
-        for task in list(self._debounce_tasks.values()):
+        for task in list(getattr(self, "_debounce_tasks", {}).values()):
             if not task.done():
                 task.cancel()
-        self._debounce_tasks.clear()
-        self._debounce_buffers.clear()
+        if hasattr(self, "_debounce_tasks"):
+            self._debounce_tasks.clear()
+        if hasattr(self, "_debounce_buffers"):
+            self._debounce_buffers.clear()
         self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
@@ -1391,10 +1393,10 @@ class GatewayRunner:
                     adapter.get_pending_message(_quick_key)  # consume and discard
                 self._pending_messages.pop(_quick_key, None)
                 # Cancel any pending debounce timer for this session
-                _dt = self._debounce_tasks.pop(_quick_key, None)
+                _dt = getattr(self, "_debounce_tasks", {}).pop(_quick_key, None)
                 if _dt and not _dt.done():
                     _dt.cancel()
-                self._debounce_buffers.pop(_quick_key, None)
+                getattr(self, "_debounce_buffers", {}).pop(_quick_key, None)
                 # Clean up the running agent entry so the reset handler
                 # doesn't think an agent is still active.
                 if _quick_key in self._running_agents:
@@ -1654,11 +1656,11 @@ class GatewayRunner:
         _debounce_ms = getattr(self.config, "inbound_debounce_ms", 0)
         if _debounce_ms > 0 and event.message_type == MessageType.TEXT:
             # Cancel any existing pending timer for this session
-            existing_task = self._debounce_tasks.get(_quick_key)
+            existing_task = getattr(self, "_debounce_tasks", {}).get(_quick_key)
             if existing_task and not existing_task.done():
                 existing_task.cancel()
             # Append to buffer
-            self._debounce_buffers.setdefault(_quick_key, []).append(event)
+            getattr(self, "_debounce_buffers", {}).setdefault(_quick_key, []).append(event)
             # Start new timer — flush after debounce window
             async def _debounce_timer(ms: float, key: str) -> None:
                 try:
@@ -1666,10 +1668,11 @@ class GatewayRunner:
                     await self._flush_debounce_buffer(key)
                 except asyncio.CancelledError:
                     pass  # Superseded by a newer message
-            self._debounce_tasks[_quick_key] = asyncio.create_task(
-                _debounce_timer(_debounce_ms, _quick_key),
-                name=f"debounce-{_quick_key[:20]}",
-            )
+            if hasattr(self, "_debounce_tasks"):
+                self._debounce_tasks[_quick_key] = asyncio.create_task(
+                    _debounce_timer(_debounce_ms, _quick_key),
+                    name=f"debounce-{_quick_key[:20]}",
+                )
             return None
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -2419,8 +2422,8 @@ class GatewayRunner:
     async def _flush_debounce_buffer(self, session_key: str) -> None:
         """Fire after debounce window expires: merge buffered events and dispatch."""
         try:
-            events = self._debounce_buffers.pop(session_key, [])
-            self._debounce_tasks.pop(session_key, None)
+            events = getattr(self, "_debounce_buffers", {}).pop(session_key, [])
+            getattr(self, "_debounce_tasks", {}).pop(session_key, None)
             if not events:
                 return
             # Merge text from all buffered events into the first event

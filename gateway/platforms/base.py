@@ -256,6 +256,61 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Video cache utilities
+#
+# Same pattern as image/audio/document cache -- videos from platforms are
+# downloaded here so the video analysis tool can extract frames locally.
+# ---------------------------------------------------------------------------
+
+VIDEO_CACHE_DIR = get_hermes_home() / "video_cache"
+
+
+def get_video_cache_dir() -> Path:
+    """Return the video cache directory, creating it if it doesn't exist."""
+    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return VIDEO_CACHE_DIR
+
+
+def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
+    """
+    Save raw video bytes to the cache and return the absolute file path.
+
+    Args:
+        data: Raw video bytes.
+        ext:  File extension including the dot (e.g. ".mp4", ".mov").
+
+    Returns:
+        Absolute path to the cached video file as a string.
+    """
+    cache_dir = get_video_cache_dir()
+    filename = f"vid_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    import time
+
+    cache_dir = get_video_cache_dir()
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    for f in cache_dir.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"

@@ -57,6 +57,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_document_from_bytes,
+    cache_video_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
 
@@ -1228,6 +1229,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+
+        # Download video to local cache for frame extraction / analysis
+        elif msg.video:
+            try:
+                # Telegram Bot API limit: 20 MB for file downloads
+                MAX_VIDEO_BYTES = 20 * 1024 * 1024
+                if msg.video.file_size and msg.video.file_size > MAX_VIDEO_BYTES:
+                    size_mb = msg.video.file_size / (1024 * 1024)
+                    note = (
+                        f"[Video too large to download ({size_mb:.1f} MB). "
+                        f"Telegram Bot API limit is 20 MB.]"
+                    )
+                    event.text = f"{note}\n\n{event.text}" if event.text else note
+                    logger.info("[Telegram] Video too large: %.1f MB", size_mb)
+                else:
+                    file_obj = await msg.video.get_file()
+                    video_bytes = await file_obj.download_as_bytearray()
+                    # Determine extension from mime_type
+                    mime = msg.video.mime_type or "video/mp4"
+                    mime_ext_map = {
+                        "video/mp4": ".mp4",
+                        "video/quicktime": ".mov",
+                        "video/webm": ".webm",
+                        "video/x-matroska": ".mkv",
+                        "video/avi": ".avi",
+                        "video/x-msvideo": ".avi",
+                    }
+                    ext = mime_ext_map.get(mime, ".mp4")
+                    cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [mime]
+                    logger.info("[Telegram] Cached user video at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
 
         # Download document files to cache for agent processing
         elif msg.document:

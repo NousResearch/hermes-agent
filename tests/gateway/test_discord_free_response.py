@@ -1,5 +1,6 @@
-"""Tests for Discord free-response defaults and mention gating."""
+"""Tests for Discord free-response defaults, mention gating, and text batching."""
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -358,3 +359,80 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     await adapter._handle_message(message)
 
     assert "777" in adapter._bot_participated_threads
+
+
+@pytest.mark.asyncio
+async def test_discord_text_messages_are_debounced(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._text_batch_delay_seconds = 0.05
+
+    first = make_message(channel=FakeTextChannel(channel_id=123), content="part one")
+    second = make_message(channel=FakeTextChannel(channel_id=123), content="part two")
+
+    await adapter._handle_message(first)
+    await asyncio.sleep(0.01)
+    await adapter._handle_message(second)
+
+    adapter.handle_message.assert_not_awaited()
+
+    await asyncio.sleep(0.08)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_discord_command_bypasses_debounce(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._text_batch_delay_seconds = 0.05
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="/reset")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_type == discord_platform.MessageType.COMMAND
+
+
+@pytest.mark.asyncio
+async def test_discord_debounce_disabled_preserves_existing_behavior(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._text_batch_delay_seconds = 0.0
+
+    first = make_message(channel=FakeTextChannel(channel_id=123), content="first")
+    second = make_message(channel=FakeTextChannel(channel_id=123), content="second")
+
+    await adapter._handle_message(first)
+    await adapter._handle_message(second)
+
+    assert adapter.handle_message.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_not_recreated_for_pending_text_batch(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    adapter._text_batch_delay_seconds = 0.05
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    first = make_message(channel=FakeTextChannel(channel_id=123), content="hello")
+    second = make_message(channel=FakeTextChannel(channel_id=123), content="follow-up")
+
+    await adapter._handle_message(first)
+    await asyncio.sleep(0.01)
+    await adapter._handle_message(second)
+    await asyncio.sleep(0.08)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+    assert event.text == "hello\nfollow-up"

@@ -426,6 +426,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._text_batch_delay_seconds = self._load_text_batch_delay_seconds()
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -441,6 +444,60 @@ class DiscordAdapter(BasePlatformAdapter):
         self._bot_participated_threads: set = self._load_participated_threads()
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
+
+    def _load_text_batch_delay_seconds(self) -> float:
+        """Return the configured Discord text debounce window in seconds."""
+        raw_value = os.getenv("DISCORD_DEBOUNCE_MS")
+        if raw_value in (None, ""):
+            raw_value = self.config.extra.get("debounce_ms", 0)
+        try:
+            debounce_ms = float(raw_value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, debounce_ms / 1000.0)
+
+    def _text_batch_key(self, message: DiscordMessage) -> str:
+        """Batch Discord text continuations by raw channel and author."""
+        channel_id = getattr(message.channel, "id", "unknown")
+        author_id = getattr(message.author, "id", "unknown")
+        return f"{channel_id}:{author_id}"
+
+    def _should_batch_text(self, msg_type: MessageType) -> bool:
+        return self._text_batch_delay_seconds > 0 and msg_type == MessageType.TEXT
+
+    def _enqueue_text_event(self, batch_key: str, event: MessageEvent) -> None:
+        """Buffer a Discord text event and reset the flush timer."""
+        existing = self._pending_text_batches.get(batch_key)
+        if existing is None:
+            self._pending_text_batches[batch_key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+
+        prior_task = self._pending_text_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_text_batch(batch_key)
+        )
+
+    async def _flush_text_batch(self, batch_key: str) -> None:
+        """Wait for a quiet period, then dispatch the aggregated text event."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._text_batch_delay_seconds)
+            event = self._pending_text_batches.pop(batch_key, None)
+            if not event:
+                return
+            logger.info(
+                "[Discord] Flushing text batch %s (%d chars)",
+                batch_key,
+                len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(batch_key) is current_task:
+                self._pending_text_batch_tasks.pop(batch_key, None)
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -593,6 +650,14 @@ class DiscordAdapter(BasePlatformAdapter):
     
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        pending_text_tasks = list(self._pending_text_batch_tasks.values())
+        for task in pending_text_tasks:
+            task.cancel()
+        if pending_text_tasks:
+            await asyncio.gather(*pending_text_tasks, return_exceptions=True)
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:
@@ -1835,6 +1900,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
+        batch_key = self._text_batch_key(message)
+        has_pending_text_batch = batch_key in self._pending_text_batches
+
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
@@ -1865,27 +1933,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not in_bot_thread and not has_pending_text_batch:
                 if self._client.user not in message.mentions:
                     return
 
             if self._client.user and self._client.user in message.mentions:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
-
-        # Auto-thread: when enabled, automatically create a thread for every
-        # @mention in a text channel so each conversation is isolated (like Slack).
-        # Messages already inside threads or DMs are unaffected.
-        auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread:
-                thread = await self._auto_create_thread(message)
-                if thread:
-                    is_thread = True
-                    thread_id = str(thread.id)
-                    auto_threaded_channel = thread
-                    self._track_thread(thread_id)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -1904,7 +1958,21 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         msg_type = MessageType.DOCUMENT
                     break
-        
+
+        # Auto-thread: when enabled, automatically create a thread for every
+        # @mention in a text channel so each conversation is isolated (like Slack).
+        # Messages already inside threads or DMs are unaffected.
+        auto_threaded_channel = None
+        if not is_thread and not isinstance(message.channel, discord.DMChannel):
+            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            if auto_thread and not (self._should_batch_text(msg_type) and has_pending_text_batch):
+                thread = await self._auto_create_thread(message)
+                if thread:
+                    is_thread = True
+                    thread_id = str(thread.id)
+                    auto_threaded_channel = thread
+                    self._track_thread(thread_id)
+
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
 
@@ -1990,6 +2058,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # follow-up messages in threads it has already engaged in.
         if thread_id:
             self._track_thread(thread_id)
+
+        if self._should_batch_text(msg_type):
+            self._enqueue_text_event(batch_key, event)
+            return
 
         await self.handle_message(event)
 

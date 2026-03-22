@@ -93,6 +93,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
+        "DISCORD_DEBOUNCE_MS",
         "SLACK_HOME_CHANNEL",
         "SLACK_HOME_CHANNEL_NAME",
         "SLACK_ALLOWED_USERS",

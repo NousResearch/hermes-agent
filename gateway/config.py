@@ -495,6 +495,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+                if "debounce_ms" in discord_cfg and not os.getenv("DISCORD_DEBOUNCE_MS"):
+                    os.environ["DISCORD_DEBOUNCE_MS"] = str(discord_cfg["debounce_ms"])
     except Exception:
         pass
 
@@ -748,6 +750,5 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 
 

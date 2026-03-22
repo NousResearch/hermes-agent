@@ -305,8 +305,46 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._set_fatal_error("telegram_token_lock", message, retryable=False)
                 return False
 
-            # Build the application
-            self._app = Application.builder().token(self.config.token).build()
+            # Build the application with separate connection pools for
+            # polling and regular API calls.  Without this, streaming edits
+            # (~3 req/s) saturate the default single-connection pool and cause
+            # the idle long-poll connection to be recycled, resulting in
+            # ``httpx.ReadError`` crashes.  See issue #2489.
+            try:
+                from telegram.request import HTTPXRequest
+                # Dedicated pool for get_updates long-polling — isolated from
+                # regular send/edit traffic so it is never evicted.
+                get_updates_request = HTTPXRequest(
+                    connection_pool_size=1,
+                    read_timeout=30.0,
+                    connect_timeout=10.0,
+                )
+                # Larger pool for regular API calls (send_message,
+                # edit_message_text, send_photo, etc.) so streaming bursts
+                # don't queue-block each other.
+                regular_request = HTTPXRequest(
+                    connection_pool_size=8,
+                    read_timeout=10.0,
+                    connect_timeout=10.0,
+                )
+                self._app = (
+                    Application.builder()
+                    .token(self.config.token)
+                    .get_updates_request(get_updates_request)
+                    .request(regular_request)
+                    .get_updates_read_timeout(30.0)
+                    .get_updates_connect_timeout(10.0)
+                    .build()
+                )
+            except (ImportError, AttributeError):
+                # Older python-telegram-bot without HTTPXRequest — fall back
+                # to the default builder (pre-existing behaviour).
+                logger.warning(
+                    "[%s] Could not configure separate connection pools; "
+                    "falling back to default builder",
+                    self.name,
+                )
+                self._app = Application.builder().token(self.config.token).build()
             self._bot = self._app.bot
             
             # Register handlers

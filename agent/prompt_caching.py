@@ -14,6 +14,16 @@ from typing import Any, Dict, List
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
     """Add cache_control to a single message, handling all format variations."""
+    # When the system content is a list with 2+ blocks (static + dynamic split),
+    # place the cache breakpoint on the FIRST block (the stable prefix) so that
+    # the dynamic tail (ephemeral_system_prompt, session context) doesn't
+    # invalidate the cache on every turn.
+    if msg.get("role") == "system" and isinstance(msg.get("content"), list) and len(msg["content"]) >= 2:
+        first = msg["content"][0]
+        if isinstance(first, dict):
+            first["cache_control"] = cache_marker
+        return
+
     role = msg.get("role", "")
     content = msg.get("content")
 

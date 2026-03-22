@@ -5215,13 +5215,23 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
-            effective_system = self._cached_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            # Split system prompt into static (cacheable) + dynamic (ephemeral)
+            # blocks so Anthropic prompt caching can cache the stable prefix
+            # without being invalidated by per-turn ephemeral content.
+            static_system = (self._cached_system_prompt or "").strip()
+            dynamic_system = (self.ephemeral_system_prompt or "").strip()
+            has_system = static_system or dynamic_system
+            if has_system:
+                if self._use_prompt_caching and static_system and dynamic_system:
+                    system_content = [
+                        {"type": "text", "text": static_system},
+                        {"type": "text", "text": dynamic_system},
+                    ]
+                else:
+                    system_content = (static_system + "\n\n" + dynamic_system).strip() if dynamic_system else static_system
+                api_messages = [{"role": "system", "content": system_content}] + api_messages
             if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
+                sys_offset = 1 if has_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
@@ -5643,16 +5653,28 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # Honcho later-turn recall is intentionally kept OUT of the system prompt
             # so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            #
+            # For Anthropic prompt caching: split into two content blocks so
+            # the stable prefix (SOUL.md, tools, context) gets cached while
+            # the dynamic ephemeral part (session context, platform hints)
+            # sits after the cache breakpoint and doesn't invalidate it.
+            static_system = (active_system_prompt or "").strip()
+            dynamic_system = (self.ephemeral_system_prompt or "").strip()
+            has_system = static_system or dynamic_system
+            if has_system:
+                if self._use_prompt_caching and static_system and dynamic_system:
+                    system_content = [
+                        {"type": "text", "text": static_system},
+                        {"type": "text", "text": dynamic_system},
+                    ]
+                else:
+                    system_content = (static_system + "\n\n" + dynamic_system).strip() if dynamic_system else static_system
+                api_messages = [{"role": "system", "content": system_content}] + api_messages
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
+                sys_offset = 1 if has_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 

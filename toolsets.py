@@ -177,7 +177,6 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
-    
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],

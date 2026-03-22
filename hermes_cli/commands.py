@@ -385,23 +385,35 @@ class SlashCommandCompleter(Completer):
         """
         if not text:
             return None
-        # Walk backwards to find the start of the current "word".
-        # Words are delimited by spaces, but paths can contain almost anything.
-        i = len(text) - 1
-        while i >= 0 and text[i] != " ":
-            i -= 1
-        word = text[i + 1:]
+        word = SlashCommandCompleter._last_shell_token(text)
         if not word:
             return None
-        # Only trigger path completion for path-like tokens
-        if word.startswith(("./", "../", "~/", "/")) or "/" in word:
+        parsed = SlashCommandCompleter._parse_path_token(word)
+        if parsed and parsed.is_path_like():
             return word
         return None
 
     @staticmethod
+    def _extract_context_word(text: str) -> str | None:
+        """Extract a bare ``@`` context token for Claude Code-style suggestions."""
+        if not text:
+            return None
+        word = SlashCommandCompleter._last_shell_token(text)
+        if not word.startswith("@"):
+            return None
+        if word.startswith(("@file:", "@folder:")):
+            return None
+        return word
+
+    @staticmethod
     def _path_completions(word: str, limit: int = 30):
         """Yield Completion objects for file paths matching *word*."""
-        expanded = os.path.expanduser(word)
+        parsed = SlashCommandCompleter._parse_path_token(word)
+        if parsed is None:
+            return
+
+        lookup_word = parsed.lookup_word()
+        expanded = os.path.expanduser(lookup_word)
         # Split into directory part and prefix to match inside it
         if expanded.endswith("/"):
             search_dir = expanded
@@ -415,21 +427,19 @@ class SlashCommandCompleter(Completer):
         except OSError:
             return
 
-        count = 0
-        prefix_lower = prefix.lower()
+        matches: list[tuple[tuple[int, int, int, str], Completion]] = []
         for entry in sorted(entries):
-            if prefix and not entry.lower().startswith(prefix_lower):
+            score = SlashCommandCompleter._fuzzy_match_score(entry, prefix)
+            if score is None:
                 continue
-            if count >= limit:
-                break
 
             full_path = os.path.join(search_dir, entry)
             is_dir = os.path.isdir(full_path)
 
             # Build the completion text (what replaces the typed word)
-            if word.startswith("~"):
+            if lookup_word.startswith("~"):
                 display_path = "~/" + os.path.relpath(full_path, os.path.expanduser("~"))
-            elif os.path.isabs(word):
+            elif os.path.isabs(lookup_word):
                 display_path = full_path
             else:
                 # Keep relative
@@ -440,14 +450,169 @@ class SlashCommandCompleter(Completer):
 
             suffix = "/" if is_dir else ""
             meta = "dir" if is_dir else _file_size_label(full_path)
+            completion_text = parsed.render(display_path)
 
-            yield Completion(
-                display_path,
-                start_position=-len(word),
-                display=entry + suffix,
-                display_meta=meta,
+            matches.append((
+                score,
+                Completion(
+                    completion_text,
+                    start_position=-len(word),
+                    display=entry + suffix,
+                    display_meta=meta,
+                ),
             )
-            count += 1
+            )
+
+        for _score, completion in sorted(matches, key=lambda item: item[0])[:limit]:
+            yield completion
+
+    @staticmethod
+    def _context_completions(word: str, limit: int = 30):
+        """Yield Claude Code-style context completions for bare ``@`` tokens."""
+        lowered = word.lower()
+        static_refs = (
+            ("@diff", "Git working tree diff"),
+            ("@staged", "Git staged diff"),
+            ("@file:", "Attach a file"),
+            ("@folder:", "Attach a folder"),
+        )
+
+        for candidate, meta in static_refs:
+            if candidate.lower().startswith(lowered) and candidate.lower() != lowered:
+                yield Completion(
+                    candidate,
+                    start_position=-len(word),
+                    display=candidate,
+                    display_meta=meta,
+                )
+
+        query = word[1:]
+        expanded = os.path.expanduser(query or ".")
+        if expanded.endswith("/"):
+            search_dir = expanded
+            prefix = ""
+        else:
+            search_dir = os.path.dirname(expanded) or "."
+            prefix = os.path.basename(expanded)
+
+        try:
+            entries = os.listdir(search_dir)
+        except OSError:
+            return
+
+        matches: list[tuple[tuple[int, int, int, str], Completion]] = []
+        for entry in sorted(entries):
+            score = SlashCommandCompleter._fuzzy_match_score(entry, prefix)
+            if score is None:
+                continue
+
+            full_path = os.path.join(search_dir, entry)
+            is_dir = os.path.isdir(full_path)
+
+            if query.startswith("~"):
+                display_path = "~/" + os.path.relpath(full_path, os.path.expanduser("~"))
+            elif os.path.isabs(query):
+                display_path = full_path
+            else:
+                display_path = os.path.relpath(full_path)
+
+            completion_text = f"@folder:{display_path}/" if is_dir else f"@file:{display_path}"
+            suffix = "/" if is_dir else ""
+            meta = "context dir" if is_dir else f"context {_file_size_label(full_path)}".strip()
+
+            matches.append((
+                score,
+                Completion(
+                    completion_text,
+                    start_position=-len(word),
+                    display=entry + suffix,
+                    display_meta=meta,
+                ),
+            ))
+
+        for _score, completion in sorted(matches, key=lambda item: item[0])[:limit]:
+            yield completion
+
+    @staticmethod
+    def _last_shell_token(text: str) -> str:
+        """Return the final shell-like token, preserving quotes and escapes."""
+        last_start = 0
+        quote: str | None = None
+        escaped = False
+
+        for i, ch in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if quote:
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in {"'", '"'}:
+                quote = ch
+                continue
+            if ch.isspace():
+                last_start = i + 1
+
+        return text[last_start:]
+
+    @staticmethod
+    def _parse_path_token(word: str) -> "_PathToken | None":
+        prefixes = ("@file:", "@folder:")
+        reference_prefix = ""
+        path_text = word
+        for prefix in prefixes:
+            if word.startswith(prefix):
+                reference_prefix = prefix
+                path_text = word[len(prefix):]
+                break
+
+        quote = ""
+        if path_text.startswith(("'", '"')):
+            quote = path_text[0]
+            path_text = path_text[1:]
+
+        closing_quote = bool(quote) and path_text.endswith(quote)
+        if closing_quote:
+            path_text = path_text[:-1]
+
+        keep_escaped = "\\" in path_text
+        unescaped = re.sub(r"\\(.)", r"\1", path_text)
+
+        token = _PathToken(
+            raw=word,
+            reference_prefix=reference_prefix,
+            quote=quote,
+            close_quote=closing_quote,
+            keep_escaped=keep_escaped,
+            path=unescaped,
+        )
+        return token if token.is_path_like() else None
+
+    @staticmethod
+    def _fuzzy_match_score(candidate: str, query: str) -> tuple[int, int, int, str] | None:
+        """Return a sortable fuzzy-match score or None when there is no match."""
+        normalized_candidate = re.sub(r"[^a-z0-9]", "", candidate.lower())
+        normalized_query = re.sub(r"[^a-z0-9]", "", query.lower())
+
+        if not normalized_query:
+            return (0, 0, len(normalized_candidate), candidate.lower())
+
+        positions: list[int] = []
+        idx = 0
+        for ch in normalized_query:
+            found = normalized_candidate.find(ch, idx)
+            if found == -1:
+                return None
+            positions.append(found)
+            idx = found + 1
+
+        start = positions[0]
+        span = positions[-1] - positions[0] + 1
+        return (start, span, len(normalized_candidate), candidate.lower())
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -456,6 +621,10 @@ class SlashCommandCompleter(Completer):
             path_word = self._extract_path_word(text)
             if path_word is not None:
                 yield from self._path_completions(path_word)
+                return
+            context_word = self._extract_context_word(text)
+            if context_word is not None:
+                yield from self._context_completions(context_word)
             return
 
         # Check if we're completing a subcommand (base command already typed)
@@ -545,6 +714,34 @@ class SlashCommandCompleter(Completer):
                     display=cmd,
                     display_meta=f"⚡ {short_desc}",
                 )
+
+
+@dataclass(frozen=True)
+class _PathToken:
+    raw: str
+    reference_prefix: str = ""
+    quote: str = ""
+    close_quote: bool = False
+    keep_escaped: bool = False
+    path: str = ""
+
+    def is_path_like(self) -> bool:
+        if self.reference_prefix:
+            return True
+        return self.path.startswith(("./", "../", "~/", "/")) or "/" in self.path
+
+    def lookup_word(self) -> str:
+        return self.path or "."
+
+    def render(self, path: str) -> str:
+        rendered = path
+        if self.keep_escaped:
+            rendered = re.sub(r'([\\\s])', r'\\\1', rendered)
+        if self.quote:
+            rendered = f"{self.quote}{rendered}"
+            if self.close_quote:
+                rendered += self.quote
+        return f"{self.reference_prefix}{rendered}"
 
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,43 @@ class TestExtractPathWord:
     def test_just_tilde_slash(self):
         assert SlashCommandCompleter._extract_path_word("~/") == "~/"
 
+    def test_quoted_path_with_spaces(self):
+        assert (
+            SlashCommandCompleter._extract_path_word('see "/tmp/Screen Shot 2026')
+            == '"/tmp/Screen Shot 2026'
+        )
+
+    def test_escaped_spaces_path(self):
+        assert (
+            SlashCommandCompleter._extract_path_word(
+                r"see /tmp/Screen\ Shot\ 2026"
+            )
+            == r"/tmp/Screen\ Shot\ 2026"
+        )
+
+    def test_context_file_reference_path(self):
+        assert (
+            SlashCommandCompleter._extract_path_word("review @file:src/ma")
+            == "@file:src/ma"
+        )
+
+    def test_context_folder_reference_path(self):
+        assert (
+            SlashCommandCompleter._extract_path_word("review @folder:src/")
+            == "@folder:src/"
+        )
+
+
+class TestExtractContextWord:
+    def test_bare_context_trigger(self):
+        assert SlashCommandCompleter._extract_context_word("review @") == "@"
+
+    def test_bare_context_path_fragment(self):
+        assert SlashCommandCompleter._extract_context_word("review @src") == "@src"
+
+    def test_explicit_context_file_reference_is_not_bare_trigger(self):
+        assert SlashCommandCompleter._extract_context_word("review @file:src/main.py") is None
+
 
 class TestPathCompletions:
     def test_lists_current_directory(self, tmp_path):
@@ -125,6 +162,103 @@ class TestPathCompletions:
         names = _display_names(completions)
         assert "README.md" in names
 
+    def test_fuzzy_match_non_contiguous_filename(self, tmp_path):
+        (tmp_path / "Screenshot 2026-03-22 at 4.27.40 PM.png").touch()
+        (tmp_path / "notes.txt").touch()
+
+        completions = list(SlashCommandCompleter._path_completions(f"{tmp_path}/scsh"))
+        names = _display_names(completions)
+
+        assert "Screenshot 2026-03-22 at 4.27.40 PM.png" in names
+        assert "notes.txt" not in names
+
+    def test_fuzzy_match_orders_better_match_first(self, tmp_path):
+        (tmp_path / "screen-capture.png").touch()
+        (tmp_path / "super-complex-screenshot.png").touch()
+
+        completions = list(SlashCommandCompleter._path_completions(f"{tmp_path}/scrcap"))
+        names = _display_names(completions)
+
+        assert names[0] == "screen-capture.png"
+
+    def test_preserves_escaped_spaces_in_completion_text(self, tmp_path):
+        target = tmp_path / "Screenshot 2026-03-22 at 4.27.40 PM.png"
+        target.touch()
+
+        completions = list(
+            SlashCommandCompleter._path_completions(
+                str(target).replace(" ", r"\ ").rsplit(".", 1)[0]
+            )
+        )
+
+        assert any(c.text == str(target).replace(" ", r"\ ") for c in completions)
+
+    def test_preserves_opening_quote_in_completion_text(self, tmp_path):
+        target = tmp_path / "Screenshot 2026-03-22 at 4.27.40 PM.png"
+        target.touch()
+
+        completions = list(
+            SlashCommandCompleter._path_completions(f'"{tmp_path}/Screen')
+        )
+
+        assert any(c.text == f'"{target}' for c in completions)
+
+    def test_completes_context_file_references(self, tmp_path):
+        target = tmp_path / "main.py"
+        target.touch()
+
+        completions = list(
+            SlashCommandCompleter._path_completions(f"@file:{tmp_path}/ma")
+        )
+
+        assert any(c.text == f"@file:{target}" for c in completions)
+
+    def test_completes_context_folder_references(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+
+        completions = list(
+            SlashCommandCompleter._path_completions(f"@folder:{tmp_path}/s")
+        )
+
+        assert any(c.text == f"@folder:{target}/" for c in completions)
+
+
+class TestContextCompletions:
+    def test_lists_static_context_references(self):
+        completions = list(SlashCommandCompleter._context_completions("@"))
+        texts = [c.text for c in completions]
+        assert "@diff" in texts
+        assert "@staged" in texts
+        assert "@file:" in texts
+        assert "@folder:" in texts
+
+    def test_bare_context_path_completes_to_file_reference(self, tmp_path):
+        target = tmp_path / "main.py"
+        target.touch()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            completions = list(SlashCommandCompleter._context_completions("@ma"))
+        finally:
+            os.chdir(old_cwd)
+
+        assert any(c.text == "@file:main.py" for c in completions)
+
+    def test_bare_context_path_completes_to_folder_reference(self, tmp_path):
+        target = tmp_path / "src"
+        target.mkdir()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            completions = list(SlashCommandCompleter._context_completions("@sr"))
+        finally:
+            os.chdir(old_cwd)
+
+        assert any(c.text == "@folder:src/" for c in completions)
+
 
 class TestIntegration:
     """Test the completer produces path completions via the prompt_toolkit API."""
@@ -162,6 +296,31 @@ class TestIntegration:
         names = _display_names(completions)
         # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
+
+    def test_context_file_reference_triggers_completion(self, completer, tmp_path):
+        target = tmp_path / "main.py"
+        target.touch()
+
+        doc = Document(f"check @file:{tmp_path}/ma", cursor_position=len(f"check @file:{tmp_path}/ma"))
+        event = MagicMock()
+        completions = list(completer.get_completions(doc, event))
+
+        assert any(c.text == f"@file:{target}" for c in completions)
+
+    def test_bare_context_trigger_shows_context_completion(self, completer, tmp_path):
+        target = tmp_path / "main.py"
+        target.touch()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            doc = Document("check @ma", cursor_position=len("check @ma"))
+            event = MagicMock()
+            completions = list(completer.get_completions(doc, event))
+        finally:
+            os.chdir(old_cwd)
+
+        assert any(c.text == "@file:main.py" for c in completions)
 
 
 class TestFileSizeLabel:

@@ -16,11 +16,12 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
         CommandHandler,
         MessageHandler as TelegramMessageHandler,
+        CallbackQueryHandler, # Added this for button support
         ContextTypes,
         filters,
     )
@@ -235,6 +236,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._bot = self._app.bot
             
             # Register handlers
+            self._app.add_handler(CommandHandler("models", self._handle_models_command))
+            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -996,6 +999,72 @@ class TelegramAdapter(BasePlatformAdapter):
         
         event = self._build_message_event(update.message, MessageType.COMMAND)
         await self.handle_message(event)
+
+    async def _handle_models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /models command by showing an inline keyboard of available models."""
+        if not update.message:
+            return
+
+        try:
+            from hermes_cli.models import provider_model_ids
+            
+            models = provider_model_ids(None)
+            models_to_show = models[:10]
+            
+            if not models_to_show:
+                await update.message.reply_text("_No models available._", parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            keyboard = []
+            for model_id in models_to_show:
+                # Both button label and callback_data now use the model ID string
+                keyboard.append([InlineKeyboardButton(model_id, callback_data=f"set_model:{model_id}")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "*Select a model from the list:*",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        except Exception as e:
+            logger.error(f"Error in /models command: {e}")
+            await update.message.reply_text("❌ Failed to fetch models. Try /model manually.")
+
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle button clicks from the /models interactive menu."""
+        query = update.callback_query
+        if not query or not query.message:
+            return
+
+        # Acknowledge the callback to remove the loading state from the button
+        await query.answer()
+
+        if query.data and query.data.startswith("set_model:"):
+            model_name = query.data.split(":")[1]
+            
+            # Create a MessageEvent based on the message containing the buttons.
+            # We treat this as a COMMAND type to trigger the core /model logic.
+            event = self._build_message_event(query.message, MessageType.COMMAND)
+            
+            # Since Telegram's Message objects are immutable, we modify the 
+            # text directly in the Hermes MessageEvent wrapper.
+            event.text = f"/model {model_name}"
+            
+            # Ensure the source identifies the user who clicked the button,
+            # not the bot that sent the original message.
+            if query.from_user:
+                event.source.user_id = str(query.from_user.id)
+                event.source.user_name = query.from_user.full_name
+            
+            # Forward the simulated command event to the main message handler
+            await self.handle_message(event)
+            
+            # Update the message text to provide immediate visual confirmation
+            await query.edit_message_text(
+                text=f"✅ Model successfully changed to: `{model_name}`",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""

@@ -6,15 +6,16 @@ Implements a multi-strategy matching chain to robustly find and replace text,
 accommodating variations in whitespace, indentation, and escaping common
 in LLM-generated code.
 
-The 8-strategy chain (inspired by OpenCode), tried in order:
+The 9-strategy chain (inspired by OpenCode), tried in order:
 1. Exact match - Direct string comparison
 2. Line-trimmed - Strip leading/trailing whitespace per line
 3. Whitespace normalized - Collapse multiple spaces/tabs to single space
 4. Indentation flexible - Ignore indentation differences entirely
-5. Escape normalized - Convert \\n literals to actual newlines
+5. Escape normalized - Convert \\\\n literals to actual newlines
 6. Trimmed boundary - Trim first/last line whitespace only
 7. Block anchor - Match first+last lines, use similarity for middle
 8. Context-aware - 50% line similarity threshold
+9. Comment-stripped - Strip single-line comments before comparing
 
 Multi-occurrence matching is handled via the replace_all flag.
 
@@ -29,6 +30,7 @@ Usage:
     )
 """
 
+import os
 import re
 from typing import Tuple, Optional, List, Callable
 from difflib import SequenceMatcher
@@ -48,7 +50,8 @@ def _unicode_normalize(text: str) -> str:
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                            replace_all: bool = False) -> Tuple[str, int, Optional[str]]:
+                            replace_all: bool = False,
+                            file_path: str = "") -> Tuple[str, int, Optional[str]]:
     """
     Find and replace text using a chain of increasingly fuzzy matching strategies.
     
@@ -79,6 +82,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         ("trimmed_boundary", _strategy_trimmed_boundary),
         ("block_anchor", _strategy_block_anchor),
         ("context_aware", _strategy_context_aware),
+        ("comment_stripped", lambda c, p: _strategy_comment_stripped(c, p, file_path)),
     ]
     
     for strategy_name, strategy_fn in strategies:
@@ -349,6 +353,92 @@ def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]
             )
             matches.append((start_pos, end_pos))
     
+    return matches
+
+
+def _strip_comments(text: str, file_path: str) -> str:
+    """Strip single-line comments from text based on file extension.
+
+    Handles full-line comments and inline comments for:
+    - Python (.py): # comments
+    - JS/TS/C/Go/Rust (.js, .ts, .tsx, .jsx, .c, .h, .cpp, .go, .rs): // comments
+    """
+    ext = ""
+    if file_path:
+        ext = os.path.splitext(file_path)[1].lower()
+
+    # Determine comment prefix based on extension
+    hash_langs = {".py", ".sh", ".bash", ".zsh", ".rb", ".pl", ".yaml", ".yml", ".toml"}
+    slash_langs = {".js", ".ts", ".tsx", ".jsx", ".c", ".h", ".cpp", ".cc", ".cxx",
+                   ".hpp", ".go", ".rs", ".java", ".kt", ".swift", ".cs", ".scala"}
+
+    use_hash = ext in hash_langs
+    use_slash = ext in slash_langs
+
+    # If extension is unknown, try both
+    if not use_hash and not use_slash:
+        use_hash = True
+        use_slash = True
+
+    lines = text.split('\n')
+    stripped = []
+    for line in lines:
+        s = line
+        trimmed = s.lstrip()
+        # Skip full-line comments
+        if use_hash and trimmed.startswith('#'):
+            continue
+        if use_slash and trimmed.startswith('//'):
+            continue
+        # Strip inline comments (simple heuristic — not quote-aware)
+        if use_hash and '#' in s:
+            s = s[:s.index('#')]
+        if use_slash and '//' in s:
+            s = s[:s.index('//')]
+        stripped.append(s.rstrip())
+    return '\n'.join(stripped)
+
+
+def _strategy_comment_stripped(content: str, pattern: str, file_path: str) -> List[Tuple[int, int]]:
+    """Strategy 9: Strip single-line comments before comparing.
+
+    Removes comment-only lines and inline comments, then uses
+    line-based normalized matching to find the block in the original.
+    """
+    content_stripped = _strip_comments(content, file_path)
+    pattern_stripped = _strip_comments(pattern, file_path)
+
+    # If stripping didn't change anything, skip (earlier strategies would've matched)
+    if content_stripped == content and pattern_stripped == pattern:
+        return []
+
+    content_lines = content.split('\n')
+    content_stripped_lines = content_stripped.split('\n')
+    pattern_stripped_lines = pattern_stripped.split('\n')
+
+    # Filter out blank lines from both for matching
+    def non_blank_indices(lines):
+        return [(i, line) for i, line in enumerate(lines) if line.strip()]
+
+    pattern_nb = [line.strip() for _, line in non_blank_indices(pattern_stripped_lines)]
+    if not pattern_nb:
+        return []
+
+    # Slide a window over content lines, comparing non-blank stripped lines
+    matches = []
+    num_content = len(content_lines)
+    num_pattern = len(content_lines)  # window sizing needs pattern line count
+    pat_line_count = len(pattern.split('\n'))
+
+    for i in range(num_content - pat_line_count + 1):
+        block_stripped = content_stripped_lines[i:i + pat_line_count]
+        block_nb = [line.strip() for line in block_stripped if line.strip()]
+        if block_nb == pattern_nb:
+            start_pos, end_pos = _calculate_line_positions(
+                content_lines, i, i + pat_line_count, len(content)
+            )
+            matches.append((start_pos, end_pos))
+
     return matches
 
 

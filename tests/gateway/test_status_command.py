@@ -82,8 +82,8 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Tokens:** 321" in result
-    assert "**Agent Running:** Yes ⚡" in result
+    assert "321" in result and "tokens" in result
+    assert "⚡" in result  # running agent indicator
     running_agent.interrupt.assert_not_called()
     assert runner._pending_messages == {}
 

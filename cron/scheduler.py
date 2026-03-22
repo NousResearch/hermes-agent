@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, update_job, is_valid_transition
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -482,6 +482,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
+def _recover_stale_running_jobs() -> None:
+    """Detect and recover jobs stuck in 'running' state from a previous crash.
+
+    If the scheduler starts and finds jobs in 'running' state, they must be
+    from a previous process that crashed. Mark them as 'failed' so they can
+    be manually retried or will be picked up on next schedule.
+    """
+    from cron.jobs import load_jobs, save_jobs
+    jobs = load_jobs()
+    recovered = 0
+    for job in jobs:
+        if job.get("state") == "running":
+            logger.warning(
+                "Recovering stale running job '%s' (ID: %s) — marking as failed",
+                job.get("name", "?"), job.get("id", "?")
+            )
+            job["state"] = "failed"
+            job["last_error"] = "Process crashed during execution (recovered on restart)"
+            job["last_status"] = "error"
+            recovered += 1
+    if recovered:
+        save_jobs(jobs)
+        logger.info("Recovered %d stale running job(s)", recovered)
+
+
 def tick(verbose: bool = True) -> int:
     """
     Check and run all due jobs.
@@ -512,6 +537,9 @@ def tick(verbose: bool = True) -> int:
         return 0
 
     try:
+        # Recover stale 'running' jobs from previous crash
+        _recover_stale_running_jobs()
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -524,6 +552,16 @@ def tick(verbose: bool = True) -> int:
         executed = 0
         for job in due_jobs:
             try:
+                # Mark job as running before execution
+                cur_state = job.get("state", "scheduled")
+                if is_valid_transition(cur_state, "running"):
+                    update_job(job["id"], {"state": "running"})
+                else:
+                    logger.warning(
+                        "Job '%s': invalid state transition %s -> running, skipping",
+                        job["id"], cur_state,
+                    )
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
@@ -550,7 +588,14 @@ def tick(verbose: bool = True) -> int:
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                try:
+                    mark_job_run(job["id"], False, str(e))
+                except Exception as mark_err:
+                    logger.error("Failed to mark job %s as failed: %s", job['id'], mark_err)
+                    try:
+                        update_job(job["id"], {"state": "failed", "last_error": str(e)})
+                    except Exception:
+                        pass
 
         return executed
     finally:

@@ -22,6 +22,10 @@ from cron.jobs import (
     mark_job_run,
     get_due_jobs,
     save_job_output,
+    job_is_active,
+    is_valid_transition,
+    JOB_STATES,
+    VALID_TRANSITIONS,
 )
 
 
@@ -192,7 +196,7 @@ class TestJobCRUD:
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]
         assert job["prompt"] == "Check server status"
-        assert job["enabled"] is True
+        assert job["state"] == "scheduled"
         assert job["schedule"]["kind"] == "once"
 
         fetched = get_job(job["id"])
@@ -268,11 +272,11 @@ class TestUpdateJob:
 
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
-        assert job["enabled"] is True
-        updated = update_job(job["id"], {"enabled": False})
-        assert updated["enabled"] is False
+        assert job["state"] == "scheduled"
+        updated = update_job(job["id"], {"state": "paused"})
+        assert updated["state"] == "paused"
         fetched = get_job(job["id"])
-        assert fetched["enabled"] is False
+        assert fetched["state"] == "paused"
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
@@ -284,7 +288,6 @@ class TestPauseResumeJob:
         job = create_job(prompt="Pause me", schedule="every 1h")
         paused = pause_job(job["id"], reason="user paused")
         assert paused is not None
-        assert paused["enabled"] is False
         assert paused["state"] == "paused"
         assert paused["paused_reason"] == "user paused"
 
@@ -293,7 +296,7 @@ class TestPauseResumeJob:
         pause_job(job["id"], reason="user paused")
         resumed = resume_job(job["id"])
         assert resumed is not None
-        assert resumed["enabled"] is True
+        assert job_is_active(resumed)
         assert resumed["state"] == "scheduled"
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
@@ -364,7 +367,7 @@ class TestGetDueJobs:
     def test_disabled_not_returned(self, tmp_cron_dir):
         job = create_job(prompt="Disabled", schedule="every 1h")
         jobs = load_jobs()
-        jobs[0]["enabled"] = False
+        jobs[0]["state"] = "paused"
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
         save_jobs(jobs)
 
@@ -384,7 +387,6 @@ class TestGetDueJobs:
                 "schedule": {"kind": "once", "run_at": run_at, "display": "once at 2026-03-18 04:22"},
                 "schedule_display": "once at 2026-03-18 04:22",
                 "repeat": {"times": 1, "completed": 0},
-                "enabled": True,
                 "state": "scheduled",
                 "paused_at": None,
                 "paused_reason": None,
@@ -415,7 +417,6 @@ class TestGetDueJobs:
                 "schedule": {"kind": "once", "run_at": "2026-03-18T04:22:00+00:00", "display": "once at 2026-03-18 04:22"},
                 "schedule_display": "once at 2026-03-18 04:22",
                 "repeat": {"times": 1, "completed": 0},
-                "enabled": True,
                 "state": "scheduled",
                 "paused_at": None,
                 "paused_reason": None,

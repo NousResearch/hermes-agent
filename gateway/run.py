@@ -390,6 +390,24 @@ class GatewayRunner:
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
 
+    @staticmethod
+    def _agent_config_signature(model: str, runtime: dict, toolsets: list, system_prompt: str) -> str:
+        """Produce a stable hash key for the agent config (excluding reasoning)."""
+        import hashlib, json
+        blob = json.dumps({
+            "model": model,
+            "base_url": runtime.get("base_url", ""),
+            "provider": runtime.get("provider", ""),
+            "toolsets": sorted(toolsets),
+            "system_prompt": system_prompt,
+        }, sort_keys=True)
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    def _evict_cached_agent(self, session_key: str) -> None:
+        """Remove a cached agent entry for the given session key."""
+        with self._agent_cache_lock:
+            self._agent_cache.pop(session_key, None)
+
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
         if not hasattr(self, "_honcho_managers"):
@@ -1561,6 +1579,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "cost":
+            return await self._handle_cost_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -1590,6 +1611,18 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if canonical == "test":
+            return await self._handle_test_command(event)
+
+        if canonical == "lint":
+            return await self._handle_lint_command(event)
+
+        if canonical == "architect":
+            return await self._handle_architect_command(event)
+
+        if canonical == "git-undo":
+            return await self._handle_git_undo_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -3545,6 +3578,84 @@ class GatewayRunner:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return "Voice mode disabled."
 
+    # ------------------------------------------------------------------
+    # /test, /lint, /architect, /git-undo handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_test_command(self, event) -> str:
+        """Handle /test command -- detect and run project tests."""
+        import asyncio
+        from agent.test_lint_runner import run_tests, format_test_results
+
+        args = event.get_command_args().strip()
+        timeout = 120
+        if args.isdigit():
+            timeout = int(args)
+
+        cwd = self._get_session_cwd(event)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: run_tests(cwd, timeout=timeout))
+        return format_test_results(result)
+
+    async def _handle_lint_command(self, event) -> str:
+        """Handle /lint command -- detect and run project linter."""
+        import asyncio
+        from agent.test_lint_runner import run_linter, format_lint_results
+
+        cwd = self._get_session_cwd(event)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: run_linter(cwd))
+        return format_lint_results(result)
+
+    async def _handle_architect_command(self, event) -> str:
+        """Handle /architect command -- generate implementation plan and inject into conversation."""
+        import asyncio
+        from agent.architect import run_architect, format_architect_context
+
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: /architect <description of what to build>"
+
+        loop = asyncio.get_event_loop()
+        plan = await loop.run_in_executor(None, lambda: run_architect(prompt))
+
+        # Inject the plan as context and let the agent implement it
+        context_msg = format_architect_context(plan, prompt)
+        event.text = context_msg
+        # Return None to let the message fall through to the agent loop
+        return None
+
+    async def _handle_git_undo_command(self, event) -> str:
+        """Handle /git-undo command -- undo the last git commit."""
+        import asyncio
+        from agent.auto_git import undo_last_commit, is_git_repo
+
+        cwd = self._get_session_cwd(event)
+        if not is_git_repo(cwd):
+            return "Not inside a git repository."
+
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, lambda: undo_last_commit(cwd))
+        if success:
+            return "✅ Last commit undone (soft reset). Changes are now staged."
+        return "❌ Failed to undo last commit."
+
+    def _get_session_cwd(self, event) -> str:
+        """Get the working directory for the current session."""
+        # Try to get cwd from session config, fall back to hermes home
+        try:
+            source = event.source
+            session_key = self._session_key(source)
+            agent = self._agents.get(session_key)
+            if agent and hasattr(agent, "cwd"):
+                return agent.cwd
+        except Exception:
+            pass
+        # Fallback: use configured cwd or home
+        if hasattr(self, "cwd") and self.cwd:
+            return self.cwd
+        return os.getcwd()
+
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
@@ -4258,6 +4369,15 @@ class GatewayRunner:
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
+
+    async def _handle_cost_command(self, event: MessageEvent) -> str:
+        """Handle /cost command -- show estimated cost for the session."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        agent = self._running_agents.get(session_key)
+        if agent and hasattr(agent, "cost_tracker"):
+            return agent.cost_tracker.format_summary()
+        return "No cost data available for this session."
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
@@ -5336,7 +5456,17 @@ class GatewayRunner:
                             if _p:
                                 _history_media_paths.add(_p)
             
-            result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+            # Expand @-mentions in the message before sending to agent
+            _agent_message = message
+            try:
+                from agent.context_mentions import expand_mentions as _gw_expand
+                _gw_cleaned, _gw_context = _gw_expand(message, os.getcwd())
+                if _gw_context:
+                    _agent_message = _gw_context + "\n\n" + _gw_cleaned
+            except Exception:
+                pass  # context mentions are best-effort
+
+            result = agent.run_conversation(_agent_message, conversation_history=agent_history, task_id=session_id)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

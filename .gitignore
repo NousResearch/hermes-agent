@@ -53,3 +53,5 @@ environments/benchmarks/evals/
 
 # Release script temp files
 .release_notes.md
+.DS_Store
+gateway/.DS_Store

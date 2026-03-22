@@ -42,6 +42,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
+| `hermes plugins` | Install, update, remove, and list plugins. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes honcho` | Manage Honcho cross-session memory integration. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
@@ -236,6 +237,51 @@ hermes pairing <list|approve|revoke|clear-pending>
 | `approve <platform> <code>` | Approve a pairing code. |
 | `revoke <platform> <user-id>` | Revoke a user's access. |
 | `clear-pending` | Clear pending pairing codes. |
+
+## `hermes plugins`
+
+```bash
+hermes plugins <subcommand>
+```
+
+Manage plugins — install from Git repositories, update, remove, or list installed plugins.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `install <identifier>` | Install a plugin from a Git URL or `owner/repo` shorthand. |
+| `update <name>` | Pull latest changes for an installed plugin. |
+| `remove <name>` | Remove an installed plugin. Aliases: `rm`, `uninstall`. |
+| `list` | List installed plugins with version and source info. Alias: `ls`. |
+
+`install` options:
+
+| Option | Description |
+|--------|-------------|
+| `--force`, `-f` | Remove existing plugin and reinstall from scratch. |
+
+Identifiers accepted by `install`:
+
+| Format | Example |
+|--------|---------|
+| `owner/repo` shorthand | `acme/hermes-plugin-weather` |
+| Full HTTPS URL | `https://github.com/acme/hermes-plugin-weather.git` |
+| SSH URL | `git@github.com:acme/hermes-plugin-weather.git` |
+
+Examples:
+
+```bash
+hermes plugins list
+hermes plugins install acme/hermes-plugin-weather
+hermes plugins install https://github.com/acme/hermes-plugin-weather.git --force
+hermes plugins update weather
+hermes plugins remove weather
+```
+
+After install, if the plugin ships an `after-install.md` file it is displayed. Any `.example` files (e.g. `config.yaml.example`) are copied to their real names if they don't already exist.
+
+Restart the gateway for changes to take effect: `hermes gateway restart`.
 
 ## `hermes skills`
 

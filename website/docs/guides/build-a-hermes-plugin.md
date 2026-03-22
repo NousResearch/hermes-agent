@@ -4,7 +4,164 @@ sidebar_position: 10
 
 # Build a Hermes Plugin
 
-This guide walks through building a complete Hermes plugin from scratch. By the end you'll have a working plugin with multiple tools, lifecycle hooks, shipped data files, and a bundled skill — everything the plugin system supports.
+This guide covers the plugin format, file structure, manifest schema, and registration API — then walks through building a complete working plugin from scratch.
+
+## Plugin format reference
+
+### Directory structure
+
+A plugin is a directory inside `~/.hermes/plugins/` (user) or `./.hermes/plugins/` (project-local, opt-in). The minimum required files are `plugin.yaml` and `__init__.py`:
+
+```
+~/.hermes/plugins/my-plugin/
+├── plugin.yaml          # Required — manifest declaring the plugin
+├── __init__.py          # Required — register() entry point
+├── schemas.py           # Conventional — tool schemas (what the LLM sees)
+├── tools.py             # Conventional — tool handlers (what runs when called)
+├── config.yaml.example  # Optional — copied to config.yaml on install if absent
+├── after-install.md     # Optional — displayed after hermes plugins install
+├── README.md            # Optional — documentation
+├── .gitignore           # Optional — for git-distributed plugins
+└── data/                # Optional — shipped data files, read at import time
+```
+
+The separation into `schemas.py` and `tools.py` is a convention, not a requirement — you can put everything in `__init__.py` if you prefer.
+
+### Manifest (`plugin.yaml`)
+
+Every plugin must have a `plugin.yaml` (or `plugin.yml`) at its root. Without it, Hermes skips the directory.
+
+```yaml
+# Required
+name: my-plugin                # Plugin name (used as identifier)
+
+# Optional metadata
+manifest_version: 1            # Schema version (current: 1)
+version: 1.0.0                 # Semantic version of your plugin
+description: What this plugin does
+author: Your Name
+
+# Optional — gate loading on environment variables
+# If any listed variable is missing, the plugin is disabled with a clear message
+requires_env:
+  - SOME_API_KEY
+  - ANOTHER_SECRET
+
+# Optional — informational declarations (not enforced by the loader)
+provides:
+  tools: true
+  hooks: true
+```
+
+**Manifest fields reference:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Plugin identifier. Falls back to directory name if omitted. |
+| `manifest_version` | integer | No | Schema version. Must be ≤ the installer's supported version (currently `1`). If a plugin declares a higher version, `hermes plugins install` will refuse it with an upgrade message. |
+| `version` | string | No | Plugin version (shown in `hermes plugins list`). |
+| `description` | string | No | Short description (shown in `hermes plugins list`). |
+| `author` | string | No | Author name. |
+| `requires_env` | list of strings | No | Environment variables that must be set for the plugin to load. If any are missing, the plugin is silently disabled. |
+| `provides` | object | No | Informational — declares what the plugin provides. Not enforced by the loader. |
+
+### Registration (`__init__.py`)
+
+The `__init__.py` must export a `register(ctx)` function. This is called exactly once at startup. If it crashes, the plugin is disabled but Hermes continues.
+
+```python
+def register(ctx):
+    """Called once at startup. ctx is a PluginContext instance."""
+    ctx.register_tool(...)    # Add tools to the global registry
+    ctx.register_hook(...)    # Subscribe to lifecycle events
+```
+
+#### `ctx.register_tool()`
+
+Registers a tool in the global tool registry. The model sees it alongside built-in tools.
+
+```python
+ctx.register_tool(
+    name="my_tool",           # Tool name (must be unique across all tools)
+    toolset="my_toolset",     # Toolset grouping (for hermes tools enable/disable)
+    schema={                  # OpenAI function-calling schema
+        "name": "my_tool",
+        "description": "What this tool does and when to use it",
+        "parameters": {
+            "type": "object",
+            "properties": { ... },
+            "required": [ ... ],
+        },
+    },
+    handler=my_handler_fn,    # Callable — see handler contract below
+    check_fn=None,            # Optional — returns False to hide from model
+    requires_env=None,        # Optional — list of required env vars for this tool
+    is_async=False,           # Whether the handler is async
+    description="",           # Optional — additional description metadata
+    emoji="",                 # Optional — emoji shown in tool output prefix
+)
+```
+
+#### Handler contract
+
+Every tool handler **must** follow these rules:
+
+1. **Signature:** `def handler(args: dict, **kwargs) -> str`
+2. **Return:** Always a JSON string — both success and error cases
+3. **Never raise:** Catch all exceptions and return error JSON instead
+4. **Accept `**kwargs`:** Hermes may pass additional context (e.g. `task_id`)
+
+```python
+def my_handler(args: dict, **kwargs) -> str:
+    try:
+        result = do_something(args.get("param", ""))
+        return json.dumps({"success": True, "data": result})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+```
+
+#### `ctx.register_hook()`
+
+Subscribes to lifecycle events. Hooks are observers — they cannot modify arguments or return values. If a hook crashes, it is logged and skipped.
+
+```python
+ctx.register_hook("post_tool_call", my_callback)
+```
+
+**Available hooks:**
+
+| Hook | When | Arguments |
+|------|------|-----------|
+| `pre_tool_call` | Before any tool runs | `tool_name`, `args`, `task_id` |
+| `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
+| `pre_llm_call` | Before LLM API call | *(reserved — not yet invoked)* |
+| `post_llm_call` | After LLM response | *(reserved — not yet invoked)* |
+| `on_session_start` | Session begins | *(reserved — not yet invoked)* |
+| `on_session_end` | Session ends | *(reserved — not yet invoked)* |
+
+:::note
+Currently only `pre_tool_call` and `post_tool_call` are invoked by the agent core. The remaining hooks are defined in the schema for forward compatibility — plugins can register them now and they will fire once the core adds the invocation points.
+:::
+
+### Special files
+
+| File | Purpose |
+|------|---------|
+| `after-install.md` | Rich Markdown rendered after `hermes plugins install`. Use for post-install instructions (config steps, env vars to set, gateway restart reminder). |
+| `config.yaml.example` | Automatically copied to `config.yaml` on install if no `config.yaml` exists. Updated on `hermes plugins update` if new `.example` files appear. Never overwrites user-edited config. |
+| `README.md` | Documentation — not processed by Hermes, but useful for Git repos. |
+
+### Plugin discovery order
+
+| Priority | Source | Path | Opt-in |
+|----------|--------|------|--------|
+| 1 | User plugins | `~/.hermes/plugins/` | Always scanned |
+| 2 | Project plugins | `./.hermes/plugins/` | Requires `HERMES_ENABLE_PROJECT_PLUGINS=true` |
+| 3 | pip packages | `hermes_agent.plugins` entry-point group | Always scanned |
+
+---
+
+## Tutorial: Building a plugin from scratch
 
 ## What you're building
 
@@ -16,10 +173,20 @@ Plus a hook that logs every tool call, and a bundled skill file.
 
 ## Step 1: Create the plugin directory
 
+For local development, create a directory directly:
+
 ```bash
 mkdir -p ~/.hermes/plugins/calculator
 cd ~/.hermes/plugins/calculator
 ```
+
+:::tip
+If someone has already published a plugin to a Git repository, you can install it directly:
+```bash
+hermes plugins install owner/repo
+```
+See [Managing plugins](/docs/user-guide/features/plugins#managing-plugins) for more on the `hermes plugins` CLI.
+:::
 
 ## Step 2: Write the manifest
 
@@ -232,7 +399,7 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
-- `ctx.register_command()` adds a slash command to `/help`, autocomplete, and gateway dispatch
+- `ctx.register_command()` adds a slash command *(planned — not yet implemented)*
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 ## Step 6: Test it
@@ -361,22 +528,24 @@ def register(ctx):
     ctx.register_hook("on_session_end", on_session_end)
 ```
 
-Available hooks:
-
-| Hook | When | Arguments |
-|------|------|-----------|
-| `pre_tool_call` | Before any tool runs | `tool_name`, `args`, `task_id` |
-| `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
-| `pre_llm_call` | Before LLM API call | `messages`, `model` |
-| `post_llm_call` | After LLM response | `messages`, `response`, `model` |
-| `on_session_start` | Session begins | `session_id`, `platform` |
-| `on_session_end` | Session ends | `session_id`, `platform` |
+See the [hooks reference](#ctxregister_hook) above for the full list and current invocation status.
 
 Hooks are observers — they can't modify arguments or return values. If a hook crashes, it's logged and skipped; other hooks and the tool continue normally.
 
+### Distribute via Git
+
+The simplest way to share a plugin — push it to a Git repository and others install with one command:
+
+```bash
+hermes plugins install owner/repo              # GitHub shorthand
+hermes plugins install https://gitlab.com/...  # any Git URL
+```
+
+Users update with `hermes plugins update <name>` and remove with `hermes plugins remove <name>`.
+
 ### Distribute via pip
 
-For sharing plugins publicly, add an entry point to your Python package:
+For sharing plugins as Python packages, add an entry point to your package:
 
 ```toml
 # pyproject.toml

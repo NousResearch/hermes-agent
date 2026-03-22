@@ -30,10 +30,11 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 |-----------|-----|
 | Add tools | `ctx.register_tool(name, schema, handler)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
-| Add slash commands | `ctx.register_command("mycommand", handler)` |
+| Add slash commands | `ctx.register_command("mycommand", handler)` *(planned — not yet implemented)* |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | Copy `skill.md` to `~/.hermes/skills/` at load time |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml |
+| Distribute via Git | `hermes plugins install owner/repo` |
 | Distribute via pip | `[project.entry-points."hermes_agent.plugins"]` |
 
 ## Plugin discovery
@@ -57,7 +58,11 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 
 ## Slash commands
 
-Plugins can register slash commands that work in both CLI and messaging platforms:
+:::note
+`register_command()` is planned but not yet implemented in `PluginContext`. The API shape below is the intended design — it will work once the feature lands.
+:::
+
+Plugins will be able to register slash commands that work in both CLI and messaging platforms:
 
 ```python
 def register(ctx):
@@ -70,7 +75,7 @@ def register(ctx):
     )
 ```
 
-The handler receives the argument string (everything after `/greet`) and returns a string to display. Registered commands automatically appear in `/help`, tab autocomplete, Telegram bot menu, and Slack subcommand mapping.
+The handler receives the argument string (everything after `/greet`) and returns a string to display. Registered commands will automatically appear in `/help`, tab autocomplete, Telegram bot menu, and Slack subcommand mapping.
 
 | Parameter | Description |
 |-----------|-------------|
@@ -84,9 +89,31 @@ The handler receives the argument string (everything after `/greet`) and returns
 
 ## Managing plugins
 
+### CLI commands
+
+Install, update, remove, and list plugins from the terminal:
+
+```bash
+hermes plugins list                                          # list installed plugins
+hermes plugins install owner/repo                            # install from GitHub shorthand
+hermes plugins install https://github.com/owner/repo.git     # install from full URL
+hermes plugins install owner/repo --force                    # reinstall (remove + clone)
+hermes plugins update my-plugin                              # pull latest changes
+hermes plugins remove my-plugin                              # remove a plugin
 ```
-/plugins              # list loaded plugins in a session
-hermes config set display.show_cost true  # show cost in status bar
+
+After installing or removing a plugin, restart the gateway for changes to take effect:
+
+```bash
+hermes gateway restart
+```
+
+### In-session commands
+
+```
+/plugins              # list loaded plugins in the current session
 ```
 
 See the **[full guide](/docs/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.
+
+See the **[CLI Commands Reference](/docs/reference/cli-commands#hermes-plugins)** for the full `hermes plugins` subcommand reference.

@@ -429,7 +429,7 @@ class SlashCommandCompleter(Completer):
         word = SlashCommandCompleter._last_shell_token(text)
         if not word.startswith("@"):
             return None
-        if word.startswith(("@file:", "@folder:")):
+        if word.startswith(("@file:", "@folder:", "@git:", "@url:")):
             return None
         return word
 
@@ -464,7 +464,7 @@ class SlashCommandCompleter(Completer):
 
         for ignore_dir, patterns in SlashCommandCompleter._hermesignore_patterns(search_dir):
             rel_entries = [os.path.relpath(os.path.join(search_dir, entry), ignore_dir) for entry in entries]
-            for entry, rel_entry in zip(entries, rel_entries, strict=False):
+            for entry, rel_entry in zip(entries, rel_entries, strict=True):
                 for pattern in patterns:
                     if _hermesignore_match(pattern, entry) or _hermesignore_match(pattern, rel_entry):
                         ignored.add(entry)
@@ -486,8 +486,8 @@ class SlashCommandCompleter(Completer):
                 try:
                     with open(ignore_file, encoding="utf-8") as f:
                         patterns = [
-                            line.strip() for line in f
-                            if line.strip() and not line.startswith("#")
+                            stripped for line in f
+                            if (stripped := line.strip()) and not stripped.startswith("#")
                         ]
                     patterns_by_dir.append((current, patterns))
                 except OSError:

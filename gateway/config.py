@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    SIMPLEX = "simplex"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -250,6 +251,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
+                connected.append(platform)
+            # SimpleX uses extra dict for config (ws_url)
+            elif platform == Platform.SIMPLEX and config.extra.get("ws_url"):
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
@@ -628,6 +632,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
             )
     
+    # SimpleX
+    simplex_ws_url = os.getenv("SIMPLEX_WS_URL")
+    if simplex_ws_url:
+        if Platform.SIMPLEX not in config.platforms:
+            config.platforms[Platform.SIMPLEX] = PlatformConfig()
+        config.platforms[Platform.SIMPLEX].enabled = True
+        config.platforms[Platform.SIMPLEX].extra.update({
+            "ws_url": simplex_ws_url,
+        })
+        simplex_home = os.getenv("SIMPLEX_HOME_CHANNEL")
+        if simplex_home:
+            config.platforms[Platform.SIMPLEX].home_channel = HomeChannel(
+                platform=Platform.SIMPLEX,
+                chat_id=simplex_home,
+                name=os.getenv("SIMPLEX_HOME_CHANNEL_NAME", "Home"),
+            )
+
     # Signal
     signal_url = os.getenv("SIGNAL_HTTP_URL")
     signal_account = os.getenv("SIGNAL_ACCOUNT")

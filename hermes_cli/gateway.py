@@ -1125,6 +1125,12 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "simplex",
+        "label": "SimpleX Chat",
+        "emoji": "🔒",
+        "token_var": "SIMPLEX_WS_URL",
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -1535,6 +1541,80 @@ def _setup_signal():
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
+def _setup_simplex():
+    """Interactive setup for SimpleX Chat."""
+    print()
+    print(color("  ─── 🔒 SimpleX Chat Setup ───", Colors.CYAN))
+
+    existing_url = get_env_value("SIMPLEX_WS_URL")
+    if existing_url:
+        print()
+        print_success("SimpleX is already configured.")
+        if not prompt_yes_no("  Reconfigure SimpleX?", False):
+            return
+
+    print()
+    print_info("  SimpleX Chat requires the simplex-chat daemon running in WebSocket mode.")
+    print_info("  Install options:")
+    print_info("    Linux/macOS: download from https://github.com/simplex-chat/simplex-chat/releases")
+    print_info("    Docker:      simplexchat/simplex-chat")
+    print()
+    print_info("  Start the daemon:")
+    print_info("    simplex-chat -p 5225")
+    print()
+
+    # WebSocket URL
+    print_info("  Enter the WebSocket URL where the daemon is listening.")
+    default_url = existing_url or "ws://127.0.0.1:5225"
+    try:
+        url = input(f"  WebSocket URL [{default_url}]: ").strip() or default_url
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    # Test connectivity
+    print_info("  Testing connection...")
+    try:
+        import asyncio
+        import websockets.client as _wsclient
+
+        async def _ping(u):
+            async with _wsclient.connect(u, open_timeout=8):
+                return True
+
+        asyncio.run(_ping(url))
+        print_success("  simplex-chat daemon is reachable!")
+    except ImportError:
+        print_warning("  websockets not installed (pip install websockets). Skipping connectivity test.")
+    except Exception as e:
+        print_warning(f"  Could not reach simplex-chat at {url}: {e}")
+        if not prompt_yes_no("  Save this URL anyway? (you can start the daemon later)", True):
+            return
+
+    save_env_value("SIMPLEX_WS_URL", url)
+
+    # Allowed users
+    print()
+    print_info("  The gateway DENIES all contacts by default for security.")
+    print_info("  Enter SimpleX contact IDs to allow (comma-separated), or leave empty to use DM pairing.")
+    existing_allowed = get_env_value("SIMPLEX_ALLOWED_USERS") or ""
+    try:
+        allowed = input(f"  Allowed users [{existing_allowed or 'empty'}]: ").strip()
+        if not allowed:
+            allowed = existing_allowed
+    except (EOFError, KeyboardInterrupt):
+        print("\n  Setup cancelled.")
+        return
+
+    if allowed:
+        save_env_value("SIMPLEX_ALLOWED_USERS", allowed)
+
+    print()
+    print_success("SimpleX configured!")
+    print_info(f"  Daemon URL: {url}")
+    print_info(f"  Auth: {'explicit allowlist' if allowed else 'DM pairing'}")
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
 
@@ -1593,6 +1673,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "simplex":
+            _setup_simplex()
         else:
             _setup_standard_platform(platform)
 

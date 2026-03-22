@@ -62,8 +62,8 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
-    for plat_name in ("telegram", "whatsapp", "signal", "email", "sms"):
+    # Telegram, WhatsApp, Signal & SimpleX can't enumerate chats -- pull from session history
+    for plat_name in ("telegram", "whatsapp", "signal", "simplex", "email", "sms"):
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
 

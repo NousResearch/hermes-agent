@@ -197,6 +197,16 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "simplex": (
+        "You are on SimpleX Chat, a private and decentralised messaging platform. "
+        "Please do not use markdown as it does not render. "
+        "Contacts have no persistent identifiers — they communicate via opaque "
+        "contact IDs, which is normal. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos and other files arrive as "
+        "downloadable attachments."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

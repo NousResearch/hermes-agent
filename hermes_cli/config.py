@@ -66,18 +66,49 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
-def _secure_dir(path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+def _win_restrict_acl(path_str: str) -> bool:
+    """Restrict a file/dir to the current user only via icacls (Windows).
+
+    Removes inherited permissions, grants the current user full control,
+    and denies access to everyone else. Returns True on success.
+    """
     try:
-        os.chmod(path, 0o700)
+        import subprocess
+        username = os.environ.get("USERNAME", "")
+        if not username:
+            return False
+        # Disable inheritance, remove all inherited ACEs, grant current user full
+        subprocess.run(
+            ["icacls", path_str, "/inheritance:r",
+             "/grant:r", f"{username}:(OI)(CI)F" if os.path.isdir(path_str) else f"{username}:F",
+             "/remove:g", "Everyone", "/remove:g", "BUILTIN\\Users",
+             "/remove:g", "Authenticated Users"],
+            capture_output=True, timeout=10,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _secure_dir(path):
+    """Set directory to owner-only access (0700 on Unix, icacls on Windows)."""
+    try:
+        if _IS_WINDOWS:
+            _win_restrict_acl(str(path))
+        else:
+            os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
         pass
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600 on Unix, icacls on Windows)."""
     try:
-        if os.path.exists(str(path)):
+        if not os.path.exists(str(path)):
+            return
+        if _IS_WINDOWS:
+            _win_restrict_acl(str(path))
+        else:
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
@@ -1532,25 +1563,107 @@ def save_anthropic_api_key(value: str, save_fn=None):
     writer("ANTHROPIC_TOKEN", "")
 
 
+# ---------------------------------------------------------------------------
+# Keyring integration — optional, used on Windows for secure credential storage
+# ---------------------------------------------------------------------------
+
+_KEYRING_SERVICE = "hermes-agent"
+_keyring_available: Optional[bool] = None
+
+
+def _has_keyring() -> bool:
+    """Check if keyring library is available and functional."""
+    global _keyring_available
+    if _keyring_available is not None:
+        return _keyring_available
+    try:
+        import keyring
+        # Verify it can actually access a backend (not just imported)
+        keyring.get_credential(_KEYRING_SERVICE, "")
+        _keyring_available = True
+    except Exception:
+        _keyring_available = False
+    return _keyring_available
+
+
+def _keyring_set(key: str, value: str) -> bool:
+    """Store a secret in the OS credential manager. Returns True on success."""
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, key, value)
+        return True
+    except Exception:
+        return False
+
+
+def _keyring_get(key: str) -> Optional[str]:
+    """Retrieve a secret from the OS credential manager."""
+    try:
+        import keyring
+        val = keyring.get_password(_KEYRING_SERVICE, key)
+        return val if val else None
+    except Exception:
+        return None
+
+
+def _keyring_delete(key: str) -> bool:
+    """Remove a secret from the OS credential manager."""
+    try:
+        import keyring
+        keyring.delete_password(_KEYRING_SERVICE, key)
+        return True
+    except Exception:
+        return False
+
+
 def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
-    save_env_value(key, value)
+    """Save a secret, preferring OS credential manager on Windows.
+
+    On Windows with keyring available: stores in Windows Credential Manager
+    and saves a placeholder in .env so load_env() knows the key exists.
+    On other platforms or without keyring: falls back to .env file.
+    """
+    stored_in_keyring = False
+    if _IS_WINDOWS and value and _has_keyring():
+        stored_in_keyring = _keyring_set(key, value)
+        if stored_in_keyring:
+            # Save placeholder so env-scanning code knows this key is set
+            save_env_value(key, f"<stored-in-credential-manager>")
+            os.environ[key] = value
+
+    if not stored_in_keyring:
+        save_env_value(key, value)
+
     return {
         "success": True,
         "stored_as": key,
         "validated": False,
+        "keyring": stored_in_keyring,
     }
 
 
-
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
-    # Check environment first
-    if key in os.environ:
-        return os.environ[key]
-    
-    # Then check .env file
+    """Get a value from environment, keyring, or ~/.hermes/.env."""
+    # Check environment first (runtime overrides always win)
+    val = os.environ.get(key)
+    if val and val != "<stored-in-credential-manager>":
+        return val
+
+    # On Windows, check keyring before falling back to .env
+    if _IS_WINDOWS and _has_keyring():
+        kr_val = _keyring_get(key)
+        if kr_val:
+            # Cache in os.environ for the rest of this process
+            os.environ[key] = kr_val
+            return kr_val
+
+    # Fall back to .env file
     env_vars = load_env()
-    return env_vars.get(key)
+    file_val = env_vars.get(key)
+    if file_val and file_val != "<stored-in-credential-manager>":
+        return file_val
+
+    return None
 
 
 # =============================================================================

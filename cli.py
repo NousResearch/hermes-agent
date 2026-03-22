@@ -2340,21 +2340,46 @@ class HermesCLI:
         print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_paste_command(self):
-        """Handle /paste — explicitly check clipboard for an image.
+        """Handle /paste — check clipboard for images or text.
 
         This is the reliable fallback for terminals where BracketedPaste
         doesn't fire for image-only clipboard content (e.g., VSCode terminal,
-        Windows Terminal with WSL2).
+        Windows Terminal with WSL2).  Also handles text paste on terminals
+        where Ctrl+V sends raw 0x16 instead of triggering a paste event.
+
+        Priority: image first (since text paste usually works via terminal),
+        then text as fallback.
         """
-        from hermes_cli.clipboard import has_clipboard_image
+        from hermes_cli.clipboard import has_clipboard_image, get_clipboard_text
         if has_clipboard_image():
             if self._try_attach_clipboard_image():
                 n = len(self._attached_images)
                 _cprint(f"  📎 Image #{n} attached from clipboard")
             else:
                 _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
+            return
+
+        # No image — try text
+        text = get_clipboard_text()
+        if text:
+            line_count = text.count('\n') + 1
+            char_count = len(text)
+            if char_count > 200:
+                preview = text[:200].replace('\n', '↵ ') + "..."
+            else:
+                preview = text.replace('\n', '↵ ')
+            _cprint(f"  📋 Pasted {char_count} chars ({line_count} lines) from clipboard")
+            _cprint(f"  {_DIM}{preview}{_RST}")
+            # Insert into the input buffer if we have access to the app
+            if hasattr(self, '_app') and self._app and self._app.layout:
+                try:
+                    buf = self._app.layout.current_buffer
+                    if buf:
+                        buf.insert_text(text)
+                except Exception:
+                    pass
         else:
-            _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
+            _cprint(f"  {_DIM}(._.) Nothing found in clipboard{_RST}")
 
     def _preprocess_images_with_vision(self, text: str, images: list) -> str:
         """Analyze attached images via the vision tool and return enriched text.
@@ -2504,7 +2529,10 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+        if sys.platform == "win32":
+            _cprint(f"  {_DIM}Paste image: Ctrl+V (or /paste){_RST}\n")
+        else:
+            _cprint(f"  {_DIM}Paste image: Alt+V, Ctrl+V (or /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -3377,7 +3405,7 @@ class HermesCLI:
             print("  To start the gateway:")
             print("    python cli.py --gateway")
             print()
-            print("  Configuration file: ~/.hermes/config.yaml")
+            print(f"  Configuration file: {_hermes_home / 'config.yaml'}")
             print()
             
         except Exception as e:
@@ -3387,7 +3415,7 @@ class HermesCLI:
             print("    1. Set environment variables:")
             print("       TELEGRAM_BOT_TOKEN=your_token")
             print("       DISCORD_BOT_TOKEN=your_token")
-            print("    2. Or configure settings in ~/.hermes/config.yaml")
+            print(f"    2. Or configure settings in {_hermes_home / 'config.yaml'}")
             print()
     
     def process_command(self, command: str) -> bool:
@@ -3695,7 +3723,7 @@ class HermesCLI:
                 plugins = mgr.list_plugins()
                 if not plugins:
                     print("No plugins installed.")
-                    print(f"Drop plugin directories into ~/.hermes/plugins/ to get started.")
+                    print(f"Drop plugin directories into {_hermes_home / 'plugins'} to get started.")
                 else:
                     print(f"Plugins ({len(plugins)}):")
                     for p in plugins:
@@ -3738,13 +3766,21 @@ class HermesCLI:
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
                 if qcmd.get("type") == "exec":
-                    import subprocess
+                    import subprocess, shlex as _shlex
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # Parse command into args list to avoid shell injection.
+                            # On Windows, shlex.split may not handle all cmd.exe syntax,
+                            # so fall back to shell=True only on Windows.
+                            if sys.platform == "win32":
+                                _run_args = {"args": exec_cmd, "shell": True}
+                            else:
+                                _run_args = {"args": _shlex.split(exec_cmd), "shell": False}
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
+                                capture_output=True,
+                                text=True, timeout=30,
+                                **_run_args,
                             )
                             output = result.stdout.strip() or result.stderr.strip()
                             if output:
@@ -4200,7 +4236,7 @@ class HermesCLI:
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
             print(f"\n  Usage: /skin <name>")
-            print(f"  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
+            print(f"  Custom skins: drop a YAML file in {_hermes_home / 'skins'}\n")
             return
 
         new_skin = parts[1].strip().lower()
@@ -4540,6 +4576,7 @@ class HermesCLI:
             # Capture old server names
             with _lock:
                 old_servers = set(_servers.keys())
+
 
             if not self._command_running:
                 print("🔄 Reloading MCP servers...")
@@ -5533,7 +5570,7 @@ class HermesCLI:
                             break
                     except queue.Empty:
                         # Force prompt_toolkit to flush any pending stdout
-                        # output from the agent thread.  Without this, the
+                        # output from the agent thread. Without this, the
                         # StdoutProxy buffer only flushes on renderer passes
                         # triggered by input events — on macOS this causes
                         # the CLI to appear frozen until the user types. (#1624)
@@ -5708,7 +5745,7 @@ class HermesCLI:
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
-    
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
         print()
@@ -6345,6 +6382,15 @@ class HermesCLI:
                 event.app.invalidate()
         from prompt_toolkit.keys import Keys
 
+        def _attach_and_notify(event) -> bool:
+            """Try to attach a clipboard image; print confirmation if found."""
+            if self._try_attach_clipboard_image():
+                n = len(self._attached_images)
+                _cprint(f"\n  📎 Image #{n} attached from clipboard (type message + Enter to send)")
+                event.app.invalidate()
+                return True
+            return False
+
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
             """Handle terminal paste — detect clipboard images.
@@ -6354,24 +6400,34 @@ class HermesCLI:
             clipboard for an image on every paste event.
             """
             pasted_text = event.data or ""
-            if self._try_attach_clipboard_image():
-                event.app.invalidate()
+            _attach_and_notify(event)
             if pasted_text:
                 event.current_buffer.insert_text(pasted_text)
 
         @kb.add('c-v')
         def handle_ctrl_v(event):
-            """Fallback image paste for terminals without bracketed paste.
+            """Ctrl+V paste — works on native Windows and Linux terminals.
 
-            On Linux terminals (GNOME Terminal, Konsole, etc.), Ctrl+V
-            sends raw byte 0x16 instead of triggering a paste.  This
-            binding catches that and checks the clipboard for images.
-            On terminals that DO intercept Ctrl+V for paste (macOS
-            Terminal, iTerm2, VSCode, Windows Terminal), the bracketed
-            paste handler fires instead and this binding never triggers.
+            On native Windows: Windows Terminal intercepts Ctrl+V for
+            text paste (handled by BracketedPaste or direct insertion).
+            But when the clipboard has only an image, Windows Terminal
+            does nothing and the keystroke reaches prompt_toolkit — so
+            this handler picks it up and attaches the image.
+
+            On Linux terminals: Ctrl+V sends raw 0x16 which prompt_toolkit
+            sees as c-v.  We check for images first, then fall back to
+            text paste from clipboard.
             """
-            if self._try_attach_clipboard_image():
-                event.app.invalidate()
+            if _attach_and_notify(event):
+                return
+            # No image — try text paste from clipboard
+            try:
+                from hermes_cli.clipboard import get_clipboard_text
+                text = get_clipboard_text()
+                if text:
+                    event.current_buffer.insert_text(text)
+            except Exception:
+                pass
 
         @kb.add('escape', 'v')
         def handle_alt_v(event):
@@ -6383,11 +6439,27 @@ class HermesCLI:
             on WSL2, VSCode, and any terminal over SSH where Ctrl+V
             can't reach the application for image-only clipboard.
             """
-            if self._try_attach_clipboard_image():
-                event.app.invalidate()
-            else:
+            if not _attach_and_notify(event):
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
+
+        if sys.platform == "win32":
+            @kb.add('s-insert')
+            def handle_shift_insert(event):
+                """Shift+Insert — alternative paste on Windows.
+
+                Some Windows users use Shift+Insert to paste.  Handle
+                clipboard images here too.
+                """
+                if _attach_and_notify(event):
+                    return
+                try:
+                    from hermes_cli.clipboard import get_clipboard_text
+                    text = get_clipboard_text()
+                    if text:
+                        event.current_buffer.insert_text(text)
+                except Exception:
+                    pass
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -6478,9 +6550,12 @@ class HermesCLI:
             line_count = text.count('\n')
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
-            # Heuristic: a real paste adds many characters at once (not just a
-            # single newline from Alt+Enter) AND the result has 5+ lines.
-            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
+            # Heuristic: a real paste adds many characters at once.
+            # Require both a substantial character count AND multiple lines to
+            # avoid false positives from multiline typing (Alt+Enter) or short
+            # pastes.  The threshold of 10+ lines and 200+ chars at once
+            # catches code/log pastes while leaving normal input alone.
+            if line_count >= 10 and chars_added >= 200 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"
@@ -7338,3 +7413,4 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
+

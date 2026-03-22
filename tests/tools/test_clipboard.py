@@ -20,17 +20,32 @@ import pytest
 from hermes_cli.clipboard import (
     save_clipboard_image,
     has_clipboard_image,
+    get_clipboard_text,
+    has_clipboard_text,
     _is_wsl,
     _linux_save,
     _macos_pngpaste,
     _macos_osascript,
     _macos_has_image,
+    _macos_get_text,
+    _macos_has_text,
     _xclip_save,
     _xclip_has_image,
+    _xclip_get_text,
+    _xclip_has_text,
     _wsl_save,
     _wsl_has_image,
+    _wsl_get_text,
+    _wsl_has_text,
     _wayland_save,
     _wayland_has_image,
+    _wayland_get_text,
+    _wayland_has_text,
+    _windows_save,
+    _windows_has_image,
+    _windows_get_text,
+    _windows_has_text,
+    _find_powershell_wsl,
     _convert_to_png,
 )
 
@@ -56,6 +71,14 @@ class TestSaveClipboardImage:
         with patch("hermes_cli.clipboard.sys") as mock_sys:
             mock_sys.platform = "linux"
             with patch("hermes_cli.clipboard._linux_save", return_value=False) as m:
+                save_clipboard_image(dest)
+                m.assert_called_once_with(dest)
+
+    def test_dispatches_to_windows_on_win32(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch("hermes_cli.clipboard._windows_save", return_value=False) as m:
                 save_clipboard_image(dest)
                 m.assert_called_once_with(dest)
 
@@ -875,3 +898,317 @@ class TestQueueRouting:
         is_command = isinstance(user_input, str) and user_input.startswith("/")
         assert is_command is False
         assert len(submit_images) == 1
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 5: Native Windows clipboard support
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestWindowsHasImage:
+    def test_clipboard_has_image(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="True\n", returncode=0)
+                assert _windows_has_image() is True
+
+    def test_clipboard_no_image(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="False\n", returncode=0)
+                assert _windows_has_image() is False
+
+    def test_powershell_not_found(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+                assert _windows_has_image() is False
+
+
+class TestWindowsSave:
+    def test_successful_extraction(self, tmp_path):
+        dest = tmp_path / "out.png"
+        b64_png = base64.b64encode(FAKE_PNG).decode()
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout=b64_png + "\n", returncode=0)
+                assert _windows_save(dest) is True
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_no_image_returns_false(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="", returncode=1)
+                assert _windows_save(dest) is False
+
+    def test_powershell_not_found(self, tmp_path):
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+                assert _windows_save(dest) is False
+
+
+class TestWindowsText:
+    def test_has_text(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="True\n", returncode=0)
+                assert _windows_has_text() is True
+
+    def test_no_text(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="False\n", returncode=0)
+                assert _windows_has_text() is False
+
+    def test_get_text(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="Hello World\r\n", returncode=0)
+                assert _windows_get_text() == "Hello World"
+
+    def test_get_text_empty(self):
+        with patch("hermes_cli.clipboard._find_powershell_native", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="", returncode=1)
+                assert _windows_get_text() is None
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 6: Text clipboard functions — WSL, Wayland, X11, macOS
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestWslText:
+    def test_has_text(self):
+        with patch("hermes_cli.clipboard._find_powershell_wsl", return_value="powershell.exe"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="True\n", returncode=0)
+                assert _wsl_has_text() is True
+
+    def test_no_text(self):
+        with patch("hermes_cli.clipboard._find_powershell_wsl", return_value="powershell.exe"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="False\n", returncode=0)
+                assert _wsl_has_text() is False
+
+    def test_get_text(self):
+        with patch("hermes_cli.clipboard._find_powershell_wsl", return_value="powershell.exe"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="Hello from Windows\r\n", returncode=0)
+                result = _wsl_get_text()
+                assert result == "Hello from Windows"
+
+    def test_get_text_normalizes_crlf(self):
+        with patch("hermes_cli.clipboard._find_powershell_wsl", return_value="powershell.exe"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(stdout="line1\r\nline2\r\nline3\r\n", returncode=0)
+                result = _wsl_get_text()
+                assert result == "line1\nline2\nline3"
+
+    def test_get_text_powershell_not_found(self):
+        with patch("hermes_cli.clipboard._find_powershell_wsl", return_value="powershell.exe"):
+            with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+                assert _wsl_get_text() is None
+
+
+class TestWaylandText:
+    def test_has_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="text/plain\ntext/html\n", returncode=0
+            )
+            assert _wayland_has_text() is True
+
+    def test_has_utf8_string(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="UTF8_STRING\n", returncode=0
+            )
+            assert _wayland_has_text() is True
+
+    def test_no_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="image/png\n", returncode=0
+            )
+            assert _wayland_has_text() is False
+
+    def test_get_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="clipboard text", returncode=0)
+            assert _wayland_get_text() == "clipboard text"
+
+    def test_get_text_not_installed(self):
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+            assert _wayland_get_text() is None
+
+
+class TestXclipText:
+    def test_has_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="UTF8_STRING\ntext/plain\n", returncode=0
+            )
+            assert _xclip_has_text() is True
+
+    def test_no_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="image/png\n", returncode=0
+            )
+            assert _xclip_has_text() is False
+
+    def test_get_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="xclip text", returncode=0)
+            assert _xclip_get_text() == "xclip text"
+
+    def test_get_text_not_installed(self):
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
+            assert _xclip_get_text() is None
+
+
+class TestMacosText:
+    def test_has_text_utf8(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="«class utf8», «class ut16»", returncode=0
+            )
+            assert _macos_has_text() is True
+
+    def test_has_text_ut16(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="«class PNGf», «class ut16»", returncode=0
+            )
+            assert _macos_has_text() is True
+
+    def test_no_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="«class PNGf»", returncode=0
+            )
+            assert _macos_has_text() is False
+
+    def test_get_text(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="pbpaste text", returncode=0)
+            assert _macos_get_text() == "pbpaste text"
+
+    def test_get_text_empty(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="", returncode=0)
+            assert _macos_get_text() is None
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 7: PowerShell WSL path resolution
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestFindPowershellWsl:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._powershell_path = None  # Reset cache
+
+    def test_finds_on_path(self):
+        with patch("hermes_cli.clipboard.shutil.which", return_value="/usr/bin/powershell.exe"):
+            assert _find_powershell_wsl() == "/usr/bin/powershell.exe"
+
+    def test_fallback_to_system32(self):
+        with patch("hermes_cli.clipboard.shutil.which", return_value=None):
+            with patch("os.path.isfile", side_effect=lambda p: "System32" in p):
+                with patch("os.access", return_value=True):
+                    result = _find_powershell_wsl()
+                    assert "System32" in result
+
+    def test_caches_result(self):
+        import hermes_cli.clipboard as cb
+        with patch("hermes_cli.clipboard.shutil.which", return_value="/usr/bin/powershell.exe") as m:
+            _find_powershell_wsl()
+            _find_powershell_wsl()
+            m.assert_called_once()
+        cb._powershell_path = None  # Clean up
+
+    def test_returns_name_when_nothing_found(self):
+        with patch("hermes_cli.clipboard.shutil.which", return_value=None):
+            with patch("os.path.isfile", return_value=False):
+                assert _find_powershell_wsl() == "powershell.exe"
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Level 8: get_clipboard_text and has_clipboard_text dispatch
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestGetClipboardText:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._wsl_detected = None
+
+    def test_macos_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("hermes_cli.clipboard._macos_get_text", return_value="mac text") as m:
+                assert get_clipboard_text() == "mac text"
+                m.assert_called_once()
+
+    def test_win32_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch("hermes_cli.clipboard._windows_get_text", return_value="win text") as m:
+                assert get_clipboard_text() == "win text"
+                m.assert_called_once()
+
+    def test_wsl_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+                with patch("hermes_cli.clipboard._wsl_get_text", return_value="wsl text") as m:
+                    assert get_clipboard_text() == "wsl text"
+                    m.assert_called_once()
+
+    def test_wayland_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch("hermes_cli.clipboard._is_wsl", return_value=False):
+                with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                    with patch("hermes_cli.clipboard._wayland_get_text", return_value="way text") as m:
+                        assert get_clipboard_text() == "way text"
+                        m.assert_called_once()
+
+    def test_x11_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch("hermes_cli.clipboard._is_wsl", return_value=False):
+                with patch.dict(os.environ, {}, clear=True):
+                    with patch("hermes_cli.clipboard._xclip_get_text", return_value="x11 text") as m:
+                        assert get_clipboard_text() == "x11 text"
+                        m.assert_called_once()
+
+
+class TestHasClipboardText:
+    def setup_method(self):
+        import hermes_cli.clipboard as cb
+        cb._wsl_detected = None
+
+    def test_macos_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("hermes_cli.clipboard._macos_has_text", return_value=True) as m:
+                assert has_clipboard_text() is True
+                m.assert_called_once()
+
+    def test_win32_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch("hermes_cli.clipboard._windows_has_text", return_value=True) as m:
+                assert has_clipboard_text() is True
+                m.assert_called_once()
+
+
+class TestHasClipboardImageWin32:
+    """has_clipboard_image dispatch for win32."""
+    def test_win32_dispatch(self):
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch("hermes_cli.clipboard._windows_has_image", return_value=True) as m:
+                assert has_clipboard_image() is True
+                m.assert_called_once()

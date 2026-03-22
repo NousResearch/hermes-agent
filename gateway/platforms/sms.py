@@ -105,7 +105,9 @@ class SmsAdapter(BasePlatformAdapter):
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self._webhook_port)
+        # Bind to localhost by default for security; override with HERMES_SMS_BIND_HOST
+        _bind_host = os.environ.get("HERMES_SMS_BIND_HOST", "127.0.0.1")
+        site = web.TCPSite(self._runner, _bind_host, self._webhook_port)
         await site.start()
         self._http_session = aiohttp.ClientSession()
         self._running = True

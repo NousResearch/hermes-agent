@@ -280,7 +280,8 @@ def image_generate_tool(
             raise ValueError("Prompt is required and must be a non-empty string")
         
         # Check API key availability
-        if not os.getenv("FAL_KEY"):
+        value = os.getenv("FAL_KEY")
+        if not value or not value.strip():
             raise ValueError("FAL_KEY environment variable not set")
         
         # Validate other parameters
@@ -400,7 +401,8 @@ def check_fal_api_key() -> bool:
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("FAL_KEY"))
+    value = os.getenv("FAL_KEY")
+    return bool(value and value.strip())
 
 
 def check_image_generation_requirements() -> bool:

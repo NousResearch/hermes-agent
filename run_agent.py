@@ -6732,6 +6732,9 @@ class AIAgent:
                     _msg_count_before_tools = len(messages)
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                    # Signal iteration boundary to stream consumers to prevent text concatenation
+                    self._fire_stream_delta("\n\n")
+
                     # Refund the iteration if the ONLY tool(s) called were
                     # execute_code (programmatic tool calling).  These are
                     # cheap RPC-style calls that shouldn't eat the budget.

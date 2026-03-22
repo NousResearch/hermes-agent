@@ -1,0 +1,63 @@
+# Endless Terminals Env Config - openthinker SFT model
+# Trainer: environments/endless_terminals/grpo_trainer.py (not tinker)
+
+env:
+  # Toolsets
+  enabled_toolsets: ["terminal", "file"]
+
+  # Model / tokenizer (must match openai.model_name below)
+  tokenizer_name: "obiwan96/qwen3-8b-openthinker-sft-endless-terminals"
+
+  # Agent configuration
+  max_agent_turns: 16
+  max_token_length: 2048
+  agent_temperature: 0.6
+
+  # Terminal backend (must be containerized -- tasks need Linux paths like /home/user)
+  terminal_backend: "docker"
+
+  # Dataset settings
+  use_dataset: true
+  dataset_name: "obiwan96/endless-terminals"
+  dataset_split: "train"
+  dataset_cache_dir: "~/.cache/huggingface/datasets"
+  tasks_base_dir: "/Users/samherring/Desktop/Projects/Hermes-Agent/endless-terminals"
+
+  # Test execution
+  test_timeout_s: 60
+  default_docker_image: "ubuntu:22.04"
+  max_concurrent_containers: 16
+
+  # Training configuration
+  group_size: 16
+  batch_size: 16          # 1 group × 16 rollouts per step (matches paper)
+  total_steps: 10000
+  steps_per_eval: 50
+  min_items_sent_before_logging: 1  # Log to wandb after every group
+  ensure_scores_are_not_same: true
+
+  # Overfitting test — pin to a single task to verify learning signal
+  overfit_task_index: 69
+
+  # Evaluation configuration
+  num_eval_tasks: 20
+  eval_split_ratio: 0.1
+
+  # Logging
+  use_wandb: true
+  wandb_name: "endless-terminals-openthinker"
+
+  # System prompt
+  system_prompt: >
+    You are a skilled Linux system administrator and programmer.
+    You have access to a terminal and file tools to complete system administration
+    and programming tasks. Use the tools effectively to solve the given task,
+    and verify your solution works correctly before finishing.
+    Keep each command short and focused — break complex tasks into multiple steps
+    rather than writing long one-liners.
+
+openai:
+  - model_name: "obiwan96/qwen3-8b-openthinker-sft-endless-terminals"
+    base_url: "http://localhost:9001/v1"
+    api_key: "x"
+    server_type: "vllm"

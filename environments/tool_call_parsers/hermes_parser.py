@@ -48,7 +48,13 @@ class HermesToolCallParser(ToolCallParser):
                 if not raw_json.strip():
                     continue
 
-                tc_data = json.loads(raw_json)
+                try:
+                    tc_data = json.loads(raw_json)
+                except json.JSONDecodeError:
+                    # Fix invalid backslash escapes from shell commands in JSON strings
+                    # e.g. \s \w \d \n (unescaped) → \\s \\w \\d \\n
+                    fixed = re.sub(r'\\([^"\\/bfnrtu0-9\n])', r'\\\\\1', raw_json)
+                    tc_data = json.loads(fixed)
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
                         id=f"call_{uuid.uuid4().hex[:8]}",

@@ -298,7 +298,6 @@ class HermesAgentBaseEnv(BaseEnv):
             return False
 
         server = self.server.servers[0]
-        # If the server is an OpenAI server (not VLLM/SGLang), use direct mode
         from atroposlib.envs.server_handling.openai_server import OpenAIServer
         return not isinstance(server, OpenAIServer)
 

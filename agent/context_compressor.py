@@ -35,14 +35,12 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
-# Minimum / maximum tokens for the summary output
+# Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
-_MAX_SUMMARY_TOKENS = 8000
 # Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
-
-# Token budget for tail protection (keep most-recent context)
-_DEFAULT_TAIL_TOKEN_BUDGET = 20_000
+# Absolute ceiling for summary tokens (even on very large context windows)
+_SUMMARY_TOKENS_CEILING = 32_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -65,10 +63,10 @@ class ContextCompressor:
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
+        threshold_percent: float = 0.80,
         protect_first_n: int = 3,
-        protect_last_n: int = 4,
-        summary_target_tokens: int = 2500,
+        protect_last_n: int = 20,
+        summary_target_ratio: float = 0.40,
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
@@ -83,7 +81,7 @@ class ContextCompressor:
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
-        self.summary_target_tokens = summary_target_tokens
+        self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
 
         self.context_length = get_model_context_length(
@@ -94,12 +92,22 @@ class ContextCompressor:
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
 
+        # Derive token budgets from the target ratio and context length
+        target_tokens = int(self.context_length * self.summary_target_ratio)
+        self.tail_token_budget = target_tokens
+        self.max_summary_tokens = min(
+            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+        )
+
         if not quiet_mode:
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) provider=%s base_url=%s",
+                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+                "provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, provider or "none", base_url or "none",
+                threshold_percent * 100, self.summary_target_ratio * 100,
+                self.tail_token_budget,
+                provider or "none", base_url or "none",
             )
         self._context_probed = False  # True after a step-down from context error
 
@@ -179,10 +187,15 @@ class ContextCompressor:
     # ------------------------------------------------------------------
 
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
-        """Scale summary token budget with the amount of content being compressed."""
+        """Scale summary token budget with the amount of content being compressed.
+
+        The maximum scales with the model's context window (5% of context,
+        capped at ``_SUMMARY_TOKENS_CEILING``) so large-context models get
+        richer summaries instead of being hard-capped at 8K tokens.
+        """
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
         budget = int(content_tokens * _SUMMARY_RATIO)
-        return max(_MIN_SUMMARY_TOKENS, min(budget, _MAX_SUMMARY_TOKENS))
+        return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -477,14 +490,20 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
-        token_budget: int = _DEFAULT_TAIL_TOKEN_BUDGET,
+        token_budget: int | None = None,
     ) -> int:
         """Walk backward from the end of messages, accumulating tokens until
         the budget is reached. Returns the index where the tail starts.
 
+        ``token_budget`` defaults to ``self.tail_token_budget`` which is
+        derived from ``summary_target_ratio * context_length``, so it
+        scales automatically with the model's context window.
+
         Never cuts inside a tool_call/result group. Falls back to the old
         ``protect_last_n`` if the budget would protect fewer messages.
         """
+        if token_budget is None:
+            token_budget = self.tail_token_budget
         n = len(messages)
         min_tail = self.protect_last_n
         accumulated = 0

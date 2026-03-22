@@ -1,12 +1,17 @@
 {
-  "schema_version": 1,
-  "name": "hermes-agent",
-  "display_name": "Hermes Agent",
-  "description": "AI agent by Nous Research with 90+ tools, persistent memory, and multi-platform support",
+  "id": "hermes-agent",
+  "name": "Hermes Agent",
+  "version": "0.4.0",
+  "description": "Open-source AI agent by Nous Research with 90+ tools, persistent memory, multi-platform messaging (Telegram, Discord, Slack, Signal, WhatsApp), cron scheduling, and skill system",
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "website": "https://github.com/NousResearch/hermes-agent",
+  "authors": ["Nous Research"],
+  "license": "MIT",
   "icon": "icon.svg",
   "distribution": {
-    "type": "command",
-    "command": "hermes",
-    "args": ["acp"]
+    "uvx": {
+      "package": "hermes-agent==0.4.0",
+      "args": ["acp"]
+    }
   }
 }

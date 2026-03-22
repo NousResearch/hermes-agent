@@ -1,0 +1,31 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Build package
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

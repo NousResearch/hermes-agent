@@ -2141,7 +2141,29 @@ class AIAgent:
                 "and what you were working on together. Do not call tools to "
                 "look up information that is already present here.\n"
             )
-            return header + "\n\n".join(parts)
+            assembled = header + "\n\n".join(parts)
+
+            # Enforce context_tokens budget on the assembled block.
+            # The Honcho API's tokens param only limits message history, not
+            # peer_representation/peer_card which can grow unbounded. We must
+            # truncate client-side to respect the user's configured budget.
+            token_budget = (
+                self._honcho._context_tokens
+                if self._honcho and hasattr(self._honcho, "_context_tokens")
+                else None
+            )
+            if token_budget and token_budget > 0:
+                # Rough estimate: 1 token ≈ 4 chars (conservative for English text)
+                char_budget = token_budget * 4
+                if len(assembled) > char_budget:
+                    logger.debug(
+                        "Honcho context exceeds budget (%d chars > %d char limit "
+                        "from %d tokens), truncating",
+                        len(assembled), char_budget, token_budget,
+                    )
+                    assembled = assembled[:char_budget] + "\n\n[… truncated to fit token budget]"
+
+            return assembled
         except Exception as e:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
             return ""

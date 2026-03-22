@@ -1917,6 +1917,58 @@ class TestHonchoPrefetchScheduling:
         assert "Continuity synthesis" in context
         assert "migration checklist" in context
 
+    def test_honcho_prefetch_truncates_to_token_budget(self, agent):
+        """context_tokens budget should truncate the assembled Honcho block."""
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho._context_tokens = 50  # 50 tokens ≈ 200 chars
+        # Return a large representation that exceeds the budget
+        large_rep = "x" * 5000
+        agent._honcho.pop_context_result.return_value = {
+            "representation": large_rep,
+            "card": "",
+        }
+        agent._honcho.pop_dialectic_result.return_value = ""
+
+        context = agent._honcho_prefetch("hello")
+
+        # Should be truncated: 50 tokens * 4 chars = 200 chars
+        assert len(context) < 300  # 200 chars + truncation marker
+        assert "truncated to fit token budget" in context
+
+    def test_honcho_prefetch_no_truncation_within_budget(self, agent):
+        """Honcho block within token budget should not be truncated."""
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho._context_tokens = 5000  # generous budget
+        agent._honcho.pop_context_result.return_value = {
+            "representation": "User likes Python.",
+            "card": "",
+        }
+        agent._honcho.pop_dialectic_result.return_value = ""
+
+        context = agent._honcho_prefetch("hello")
+
+        assert "truncated" not in context
+        assert "User likes Python" in context
+
+    def test_honcho_prefetch_no_truncation_when_no_budget(self, agent):
+        """No context_tokens set means no truncation."""
+        agent._honcho = MagicMock()
+        agent._honcho_session_key = "session-key"
+        agent._honcho._context_tokens = None  # no budget
+        large_rep = "x" * 5000
+        agent._honcho.pop_context_result.return_value = {
+            "representation": large_rep,
+            "card": "",
+        }
+        agent._honcho.pop_dialectic_result.return_value = ""
+
+        context = agent._honcho_prefetch("hello")
+
+        assert "truncated" not in context
+        assert len(context) > 5000
+
     def test_queue_honcho_prefetch_skips_tools_mode(self, agent):
         agent._honcho = MagicMock()
         agent._honcho_session_key = "session-key"

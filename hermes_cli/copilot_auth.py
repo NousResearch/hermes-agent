@@ -321,7 +321,10 @@ def exchange_copilot_api_token(github_token: str, *, timeout: float = 15.0) -> d
         raise ValueError("Copilot token response missing token")
 
     expires_at_ms = _parse_expires_at(payload.get("expires_at"))
-    base_url = derive_copilot_api_base_url(token)
+    endpoints = payload.get("endpoints") or {}
+    base_url = str(endpoints.get("api") or "").strip()
+    if not is_copilot_base_url(base_url):
+        base_url = derive_copilot_api_base_url(token)
     try:
         _save_cached_copilot_api_token(github_token, token, expires_at_ms, base_url)
     except Exception:

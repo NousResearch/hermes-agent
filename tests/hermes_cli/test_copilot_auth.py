@@ -269,6 +269,33 @@ class TestTokenExchange:
         assert result["base_url"] == "https://api.individual.githubcopilot.com"
         assert result["expires_at_ms"] == 1718452800000
 
+    def test_exchange_copilot_api_token_prefers_endpoints_api(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import exchange_copilot_api_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                payload = {
+                    "token": "tid=abc;exp=1718452800;sku=copilot_for_individuals_subscriber",
+                    "expires_at": "2024-06-15T12:00:00+00:00",
+                    "endpoints": {
+                        "api": "https://api.business.githubcopilot.com",
+                    },
+                }
+                return json.dumps(payload).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Resp()):
+            result = exchange_copilot_api_token("gho_source_token")
+
+        assert result["base_url"] == "https://api.business.githubcopilot.com"
+
     def test_exchange_copilot_api_token_missing_token_raises(self, tmp_path, monkeypatch):
         from hermes_cli.copilot_auth import exchange_copilot_api_token
 

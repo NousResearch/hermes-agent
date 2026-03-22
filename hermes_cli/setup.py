@@ -166,10 +166,10 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
             try:
                 creds = resolve_api_key_provider_credentials("copilot")
                 api_key = creds.get("api_key", "")
+                base_url = creds.get("base_url", "") or pconfig.inference_base_url
             except Exception:
-                pass
-            base_url = pconfig.inference_base_url
-        catalog = fetch_github_model_catalog(api_key)
+                base_url = pconfig.inference_base_url
+        catalog = fetch_github_model_catalog(api_key, base_url=base_url)
         current_model = normalize_copilot_model_id(
             current_model,
             catalog=catalog,
@@ -1514,8 +1514,9 @@ def setup_model_provider(config: dict):
         if existing_custom:
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "copilot", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
+        copilot_creds = resolve_api_key_provider_credentials("copilot")
+        selected_base_url = str(copilot_creds.get("base_url") or pconfig.inference_base_url).rstrip("/")
+        _set_model_provider(config, "copilot", selected_base_url)
 
     elif provider_idx == 15:  # GitHub Copilot ACP
         selected_provider = "copilot-acp"

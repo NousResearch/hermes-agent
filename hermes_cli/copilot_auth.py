@@ -19,14 +19,20 @@ Credential search order (matching Copilot CLI behaviour):
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+
+from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +44,8 @@ COPILOT_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
 # Copilot API constants
 COPILOT_TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 COPILOT_API_BASE_URL = "https://api.githubcopilot.com"
+COPILOT_TOKEN_REFRESH_SKEW_SECONDS = 5 * 60
+_COPILOT_ALLOWED_HOST = "githubcopilot.com"
 
 # Token type prefixes
 _CLASSIC_PAT_PREFIX = "ghp_"
@@ -145,6 +153,188 @@ def _try_gh_cli_token() -> Optional[str]:
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     return None
+
+
+def _copilot_token_cache_path() -> Path:
+    """Return the on-disk cache path for exchanged Copilot API tokens."""
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    return home / "copilot_token.json"
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_expires_at(value: Any) -> int:
+    """Parse GitHub's expires_at field into epoch milliseconds."""
+    if isinstance(value, (int, float)) and value > 0:
+        numeric = int(value)
+        return numeric if numeric > 10_000_000_000 else numeric * 1000
+    if isinstance(value, str) and value.strip():
+        raw = value.strip()
+        try:
+            parsed = int(raw)
+        except ValueError:
+            try:
+                parsed_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("Copilot token response missing expires_at") from exc
+            if parsed_dt.tzinfo is None:
+                parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+            return int(parsed_dt.timestamp() * 1000)
+        return parsed if parsed > 10_000_000_000 else parsed * 1000
+    raise ValueError("Copilot token response missing expires_at")
+
+
+def _normalize_host_candidate(value: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return ""
+    parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+    return (parsed.hostname or "").strip().lower()
+
+
+def _is_allowed_copilot_host(hostname: str) -> bool:
+    hostname = (hostname or "").strip().lower()
+    return bool(hostname) and (
+        hostname == _COPILOT_ALLOWED_HOST
+        or hostname.endswith(f".{_COPILOT_ALLOWED_HOST}")
+    )
+
+
+def derive_copilot_api_base_url(token: str) -> str:
+    """Best-effort routed Copilot API base URL from the exchanged token payload."""
+    trimmed = (token or "").strip()
+    if not trimmed:
+        return COPILOT_API_BASE_URL
+
+    match = re.search(r"(?:^|;)\s*proxy-ep=([^;\s]+)", trimmed, flags=re.IGNORECASE)
+    proxy_endpoint = match.group(1).strip() if match else ""
+    hostname = _normalize_host_candidate(proxy_endpoint)
+    if not _is_allowed_copilot_host(hostname):
+        return COPILOT_API_BASE_URL
+
+    host = re.sub(r"^proxy\.", "api.", hostname, flags=re.IGNORECASE)
+    return f"https://{host}" if _is_allowed_copilot_host(host) else COPILOT_API_BASE_URL
+
+
+def is_copilot_base_url(base_url: Optional[str]) -> bool:
+    """Return True for routed GitHub Copilot API hosts."""
+    hostname = _normalize_host_candidate(str(base_url or ""))
+    return _is_allowed_copilot_host(hostname)
+
+
+def _load_cached_copilot_api_token(github_token: str) -> Optional[dict[str, Any]]:
+    path = _copilot_token_cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    cached_token = str(payload.get("token") or "").strip()
+    expires_at_ms = payload.get("expires_at_ms")
+    fingerprint = str(payload.get("github_token_fingerprint") or "")
+    if not cached_token or not isinstance(expires_at_ms, int) or not fingerprint:
+        return None
+    if fingerprint != _token_fingerprint(github_token):
+        return None
+    if expires_at_ms - int(time.time() * 1000) <= COPILOT_TOKEN_REFRESH_SKEW_SECONDS * 1000:
+        return None
+
+    return {
+        "token": cached_token,
+        "expires_at_ms": expires_at_ms,
+        "base_url": str(payload.get("base_url") or "").strip() or derive_copilot_api_base_url(cached_token),
+        "source": f"cache:{path}",
+    }
+
+
+def _save_cached_copilot_api_token(github_token: str, token: str, expires_at_ms: int, base_url: str) -> None:
+    path = _copilot_token_cache_path()
+    payload = {
+        "github_token_fingerprint": _token_fingerprint(github_token),
+        "token": token,
+        "expires_at_ms": int(expires_at_ms),
+        "base_url": base_url,
+        "updated_at_ms": int(time.time() * 1000),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError as exc:
+            logger.warning("Could not set secure permissions on Copilot token cache %s: %s", tmp_path, exc)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def get_cached_copilot_api_token(github_token: str) -> Optional[dict[str, Any]]:
+    """Return a valid cached exchanged Copilot token without making network calls."""
+    github_token = (github_token or "").strip()
+    if not github_token:
+        return None
+    return _load_cached_copilot_api_token(github_token)
+
+
+def exchange_copilot_api_token(github_token: str, *, timeout: float = 15.0) -> dict[str, Any]:
+    """Exchange a GitHub OAuth/PAT token for a routed Copilot API token."""
+    import urllib.request
+
+    github_token = (github_token or "").strip()
+    if not github_token:
+        return {
+            "token": "",
+            "base_url": COPILOT_API_BASE_URL,
+            "expires_at_ms": 0,
+            "source": "",
+        }
+
+    cached = _load_cached_copilot_api_token(github_token)
+    if cached:
+        return cached
+
+    req = urllib.request.Request(
+        COPILOT_TOKEN_EXCHANGE_URL,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {github_token}",
+            "User-Agent": "HermesAgent/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode())
+
+    token = str(payload.get("token") or "").strip()
+    if not token:
+        raise ValueError("Copilot token response missing token")
+
+    expires_at_ms = _parse_expires_at(payload.get("expires_at"))
+    endpoints = payload.get("endpoints") or {}
+    base_url = str(endpoints.get("api") or "").strip()
+    if not is_copilot_base_url(base_url):
+        base_url = derive_copilot_api_base_url(token)
+    try:
+        _save_cached_copilot_api_token(github_token, token, expires_at_ms, base_url)
+    except Exception:
+        logger.debug("Failed to cache Copilot token", exc_info=True)
+    return {
+        "token": token,
+        "base_url": base_url,
+        "expires_at_ms": expires_at_ms,
+        "source": COPILOT_TOKEN_EXCHANGE_URL,
+    }
 
 
 # ─── OAuth Device Code Flow ────────────────────────────────────────────────

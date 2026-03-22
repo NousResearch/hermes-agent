@@ -55,6 +55,13 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language passed to `HERMES_LOCAL_STT_COMMAND` or auto-detected local `whisper` CLI fallback (default: `en`) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
 
+### GitHub Copilot Notes
+
+- Hermes resolves Copilot credentials in this order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, then `gh auth token`.
+- Hermes exchanges that GitHub credential for a short-lived Copilot API token before sending model requests.
+- The final Copilot API host may be routed by GitHub, so Hermes may persist a base URL such as `https://api.individual.githubcopilot.com` instead of the generic host.
+- `copilot-acp` is separate from direct `copilot`: ACP uses the local `copilot` CLI process instead of the Copilot HTTP API.
+
 ## Provider Auth (OAuth)
 
 For native Anthropic auth, Hermes prefers Claude Code's own credential files when they exist because those credentials can refresh automatically. Environment variables such as `ANTHROPIC_TOKEN` remain useful as manual overrides, but they are no longer the preferred path for Claude Pro/Max login.

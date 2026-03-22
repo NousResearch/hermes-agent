@@ -1,6 +1,8 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+import json
 import os
+from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -143,6 +145,175 @@ class TestRequestHeaders:
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
         assert "Copilot-Vision-Request" not in headers
+
+
+class TestTokenExchange:
+    def test_derive_copilot_api_base_url_uses_proxy_endpoint(self):
+        from hermes_cli.copilot_auth import derive_copilot_api_base_url
+
+        token = "abc123;proxy-ep=proxy.individual.githubcopilot.com;foo=bar"
+        assert derive_copilot_api_base_url(token) == "https://api.individual.githubcopilot.com"
+
+    def test_derive_copilot_api_base_url_rejects_non_github_hosts(self):
+        from hermes_cli.copilot_auth import derive_copilot_api_base_url, COPILOT_API_BASE_URL
+
+        token = "abc123;proxy-ep=evil-githubcopilot.com.evil.example;foo=bar"
+        assert derive_copilot_api_base_url(token) == COPILOT_API_BASE_URL
+
+    def test_derive_copilot_api_base_url_ignores_path_components(self):
+        from hermes_cli.copilot_auth import derive_copilot_api_base_url
+
+        token = "abc123;proxy-ep=proxy.individual.githubcopilot.com/v1;foo=bar"
+        assert derive_copilot_api_base_url(token) == "https://api.individual.githubcopilot.com"
+
+    def test_is_copilot_base_url_accepts_routed_domains(self):
+        from hermes_cli.copilot_auth import is_copilot_base_url
+
+        assert is_copilot_base_url("https://api.githubcopilot.com")
+        assert is_copilot_base_url("https://api.individual.githubcopilot.com")
+        assert is_copilot_base_url("https://api.business.githubcopilot.com")
+        assert is_copilot_base_url("https://example.com") is False
+        assert is_copilot_base_url("https://evil-githubcopilot.com") is False
+        assert is_copilot_base_url("https://githubcopilot.com.evil.com") is False
+
+    @pytest.mark.parametrize(
+        "raw,expected_ms",
+        [
+            (1718452800, 1718452800000),
+            (1718452800000, 1718452800000),
+            ("1718452800", 1718452800000),
+            ("2024-06-15T12:00:00+00:00", 1718452800000),
+            ("2024-06-15T12:00:00Z", 1718452800000),
+        ],
+    )
+    def test_parse_expires_at_variants(self, raw, expected_ms):
+        from hermes_cli.copilot_auth import _parse_expires_at
+
+        assert _parse_expires_at(raw) == expected_ms
+
+    def test_parse_expires_at_invalid_raises(self):
+        from hermes_cli.copilot_auth import _parse_expires_at
+
+        with pytest.raises(ValueError):
+            _parse_expires_at("not-a-date")
+
+    def test_cache_round_trip_and_fingerprint(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import (
+            _save_cached_copilot_api_token,
+            get_cached_copilot_api_token,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _save_cached_copilot_api_token(
+            "gho_source_token",
+            "copilot_runtime_token",
+            4_102_444_800_000,
+            "https://api.individual.githubcopilot.com",
+        )
+
+        cached = get_cached_copilot_api_token("gho_source_token")
+        assert cached is not None
+        assert cached["token"] == "copilot_runtime_token"
+        assert cached["base_url"] == "https://api.individual.githubcopilot.com"
+
+        assert get_cached_copilot_api_token("gho_other_token") is None
+
+    def test_cache_rejects_corrupt_file(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import get_cached_copilot_api_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cache_path = Path(tmp_path) / "copilot_token.json"
+        cache_path.write_text("{bad json", encoding="utf-8")
+
+        assert get_cached_copilot_api_token("gho_source_token") is None
+
+    def test_exchange_copilot_api_token_uses_cache(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import _save_cached_copilot_api_token, exchange_copilot_api_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _save_cached_copilot_api_token(
+            "gho_source_token",
+            "copilot_runtime_token",
+            4_102_444_800_000,
+            "https://api.individual.githubcopilot.com",
+        )
+
+        result = exchange_copilot_api_token("gho_source_token")
+        assert result["token"] == "copilot_runtime_token"
+        assert result["base_url"] == "https://api.individual.githubcopilot.com"
+        assert "cache:" in result["source"]
+
+    def test_exchange_copilot_api_token_fetches_and_saves(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import exchange_copilot_api_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                payload = {
+                    "token": "abc123;proxy-ep=proxy.individual.githubcopilot.com",
+                    "expires_at": "2024-06-15T12:00:00+00:00",
+                }
+                return json.dumps(payload).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Resp()):
+            result = exchange_copilot_api_token("gho_source_token")
+
+        assert result["token"] == "abc123;proxy-ep=proxy.individual.githubcopilot.com"
+        assert result["base_url"] == "https://api.individual.githubcopilot.com"
+        assert result["expires_at_ms"] == 1718452800000
+
+    def test_exchange_copilot_api_token_prefers_endpoints_api(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import exchange_copilot_api_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                payload = {
+                    "token": "tid=abc;exp=1718452800;sku=copilot_for_individuals_subscriber",
+                    "expires_at": "2024-06-15T12:00:00+00:00",
+                    "endpoints": {
+                        "api": "https://api.business.githubcopilot.com",
+                    },
+                }
+                return json.dumps(payload).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Resp()):
+            result = exchange_copilot_api_token("gho_source_token")
+
+        assert result["base_url"] == "https://api.business.githubcopilot.com"
+
+    def test_exchange_copilot_api_token_missing_token_raises(self, tmp_path, monkeypatch):
+        from hermes_cli.copilot_auth import exchange_copilot_api_token
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"expires_at": 1718452800}).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Resp()):
+            with pytest.raises(ValueError, match="missing token"):
+                exchange_copilot_api_token("gho_source_token")
 
 
 class TestCopilotDefaultHeaders:

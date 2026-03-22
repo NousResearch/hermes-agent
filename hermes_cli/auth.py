@@ -1601,7 +1601,19 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
 
-    if provider_id == "kimi-coding":
+    if provider_id == "copilot" and api_key:
+        exchanged = None
+        try:
+            from hermes_cli.copilot_auth import get_cached_copilot_api_token
+
+            exchanged = get_cached_copilot_api_token(api_key)
+            if exchanged:
+                base_url = str(exchanged.get("base_url") or pconfig.inference_base_url).rstrip("/")
+            else:
+                base_url = pconfig.inference_base_url
+        except Exception:
+            base_url = pconfig.inference_base_url
+    elif provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
@@ -1684,6 +1696,30 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     env_url = ""
     if pconfig.base_url_env_var:
         env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+    if provider_id == "copilot":
+        base_url = pconfig.inference_base_url
+        exchanged_api_key = api_key
+        expires_at_ms = None
+        if api_key:
+            try:
+                from hermes_cli.copilot_auth import exchange_copilot_api_token
+
+                exchanged = exchange_copilot_api_token(api_key)
+                exchanged_api_key = str(exchanged.get("token") or "").strip() or api_key
+                base_url = str(exchanged.get("base_url") or pconfig.inference_base_url)
+                expires_at_ms = exchanged.get("expires_at_ms")
+            except Exception:
+                logger.debug("Copilot token exchange failed; falling back to default API host", exc_info=True)
+        return {
+            "provider": provider_id,
+            "api_key": exchanged_api_key,
+            "base_url": base_url.rstrip("/"),
+            "source": key_source or "default",
+            "github_token": api_key,
+            "github_token_source": key_source or "default",
+            "expires_at_ms": expires_at_ms,
+        }
 
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)

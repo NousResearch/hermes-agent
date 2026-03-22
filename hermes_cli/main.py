@@ -1639,6 +1639,7 @@ def _model_flow_copilot(config, current_model=""):
         print("    1. Login with GitHub (OAuth device code flow)")
         print("    2. Enter a token manually")
         print("    3. Cancel")
+        print("  Note: GitHub may show an 'Authorize OpenCode' page for this device flow.")
         print()
         try:
             choice = input("  Choice [1-3]: ").strip()
@@ -1689,17 +1690,18 @@ def _model_flow_copilot(config, current_model=""):
         api_key = creds.get("api_key", "")
         source = creds.get("source", "")
     else:
+        display_token = str(creds.get("github_token") or api_key)
         if source in ("GITHUB_TOKEN", "GH_TOKEN"):
-            print(f"  GitHub token: {api_key[:8]}... ✓ ({source})")
+            print(f"  GitHub token: {display_token[:8]}... ✓ ({source})")
         elif source == "gh auth token":
             print("  GitHub token: ✓ (from `gh auth token`)")
         else:
             print("  GitHub token: ✓")
         print()
 
-    effective_base = pconfig.inference_base_url
+    effective_base = str(creds.get("base_url") or pconfig.inference_base_url).rstrip("/")
 
-    catalog = fetch_github_model_catalog(api_key)
+    catalog = fetch_github_model_catalog(api_key, base_url=effective_base)
     live_models = [item.get("id", "") for item in catalog if item.get("id")] if catalog else fetch_api_models(api_key, effective_base)
     normalized_current_model = normalize_copilot_model_id(
         current_model,

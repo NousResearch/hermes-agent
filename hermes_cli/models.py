@@ -14,6 +14,8 @@ import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
 
+from hermes_cli.copilot_auth import is_copilot_base_url
+
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
 COPILOT_EDITOR_VERSION = "vscode/1.104.1"
@@ -536,6 +538,17 @@ def _resolve_copilot_catalog_api_key() -> str:
         return ""
 
 
+def _resolve_copilot_catalog_base_url() -> str:
+    """Best-effort routed Copilot base URL for model-catalog requests."""
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("copilot")
+        return str(creds.get("base_url") or "").strip().rstrip("/") or COPILOT_BASE_URL
+    except Exception:
+        return COPILOT_BASE_URL
+
+
 def provider_model_ids(provider: Optional[str]) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -551,7 +564,10 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         return get_codex_model_ids()
     if normalized in {"copilot", "copilot-acp"}:
         try:
-            live = _fetch_github_models(_resolve_copilot_catalog_api_key())
+            live = _fetch_github_models(
+                _resolve_copilot_catalog_api_key(),
+                base_url=_resolve_copilot_catalog_base_url(),
+            )
             if live:
                 return live
         except Exception:
@@ -698,9 +714,12 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
 
 
 def fetch_github_model_catalog(
-    api_key: Optional[str] = None, timeout: float = 5.0
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
 ) -> Optional[list[dict[str, Any]]]:
     """Fetch the live GitHub Copilot model catalog for this account."""
+    models_url = ((base_url or "").strip().rstrip("/") or _resolve_copilot_catalog_base_url()) + "/models"
     attempts: list[dict[str, str]] = []
     if api_key:
         attempts.append({
@@ -710,7 +729,7 @@ def fetch_github_model_catalog(
     attempts.append(copilot_default_headers())
 
     for headers in attempts:
-        req = urllib.request.Request(COPILOT_MODELS_URL, headers=headers)
+        req = urllib.request.Request(models_url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
@@ -735,13 +754,18 @@ def fetch_github_model_catalog(
 def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
     return (
-        normalized.startswith(COPILOT_BASE_URL)
+        is_copilot_base_url(normalized)
         or normalized.startswith("https://models.github.ai/inference")
     )
 
 
-def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
-    catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
+def _fetch_github_models(
+    api_key: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    catalog = fetch_github_model_catalog(api_key=api_key, base_url=base_url, timeout=timeout)
     if not catalog:
         return None
     return [item.get("id", "") for item in catalog if item.get("id")]
@@ -775,7 +799,10 @@ def _copilot_catalog_ids(
     api_key: Optional[str] = None,
 ) -> set[str]:
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = fetch_github_model_catalog(
+            api_key=api_key,
+            base_url=_resolve_copilot_catalog_base_url(),
+        )
     if not catalog:
         return set()
     return {
@@ -875,7 +902,10 @@ def copilot_model_api_mode(
 
     # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
     if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
+        catalog = fetch_github_model_catalog(
+            api_key=api_key,
+            base_url=_resolve_copilot_catalog_base_url(),
+        )
 
     if catalog:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
@@ -907,7 +937,10 @@ def github_model_reasoning_efforts(
     if catalog is not None:
         catalog_entry = next((item for item in catalog if item.get("id") == normalized), None)
     elif api_key:
-        fetched_catalog = fetch_github_model_catalog(api_key=api_key)
+        fetched_catalog = fetch_github_model_catalog(
+            api_key=api_key,
+            base_url=_resolve_copilot_catalog_base_url(),
+        )
         if fetched_catalog:
             catalog_entry = next((item for item in fetched_catalog if item.get("id") == normalized), None)
 
@@ -953,11 +986,11 @@ def probe_api_models(
         }
 
     if _is_github_models_base_url(normalized):
-        models = _fetch_github_models(api_key=api_key, timeout=timeout)
+        models = _fetch_github_models(api_key=api_key, base_url=normalized, timeout=timeout)
         return {
             "models": models,
-            "probed_url": COPILOT_MODELS_URL,
-            "resolved_base_url": COPILOT_BASE_URL,
+            "probed_url": normalized.rstrip("/") + "/models",
+            "resolved_base_url": normalized.rstrip("/"),
             "suggested_base_url": None,
             "used_fallback": False,
         }
@@ -975,7 +1008,7 @@ def probe_api_models(
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if normalized.startswith(COPILOT_BASE_URL):
+    if _is_github_models_base_url(normalized):
         headers.update(copilot_default_headers())
 
     for candidate_base, is_fallback in candidates:

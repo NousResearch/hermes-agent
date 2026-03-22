@@ -279,14 +279,18 @@ def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
         "hermes_cli.auth.resolve_api_key_provider_credentials",
         lambda provider_id: {
             "provider": provider_id,
-            "api_key": "gh-cli-token",
-            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-api-token",
+            "github_token": "gh-cli-token",
+            "base_url": "https://api.individual.githubcopilot.com",
             "source": "gh auth token",
         },
     )
-    monkeypatch.setattr(
-        "hermes_cli.models.fetch_github_model_catalog",
-        lambda api_key: [
+    seen = {}
+
+    def fake_fetch_catalog(api_key=None, base_url=None, timeout=5.0):
+        seen["api_key"] = api_key
+        seen["base_url"] = base_url
+        return [
             {
                 "id": "gpt-4.1",
                 "capabilities": {"type": "chat", "supports": {}},
@@ -297,8 +301,9 @@ def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
                 "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
                 "supported_endpoints": ["/responses"],
             },
-        ],
-    )
+        ]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_github_model_catalog", fake_fetch_catalog)
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
@@ -308,11 +313,69 @@ def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
     reloaded = load_config()
 
     assert env.get("GITHUB_TOKEN") is None
+    assert seen["api_key"] == "copilot-api-token"
+    assert seen["base_url"] == "https://api.individual.githubcopilot.com"
     assert reloaded["model"]["provider"] == "copilot"
-    assert reloaded["model"]["base_url"] == "https://api.githubcopilot.com"
+    assert reloaded["model"]["base_url"] == "https://api.individual.githubcopilot.com"
     assert reloaded["model"]["default"] == "gpt-5.4"
     assert reloaded["model"]["api_mode"] == "codex_responses"
     assert reloaded["agent"]["reasoning_effort"] == "high"
+
+
+def test_setup_copilot_normalizes_catalog_alias_selection(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 14
+        if question == "Select default model:":
+            assert "claude-sonnet-4.6" in choices
+            return choices.index("claude-sonnet-4.6")
+        if question == "Configure vision:":
+            return len(choices) - 1
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider_id: {"logged_in": provider_id == "copilot"})
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda provider_id: {
+            "provider": provider_id,
+            "api_key": "copilot-api-token",
+            "github_token": "gh-cli-token",
+            "base_url": "https://api.individual.githubcopilot.com",
+            "source": "gh auth token",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_github_model_catalog",
+        lambda api_key=None, base_url=None, timeout=5.0: [
+            {
+                "id": "claude-sonnet-4.6",
+                "capabilities": {"type": "chat", "supports": {}},
+                "supported_endpoints": ["/chat/completions"],
+            },
+        ],
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert reloaded["model"]["provider"] == "copilot"
+    assert reloaded["model"]["default"] == "claude-sonnet-4.6"
+    assert reloaded["model"]["api_mode"] == "chat_completions"
 
 
 def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkeypatch):
@@ -349,14 +412,15 @@ def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkey
         "hermes_cli.auth.resolve_api_key_provider_credentials",
         lambda provider_id: {
             "provider": "copilot",
-            "api_key": "gh-cli-token",
-            "base_url": "https://api.githubcopilot.com",
+            "api_key": "copilot-api-token",
+            "github_token": "gh-cli-token",
+            "base_url": "https://api.individual.githubcopilot.com",
             "source": "gh auth token",
         },
     )
     monkeypatch.setattr(
         "hermes_cli.models.fetch_github_model_catalog",
-        lambda api_key: [
+        lambda api_key=None, base_url=None, timeout=5.0: [
             {
                 "id": "gpt-4.1",
                 "capabilities": {"type": "chat", "supports": {}},

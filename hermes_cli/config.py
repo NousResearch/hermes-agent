@@ -58,6 +58,10 @@ def get_config_path() -> Path:
     """Get the main config file path."""
     return get_hermes_home() / "config.yaml"
 
+def get_local_config_path() -> Path:
+    """Get the local config override file path (never touched by hermes update)."""
+    return get_hermes_home() / "config.local.yaml"
+
 def get_env_path() -> Path:
     """Get the .env file path (for API keys)."""
     return get_hermes_home() / ".env"
@@ -1211,7 +1215,18 @@ def load_config() -> Dict[str, Any]:
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
-    
+
+    # Apply local overrides (config.local.yaml) — never touched by hermes update
+    local_path = get_local_config_path()
+    if local_path.exists():
+        try:
+            with open(local_path, encoding="utf-8") as f:
+                local_config = yaml.safe_load(f) or {}
+            if local_config:
+                config = _deep_merge(config, local_config)
+        except Exception as e:
+            print(f"Warning: Failed to load config.local.yaml: {e}")
+
     return _normalize_max_turns_config(config)
 
 

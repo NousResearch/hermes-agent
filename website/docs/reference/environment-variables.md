@@ -194,6 +194,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |
+| `WEIXIN_TOKEN` | WeChat bot token returned by the iLink QR login flow |
+| `WEIXIN_ACCOUNT_ID` | WeChat bot account ID returned by the iLink QR login flow |
+| `WEIXIN_BASE_URL` | Override the WeChat iLink API base URL |
+| `WEIXIN_CDN_BASE_URL` | Override the WeChat CDN base URL for media upload/download |
+| `WEIXIN_ALLOWED_USERS` | Comma-separated WeChat user IDs allowed to message the bot |
+| `WEIXIN_ALLOW_ALL_USERS` | Allow all WeChat users without an allowlist |
+| `WEIXIN_HOME_CHANNEL` | Default WeChat user/chat ID for proactive delivery |
+| `WEIXIN_HOME_CHANNEL_NAME` | Display name for the WeChat home target |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

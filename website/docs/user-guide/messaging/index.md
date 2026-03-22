@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, WeChat, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, WeChat, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -27,6 +27,7 @@ flowchart TB
             mm[Mattermost]
             mx[Matrix]
             dt[DingTalk]
+            wx[WeChat]
             api["API Server<br/>(OpenAI-compatible)"]
             wh[Webhooks]
         end
@@ -47,6 +48,7 @@ flowchart TB
     mm --> store
     mx --> store
     dt --> store
+    wx --> store
     api --> store
     wh --> store
     store --> agent
@@ -148,6 +150,7 @@ EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 MATRIX_ALLOWED_USERS=@alice:matrix.org
 DINGTALK_ALLOWED_USERS=user-id-1
+WEIXIN_ALLOWED_USERS=user-id-1
 
 # Or allow
 GATEWAY_ALLOWED_USERS=123456789,987654321
@@ -312,6 +315,7 @@ Each platform has its own toolset:
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
+| WeChat | `hermes-weixin` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
@@ -328,5 +332,6 @@ Each platform has its own toolset:
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
+- [WeChat (Weixin) Setup](weixin.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)

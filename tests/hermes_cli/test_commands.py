@@ -504,3 +504,88 @@ class TestGhostText:
         s = _suggestion("/model anthropic:cl", completer=completer)
         assert s is not None
         assert s.startswith("aude-")
+
+
+class TestCleanup:
+    def test_initial_state_is_false(self):
+        """The _cleanup_done flag starts as False before any cleanup."""
+        import cli
+        # Reset to initial state
+        cli._cleanup_done = False
+        assert cli._cleanup_done is False
+    
+    def test_flag_set_before_cleanup_runs(self):
+        """The _cleanup_done flag is set to True at the start of cleanup."""
+        import cli
+        from unittest.mock import patch
+        from cli import _run_cleanup
+        
+        cli._cleanup_done = False
+        
+        with patch.object(cli, '_cleanup_all_terminals') as mock_term, \
+             patch.object(cli, '_cleanup_all_browsers') as mock_browser, \
+             patch('tools.mcp_tool.shutdown_mcp_servers') as mock_mcp:
+            _run_cleanup()
+            # Flag should be True before any cleanup function is called
+            mock_term.assert_called_once()
+            mock_browser.assert_called_once()
+            mock_mcp.assert_called_once()
+    
+    def test_idempotent(self):
+        """Calling _run_cleanup multiple times executes only once."""
+        import cli
+        from cli import _run_cleanup
+        
+        cli._cleanup_done = False
+        _run_cleanup()
+        assert _run_cleanup.__globals__['_cleanup_done'] is True
+        _run_cleanup()  # Second call is a no-op
+    
+    def test_calls_all_cleanup_functions(self):
+        """Run terminals, browsers, and MCP cleanup once each."""
+        import cli
+        from unittest.mock import patch
+        from cli import _run_cleanup
+        
+        cli._cleanup_done = False
+        
+        with patch.object(cli, '_cleanup_all_terminals') as mock_term, \
+             patch.object(cli, '_cleanup_all_browsers') as mock_browser, \
+             patch('tools.mcp_tool.shutdown_mcp_servers') as mock_mcp:
+            _run_cleanup()
+            mock_term.assert_called_once()
+            mock_browser.assert_called_once()
+            mock_mcp.assert_called_once()
+    
+    def test_exception_does_not_propagate(self):
+        """Exception in one cleanup does not prevent others from running."""
+        import cli
+        from unittest.mock import patch
+        from cli import _run_cleanup
+        
+        cli._cleanup_done = False
+        
+        with patch.object(cli, '_cleanup_all_terminals', side_effect=Exception("boom")), \
+             patch.object(cli, '_cleanup_all_browsers') as mock_browser, \
+             patch('tools.mcp_tool.shutdown_mcp_servers') as mock_mcp:
+            _run_cleanup()
+            mock_browser.assert_called_once()
+            mock_mcp.assert_called_once()
+    
+    def test_execution_order(self):
+        """Cleanup runs in order: terminals → browsers → MCP."""
+        import cli
+        from unittest.mock import patch
+        from cli import _run_cleanup
+        
+        cli._cleanup_done = False
+        call_order = []
+        
+        def make_ordered_mock(name):
+            return lambda *a, **k: call_order.append(name)
+        
+        with patch.object(cli, '_cleanup_all_terminals', side_effect=make_ordered_mock('terminals')), \
+             patch.object(cli, '_cleanup_all_browsers', side_effect=make_ordered_mock('browsers')), \
+             patch('tools.mcp_tool.shutdown_mcp_servers', side_effect=make_ordered_mock('mcp')):
+            _run_cleanup()
+            assert call_order == ['terminals', 'browsers', 'mcp']

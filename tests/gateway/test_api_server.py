@@ -1295,7 +1295,7 @@ class TestConversationParameter:
                 data = await resp.json()
                 assert data["status"] == "completed"
                 # Conversation mapping should be set
-                assert "my-chat" in adapter._conversations
+                assert adapter._response_store.get_conversation("my-chat") is not None
 
     @pytest.mark.asyncio
     async def test_conversation_chains_automatically(self, adapter):
@@ -1369,7 +1369,7 @@ class TestConversationParameter:
                 await cli.post("/v1/responses", json={"input": "conv-b msg", "conversation": "conv-b"})
 
                 # They should have different response IDs in the mapping
-                assert adapter._conversations["conv-a"] != adapter._conversations["conv-b"]
+                assert adapter._response_store.get_conversation("conv-a") != adapter._response_store.get_conversation("conv-b")
 
     @pytest.mark.asyncio
     async def test_conversation_store_false_no_mapping(self, adapter):
@@ -1388,4 +1388,4 @@ class TestConversationParameter:
                 })
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
-                assert "ephemeral-chat" not in adapter._conversations
+                assert adapter._response_store.get_conversation("ephemeral-chat") is None

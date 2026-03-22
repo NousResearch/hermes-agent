@@ -182,6 +182,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
+            "timeout": 30,         # seconds — increase for slow local vision models
         },
         "web_extract": {
             "provider": "auto",

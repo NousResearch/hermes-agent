@@ -23,7 +23,9 @@ import tempfile
 import time
 import uuid
 import textwrap
+import re
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -78,6 +80,143 @@ _CTRL_BACKSPACE_ESCAPE_SEQUENCES = (
     "\x1b[27;5;127~",
     "\x1b[27;5;8~",
 )
+_KITTY_KEYBOARD_QUERY = "\x1b[?u"
+_KITTY_KEYBOARD_ENABLE = "\x1b[>1u"
+_KITTY_KEYBOARD_DISABLE = "\x1b[<u"
+_MODIFY_OTHER_KEYS_QUERY = "\x1b[>4;?m"
+_MODIFY_OTHER_KEYS_ENABLE = "\x1b[>4;2m"
+_MODIFY_OTHER_KEYS_DISABLE = "\x1b[>4;0m"
+_DEVICE_ATTRIBUTES_QUERY = "\x1b[c"
+_TERMINAL_KEYBOARD_QUERY_TIMEOUT_S = 0.25
+_KITTY_QUERY_RESPONSE_RE = re.compile(r"\x1b\[\?(\d+)u")
+_MODIFY_OTHER_KEYS_RESPONSE_RE = re.compile(r"\x1b\[>4;(\d+)m")
+_DEVICE_ATTRIBUTES_RESPONSE_RE = re.compile(r"\x1b\[\?(?:\d+)(?:;\d+)*c")
+
+
+@dataclass(frozen=True)
+class _TerminalKeyboardCapabilities:
+    kitty_supported: bool = False
+    modify_other_keys_supported: bool = False
+
+
+def _parse_terminal_keyboard_capabilities(data: str) -> _TerminalKeyboardCapabilities:
+    """Parse raw terminal responses for keyboard protocol support."""
+    kitty_supported = bool(_KITTY_QUERY_RESPONSE_RE.search(data))
+    modify_levels = [
+        int(match.group(1))
+        for match in _MODIFY_OTHER_KEYS_RESPONSE_RE.finditer(data)
+    ]
+    return _TerminalKeyboardCapabilities(
+        kitty_supported=kitty_supported,
+        modify_other_keys_supported=any(level >= 2 for level in modify_levels),
+    )
+
+
+def _select_terminal_keyboard_mode(
+    capabilities: _TerminalKeyboardCapabilities,
+) -> str | None:
+    """Pick the best keyboard enhancement mode supported by the terminal."""
+    if capabilities.kitty_supported:
+        return "kitty"
+    if capabilities.modify_other_keys_supported:
+        return "modify_other_keys"
+    return None
+
+
+def _write_terminal_sequence(
+    sequence: str,
+    *,
+    writer=None,
+) -> None:
+    """Emit a raw terminal control sequence."""
+    if writer is not None:
+        writer(sequence)
+        return
+
+    stdout = getattr(sys, "__stdout__", None) or sys.stdout
+    if stdout is None or not hasattr(stdout, "write") or not hasattr(stdout, "flush"):
+        return
+    stdout.write(sequence)
+    stdout.flush()
+
+
+def _set_terminal_keyboard_mode(
+    mode: str | None,
+    *,
+    enable: bool,
+    writer=None,
+) -> None:
+    """Enable or disable an enhanced terminal keyboard mode."""
+    if mode == "kitty":
+        sequence = _KITTY_KEYBOARD_ENABLE if enable else _KITTY_KEYBOARD_DISABLE
+    elif mode == "modify_other_keys":
+        sequence = _MODIFY_OTHER_KEYS_ENABLE if enable else _MODIFY_OTHER_KEYS_DISABLE
+    else:
+        return
+    _write_terminal_sequence(sequence, writer=writer)
+
+
+def _detect_terminal_keyboard_capabilities(
+    *,
+    timeout_s: float = _TERMINAL_KEYBOARD_QUERY_TIMEOUT_S,
+) -> _TerminalKeyboardCapabilities:
+    """Best-effort terminal capability probe for keyboard enhancement modes."""
+    if os.name == "nt":
+        return _TerminalKeyboardCapabilities()
+
+    stdin = getattr(sys, "__stdin__", None) or sys.stdin
+    stdout = getattr(sys, "__stdout__", None) or sys.stdout
+    if stdin is None or stdout is None:
+        return _TerminalKeyboardCapabilities()
+    if not hasattr(stdin, "isatty") or not hasattr(stdout, "isatty"):
+        return _TerminalKeyboardCapabilities()
+    if not stdin.isatty() or not stdout.isatty():
+        return _TerminalKeyboardCapabilities()
+
+    try:
+        import select
+        import termios
+        import tty
+    except Exception:
+        return _TerminalKeyboardCapabilities()
+
+    try:
+        stdin_fd = stdin.fileno()
+        original_attrs = termios.tcgetattr(stdin_fd)
+    except Exception:
+        return _TerminalKeyboardCapabilities()
+
+    try:
+        tty.setcbreak(stdin_fd)
+        _write_terminal_sequence(
+            _KITTY_KEYBOARD_QUERY + _MODIFY_OTHER_KEYS_QUERY + _DEVICE_ATTRIBUTES_QUERY
+        )
+
+        chunks: list[bytes] = []
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            ready, _, _ = select.select([stdin_fd], [], [], max(0.0, remaining))
+            if not ready:
+                continue
+            chunk = os.read(stdin_fd, 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            decoded = b"".join(chunks).decode("utf-8", errors="ignore")
+            if _DEVICE_ATTRIBUTES_RESPONSE_RE.search(decoded):
+                break
+
+        return _parse_terminal_keyboard_capabilities(
+            b"".join(chunks).decode("utf-8", errors="ignore")
+        )
+    except Exception:
+        return _TerminalKeyboardCapabilities()
+    finally:
+        try:
+            termios.tcsetattr(stdin_fd, termios.TCSANOW, original_attrs)
+        except Exception:
+            pass
 
 
 def _detect_terminfo_backspace() -> bytes | None:
@@ -1248,6 +1387,7 @@ class HermesCLI:
         # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
         self._app = None  # prompt_toolkit Application (set in run())
+        self._terminal_keyboard_mode: str | None = None
         
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
@@ -7156,7 +7296,25 @@ class HermesCLI:
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
-        
+
+        terminal_keyboard_cleanup = None
+        try:
+            self._terminal_keyboard_mode = _select_terminal_keyboard_mode(
+                _detect_terminal_keyboard_capabilities()
+            )
+            if self._terminal_keyboard_mode:
+                _set_terminal_keyboard_mode(self._terminal_keyboard_mode, enable=True)
+
+                def terminal_keyboard_cleanup(
+                    mode=self._terminal_keyboard_mode,
+                ) -> None:
+                    _set_terminal_keyboard_mode(mode, enable=False)
+
+                atexit.register(terminal_keyboard_cleanup)
+        except Exception:
+            self._terminal_keyboard_mode = None
+            terminal_keyboard_cleanup = None
+
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         
@@ -7168,6 +7326,16 @@ class HermesCLI:
             pass
         finally:
             self._should_exit = True
+            if terminal_keyboard_cleanup is not None:
+                try:
+                    atexit.unregister(terminal_keyboard_cleanup)
+                except Exception:
+                    pass
+                try:
+                    terminal_keyboard_cleanup()
+                except Exception:
+                    pass
+            self._terminal_keyboard_mode = None
             # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:

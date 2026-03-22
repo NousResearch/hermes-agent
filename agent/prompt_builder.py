@@ -155,6 +155,13 @@ SKILLS_GUIDANCE = (
 )
 
 PLATFORM_HINTS = {
+    "esp": (
+        "You are replying to a dedicated hardware device with a small screen. "
+        "Prefer concise, plain-text responses that render cleanly without rich "
+        "markdown. Assume the user is interacting by push-to-talk voice input "
+        "and reading the reply on-device. Avoid heavy formatting and keep the "
+        "most important information first."
+    ),
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
         "Please do not use markdown as it does not render. "

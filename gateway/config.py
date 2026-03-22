@@ -44,6 +44,7 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
+    ESP = "esp"
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
@@ -242,6 +243,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
+                connected.append(platform)
+            # ESP device bridge is a local server, not a token-auth platform
+            elif platform == Platform.ESP:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
@@ -564,6 +568,19 @@ def load_gateway_config() -> GatewayConfig:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+
+    # ESP device bridge
+    esp_enabled = os.getenv("ESP_ENABLED", "").lower() in ("true", "1", "yes")
+    if esp_enabled:
+        if Platform.ESP not in config.platforms:
+            config.platforms[Platform.ESP] = PlatformConfig()
+        config.platforms[Platform.ESP].enabled = True
+        config.platforms[Platform.ESP].extra.update({
+            "bind_host": os.getenv("ESP_BIND_HOST", "0.0.0.0"),
+            "bind_port": int(os.getenv("ESP_BIND_PORT", "8765")),
+            "shared_token": os.getenv("ESP_SHARED_TOKEN", ""),
+            "allowed_devices": os.getenv("ESP_ALLOWED_DEVICES", ""),
+        })
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")

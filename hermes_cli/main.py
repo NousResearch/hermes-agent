@@ -1197,13 +1197,18 @@ def _model_flow_custom(config):
     if not context_length and model_name:
         try:
             from agent.model_metadata import get_model_context_length
-            detected = get_model_context_length(model_name)
+            from hermes_cli.banner import _format_context_length
+            detected = get_model_context_length(
+                model_name,
+                base_url=effective_url,
+                api_key=effective_key or "",
+            )
             default_ctx = get_model_context_length("")  # get default
             if detected and detected != default_ctx:
                 context_length = detected
-                print(f"  💡 Context length auto-detected: {context_length:,} tokens")
+                print(f"  💡 Context length auto-detected: {_format_context_length(context_length)}")
             else:
-                print(f"  📏 Context length: using default 128,000 tokens (could not auto-detect for {model_name!r})")
+                print(f"  📏 Context length: using default 128K tokens (override with model.context_length in config.yaml)")
         except Exception:
             pass
 

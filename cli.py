@@ -6934,11 +6934,12 @@ class HermesCLI:
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
         # Create the application
+        _fullscreen = CLI_CONFIG.get("display", {}).get("fullscreen", False)
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
-            full_screen=False,
+            full_screen=_fullscreen,
             mouse_support=False,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )

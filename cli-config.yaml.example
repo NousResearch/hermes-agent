@@ -699,6 +699,13 @@ display:
   # Stream tokens to the terminal in real-time. Disable to wait for full responses.
   streaming: true
 
+  # Use alternate screen (fullscreen) mode — like vim or htop.
+  # When enabled, Hermes launches into the terminal's alternate screen buffer,
+  # keeping the session visually isolated from prior shell history.
+  # On exit, the original terminal content is fully restored.
+  # Set to true if you prefer a clean, fullscreen TUI experience.
+  fullscreen: false
+
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
   # ───────────────────────────────────────────────────────────────────────────

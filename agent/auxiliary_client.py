@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -325,9 +326,10 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str):
+    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
         self._client = real_client
         self._model = model
+        self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
@@ -356,6 +358,7 @@ class _AnthropicCompletionsAdapter:
             max_tokens=max_tokens,
             reasoning_config=None,
             tool_choice=normalized_tool_choice,
+            is_oauth=self._is_oauth,
         )
         if temperature is not None:
             anthropic_kwargs["temperature"] = temperature
@@ -394,9 +397,9 @@ class _AnthropicChatShim:
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str):
+    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model)
+        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
@@ -463,15 +466,30 @@ def _nous_base_url() -> str:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid Codex OAuth access token from Hermes auth store (~/.hermes/auth.json)."""
+    """Read a valid, non-expired Codex OAuth access token from Hermes auth store."""
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
-        if isinstance(access_token, str) and access_token.strip():
-            return access_token.strip()
-        return None
+        if not isinstance(access_token, str) or not access_token.strip():
+            return None
+
+        # Check JWT expiry — expired tokens block the auto chain and
+        # prevent fallback to working providers (e.g. Anthropic).
+        try:
+            import base64
+            payload = access_token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload))
+            exp = claims.get("exp", 0)
+            if exp and time.time() > exp:
+                logger.debug("Codex access token expired (exp=%s), skipping", exp)
+                return None
+        except Exception:
+            pass  # Non-JWT token or decode error — use as-is
+
+        return access_token.strip()
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
@@ -671,10 +689,12 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     except Exception:
         pass
 
+    from agent.anthropic_adapter import _is_oauth_token
+    is_oauth = _is_oauth_token(token)
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
-    logger.debug("Auxiliary client: Anthropic native (%s) at %s", model, base_url)
+    logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     real_client = build_anthropic_client(token, base_url)
-    return AnthropicAuxiliaryClient(real_client, model, token, base_url), model
+    return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
 def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:

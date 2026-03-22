@@ -37,11 +37,14 @@ import subprocess
 import sys
 import time
 import uuid
+import logging
 from datetime import datetime
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Path Configuration
@@ -206,7 +209,7 @@ def _scan_environments() -> List[EnvironmentInfo]:
                             ))
                             break
         except Exception as e:
-            print(f"Warning: Could not parse {py_file}: {e}")
+            logger.warning("Could not parse %s: %s", py_file, e)
     
     return environments
 
@@ -243,7 +246,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
             config_class = type(env_config)
         except Exception as config_error:
             # Fallback: try to import BaseEnvConfig directly from atroposlib
-            print(f"Note: config_init failed ({config_error}), using BaseEnvConfig defaults")
+            logger.info("config_init failed (%s), using BaseEnvConfig defaults", config_error)
             try:
                 from atroposlib.envs.base import BaseEnvConfig
                 config_class = BaseEnvConfig
@@ -291,7 +294,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
         return fields
         
     except Exception as e:
-        print(f"Warning: Could not introspect environment config: {e}")
+        logger.warning("Could not introspect environment config: %s", e)
         return {}
 
 

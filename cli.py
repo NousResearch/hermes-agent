@@ -498,6 +498,14 @@ def _run_cleanup():
         shutdown_mcp_servers()
     except Exception:
         pass
+    # Close cached auxiliary LLM clients (sync + async) so that
+    # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
+    # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
+    try:
+        from agent.auxiliary_client import shutdown_cached_clients
+        shutdown_cached_clients()
+    except Exception:
+        pass
 
 
 # =============================================================================

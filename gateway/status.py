@@ -58,6 +58,23 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return the kernel start time for a process when available."""
+    if sys.platform == "win32":
+        # Windows: use wmic to get process creation date
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}",
+                 "get", "CreationDate", "/VALUE"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in r.stdout.splitlines():
+                if line.startswith("CreationDate="):
+                    # WMIC returns YYYYMMDDHHmmss.ffffff format
+                    return hash(line.split("=", 1)[1].strip())
+        except Exception:
+            pass
+        return None
+
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
@@ -68,6 +85,21 @@ def _get_process_start_time(pid: int) -> Optional[int]:
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string."""
+    if sys.platform == "win32":
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}",
+                 "get", "CommandLine", "/VALUE"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in r.stdout.splitlines():
+                if line.startswith("CommandLine="):
+                    return line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+        return None
+
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
@@ -277,7 +309,8 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still respond to os.kill(pid, 0) but are not
                 # actually running. Treat them as stale so --replace works.
-                if not stale:
+                if not stale and sys.platform != "win32":
+                    # Check for stopped processes (Unix only — /proc)
                     try:
                         _proc_status = Path(f"/proc/{existing_pid}/status")
                         if _proc_status.exists():

@@ -785,6 +785,10 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
                 if age > max_age_seconds:
                     os.unlink(entry.path)
                     deleted += 1
+            except PermissionError:
+                # Windows: file may still be open by another process.
+                # Skip it — will be cleaned up on next run.
+                pass
             except OSError:
                 pass
 

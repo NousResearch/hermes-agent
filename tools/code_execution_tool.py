@@ -33,10 +33,27 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
-# Availability gate: UDS requires a POSIX OS
+# Availability gate: requires AF_UNIX sockets (POSIX, or Windows 10 1803+)
 logger = logging.getLogger(__name__)
 
-SANDBOX_AVAILABLE = sys.platform != "win32"
+
+def _check_af_unix() -> bool:
+    """Check if AF_UNIX sockets are available on this platform."""
+    if not hasattr(socket, "AF_UNIX"):
+        return False
+    if sys.platform != "win32":
+        return True  # Always available on Unix
+    # Windows: AF_UNIX added in build 17134 (Windows 10 1803)
+    # but may not work in all environments — test it
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.close()
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+SANDBOX_AVAILABLE = _check_af_unix()
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
@@ -389,7 +406,11 @@ def execute_code(
     # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
     # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
     # On Linux, tempfile.gettempdir() already returns /tmp.
-    _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    # On Windows, use tempfile.gettempdir() which returns %TEMP%.
+    if sys.platform == "darwin":
+        _sock_tmpdir = "/tmp"
+    else:
+        _sock_tmpdir = tempfile.gettempdir()
     sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []

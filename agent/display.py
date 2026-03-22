@@ -620,11 +620,19 @@ def honcho_session_line(workspace: str, session_name: str) -> str:
 
 
 def write_tty(text: str) -> None:
-    """Write directly to /dev/tty, bypassing stdout capture."""
+    """Write directly to the terminal, bypassing stdout capture.
+
+    Uses /dev/tty on Unix, CON on Windows, with stdout fallback.
+    """
     try:
-        fd = os.open("/dev/tty", os.O_WRONLY)
-        os.write(fd, text.encode("utf-8"))
-        os.close(fd)
+        if sys.platform == "win32":
+            # Windows: CON is the console device
+            with open("CON", "w", encoding="utf-8") as f:
+                f.write(text)
+        else:
+            fd = os.open("/dev/tty", os.O_WRONLY)
+            os.write(fd, text.encode("utf-8"))
+            os.close(fd)
     except OSError:
         sys.stdout.write(text)
         sys.stdout.flush()

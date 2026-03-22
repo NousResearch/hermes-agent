@@ -6,6 +6,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -318,7 +319,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
-        return f"/tmp/hermes-local-{self._session_id}"
+        return os.path.join(tempfile.gettempdir(), f"hermes-local-{self._session_id}")
 
     def _spawn_shell_process(self) -> subprocess.Popen:
         user_shell = _find_bash()
@@ -347,10 +348,17 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         if self._shell_pid is None:
             return
         try:
-            subprocess.run(
-                ["pkill", "-P", str(self._shell_pid)],
-                capture_output=True, timeout=5,
-            )
+            if _IS_WINDOWS:
+                # taskkill /T kills the process tree; /F forces termination
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._shell_pid)],
+                    capture_output=True, timeout=5,
+                )
+            else:
+                subprocess.run(
+                    ["pkill", "-P", str(self._shell_pid)],
+                    capture_output=True, timeout=5,
+                )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 

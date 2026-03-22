@@ -880,8 +880,9 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
         if not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                os.kill(pid, signal.SIGKILL)
-                print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
+                _sig = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+                os.kill(pid, _sig)
+                print(f"⚠ Gateway PID {pid} did not exit gracefully; sent {_sig.name}")
             except (ProcessLookupError, PermissionError):
                 return  # Already gone or we can't touch it.
             force_sent = True
@@ -1384,6 +1385,8 @@ def _is_service_installed() -> bool:
         return get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()
     elif is_macos():
         return get_launchd_plist_path().exists()
+    elif is_windows():
+        return _win_schtasks_exists()
     return False
 
 
@@ -1660,6 +1663,17 @@ def gateway_setup():
                     if is_linux():
                         print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                     print_info("  Or run in foreground:  hermes gateway")
+            elif is_windows():
+                if prompt_yes_no("Install gateway as a Windows scheduled task (runs at logon)?", True):
+                    try:
+                        windows_task_install()
+                        windows_task_start()
+                    except Exception as e:
+                        print_error(f"  Install failed: {e}")
+                        print_info("  You can try manually: hermes gateway install")
+                else:
+                    print_info("  You can install later: hermes gateway install")
+                    print_info("  Or run in foreground:  hermes gateway")
             else:
                 print_info("  Service install not supported on this platform.")
                 print_info("  Run in foreground: hermes gateway")
@@ -1668,6 +1682,110 @@ def gateway_setup():
         print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
 
     print()
+
+
+# =============================================================================
+# Windows (Task Scheduler)
+# =============================================================================
+
+_WIN_TASK_NAME = "HermesGateway"
+
+
+def _win_schtasks_exists() -> bool:
+    """Check if the Hermes gateway task exists in Windows Task Scheduler."""
+    try:
+        r = subprocess.run(
+            ["schtasks", "/Query", "/TN", _WIN_TASK_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def windows_task_install(force: bool = False):
+    """Install the Hermes gateway as a Windows Task Scheduler task.
+
+    Creates a task that runs at logon and restarts on failure.
+    """
+    if _win_schtasks_exists() and not force:
+        print(f"✓ Task '{_WIN_TASK_NAME}' already exists. Use --force to reinstall.")
+        return
+
+    python = get_python_path()
+    hermes_home = str(get_hermes_home())
+
+    # Build the command to run
+    cmd = f'"{python}" -m hermes_cli.main gateway run'
+
+    # Remove existing task if reinstalling
+    if _win_schtasks_exists():
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", _WIN_TASK_NAME, "/F"],
+            capture_output=True, timeout=10,
+        )
+
+    # Create task that runs at logon
+    result = subprocess.run(
+        ["schtasks", "/Create",
+         "/TN", _WIN_TASK_NAME,
+         "/TR", cmd,
+         "/SC", "ONLOGON",
+         "/RL", "LIMITED",
+         "/F"],
+        capture_output=True, text=True, timeout=15,
+    )
+
+    if result.returncode == 0:
+        print(f"✓ Installed gateway as Windows scheduled task '{_WIN_TASK_NAME}'")
+        print(f"  Runs at: user logon")
+        print(f"  Python:  {python}")
+        print(f"  Home:    {hermes_home}")
+    else:
+        err = result.stderr.strip() or result.stdout.strip()
+        print(f"✗ Failed to create scheduled task: {err}")
+        print("  Try running as Administrator, or start manually: hermes gateway run")
+
+
+def windows_task_uninstall():
+    """Remove the Hermes gateway scheduled task."""
+    if not _win_schtasks_exists():
+        print(f"✗ Task '{_WIN_TASK_NAME}' not found")
+        return
+
+    result = subprocess.run(
+        ["schtasks", "/Delete", "/TN", _WIN_TASK_NAME, "/F"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0:
+        print(f"✓ Removed scheduled task '{_WIN_TASK_NAME}'")
+    else:
+        print(f"✗ Failed to remove task: {result.stderr.strip()}")
+
+
+def windows_task_start():
+    """Start the gateway scheduled task."""
+    if not _win_schtasks_exists():
+        print(f"✗ Task '{_WIN_TASK_NAME}' not installed. Run: hermes gateway install")
+        return
+
+    result = subprocess.run(
+        ["schtasks", "/Run", "/TN", _WIN_TASK_NAME],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0:
+        print(f"✓ Started gateway task '{_WIN_TASK_NAME}'")
+    else:
+        print(f"✗ Failed to start task: {result.stderr.strip()}")
+
+
+def windows_task_stop():
+    """Stop the gateway scheduled task."""
+    if _win_schtasks_exists():
+        subprocess.run(
+            ["schtasks", "/End", "/TN", _WIN_TASK_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
 
 
 # =============================================================================
@@ -1698,6 +1816,8 @@ def gateway_command(args):
             systemd_install(force=force, system=system, run_as_user=run_as_user)
         elif is_macos():
             launchd_install(force)
+        elif is_windows():
+            windows_task_install(force=force)
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
@@ -1709,6 +1829,8 @@ def gateway_command(args):
             systemd_uninstall(system=system)
         elif is_macos():
             launchd_uninstall()
+        elif is_windows():
+            windows_task_uninstall()
         else:
             print("Not supported on this platform.")
             sys.exit(1)
@@ -1719,6 +1841,8 @@ def gateway_command(args):
             systemd_start(system=system)
         elif is_macos():
             launchd_start()
+        elif is_windows():
+            windows_task_start()
         else:
             print("Not supported on this platform.")
             sys.exit(1)
@@ -1740,6 +1864,9 @@ def gateway_command(args):
                 service_available = True
             except subprocess.CalledProcessError:
                 pass
+        elif is_windows() and _win_schtasks_exists():
+            windows_task_stop()
+            service_available = True
 
         killed = kill_gateway_processes()
         if not service_available:

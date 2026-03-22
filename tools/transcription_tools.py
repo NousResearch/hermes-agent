@@ -29,6 +29,8 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+
+from tools.shell_quote import shell_quote as _shell_quote
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -143,7 +145,7 @@ def _get_local_command_template() -> Optional[str]:
 
     whisper_binary = _find_whisper_binary()
     if whisper_binary:
-        quoted_binary = shlex.quote(whisper_binary)
+        quoted_binary = _shell_quote(whisper_binary)
         return (
             f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
             "--output_dir {output_dir} --language {language}"
@@ -226,7 +228,8 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
-    if _HAS_OPENAI and _resolve_openai_api_key():
+    if _HAS_OPENAI and _resolve_openai_logout
+api_key():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
     return "none"
@@ -342,10 +345,10 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 return {"success": False, "transcript": "", "error": prep_error}
 
             command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
+                input_path=_shell_quote(prepared_input),
+                output_dir=_shell_quote(output_dir),
+                language=_shell_quote(language),
+                model=_shell_quote(normalized_model),
             )
             subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
 
@@ -552,3 +555,4 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+

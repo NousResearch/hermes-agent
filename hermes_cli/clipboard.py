@@ -1,19 +1,20 @@
-"""Clipboard image extraction for macOS, Linux, and WSL2.
+"""Clipboard image and text extraction for macOS, Windows, Linux, and WSL2.
 
-Provides a single function `save_clipboard_image(dest)` that checks the
-system clipboard for image data, saves it to *dest* as PNG, and returns
-True on success.  No external Python dependencies — uses only OS-level
-CLI tools that ship with the platform (or are commonly installed).
+Provides functions for extracting images and text from the system clipboard.
+No external Python dependencies — uses only OS-level CLI tools that ship
+with the platform (or are commonly installed).
 
 Platform support:
-  macOS  — osascript (always available), pngpaste (if installed)
-  WSL2   — powershell.exe via .NET System.Windows.Forms.Clipboard
-  Linux  — wl-paste (Wayland), xclip (X11)
+  macOS   — osascript (always available), pngpaste (if installed), pbpaste (text)
+  Windows — PowerShell with .NET System.Windows.Forms.Clipboard (native win32)
+  WSL2    — powershell.exe via .NET System.Windows.Forms.Clipboard
+  Linux   — wl-paste (Wayland), xclip (X11)
 """
 
 import base64
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 # Cache WSL detection (checked once per process)
 _wsl_detected: bool | None = None
+
+# Cache powershell.exe path for WSL (resolved once)
+_powershell_path: str | None = None
 
 
 def save_clipboard_image(dest: Path) -> bool:
@@ -32,6 +36,8 @@ def save_clipboard_image(dest: Path) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
         return _macos_save(dest)
+    if sys.platform == "win32":
+        return _windows_save(dest)
     return _linux_save(dest)
 
 
@@ -42,11 +48,49 @@ def has_clipboard_image() -> bool:
     """
     if sys.platform == "darwin":
         return _macos_has_image()
+    if sys.platform == "win32":
+        return _windows_has_image()
     if _is_wsl():
         return _wsl_has_image()
     if os.environ.get("WAYLAND_DISPLAY"):
         return _wayland_has_image()
     return _xclip_has_image()
+
+
+def get_clipboard_text() -> str | None:
+    """Get text content from the system clipboard.
+
+    Returns the text string if clipboard contains text, None otherwise.
+    """
+    if sys.platform == "darwin":
+        return _macos_get_text()
+    if sys.platform == "win32":
+        return _windows_get_text()
+    if _is_wsl():
+        text = _wsl_get_text()
+        if text is not None:
+            return text
+        # Fall through to wl-paste/xclip for WSLg
+    if os.environ.get("WAYLAND_DISPLAY"):
+        text = _wayland_get_text()
+        if text is not None:
+            return text
+    return _xclip_get_text()
+
+
+def has_clipboard_text() -> bool:
+    """Quick check: does the clipboard currently contain text?"""
+    if sys.platform == "darwin":
+        return _macos_has_text()
+    if sys.platform == "win32":
+        return _windows_has_text()
+    if _is_wsl():
+        if _wsl_has_text():
+            return True
+    if os.environ.get("WAYLAND_DISPLAY"):
+        if _wayland_has_text():
+            return True
+    return _xclip_has_text()
 
 
 # ── macOS ────────────────────────────────────────────────────────────────
@@ -112,6 +156,32 @@ def _macos_osascript(dest: Path) -> bool:
     return False
 
 
+def _macos_get_text() -> str | None:
+    """Get text from macOS clipboard via pbpaste."""
+    try:
+        r = subprocess.run(
+            ["pbpaste"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0 and r.stdout:
+            return r.stdout
+    except Exception as e:
+        logger.debug("pbpaste failed: %s", e)
+    return None
+
+
+def _macos_has_text() -> bool:
+    """Check if macOS clipboard has text content."""
+    try:
+        info = subprocess.run(
+            ["osascript", "-e", "clipboard info"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return "«class utf8»" in info.stdout or "«class ut16»" in info.stdout
+    except Exception:
+        return False
+
+
 # ── Linux ────────────────────────────────────────────────────────────────
 
 def _is_wsl() -> bool:
@@ -141,6 +211,122 @@ def _linux_save(dest: Path) -> bool:
     return _xclip_save(dest)
 
 
+# ── Native Windows (sys.platform == "win32") ────────────────────────────
+
+# PowerShell commands for native Windows — same .NET approach as WSL
+# but invokes "powershell" (not "powershell.exe") since we're native.
+_PS_WIN_CHECK_IMAGE = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "[System.Windows.Forms.Clipboard]::ContainsImage()"
+)
+
+_PS_WIN_EXTRACT_IMAGE = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "Add-Type -AssemblyName System.Drawing;"
+    "$img = [System.Windows.Forms.Clipboard]::GetImage();"
+    "if ($null -eq $img) { exit 1 }"
+    "$ms = New-Object System.IO.MemoryStream;"
+    "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);"
+    "[System.Convert]::ToBase64String($ms.ToArray())"
+)
+
+_PS_WIN_CHECK_TEXT = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "[System.Windows.Forms.Clipboard]::ContainsText()"
+)
+
+_PS_WIN_GET_TEXT = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "$t = [System.Windows.Forms.Clipboard]::GetText();"
+    "if ($t) { $t } else { exit 1 }"
+)
+
+
+def _find_powershell_native() -> str:
+    """Find PowerShell on native Windows."""
+    # Prefer pwsh (PowerShell 7+) over Windows PowerShell 5.1
+    for cmd in ("pwsh", "powershell"):
+        if shutil.which(cmd):
+            return cmd
+    return "powershell"
+
+
+def _windows_has_image() -> bool:
+    """Check if Windows clipboard has an image (native win32)."""
+    try:
+        ps = _find_powershell_native()
+        r = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             _PS_WIN_CHECK_IMAGE],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.returncode == 0 and "True" in r.stdout
+    except FileNotFoundError:
+        logger.debug("PowerShell not found — Windows clipboard unavailable")
+    except Exception as e:
+        logger.debug("Windows clipboard check failed: %s", e)
+    return False
+
+
+def _windows_save(dest: Path) -> bool:
+    """Extract clipboard image on native Windows via PowerShell."""
+    try:
+        ps = _find_powershell_native()
+        r = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             _PS_WIN_EXTRACT_IMAGE],
+            capture_output=True, text=True, timeout=20,
+        )
+        if r.returncode != 0:
+            return False
+
+        b64_data = r.stdout.strip()
+        if not b64_data:
+            return False
+
+        png_bytes = base64.b64decode(b64_data)
+        dest.write_bytes(png_bytes)
+        return dest.exists() and dest.stat().st_size > 0
+
+    except FileNotFoundError:
+        logger.debug("PowerShell not found — Windows clipboard unavailable")
+    except Exception as e:
+        logger.debug("Windows clipboard extraction failed: %s", e)
+        dest.unlink(missing_ok=True)
+    return False
+
+
+def _windows_has_text() -> bool:
+    """Check if Windows clipboard has text (native win32)."""
+    try:
+        ps = _find_powershell_native()
+        r = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             _PS_WIN_CHECK_TEXT],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.returncode == 0 and "True" in r.stdout
+    except Exception as e:
+        logger.debug("Windows text clipboard check failed: %s", e)
+    return False
+
+
+def _windows_get_text() -> str | None:
+    """Get text from Windows clipboard (native win32)."""
+    try:
+        ps = _find_powershell_native()
+        r = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             _PS_WIN_GET_TEXT],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0 and r.stdout:
+            return r.stdout.rstrip("\r\n")
+    except Exception as e:
+        logger.debug("Windows text clipboard get failed: %s", e)
+    return None
+
+
 # ── WSL2 (powershell.exe) ────────────────────────────────────────────────
 
 # PowerShell script: get clipboard image as base64-encoded PNG on stdout.
@@ -160,14 +346,59 @@ _PS_EXTRACT_IMAGE = (
     "[System.Convert]::ToBase64String($ms.ToArray())"
 )
 
+_PS_CHECK_TEXT = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "[System.Windows.Forms.Clipboard]::ContainsText()"
+)
+
+_PS_GET_TEXT = (
+    "Add-Type -AssemblyName System.Windows.Forms;"
+    "$t = [System.Windows.Forms.Clipboard]::GetText();"
+    "if ($t) { $t } else { exit 1 }"
+)
+
+
+def _find_powershell_wsl() -> str:
+    """Find powershell.exe accessible from WSL.
+
+    Tries in order:
+    1. powershell.exe on PATH (works if Windows PATH is appended to WSL PATH)
+    2. Common Windows install locations via /mnt/c/
+    """
+    global _powershell_path
+    if _powershell_path is not None:
+        return _powershell_path
+
+    # Check PATH first
+    path = shutil.which("powershell.exe")
+    if path:
+        _powershell_path = path
+        return path
+
+    # Try common Windows install locations
+    common_paths = [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "/mnt/c/Windows/SysWOW64/WindowsPowerShell/v1.0/powershell.exe",
+    ]
+    for p in common_paths:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            _powershell_path = p
+            logger.debug("Found powershell.exe at %s (not on PATH)", p)
+            return p
+
+    # Last resort — just return the name and let subprocess raise FileNotFoundError
+    _powershell_path = "powershell.exe"
+    return _powershell_path
+
 
 def _wsl_has_image() -> bool:
     """Check if Windows clipboard has an image (via powershell.exe)."""
     try:
+        ps = _find_powershell_wsl()
         r = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
              _PS_CHECK_IMAGE],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, text=True, timeout=15,
         )
         return r.returncode == 0 and "True" in r.stdout
     except FileNotFoundError:
@@ -180,10 +411,11 @@ def _wsl_has_image() -> bool:
 def _wsl_save(dest: Path) -> bool:
     """Extract clipboard image via powershell.exe → base64 → decode to PNG."""
     try:
+        ps = _find_powershell_wsl()
         r = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
              _PS_EXTRACT_IMAGE],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=25,
         )
         if r.returncode != 0:
             return False
@@ -202,6 +434,42 @@ def _wsl_save(dest: Path) -> bool:
         logger.debug("WSL clipboard extraction failed: %s", e)
         dest.unlink(missing_ok=True)
     return False
+
+
+def _wsl_has_text() -> bool:
+    """Check if Windows clipboard has text (via powershell.exe from WSL)."""
+    try:
+        ps = _find_powershell_wsl()
+        r = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             _PS_CHECK_TEXT],
+            capture_output=True, text=True, timeout=15,
+        )
+        return r.returncode == 0 and "True" in r.stdout
+    except FileNotFoundError:
+        logger.debug("powershell.exe not found — WSL text clipboard unavailable")
+    except Exception as e:
+        logger.debug("WSL text clipboard check failed: %s", e)
+    return False
+
+
+def _wsl_get_text() -> str | None:
+    """Get text from Windows clipboard via powershell.exe from WSL."""
+    try:
+        ps = _find_powershell_wsl()
+        r = subprocess.run(
+            [ps, "-NoProfile", "-NonInteractive", "-Command",
+             _PS_GET_TEXT],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0 and r.stdout:
+            # PowerShell on Windows uses \r\n — normalize to \n
+            return r.stdout.rstrip("\r\n").replace("\r\n", "\n")
+    except FileNotFoundError:
+        logger.debug("powershell.exe not found — WSL text clipboard unavailable")
+    except Exception as e:
+        logger.debug("WSL text clipboard get failed: %s", e)
+    return None
 
 
 # ── Wayland (wl-paste) ──────────────────────────────────────────────────
@@ -270,6 +538,38 @@ def _wayland_save(dest: Path) -> bool:
         logger.debug("wl-paste clipboard extraction failed: %s", e)
         dest.unlink(missing_ok=True)
     return False
+
+
+def _wayland_has_text() -> bool:
+    """Check if Wayland clipboard has text content."""
+    try:
+        r = subprocess.run(
+            ["wl-paste", "--list-types"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return False
+        types = r.stdout.splitlines()
+        return any(t.startswith("text/") or t == "STRING" or t == "UTF8_STRING"
+                    for t in types)
+    except Exception:
+        return False
+
+
+def _wayland_get_text() -> str | None:
+    """Get text from Wayland clipboard via wl-paste."""
+    try:
+        r = subprocess.run(
+            ["wl-paste", "--no-newline"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout:
+            return r.stdout
+    except FileNotFoundError:
+        logger.debug("wl-paste not installed — Wayland text clipboard unavailable")
+    except Exception as e:
+        logger.debug("wl-paste text extraction failed: %s", e)
+    return None
 
 
 def _convert_to_png(path: Path) -> bool:
@@ -358,3 +658,35 @@ def _xclip_save(dest: Path) -> bool:
         logger.debug("xclip image extraction failed: %s", e)
         dest.unlink(missing_ok=True)
     return False
+
+
+def _xclip_has_text() -> bool:
+    """Check if X11 clipboard has text content."""
+    try:
+        r = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode != 0:
+            return False
+        targets = r.stdout.splitlines()
+        return any(t in ("UTF8_STRING", "STRING", "text/plain")
+                    for t in targets)
+    except Exception:
+        return False
+
+
+def _xclip_get_text() -> str | None:
+    """Get text from X11 clipboard via xclip."""
+    try:
+        r = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-o"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout:
+            return r.stdout
+    except FileNotFoundError:
+        logger.debug("xclip not installed — X11 text clipboard unavailable")
+    except Exception as e:
+        logger.debug("xclip text extraction failed: %s", e)
+    return None

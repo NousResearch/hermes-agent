@@ -58,6 +58,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session"),
+    CommandDef("workflow", "Record, run, and manage reusable workflows", "Session",
+               aliases=("wf",), args_hint="<record|run|list|show|delete> [name]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("stop", "Kill all running background processes", "Session"),

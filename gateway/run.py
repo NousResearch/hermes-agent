@@ -1522,6 +1522,9 @@ class GatewayRunner:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
+        if canonical == "workflow":
+            return await self._handle_workflow_command(event.get_command_args().strip(), event)
+
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
@@ -1641,6 +1644,12 @@ class GatewayRunner:
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+
+        # Record workflow step if recording (before agent handles the message)
+        if hasattr(self, "_workflow_recorders") and _quick_key in self._workflow_recorders:
+            rec = self._workflow_recorders[_quick_key]
+            if rec.is_recording and event.text:
+                rec.record_step(event.text)
 
         try:
             return await self._handle_message_with_agent(event, source, _quick_key)
@@ -3659,6 +3668,103 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    async def _handle_workflow_command(self, args: str, event: MessageEvent) -> str:
+        """Handle /workflow subcommands for gateway."""
+        from agent.workflow import (
+            WorkflowRecorder, load_workflow, list_workflows,
+            delete_workflow, format_workflow_list, format_workflow_detail,
+        )
+
+        parts = args.strip().split(None, 1)
+        sub = parts[0].lower() if parts else "help"
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        source = event.source
+        session_key = f"{source.platform}:{source.chat_id}"
+
+        if sub == "record":
+            if not arg:
+                return "Usage: /workflow record <name>"
+            if not hasattr(self, "_workflow_recorders"):
+                self._workflow_recorders = {}
+            if session_key in self._workflow_recorders:
+                return f"Already recording '{self._workflow_recorders[session_key].workflow.name}'. Use /workflow stop first."
+            self._workflow_recorders[session_key] = WorkflowRecorder(arg)
+            return f"Recording workflow '{arg}'. Your messages will be captured. Use /workflow stop to save."
+
+        elif sub == "stop":
+            if not hasattr(self, "_workflow_recorders") or session_key not in self._workflow_recorders:
+                return "Not recording any workflow."
+            rec = self._workflow_recorders.pop(session_key)
+            wf = rec.stop()
+            if wf.steps:
+                rec.save()
+                return f"Workflow '{wf.name}' saved ({len(wf.steps)} steps)"
+            return "No steps recorded. Workflow discarded."
+
+        elif sub == "run":
+            if not arg:
+                return "Usage: /workflow run <name>"
+            wf = load_workflow(arg)
+            if not wf:
+                return f"Workflow '{arg}' not found."
+            if not wf.steps:
+                return f"Workflow '{arg}' has no steps."
+
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                await adapter.send(source.chat_id, f"Running workflow '{wf.name}' ({len(wf.steps)} steps)...")
+
+            # Run each step as a message through the agent
+            for i, step in enumerate(wf.steps):
+                if adapter:
+                    await adapter.send(source.chat_id, f"Step {i+1}/{len(wf.steps)}: {step.prompt}")
+                # Create a synthetic message event for each step
+                from gateway.platforms.base import MessageEvent, MessageType
+                step_event = MessageEvent(
+                    text=step.prompt,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    raw_message=event.raw_message,
+                )
+                await self._handle_message(step_event)
+
+            # Update run stats
+            wf.last_run_at = __import__("time").time()
+            wf.run_count += 1
+            from agent.workflow import save_workflow
+            save_workflow(wf)
+            return f"Workflow '{wf.name}' complete ({len(wf.steps)} steps)"
+
+        elif sub == "list":
+            return format_workflow_list(list_workflows())
+
+        elif sub == "show":
+            if not arg:
+                return "Usage: /workflow show <name>"
+            wf = load_workflow(arg)
+            if not wf:
+                return f"Workflow '{arg}' not found."
+            return format_workflow_detail(wf)
+
+        elif sub == "delete":
+            if not arg:
+                return "Usage: /workflow delete <name>"
+            if delete_workflow(arg):
+                return f"Deleted workflow '{arg}'"
+            return f"Workflow '{arg}' not found."
+
+        else:
+            return (
+                "Workflow commands:\n"
+                "  /workflow record <name>  Start recording\n"
+                "  /workflow stop           Stop and save\n"
+                "  /workflow run <name>     Replay workflow\n"
+                "  /workflow list           List saved\n"
+                "  /workflow show <name>    Show steps\n"
+                "  /workflow delete <name>  Delete"
+            )
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""

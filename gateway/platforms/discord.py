@@ -1515,6 +1515,22 @@ class DiscordAdapter(BasePlatformAdapter):
             event = self._build_slash_event(interaction, f"/voice {mode}".strip())
             await self.handle_message(event)
 
+        @tree.command(name="workflow", description="Record, run, and manage reusable workflows")
+        @discord.app_commands.describe(action="Action: record, stop, run, list, show, delete")
+        @discord.app_commands.choices(action=[
+            discord.app_commands.Choice(name="record — start recording a workflow", value="record"),
+            discord.app_commands.Choice(name="stop — stop recording and save", value="stop"),
+            discord.app_commands.Choice(name="run — replay a saved workflow", value="run"),
+            discord.app_commands.Choice(name="list — list saved workflows", value="list"),
+            discord.app_commands.Choice(name="show — show workflow steps", value="show"),
+            discord.app_commands.Choice(name="delete — delete a workflow", value="delete"),
+        ])
+        @discord.app_commands.describe(name="Workflow name (for record, run, show, delete)")
+        async def slash_workflow(interaction: discord.Interaction, action: str = "list", name: str = ""):
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/workflow {action} {name}".strip())
+            await self.handle_message(event)
+
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")

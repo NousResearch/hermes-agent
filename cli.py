@@ -1762,8 +1762,22 @@ class HermesCLI:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         if not isinstance(api_key, str) or not api_key:
-            self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
-            return False
+            # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
+            # don't require authentication.  When a base_url IS configured but
+            # no API key was found, use a placeholder so the OpenAI SDK
+            # doesn't reject the request and local servers just ignore it.
+            _source = runtime.get("source", "")
+            _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
+            if _has_custom_base:
+                api_key = "no-key-required"
+                logger.debug(
+                    "No API key for custom endpoint %s (source=%s), "
+                    "using placeholder — local servers typically ignore auth",
+                    base_url, _source,
+                )
+            else:
+                self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
+                return False
         if not isinstance(base_url, str) or not base_url:
             self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
             return False

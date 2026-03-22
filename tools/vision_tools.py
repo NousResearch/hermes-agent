@@ -298,12 +298,23 @@ async def vision_analyze_tool(
         
         logger.info("Processing image with vision model...")
         
-        # Call the vision API via centralized router
+        # Call the vision API via centralized router.
+        # Read timeout from config.yaml (auxiliary.vision.timeout), default 30s.
+        vision_timeout = 30.0
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            if _vt is not None:
+                vision_timeout = float(_vt)
+        except Exception:
+            pass
         call_kwargs = {
             "task": "vision",
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 2000,
+            "timeout": vision_timeout,
         }
         if model:
             call_kwargs["model"] = model

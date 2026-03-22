@@ -1778,6 +1778,10 @@ class GatewayRunner:
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
+            _hyg_config_context_length = None
+            _hyg_provider = None
+            _hyg_base_url = None
+            _hyg_api_key = None
             try:
                 _hyg_cfg_path = _hermes_home / "config.yaml"
                 if _hyg_cfg_path.exists():
@@ -1791,6 +1795,17 @@ class GatewayRunner:
                         _hyg_model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         _hyg_model = _model_cfg.get("default", _hyg_model)
+                        # Read explicit context_length override from model config
+                        # (same as run_agent.py lines 995-1005)
+                        _raw_ctx = _model_cfg.get("context_length")
+                        if _raw_ctx is not None:
+                            try:
+                                _hyg_config_context_length = int(_raw_ctx)
+                            except (TypeError, ValueError):
+                                pass
+                        # Read provider for accurate context detection
+                        _hyg_provider = _model_cfg.get("provider") or None
+                        _hyg_base_url = _model_cfg.get("base_url") or None
 
                     # Read compression settings — only use enabled flag.
                     # The threshold is intentionally separate from the agent's
@@ -1800,11 +1815,27 @@ class GatewayRunner:
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in ("true", "1", "yes")
+
+                # Resolve provider/base_url from runtime if not in config
+                if not _hyg_provider or not _hyg_base_url:
+                    try:
+                        _hyg_runtime = _resolve_runtime_agent_kwargs()
+                        _hyg_provider = _hyg_provider or _hyg_runtime.get("provider")
+                        _hyg_base_url = _hyg_base_url or _hyg_runtime.get("base_url")
+                        _hyg_api_key = _hyg_runtime.get("api_key")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
             if _hyg_compression_enabled:
-                _hyg_context_length = get_model_context_length(_hyg_model)
+                _hyg_context_length = get_model_context_length(
+                    _hyg_model,
+                    base_url=_hyg_base_url or "",
+                    api_key=_hyg_api_key or "",
+                    config_context_length=_hyg_config_context_length,
+                    provider=_hyg_provider or "",
+                )
                 _compress_token_threshold = int(
                     _hyg_context_length * _hyg_threshold_pct
                 )
@@ -1822,11 +1853,20 @@ class GatewayRunner:
                     _token_source = "actual"
                 else:
                     _approx_tokens = estimate_messages_tokens_rough(history)
-                    # Apply safety factor only for rough estimates
-                    _compress_token_threshold = int(
-                        _compress_token_threshold * 1.4
+                    # Apply safety factor only for rough estimates.
+                    # Cap the adjusted threshold at 95% of context length
+                    # so it never exceeds what the model can actually handle
+                    # (the 1.4x factor previously pushed the threshold above
+                    # the model's context limit for ~200K models like GLM-5).
+                    _max_safe_threshold = int(_hyg_context_length * 0.95)
+                    _compress_token_threshold = min(
+                        int(_compress_token_threshold * 1.4),
+                        _max_safe_threshold,
                     )
-                    _warn_token_threshold = int(_warn_token_threshold * 1.4)
+                    _warn_token_threshold = min(
+                        int(_warn_token_threshold * 1.4),
+                        _hyg_context_length,
+                    )
                     _token_source = "estimated"
 
                 _needs_compress = _approx_tokens >= _compress_token_threshold

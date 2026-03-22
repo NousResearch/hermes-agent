@@ -516,7 +516,10 @@ class SlashCommandCompleter(Completer):
             else:
                 display_path = os.path.relpath(full_path)
 
-            completion_text = f"@folder:{display_path}/" if is_dir else f"@file:{display_path}"
+            completion_text = SlashCommandCompleter._render_context_reference(
+                display_path,
+                is_dir=is_dir,
+            )
             suffix = "/" if is_dir else ""
             meta = "context dir" if is_dir else f"context {_file_size_label(full_path)}".strip()
 
@@ -532,6 +535,21 @@ class SlashCommandCompleter(Completer):
 
         for _score, completion in sorted(matches, key=lambda item: item[0])[:limit]:
             yield completion
+
+    @staticmethod
+    def _render_context_reference(path: str, *, is_dir: bool) -> str:
+        """Render a parser-compatible ``@file:``/``@folder:`` reference."""
+        prefix = "@folder:" if is_dir else "@file:"
+        rendered_path = f"{path}/" if is_dir and not path.endswith("/") else path
+
+        if any(ch.isspace() for ch in rendered_path):
+            if '"' not in rendered_path:
+                return f'{prefix}"{rendered_path}"'
+            if "'" not in rendered_path:
+                return f"{prefix}'{rendered_path}'"
+
+        rendered_path = re.sub(r'([\\\s])', r'\\\1', rendered_path)
+        return f"{prefix}{rendered_path}"
 
     @staticmethod
     def _last_shell_token(text: str) -> str:

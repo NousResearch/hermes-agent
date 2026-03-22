@@ -14,7 +14,12 @@ from typing import Awaitable, Callable
 from agent.model_metadata import estimate_tokens_rough
 
 REFERENCE_PATTERN = re.compile(
-    r"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>\S+))"
+    r"""(?<![\w/])@(?:
+    (?P<simple>diff|staged)\b|
+    (?P<kind>file|folder|git|url):
+    (?P<value>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?:\\.|[^\s])+)
+    )""",
+    re.VERBOSE,
 )
 TRAILING_PUNCTUATION = ",.;!?"
 
@@ -61,7 +66,7 @@ def parse_context_references(message: str) -> list[ContextReference]:
             continue
 
         kind = match.group("kind")
-        value = _strip_trailing_punctuation(match.group("value") or "")
+        value = _decode_reference_value(_strip_trailing_punctuation(match.group("value") or ""))
         line_start = None
         line_end = None
         target = value
@@ -316,6 +321,8 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
 
 
 def _strip_trailing_punctuation(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value
     stripped = value.rstrip(TRAILING_PUNCTUATION)
     while stripped.endswith((")", "]", "}")):
         closer = stripped[-1]
@@ -325,6 +332,12 @@ def _strip_trailing_punctuation(value: str) -> str:
             continue
         break
     return stripped
+
+
+def _decode_reference_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return re.sub(r"\\(.)", r"\1", value)
 
 
 def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:

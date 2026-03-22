@@ -259,6 +259,19 @@ class TestContextCompletions:
 
         assert any(c.text == "@folder:src/" for c in completions)
 
+    def test_bare_context_path_with_spaces_uses_quoted_reference(self, tmp_path):
+        target = tmp_path / "Screen Shot.png"
+        target.touch()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            completions = list(SlashCommandCompleter._context_completions("@scrsh"))
+        finally:
+            os.chdir(old_cwd)
+
+        assert any(c.text == '@file:"Screen Shot.png"' for c in completions)
+
 
 class TestIntegration:
     """Test the completer produces path completions via the prompt_toolkit API."""

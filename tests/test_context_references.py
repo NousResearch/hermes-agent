@@ -83,6 +83,18 @@ def test_parse_references_strips_trailing_punctuation():
     assert refs[1].target == "https://example.com/docs"
 
 
+def test_parse_references_supports_quoted_and_escaped_paths():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references(
+        r'review @file:"docs/Screen Shot.png" and @folder:docs/My\ Folder/'
+    )
+
+    assert [ref.kind for ref in refs] == ["file", "folder"]
+    assert refs[0].target == "docs/Screen Shot.png"
+    assert refs[1].target == "docs/My Folder/"
+
+
 def test_expand_file_range_and_folder_listing(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
@@ -219,3 +231,21 @@ def test_restricts_paths_to_allowed_root(tmp_path: Path):
     assert "```\noutside\n```" not in result.message
     assert "inside" in result.message
     assert any("outside the allowed workspace" in warning for warning in result.warnings)
+
+
+def test_expand_quoted_file_reference_with_spaces(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spaced = repo / "Screen Shot.txt"
+    spaced.write_text("pixels\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        'inspect @file:"Screen Shot.txt"',
+        cwd=repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "pixels" in result.message

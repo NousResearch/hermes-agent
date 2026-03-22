@@ -176,7 +176,7 @@ The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). S
 If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
 :::
 
-At runtime Hermes exchanges your GitHub token for a short-lived Copilot API token and follows the routed Copilot host returned by GitHub (for example `api.individual.githubcopilot.com`). This matches the Copilot CLI/OpenClaw flow and avoids pinning requests to a single hard-coded endpoint.
+At runtime Hermes exchanges your GitHub token for a short-lived Copilot API token and follows the routed Copilot host returned by GitHub (for example `api.individual.githubcopilot.com`). This matches the Copilot CLI/OpenCode flow and avoids pinning requests to a single hard-coded endpoint.
 
 **API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
 

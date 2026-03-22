@@ -38,6 +38,7 @@ dependencies = [
   "platformdirs",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]",
+  "aiohttp>=3.9.0"
 ]
 
 [project.optional-dependencies]

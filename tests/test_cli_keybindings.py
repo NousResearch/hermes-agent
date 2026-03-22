@@ -68,6 +68,10 @@ def test_select_terminal_keyboard_mode_falls_back_to_modify_other_keys():
     assert tkbd.select_mode(capabilities) == "modify_other_keys"
 
 
+def test_select_terminal_keyboard_mode_returns_none_when_unsupported():
+    assert tkbd.select_mode(tkbd.TerminalKeyboardCapabilities()) is None
+
+
 @pytest.mark.parametrize(
     ("mode", "enable", "expected_sequence"),
     [

@@ -103,10 +103,9 @@ def parse_capabilities(data: str) -> TerminalKeyboardCapabilities:
 
 def _strip_query_responses(data: str) -> str:
     """Remove terminal capability probe responses and preserve other input."""
-    data = _KITTY_QUERY_RESPONSE_RE.sub("", data)
-    data = _MODIFY_OTHER_KEYS_RESPONSE_RE.sub("", data)
-    data = _DEVICE_ATTRIBUTES_RESPONSE_RE.sub("", data)
-    return data
+    result = _KITTY_QUERY_RESPONSE_RE.sub("", data)
+    result = _MODIFY_OTHER_KEYS_RESPONSE_RE.sub("", result)
+    return _DEVICE_ATTRIBUTES_RESPONSE_RE.sub("", result)
 
 
 def parse_detection_result(

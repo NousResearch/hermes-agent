@@ -1,3 +1,5 @@
+Many users run Hermes on laptops or small GPUs.  
+This guide explains how to run Hermes efficiently on low-resource hardware using quantized models and lightweight inference engines.
 # Running Hermes on Low Resource Hardware
 
 If you are running Hermes on a machine with limited VRAM (e.g., 4GB–8GB) or a CPU-only setup, you can still achieve excellent performance by using quantized models and memory-efficient inference engines.

@@ -1500,7 +1500,17 @@ class DiscordAdapter(BasePlatformAdapter):
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
-        chat_type = "dm" if is_dm else "group"
+        is_thread = isinstance(interaction.channel, discord.Thread)
+        thread_id = None
+
+        if is_dm:
+            chat_type = "dm"
+        elif is_thread:
+            chat_type = "thread"
+            thread_id = str(interaction.channel_id)
+        else:
+            chat_type = "group"
+
         chat_name = ""
         if not is_dm and hasattr(interaction.channel, "name"):
             chat_name = interaction.channel.name
@@ -1516,6 +1526,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
+            thread_id=thread_id,
             chat_topic=chat_topic,
         )
 

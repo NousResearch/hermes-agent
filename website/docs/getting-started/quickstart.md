@@ -43,6 +43,8 @@ hermes setup       # Or configure everything at once
 |----------|-----------|---------------|
 | **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
 | **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
+| **GitHub Copilot** | Direct Copilot API with your GitHub Copilot subscription | `hermes model`, then use OAuth device login, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` |
+| **GitHub Copilot ACP** | Local Copilot CLI backend via ACP | `hermes model`, requires `copilot --acp --stdio` |
 | **Anthropic** | Claude models directly (Pro/Max or API key) | `hermes model` with Claude Code auth, or an Anthropic API key |
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
@@ -59,6 +61,39 @@ hermes setup       # Or configure everything at once
 :::tip
 You can switch providers at any time with `hermes model` — no code changes, no lock-in. When configuring a custom endpoint, Hermes will prompt for the context window size and auto-detect it when possible. See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for details.
 :::
+
+### GitHub Copilot Setup Examples
+
+If you want to use GitHub Copilot as your main provider, the usual path is:
+
+```bash
+hermes model
+# Select: GitHub Copilot
+# If no token is found, choose "Login with GitHub"
+# Pick a model from the live Copilot catalog
+```
+
+Hermes checks for Copilot credentials in this order:
+
+1. `COPILOT_GITHUB_TOKEN`
+2. `GH_TOKEN`
+3. `GITHUB_TOKEN`
+4. `gh auth token`
+
+If you already use the GitHub CLI, `gh auth login` is often enough. If not, Hermes can launch the GitHub device-code flow directly from `hermes model`.
+
+When Hermes launches the Copilot device-code flow, GitHub may show an `Authorize OpenCode` page. Hermes currently reuses the same GitHub OAuth client/app used by OpenCode and the Copilot CLI for this login path.
+
+If you prefer the full setup wizard, `hermes setup` exposes the same provider choices and will save the selected Copilot provider, model, and base URL into your Hermes config for future sessions.
+
+For the local Copilot CLI backend instead:
+
+```bash
+hermes model
+# Select: GitHub Copilot ACP
+```
+
+That mode does not call the Copilot HTTP API directly. Hermes starts `copilot --acp --stdio` and delegates turns through the local Copilot CLI.
 
 ## 3. Start Chatting
 

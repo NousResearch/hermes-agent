@@ -137,7 +137,32 @@ hermes chat --provider copilot --model gpt-5.4
 3. `GITHUB_TOKEN` environment variable
 4. `gh auth token` CLI fallback
 
-If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
+If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and OpenCode. GitHub may show an `Authorize OpenCode` page during this step because Hermes currently reuses that GitHub OAuth client/app for the Copilot device-login flow.
+
+**Interactive setup flow (`hermes model`)**:
+
+1. Select `GitHub Copilot`
+2. Hermes checks `COPILOT_GITHUB_TOKEN`, then `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`
+3. If nothing usable is found, Hermes offers:
+   - Login with GitHub via device code
+   - Enter a token manually
+   - Cancel
+   - During device login, GitHub may show `Authorize OpenCode`
+4. Hermes fetches the live Copilot model catalog for your account
+5. You choose a model
+6. Hermes saves the resolved provider, routed base URL, model, and API mode into `~/.hermes/config.yaml`
+
+**One-shot CLI usage**:
+
+```bash
+# Use GitHub CLI auth if you already have it
+gh auth login
+hermes chat --provider copilot --model gpt-5.4
+
+# Or export a token explicitly
+export COPILOT_GITHUB_TOKEN=gho_xxx
+hermes chat --provider copilot --model claude-sonnet-4.6
+```
 
 :::warning Token types
 The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
@@ -151,6 +176,8 @@ The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). S
 If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
 :::
 
+At runtime Hermes exchanges your GitHub token for a short-lived Copilot API token and follows the routed Copilot host returned by GitHub (for example `api.individual.githubcopilot.com`). This matches the Copilot CLI/OpenClaw flow and avoids pinning requests to a single hard-coded endpoint.
+
 **API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
 
 **`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
@@ -159,6 +186,15 @@ If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authentic
 hermes chat --provider copilot-acp --model copilot-acp
 # Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
 ```
+
+**ACP setup flow (`hermes model`)**:
+
+1. Select `GitHub Copilot ACP`
+2. Hermes checks that the `copilot` CLI is available, or that you overrode it with `HERMES_COPILOT_ACP_COMMAND`
+3. Hermes queries the Copilot catalog when possible so you can still pick a model from the normal model list
+4. At runtime Hermes launches `copilot --acp --stdio` and talks to it through the ACP bridge
+
+Use ACP when you specifically want the local Copilot CLI runtime. Use direct `copilot` when you want Hermes to talk to the Copilot API itself.
 
 **Permanent config:**
 ```yaml

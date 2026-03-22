@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    WECHAT = "wechat"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -547,6 +548,7 @@ def load_gateway_config() -> GatewayConfig:
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+        Platform.WECHAT: "WECHAT_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -774,6 +776,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # WeChat Official Account
+    wechat_token = os.getenv("WECHAT_TOKEN")
+    wechat_app_id = os.getenv("WECHAT_APP_ID")
+    wechat_app_secret = os.getenv("WECHAT_APP_SECRET")
+    if wechat_token and wechat_app_id and wechat_app_secret:
+        if Platform.WECHAT not in config.platforms:
+            config.platforms[Platform.WECHAT] = PlatformConfig()
+        config.platforms[Platform.WECHAT].enabled = True
+        config.platforms[Platform.WECHAT].token = wechat_token
+        config.platforms[Platform.WECHAT].extra["app_id"] = wechat_app_id
+        config.platforms[Platform.WECHAT].extra["app_secret"] = wechat_app_secret
+        wechat_port = os.getenv("WECHAT_PORT")
+        if wechat_port:
+            try:
+                config.platforms[Platform.WECHAT].extra["port"] = int(wechat_port)
+            except ValueError:
+                pass
+        wechat_home = os.getenv("WECHAT_HOME_CHANNEL")
+        if wechat_home:
+            config.platforms[Platform.WECHAT].home_channel = HomeChannel(
+                platform=Platform.WECHAT,
+                chat_id=wechat_home,
+                name=os.getenv("WECHAT_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

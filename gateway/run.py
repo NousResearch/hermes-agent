@@ -1202,6 +1202,13 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
+        elif platform == Platform.WECHAT:
+            from gateway.platforms.wechat import WeChatAdapter, check_wechat_requirements
+            if not check_wechat_requirements():
+                logger.warning("WeChat: WECHAT_TOKEN, WECHAT_APP_ID, or WECHAT_APP_SECRET not set, or httpx/aiohttp missing")
+                return None
+            return WeChatAdapter(config)
+
         elif platform == Platform.API_SERVER:
             from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
             if not check_api_server_requirements():

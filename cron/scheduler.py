@@ -145,6 +145,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "wechat": Platform.WECHAT,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }

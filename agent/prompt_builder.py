@@ -221,6 +221,11 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "wechat": (
+        "You are on WeChat, a text messaging platform popular in China. "
+        "Use plain text only — no markdown, no formatting. Messages are limited "
+        "to 2048 characters. Keep responses concise and direct."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

@@ -473,6 +473,11 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        # Pluggable print function — CLI replaces this with _cprint so that
+        # raw ANSI status lines are routed through prompt_toolkit's renderer
+        # instead of going directly to stdout where patch_stdout's StdoutProxy
+        # would mangle the escape sequences.  None = use builtins.print.
+        self._print_fn = None
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
@@ -1111,16 +1116,21 @@ class AIAgent:
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
     
-    @staticmethod
-    def _safe_print(*args, **kwargs):
+    def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 
         In headless environments (systemd, Docker, nohup) stdout may become
         unavailable mid-session.  A raw ``print()`` raises ``OSError`` which
         can crash cron jobs and lose completed work.
+
+        Internally routes through ``self._print_fn`` (default: builtin
+        ``print``) so callers such as the CLI can inject a renderer that
+        handles ANSI escape sequences properly (e.g. prompt_toolkit's
+        ``print_formatted_text(ANSI(...))``) without touching this method.
         """
         try:
-            print(*args, **kwargs)
+            fn = self._print_fn or print
+            fn(*args, **kwargs)
         except OSError:
             pass
 

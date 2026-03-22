@@ -36,10 +36,6 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
-#TODO: Search Capabilities over the scraped pages
-#TODO: Store the pages in something
-#TODO: Tool to see what pages are available/saved to search over
-
 import json
 import logging
 import os

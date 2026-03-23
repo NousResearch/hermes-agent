@@ -73,6 +73,181 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/docs/integrations/providers).
 
+```yaml
+custom_providers:
+  - name: "My Local LLM"
+    base_url: "http://localhost:11434/v1"
+    models:
+      qwen3.5:27b:
+        context_length: 32768
+      deepseek-r1:70b:
+        context_length: 65536
+```
+
+`hermes model` will prompt for context length when configuring a custom endpoint. Leave it blank for auto-detection.
+
+:::tip When to set this manually
+- You're using Ollama with a custom `num_ctx` that's lower than the model's maximum
+- You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
+- You're running behind a proxy that doesn't expose `/v1/models`
+:::
+
+---
+
+### Choosing the Right Setup
+
+| Use Case | Recommended |
+|----------|-------------|
+| **Just want it to work** | OpenRouter (default) or Nous Portal |
+| **Local models, easy setup** | Ollama |
+| **Production GPU serving** | vLLM or SGLang |
+| **Mac / no GPU** | Ollama or llama.cpp |
+| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
+| **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
+| **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
+| **Enterprise / Azure** | Azure OpenAI with custom endpoint |
+| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot, or MiniMax (first-class providers) |
+
+:::tip
+You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.
+:::
+
+## Optional API Keys
+
+| Feature | Provider | Env Variable |
+|---------|----------|--------------|
+| Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` |
+| Web search (self-hosted) | [SearXNG](https://searxng.org/) | `SEARXNG_URL` |
+| Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
+| Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
+| Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
+| OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
+| RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
+| Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
+
+### Self-Hosting Web Search with SearXNG
+
+Hermes supports **SearXNG** as a self-hosted, privacy-respecting web search backend. Unlike Firecrawl which requires API keys and has per-search costs, SearXNG gives you complete control over your search infrastructure with no rate limits or costs.
+
+**What you get:**
+- No API keys required
+- No rate limits or per-search costs
+- Full data sovereignty and privacy
+- Aggregates results from multiple search engines (Google, Bing, DuckDuckGo, etc.)
+- Open-source and self-hosted
+
+**Setup:**
+
+1. **Install SearXNG** (see [SearXNG documentation](https://docs.searxng.org/admin/installation.html)):
+   ```bash
+   # Docker installation (recommended)
+   docker run -d -p 8080:8080 --name searxng -v $(pwd)/settings.yml:/etc/searxng/settings.yml:ro -v searxng-data:/data searxng/searxng:latest
+   ```
+
+2. **Configure your SearXNG instance** - Edit `settings.yml` to enable search engines you want to use (Google, Bing, DuckDuckGo, etc.)
+
+3. **Point Hermes at your SearXNG instance:**
+   ```bash
+   echo "SEARXNG_URL=http://localhost:8080" >> ~/.hermes/.env
+   ```
+
+Once configured, Hermes will automatically use SearXNG for all web searches. No additional configuration needed - it auto-detects the `SEARXNG_URL` environment variable.
+
+### Self-Hosting Firecrawl
+
+By default, Hermes uses the [Firecrawl cloud API](https://firecrawl.dev/) for web search and scraping. If you prefer to run Firecrawl locally, you can point Hermes at a self-hosted instance instead. See Firecrawl's [SELF_HOST.md](https://github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md) for complete setup instructions.
+
+**What you get:** No API key required, no rate limits, no per-page costs, full data sovereignty.
+
+**What you lose:** The cloud version uses Firecrawl's proprietary "Fire-engine" for advanced anti-bot bypassing (Cloudflare, CAPTCHAs, IP rotation). Self-hosted uses basic fetch + Playwright, so some protected sites may fail. Search uses DuckDuckGo instead of Google.
+
+**Setup:**
+
+1. Clone and start the Firecrawl Docker stack (5 containers: API, Playwright, Redis, RabbitMQ, PostgreSQL — requires ~4-8 GB RAM):
+   ```bash
+   git clone https://github.com/firecrawl/firecrawl
+   cd firecrawl
+   # In .env, set: USE_DB_AUTHENTICATION=false, HOST=0.0.0.0, PORT=3002
+   docker compose up -d
+   ```
+
+2. Point Hermes at your instance (no API key needed):
+   ```bash
+   hermes config set FIRECRAWL_API_URL http://localhost:3002
+   ```
+
+You can also set both `FIRECRAWL_API_KEY` and `FIRECRAWL_API_URL` if your self-hosted instance has authentication enabled.
+
+## OpenRouter Provider Routing
+
+When using OpenRouter, you can control how requests are routed across providers. Add a `provider_routing` section to `~/.hermes/config.yaml`:
+
+```yaml
+provider_routing:
+  sort: "throughput"          # "price" (default), "throughput", or "latency"
+  # only: ["anthropic"]      # Only use these providers
+  # ignore: ["deepinfra"]    # Skip these providers
+  # order: ["anthropic", "google"]  # Try providers in this order
+  # require_parameters: true  # Only use providers that support all request params
+  # data_collection: "deny"   # Exclude providers that may store/train on data
+```
+
+**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
+
+## Fallback Model
+
+Configure a backup provider:model that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
+
+```yaml
+fallback_model:
+  provider: openrouter                    # required
+  model: anthropic/claude-sonnet-4        # required
+  # base_url: http://localhost:8000/v1    # optional, for custom endpoints
+  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
+```
+
+When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
+
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
+
+:::tip
+Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
+:::
+
+## Smart Model Routing
+
+Optional cheap-vs-strong routing lets Hermes keep your main model for complex work while sending very short/simple turns to a cheaper model.
+
+```yaml
+smart_model_routing:
+  enabled: true
+  max_simple_chars: 160
+  max_simple_words: 28
+  cheap_model:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+    # base_url: http://localhost:8000/v1  # optional custom endpoint
+    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
+```
+
+How it works:
+- If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
+- If the turn looks complex, Hermes stays on your primary model/provider
+- If the cheap route cannot be resolved cleanly, Hermes falls back to the primary model automatically
+
+This is intentionally conservative. It is meant for quick, low-stakes turns like:
+- short factual questions
+- quick rewrites
+- lightweight summaries
+
+It will avoid routing prompts that look like:
+- coding/debugging work
+- tool-heavy requests
+- long or multi-line analysis asks
+
+Use this when you want lower latency or cost without fully changing your default model.
+>>>>>>> a9355735 (feat: Add SearXNG self-hosted web search backend)
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, or a Singularity/Apptainer container.

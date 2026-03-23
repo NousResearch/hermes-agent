@@ -66,7 +66,9 @@ async def test_runner_requests_clean_exit_for_nonretryable_startup_conflict(monk
 
 
 @pytest.mark.asyncio
-async def test_runner_requests_failure_exit_for_retryable_runtime_fatal(monkeypatch, tmp_path):
+async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatch, tmp_path):
+    """Retryable runtime fatal errors queue the platform for reconnection
+    instead of shutting down the gateway."""
     config = GatewayConfig(
         platforms={
             Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")
@@ -87,7 +89,7 @@ async def test_runner_requests_failure_exit_for_retryable_runtime_fatal(monkeypa
 
     await runner._handle_adapter_fatal_error(adapter)
 
-    assert runner.should_exit_cleanly is False
-    assert runner.should_exit_with_failure is True
-    assert "exited unexpectedly" in runner.exit_reason
-    runner.stop.assert_awaited_once()
+    # Should NOT shut down — platform is queued for reconnection
+    runner.stop.assert_not_awaited()
+    assert Platform.WHATSAPP in runner._failed_platforms
+    assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0

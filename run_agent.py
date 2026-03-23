@@ -1405,9 +1405,11 @@ class AIAgent:
 
         def _run_review():
             import contextlib, os as _os
+            review_agent = None
             try:
                 with open(_os.devnull, "w") as _devnull, \
-                     contextlib.redirect_stdout(_devnull):
+                     contextlib.redirect_stdout(_devnull), \
+                     contextlib.redirect_stderr(_devnull):
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=8,
@@ -1460,6 +1462,20 @@ class AIAgent:
 
             except Exception as e:
                 logger.debug("Background memory/skill review failed: %s", e)
+            finally:
+                # Explicitly close the OpenAI/httpx client so GC doesn't
+                # try to clean it up on a dead asyncio event loop (which
+                # produces "Event loop is closed" errors in the terminal).
+                if review_agent is not None:
+                    client = getattr(review_agent, "client", None)
+                    if client is not None:
+                        try:
+                            review_agent._close_openai_client(
+                                client, reason="bg_review_done", shared=True
+                            )
+                            review_agent.client = None
+                        except Exception:
+                            pass
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()

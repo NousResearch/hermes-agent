@@ -472,9 +472,6 @@ class SessionStore:
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._has_active_processes_fn = has_active_processes_fn
-        # on_auto_reset is deprecated — memory flush now runs proactively
-        # via the background session expiry watcher in GatewayRunner.
-        self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
         
         # Initialize SQLite session database
         self._db = None
@@ -665,14 +662,10 @@ class SessionStore:
                 self._save()
                 return entry
             else:
-                # Session is being auto-reset.  The background expiry watcher
-                # should have already flushed memories proactively; discard
-                # the marker so it doesn't accumulate.
                 was_auto_reset = True
                 auto_reset_reason = reset_reason
                 # Track whether the expired session had any real conversation
                 reset_had_activity = entry.total_tokens > 0
-                self._pre_flushed_sessions.discard(entry.session_id)
                 if self._db:
                     try:
                         self._db.end_session(entry.session_id, "session_reset")

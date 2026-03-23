@@ -1021,7 +1021,7 @@ class BasePlatformAdapter(ABC):
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
 
                 # Send extracted media files — route by file type
-                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.aac'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 

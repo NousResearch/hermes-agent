@@ -97,11 +97,13 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)
     
-    def _ssrf_redirect_guard(response):
+    async def _ssrf_redirect_guard(response):
         """Re-validate each redirect target to prevent redirect-based SSRF.
 
         Without this, an attacker can host a public URL that 302-redirects
         to http://169.254.169.254/ and bypass the pre-flight is_safe_url check.
+
+        Must be async because httpx.AsyncClient awaits event hooks.
         """
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)

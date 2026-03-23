@@ -1517,7 +1517,11 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            # Prefer the partial quote (selected text) when user quoted specific text
+            if getattr(message, 'quote', None) and message.quote.text:
+                reply_to_text = message.quote.text
+            else:
+                reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
         return MessageEvent(
             text=message.text or "",

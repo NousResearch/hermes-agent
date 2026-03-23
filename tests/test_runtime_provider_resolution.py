@@ -267,7 +267,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="local")
 
-    assert resolved["provider"] == "openrouter"
+    assert resolved["provider"] == "local"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"

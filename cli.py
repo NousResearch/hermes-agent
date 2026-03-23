@@ -2973,6 +2973,14 @@ class HermesCLI:
                     if is_active:
                         print(f"      model: {self.model} ← current")
                     print(f"      (use /model custom:<model-name>)")
+                elif p["id"].startswith("custom:"):
+                    provider_short = p["id"][len("custom:"):]
+                    model_names = p.get("models", [])
+                    for mname in model_names:
+                        current_marker = " ← current" if (is_active and mname == self.model) else ""
+                        print(f"      {mname}{current_marker}")
+                    if not model_names:
+                        print(f"      (use /model {provider_short}:<model-name>)")
                 else:
                     print(f"      (use /model {p['id']}:<model-name>)")
                 print()

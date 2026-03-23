@@ -28,15 +28,49 @@ Usage:
     )
 """
 
+import importlib.util
 import json
 import logging
 import os
 import datetime
 from typing import Dict, Any, Optional, Union
-import fal_client
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lazy availability probe — checked once per process
+# ---------------------------------------------------------------------------
+
+_HAS_FAL_CLIENT = importlib.util.find_spec("fal_client") is not None
+
+
+def detect_image_generation_environment() -> dict:
+    """Probe whether image generation is available in the current environment.
+
+    Returns a dict with:
+      ``available`` (bool)  — True only when all requirements are met.
+      ``reasons``   (list)  — Human-readable strings explaining each gap.
+      ``setup``     (list)  — Actionable fix instructions for each gap.
+    """
+    reasons: list[str] = []
+    setup: list[str] = []
+
+    if not _HAS_FAL_CLIENT:
+        reasons.append("fal-client library is not installed")
+        setup.append("pip install fal-client")
+
+    if not os.getenv("FAL_KEY"):
+        reasons.append("FAL_KEY environment variable is not set")
+        setup.append(
+            "Get a free API key at https://fal.ai and set FAL_KEY=<your-key>"
+        )
+
+    return {
+        "available": len(reasons) == 0,
+        "reasons": reasons,
+        "setup": setup,
+    }
 
 # Configuration for image generation
 DEFAULT_MODEL = "fal-ai/flux-2-pro"
@@ -186,6 +220,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
         # The async API (submit_async) caches a global httpx.AsyncClient via
         # @cached_property, which breaks when asyncio.run() destroys the loop
         # between calls (gateway thread-pool pattern).
+        import fal_client  # noqa: PLC0415 — lazy import, fal_client may not be installed
         handler = fal_client.submit(
             UPSCALER_MODEL,
             arguments=upscaler_arguments
@@ -312,6 +347,7 @@ def image_generate_tool(
         logger.info("  Guidance: %s", validated_params['guidance_scale'])
         
         # Submit request to FAL.ai using sync API (avoids cached event loop issues)
+        import fal_client  # noqa: PLC0415 — lazy import, fal_client may not be installed
         handler = fal_client.submit(
             DEFAULT_MODEL,
             arguments=arguments
@@ -404,23 +440,8 @@ def check_fal_api_key() -> bool:
 
 
 def check_image_generation_requirements() -> bool:
-    """
-    Check if all requirements for image generation tools are met.
-    
-    Returns:
-        bool: True if requirements are met, False otherwise
-    """
-    try:
-        # Check API key
-        if not check_fal_api_key():
-            return False
-        
-        # Check if fal_client is available
-        import fal_client
-        return True
-        
-    except ImportError:
-        return False
+    """Return True only when FAL_KEY is set and fal-client is installed."""
+    return detect_image_generation_environment()["available"]
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -536,6 +557,19 @@ IMAGE_GENERATE_SCHEMA = {
 
 
 def _handle_image_generate(args, **kw):
+    # Fail fast: surface a clear, actionable error instead of silently dropping
+    # the tool or attempting PIL/web-search workarounds (see issue #2543).
+    env = detect_image_generation_environment()
+    if not env["available"]:
+        msg = (
+            "Image generation is unavailable in this environment.\n\n"
+            "Missing requirements:\n"
+            + "".join(f"  - {r}\n" for r in env["reasons"])
+            + "\nTo enable image generation:\n"
+            + "".join(f"  {i + 1}. {s}\n" for i, s in enumerate(env["setup"]))
+        )
+        return json.dumps({"error": msg})
+
     prompt = args.get("prompt", "")
     if not prompt:
         return json.dumps({"error": "prompt is required for image generation"})
@@ -555,7 +589,9 @@ registry.register(
     toolset="image_gen",
     schema=IMAGE_GENERATE_SCHEMA,
     handler=_handle_image_generate,
-    check_fn=check_image_generation_requirements,
+    # check_fn intentionally removed: the handler now returns a structured error
+    # when backends are unavailable so the model always sees the tool and gets
+    # a clear setup message rather than silently attempting workarounds.
     requires_env=["FAL_KEY"],
     is_async=False,  # Switched to sync fal_client API to fix "Event loop is closed" in gateway
     emoji="🎨",

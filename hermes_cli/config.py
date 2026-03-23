@@ -246,7 +246,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local) | "kittentts" (local, lightweight)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -265,6 +265,15 @@ DEFAULT_CONFIG = {
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
+        },
+        "kittentts": {
+            "model": "KittenML/kitten-tts-nano-0.8-int8",  # 25MB model
+            # Options: KittenML/kitten-tts-nano-0.8-int8 (25MB),
+            #          KittenML/kitten-tts-micro-0.8 (41MB),
+            #          KittenML/kitten-tts-mini-0.8 (80MB)
+            "voice": "Jasper",  # Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo
+            "speed": 1.0,  # Speech speed multiplier (0.5 = slow, 2.0 = fast)
+            "clean_text": True,  # Preprocess text (expand numbers, currencies, etc.)
         },
     },
     

@@ -373,6 +373,9 @@ Tool schema descriptions must not mention tools from other toolsets by name (e.g
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
 
+### TestCleanup pattern (test_commands.py)
+The TestCleanup class demonstrates elegant test consolidation: 6 tests cover all cleanup scenarios using inline state reset (`cli._cleanup_done = False`) rather than pytest fixtures. This keeps tests self-contained and avoids fixture overhead. Test coverage: initial state (False), flag timing (set at start), idempotency (multiple calls), all functions invoked, exception handling (one failure doesn't block others), and execution order (terminals → browsers → MCP).
+
 ---
 
 ## Testing
@@ -382,6 +385,7 @@ source venv/bin/activate
 python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
 python -m pytest tests/test_model_tools.py -q   # Toolset resolution
 python -m pytest tests/test_cli_init.py -q       # CLI config loading
+python -m pytest tests/hermes_cli/test_commands.py -q  # Command registry & cleanup
 python -m pytest tests/gateway/ -q               # Gateway tests
 python -m pytest tests/tools/ -q                 # Tool-level tests
 ```

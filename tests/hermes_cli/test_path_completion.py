@@ -163,6 +163,24 @@ class TestIntegration:
         # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
 
+    def test_bare_context_path_fragment_returns_context_reference(self, completer, tmp_path):
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        target = src_dir / "main.py"
+        target.touch()
+
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            doc = Document("check @src/ma", cursor_position=len("check @src/ma"))
+            event = MagicMock()
+            completions = list(completer.get_completions(doc, event))
+        finally:
+            os.chdir(old_cwd)
+
+        assert any(c.text == "@file:src/main.py" for c in completions)
+        assert all(c.text != "src/main.py" for c in completions)
+
 
 class TestFileSizeLabel:
     def test_bytes(self, tmp_path):

@@ -70,6 +70,7 @@ Thread safety:
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import math
@@ -921,14 +922,27 @@ def _ensure_mcp_loop():
         _mcp_thread.start()
 
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
-    """Schedule a coroutine on the MCP event loop and block until done."""
+def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
+    """Schedule a coroutine on the MCP event loop and block until done.
+
+    Accepts either a coroutine object or a zero-arg callable that returns one.
+    Callers can pass a factory to avoid constructing coroutine objects when the
+    MCP loop is unavailable or a patched scheduler raises before awaiting.
+    """
     with _lock:
         loop = _mcp_loop
     if loop is None or not loop.is_running():
+        if asyncio.iscoroutine(coro_or_factory):
+            coro_or_factory.close()
         raise RuntimeError("MCP event loop is not running")
+
+    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1039,7 +1053,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -1082,7 +1096,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return json.dumps({"resources": resources})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
@@ -1124,7 +1138,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return json.dumps({"result": "\n".join(parts) if parts else ""})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
@@ -1171,7 +1185,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return json.dumps({"prompts": prompts})
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
@@ -1224,7 +1238,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             return json.dumps(resp)
 
         try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+            return _run_on_mcp_loop(_call, timeout=tool_timeout)
         except Exception as exc:
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
@@ -1660,7 +1674,7 @@ def discover_mcp_tools() -> List[str]:
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
+    _run_on_mcp_loop(_discover_all, timeout=120)
 
     _sync_mcp_toolsets(list(servers.keys()))
 
@@ -1774,7 +1788,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         )
 
     try:
-        _run_on_mcp_loop(_probe_all(), timeout=120)
+        _run_on_mcp_loop(_probe_all, timeout=120)
     except Exception as exc:
         logger.debug("MCP probe failed: %s", exc)
     finally:

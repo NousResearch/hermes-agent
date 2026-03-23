@@ -4,8 +4,10 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 """
 
 import asyncio
+import gc
 import json
 import os
+import warnings
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -181,7 +183,8 @@ class TestToolHandler:
 
     def _patch_mcp_loop(self, coro_side_effect=None):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(coro)
@@ -252,6 +255,31 @@ class TestToolHandler:
                 result = json.loads(handler({}))
             assert "error" in result
             assert "connection lost" in result["error"]
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_scheduler_failure_does_not_leak_unawaited_coroutine(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(return_value=_make_call_result("ignored"))
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("loop down")):
+                    result = json.loads(handler({"name": "world"}))
+                gc.collect()
+            assert "error" in result
+            runtime_warnings = [
+                w for w in caught
+                if issubclass(w.category, RuntimeWarning)
+                and "was never awaited" in str(w.message)
+            ]
+            assert runtime_warnings == []
         finally:
             _servers.pop("test_srv", None)
 
@@ -1201,7 +1229,8 @@ class TestUtilityHandlers:
 
     def _patch_mcp_loop(self):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
-        def fake_run(coro, timeout=30):
+        def fake_run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(coro)

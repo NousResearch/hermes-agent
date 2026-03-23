@@ -46,6 +46,7 @@ import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
+from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
@@ -895,6 +896,14 @@ async def web_extract_tool(
                     results.append({"url": url, "error": "Interrupted", "title": ""})
                     continue
 
+                # SSRF protection — block private/internal addresses
+                if not is_safe_url(url):
+                    results.append({
+                        "url": url, "title": "", "content": "",
+                        "error": "Blocked: URL targets a private or internal network address",
+                    })
+                    continue
+
                 # Website policy check — block before fetching
                 blocked = check_website_access(url)
                 if blocked:
@@ -1173,6 +1182,11 @@ async def web_crawl_tool(
             if not url.startswith(('http://', 'https://')):
                 url = f'https://{url}'
 
+            # SSRF protection — block private/internal addresses
+            if not is_safe_url(url):
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+
             # Website policy check
             blocked = check_website_access(url)
             if blocked:
@@ -1258,6 +1272,11 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
+        # SSRF protection — block private/internal addresses
+        if not is_safe_url(url):
+            return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+
         # Website policy check — block before crawling
         blocked = check_website_access(url)
         if blocked:

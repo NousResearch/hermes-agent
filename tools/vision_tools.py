@@ -69,7 +69,12 @@ def _validate_image_url(url: str) -> bool:
     if not parsed.netloc:
         return False
 
-    return True  # Allow all well-formed HTTP/HTTPS URLs for flexibility
+    # Block private/internal addresses to prevent SSRF
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        return False
+
+    return True
 
 
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:

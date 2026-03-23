@@ -2,23 +2,31 @@
 """
 Browser Tool Module
 
-This module provides browser automation tools using agent-browser CLI.  It
-supports two backends — **Browserbase** (cloud) and **local Chromium** — with
-identical agent-facing behaviour.  The backend is auto-detected: if
-``BROWSERBASE_API_KEY`` is set the cloud service is used; otherwise a local
-headless Chromium instance is launched automatically.
+This module provides browser automation tools using agent-browser CLI. It
+supports multiple backends with automatic failover and detection:
+
+**Backend Priority Order:**
+1. **Explicit CDP** (BROWSER_CDP_URL set via /browser connect)
+2. **Auto-detected Chrome CDP** (running Chrome on ports 9222-9225)
+3. **Cloud mode** (Browserbase or Browser Use if API keys configured)
+4. **Local mode** (headless Chromium via agent-browser)
 
 The tool uses agent-browser's accessibility tree (ariaSnapshot) for text-based
 page representation, making it ideal for LLM agents without vision capabilities.
 
 Features:
+- **Auto-detect Chrome CDP**: Automatically detects if Chrome is already running
+  with remote debugging enabled (ports 9222-9225), reusing existing instances
+  instead of spawning new browsers. Prevents duplicate Chrome processes.
 - **Local mode** (default): zero-cost headless Chromium via agent-browser.
-  Works on Linux servers without a display.  One-time setup:
+  Works on Linux servers without a display. One-time setup:
   ``agent-browser install`` (downloads Chromium) or
   ``agent-browser install --with-deps`` (also installs system libraries for
   Debian/Ubuntu/Docker).
-- **Cloud mode**: Browserbase cloud execution with stealth features, proxies,
-  and CAPTCHA solving.  Activated when BROWSERBASE_API_KEY is set.
+- **Cloud mode**: Browserbase or Browser Use cloud execution with stealth features,
+  proxies, and CAPTCHA solving. Activated when API keys are configured.
+- **Explicit CDP mode**: Direct connection to user-supplied CDP endpoint
+  (e.g., via /browser connect command).
 - Session isolation per task ID
 - Text-based page snapshots using accessibility tree
 - Element interaction via ref selectors (@e1, @e2, etc.)
@@ -28,6 +36,7 @@ Features:
 Environment Variables:
 - BROWSERBASE_API_KEY: API key for Browserbase (enables cloud mode)
 - BROWSERBASE_PROJECT_ID: Project ID for Browserbase (required for cloud mode)
+- BROWSER_USE_API_KEY: API key for Browser Use (alternative cloud provider)
 - BROWSERBASE_PROXIES: Enable/disable residential proxies (default: "true")
 - BROWSERBASE_ADVANCED_STEALTH: Enable advanced stealth mode with custom Chromium,
   requires Scale Plan (default: "false")
@@ -35,6 +44,11 @@ Environment Variables:
   requires paid plan (default: "true")
 - BROWSERBASE_SESSION_TIMEOUT: Custom session timeout in milliseconds. Set to extend
   beyond project default. Common values: 600000 (10min), 1800000 (30min) (default: none)
+- BROWSER_CDP_URL: Explicit CDP endpoint override (set via /browser connect)
+- BROWSER_CDP_AUTO_DETECT: Enable/disable auto-detection of running Chrome
+  (default: "true", set to "false" to disable)
+- BROWSER_INACTIVITY_TIMEOUT: Inactivity timeout before auto-cleanup in seconds
+  (default: 300)
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
@@ -163,6 +177,56 @@ def _get_cdp_override() -> str:
     the supplied Chrome DevTools Protocol endpoint.
     """
     return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
+
+
+def _check_cdp_port(host: str = "127.0.0.1", port: int = 9222, timeout: float = 1.0) -> bool:
+    """Check if a Chrome CDP instance is already listening on the given port.
+    
+    Args:
+        host: Host to check (default: 127.0.0.1)
+        port: Port to check (default: 9222)
+        timeout: Socket timeout in seconds (default: 1.0)
+        
+    Returns:
+        True if Chrome is listening on the port, False otherwise
+    """
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True
+    except (OSError, socket.timeout):
+        return False
+
+
+def _try_auto_detect_cdp() -> str:
+    """Attempt to auto-detect a running Chrome CDP instance.
+    
+    Checks the default CDP port (9222) and common alternatives.
+    Returns the CDP websocket URL if Chrome is detected, empty string otherwise.
+    
+    This enables automatic reuse of existing Chrome instances without
+    requiring explicit /browser connect command.
+    """
+    # Check if auto-detection is disabled
+    if os.environ.get("BROWSER_CDP_AUTO_DETECT", "true").lower() == "false":
+        return ""
+    
+    # Check default port 9222
+    default_port = 9222
+    if _check_cdp_port(port=default_port):
+        logger.info("Auto-detected Chrome CDP on port %d", default_port)
+        return f"ws://127.0.0.1:{default_port}"
+    
+    # Check alternative ports (9223-9225) for SSH tunnel scenarios
+    for alt_port in range(9223, 9226):
+        if _check_cdp_port(port=alt_port):
+            logger.info("Auto-detected Chrome CDP on alternative port %d", alt_port)
+            return f"ws://127.0.0.1:{alt_port}"
+    
+    return ""
 
 
 # ============================================================================
@@ -567,8 +631,12 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
     Get or create session info for the given task.
     
-    In cloud mode, creates a Browserbase session with proxies enabled.
-    In local mode, generates a session name for agent-browser --session.
+    Priority order for browser backend selection:
+    1. Explicit BROWSER_CDP_URL (set via /browser connect)
+    2. Auto-detected Chrome CDP instance (ports 9222-9225)
+    3. Cloud provider (Browserbase or Browser Use) if configured
+    4. Local headless Chromium (agent-browser)
+    
     Also starts the inactivity cleanup thread and updates activity tracking.
     Thread-safe: multiple subagents can call this concurrently.
     
@@ -593,15 +661,23 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             return _active_sessions[task_id]
     
     # Create session outside the lock (network call in cloud mode)
+    # Priority 1: Explicit CDP override from BROWSER_CDP_URL env var
     cdp_override = _get_cdp_override()
     if cdp_override:
         session_info = _create_cdp_session(task_id, cdp_override)
     else:
-        provider = _get_cloud_provider()
-        if provider is None:
-            session_info = _create_local_session(task_id)
+        # Priority 2: Auto-detect running Chrome CDP instance
+        auto_cdp = _try_auto_detect_cdp()
+        if auto_cdp:
+            session_info = _create_cdp_session(task_id, auto_cdp)
         else:
-            session_info = provider.create_session(task_id)
+            # Priority 3: Cloud provider if configured
+            provider = _get_cloud_provider()
+            if provider is not None:
+                session_info = provider.create_session(task_id)
+            else:
+                # Priority 4: Local headless Chromium
+                session_info = _create_local_session(task_id)
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we

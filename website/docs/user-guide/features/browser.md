@@ -69,6 +69,12 @@ In the CLI, use:
 
 If Chrome isn't already running with remote debugging, Hermes will attempt to auto-launch it with `--remote-debugging-port=9222`.
 
+:::tip[Auto-detection]
+**Hermes automatically detects running Chrome instances** on ports 9222-9225. If you have Chrome running with remote debugging enabled (e.g., `--remote-debugging-port=9222`), Hermes will automatically connect to it without requiring `/browser connect`. This prevents spawning duplicate Chrome processes.
+
+To disable auto-detection, set `BROWSER_CDP_AUTO_DETECT=false`.
+:::
+
 :::tip
 To start Chrome manually with CDP enabled:
 ```bash

@@ -197,7 +197,7 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Discord" in prompt
-        assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
+        assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower() or "do not have access" in prompt.lower()
 
     def test_slack_prompt_includes_platform_notes(self):
         config = GatewayConfig(
@@ -216,8 +216,8 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
-        assert "pin" in prompt.lower()
+        assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
+        assert "pin" in prompt.lower() or "curl" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""

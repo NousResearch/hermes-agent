@@ -235,13 +235,14 @@ def _build_child_agent(
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
-    # Register child for interrupt propagation
+    # Register child for interrupt propagation (always use lock)
     if hasattr(parent_agent, '_active_children'):
         lock = getattr(parent_agent, '_active_children_lock', None)
-        if lock:
-            with lock:
-                parent_agent._active_children.append(child)
-        else:
+        if lock is None:
+            import threading
+            lock = threading.Lock()
+            parent_agent._active_children_lock = lock
+        with lock:
             parent_agent._active_children.append(child)
 
     return child
@@ -375,22 +376,22 @@ def _run_single_child(
         }
 
     finally:
-        # Restore the parent's tool names so the process-global is correct
-        # for any subsequent execute_code calls or other consumers.
-        import model_tools
+        # NOTE: We no longer restore model_tools._last_resolved_tool_names here
+        # because in batch mode, multiple threads race on this global.
+        # The authoritative restore happens in delegate_task() after all
+        # children complete. handle_function_call() already prefers the
+        # explicit enabled_tools parameter over the global, so child agents
+        # are unaffected.
 
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
-
-        # Unregister child from interrupt propagation
+        # Unregister child from interrupt propagation (always use lock)
         if hasattr(parent_agent, '_active_children'):
             try:
                 lock = getattr(parent_agent, '_active_children_lock', None)
-                if lock:
-                    with lock:
-                        parent_agent._active_children.remove(child)
-                else:
+                if lock is None:
+                    import threading
+                    lock = threading.Lock()
+                    parent_agent._active_children_lock = lock
+                with lock:
                     parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
@@ -470,25 +471,22 @@ def delegate_task(
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
     # Build all child agents on the main thread (thread-safe construction)
-    # Wrapped in try/finally so the global is always restored even if a
-    # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
-    try:
-        for i, t in enumerate(task_list):
-            child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-            )
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
-    finally:
-        # Authoritative restore: reset global to parent's tool names after all children built
-        _model_tools._last_resolved_tool_names = _parent_tool_names
+    for i, t in enumerate(task_list):
+        child = _build_child_agent(
+            task_index=i, goal=t["goal"], context=t.get("context"),
+            toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+            max_iterations=effective_max_iter, parent_agent=parent_agent,
+            override_provider=creds["provider"], override_base_url=creds["base_url"],
+            override_api_key=creds["api_key"],
+            override_api_mode=creds["api_mode"],
+        )
+        # Override with correct parent tool names (before child construction mutated global)
+        child._delegate_saved_tool_names = _parent_tool_names
+        children.append((i, t, child))
+
+    # Authoritative restore: reset global to parent's tool names after all children built
+    _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)

@@ -131,12 +131,12 @@ class TestGatewayQuickCommands:
     async def test_exec_command_returns_output(self):
         from gateway.run import GatewayRunner
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
+        runner.config = {"quick_commands": {"mycheck": {"type": "exec", "command": "echo ok"}}}
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)
 
-        event = self._make_event("limits")
+        event = self._make_event("mycheck")
         result = await runner._handle_message(event)
         assert result == "ok"
 
@@ -177,12 +177,12 @@ class TestGatewayQuickCommands:
 
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = GatewayConfig(
-            quick_commands={"limits": {"type": "exec", "command": "echo ok"}}
+            quick_commands={"mycheck": {"type": "exec", "command": "echo ok"}}
         )
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)
 
-        event = self._make_event("limits")
+        event = self._make_event("mycheck")
         result = await runner._handle_message(event)
         assert result == "ok"

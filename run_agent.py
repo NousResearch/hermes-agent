@@ -76,6 +76,9 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    DEBUGGING_GUIDANCE,
+    SELF_REVIEW_GUIDANCE,
+    THINK_BEFORE_ACT_GUIDANCE,
 )
 from agent.model_metadata import (
     fetch_model_metadata,
@@ -85,8 +88,10 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, build_repo_map_prompt
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.cost_tracker import CostTracker
+from agent.context_mentions import expand_mentions
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -1063,6 +1068,7 @@ class AIAgent:
         )
         self.compression_enabled = compression_enabled
         self._user_turn_count = 0
+        self.cost_tracker = CostTracker()
 
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
@@ -2280,6 +2286,11 @@ class AIAgent:
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
+        # General behavioral guidance — always included
+        prompt_parts.append(DEBUGGING_GUIDANCE)
+        prompt_parts.append(SELF_REVIEW_GUIDANCE)
+        prompt_parts.append(THINK_BEFORE_ACT_GUIDANCE)
+
         # Honcho CLI awareness: tell Hermes about its own management commands
         # so it can refer the user to them rather than reinventing answers.
         if self._honcho and self._honcho_session_key:
@@ -2366,6 +2377,18 @@ class AIAgent:
             context_files_prompt = build_context_files_prompt(skip_soul=_soul_loaded)
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
+
+        # Repository map — Aider-style code overview
+        if not self.skip_context_files:
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _repo_map_enabled = _load_cfg().get("repo_map", True)
+            except Exception:
+                _repo_map_enabled = True
+            if _repo_map_enabled:
+                _repo_map = build_repo_map_prompt()
+                if _repo_map:
+                    prompt_parts.append(_repo_map)
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
@@ -2532,6 +2555,27 @@ class AIAgent:
         normalized = lowered.replace("-", "_").replace(" ", "_")
         if normalized in self.valid_tool_names:
             return normalized
+
+        # 2b. Static alias map for common model hallucinations
+        _TOOL_ALIASES = {
+            "bash": "terminal", "shell": "terminal", "exec": "terminal",
+            "execute": "terminal", "mkdir": "terminal", "cd": "terminal",
+            "pip": "terminal", "npm": "terminal", "git": "terminal",
+            "run": "terminal", "execute_command": "terminal",
+            "grep": "search_files", "find": "search_files", "rg": "search_files",
+            "ls": "search_files",
+            "cat": "read_file", "file_read": "read_file", "view": "read_file",
+            "show": "read_file",
+            "edit": "patch", "edit_file": "patch", "replace": "patch",
+            "sed": "patch",
+            "file_write": "write_file", "create_file": "write_file",
+            "ask": "clarify", "question": "clarify",
+            "browse": "browser_navigate", "open_url": "browser_navigate",
+            "screenshot": "browser_vision", "webpage": "browser_vision",
+        }
+        alias_target = _TOOL_ALIASES.get(normalized)
+        if alias_target and alias_target in self.valid_tool_names:
+            return alias_target
 
         # 3. Fuzzy match
         matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
@@ -4830,14 +4874,21 @@ class AIAgent:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
-            # Truncate oversized results
-            MAX_TOOL_RESULT_CHARS = 100_000
+            # Truncate oversized results — keep head + tail for context
+            MAX_TOOL_RESULT_CHARS = 50_000
             if len(function_result) > MAX_TOOL_RESULT_CHARS:
+                HEAD_CHARS = 10_000
+                TAIL_CHARS = 40_000
                 original_len = len(function_result)
+                head = function_result[:HEAD_CHARS]
+                tail = function_result[-TAIL_CHARS:]
+                skipped = function_result[HEAD_CHARS:-TAIL_CHARS]
+                skipped_lines = skipped.count("\n")
                 function_result = (
-                    function_result[:MAX_TOOL_RESULT_CHARS]
-                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
+                    head
+                    + f"\n\n[... truncated {skipped_lines:,} lines "
+                    + f"({original_len:,} chars total) ...]\n\n"
+                    + tail
                 )
 
             # Append tool result message in order
@@ -5080,16 +5131,21 @@ class AIAgent:
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             # Guard against tools returning absurdly large content that would
-            # blow up the context window. 100K chars ≈ 25K tokens — generous
-            # enough for any reasonable tool output but prevents catastrophic
-            # context explosions (e.g. accidental base64 image dumps).
-            MAX_TOOL_RESULT_CHARS = 100_000
+            # blow up the context window. Keep head + tail for context.
+            MAX_TOOL_RESULT_CHARS = 50_000
             if len(function_result) > MAX_TOOL_RESULT_CHARS:
+                HEAD_CHARS = 10_000
+                TAIL_CHARS = 40_000
                 original_len = len(function_result)
+                head = function_result[:HEAD_CHARS]
+                tail = function_result[-TAIL_CHARS:]
+                skipped = function_result[HEAD_CHARS:-TAIL_CHARS]
+                skipped_lines = skipped.count("\n")
                 function_result = (
-                    function_result[:MAX_TOOL_RESULT_CHARS]
-                    + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-                    f"exceeding the {MAX_TOOL_RESULT_CHARS:,} char limit]"
+                    head
+                    + f"\n\n[... truncated {skipped_lines:,} lines "
+                    + f"({original_len:,} chars total) ...]\n\n"
+                    + tail
                 )
 
             tool_msg = {
@@ -5466,6 +5522,11 @@ class AIAgent:
                         self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+
+        # Expand @-mentions in user message before adding to conversation
+        _mention_cleaned, _mention_context = expand_mentions(user_message, os.getcwd())
+        if _mention_context:
+            user_message = _mention_context + "\n\n" + _mention_cleaned
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -6013,6 +6074,8 @@ class AIAgent:
                         self.session_completion_tokens += completion_tokens
                         self.session_total_tokens += total_tokens
                         self.session_api_calls += 1
+                        if hasattr(self, 'cost_tracker') and self.cost_tracker:
+                            self.cost_tracker.add_usage(prompt_tokens, completion_tokens, self.model)
                         self.session_input_tokens += canonical_usage.input_tokens
                         self.session_output_tokens += canonical_usage.output_tokens
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens

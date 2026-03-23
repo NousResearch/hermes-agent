@@ -28,6 +28,18 @@ def _strip_ansi(text: str) -> str:
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 
+def _try_auto_commit(path: str) -> None:
+    """Attempt an auto-commit if the feature is enabled. Never raises."""
+    try:
+        from agent.auto_git import maybe_auto_commit
+        cwd = os.path.dirname(os.path.abspath(path)) if path else os.getcwd()
+        # Build config from environment / yaml
+        config = {"auto_commit": os.getenv("HERMES_AUTO_COMMIT", "").lower() in ("1", "true", "yes")}
+        maybe_auto_commit(cwd, config)
+    except Exception:
+        pass  # Auto-commit is best-effort; never block file operations
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):
@@ -304,7 +316,18 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         content = _strip_ansi(content)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        _try_auto_commit(path)
+        result_json = json.dumps(result.to_dict(), ensure_ascii=False)
+        # Prominent syntax error check after write
+        if not result.error:
+            lint_result = file_ops._check_lint(path)
+            if lint_result and not lint_result.skipped and not lint_result.success:
+                result_json += (
+                    "\n\n⚠️ SYNTAX ERROR after edit: "
+                    + (lint_result.output or "unknown error")
+                    + ". The file has been modified but contains errors. Please fix immediately."
+                )
+        return result_json
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
@@ -342,6 +365,28 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # retries with stale content instead of re-reading the file.
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
+        else:
+            _try_auto_commit(path)
+        # Prominent syntax error warning — make lint failures unmissable
+        lint_info = result_dict.get("lint")
+        if lint_info:
+            # Single-file lint result (from replace mode)
+            if isinstance(lint_info, dict) and lint_info.get("status") == "error":
+                result_json += (
+                    "\n\n⚠️ SYNTAX ERROR after edit: "
+                    + (lint_info.get("output") or "unknown error")
+                    + ". The file has been modified but contains errors. Please fix immediately."
+                )
+            # Multi-file lint results (from v4a patch mode)
+            elif isinstance(lint_info, dict):
+                for fpath, flint in lint_info.items():
+                    if isinstance(flint, dict) and flint.get("status") == "error":
+                        result_json += (
+                            "\n\n⚠️ SYNTAX ERROR after edit in "
+                            + fpath + ": "
+                            + (flint.get("output") or "unknown error")
+                            + ". The file has been modified but contains errors. Please fix immediately."
+                        )
         return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)

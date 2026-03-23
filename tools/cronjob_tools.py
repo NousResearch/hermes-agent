@@ -131,8 +131,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
-        "enabled": job.get("enabled", True),
-        "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
+        "state": job.get("state", "scheduled"),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
@@ -275,7 +274,7 @@ def cronjob(
                 updates["schedule_display"] = parsed_schedule.get("display", schedule)
                 if job.get("state") != "paused":
                     updates["state"] = "scheduled"
-                    updates["enabled"] = True
+                    # state already set to "scheduled" above
             if not updates:
                 return json.dumps({"success": False, "error": "No updates provided."}, indent=2)
             updated = update_job(job_id, updates)
@@ -336,9 +335,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
-NOTE: The agent's final response is auto-delivered to the target. Put the primary
-user-facing content in the final response. Cron jobs run autonomously with no user
-present — they cannot ask questions or request clarification.
+NOTE: The agent's final response is auto-delivered to the target — do NOT use
+send_message in the prompt for that same destination. Same-target send_message
+calls are skipped to avoid duplicate cron deliveries. Put the primary
+user-facing content in the final response, and use send_message only for
+additional or different targets.
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
@@ -370,7 +371,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
+                "description": "Delivery target: origin, local, telegram, discord, signal, sms, or platform:chat_id"
             },
             "model": {
                 "type": "string",

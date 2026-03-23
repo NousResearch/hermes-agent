@@ -13,6 +13,7 @@ import logging
 import os
 import json
 import re
+import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -471,10 +472,12 @@ class SessionStore:
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
+        self._lock = threading.Lock()  # protects _entries and session mutation methods
         self._has_active_processes_fn = has_active_processes_fn
         # on_auto_reset is deprecated — memory flush now runs proactively
         # via the background session expiry watcher in GatewayRunner.
         self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
+        self._flush_lock = threading.Lock()  # protects _pre_flushed_sessions
         
         # Initialize SQLite session database
         self._db = None
@@ -651,70 +654,72 @@ class SessionStore:
         Evaluates reset policy to determine if the existing session is stale.
         Creates a session record in SQLite when a new session starts.
         """
-        self._ensure_loaded()
-        
-        session_key = self._generate_session_key(source)
-        now = datetime.now()
-        
-        if session_key in self._entries and not force_new:
-            entry = self._entries[session_key]
+        with self._lock:
+            self._ensure_loaded()
             
-            reset_reason = self._should_reset(entry, source)
-            if not reset_reason:
-                entry.updated_at = now
-                self._save()
-                return entry
+            session_key = self._generate_session_key(source)
+            now = datetime.now()
+            
+            if session_key in self._entries and not force_new:
+                entry = self._entries[session_key]
+                
+                reset_reason = self._should_reset(entry, source)
+                if not reset_reason:
+                    entry.updated_at = now
+                    self._save()
+                    return entry
+                else:
+                    # Session is being auto-reset.  The background expiry watcher
+                    # should have already flushed memories proactively; discard
+                    # the marker so it doesn't accumulate.
+                    was_auto_reset = True
+                    auto_reset_reason = reset_reason
+                    # Track whether the expired session had any real conversation
+                    reset_had_activity = entry.total_tokens > 0
+                    with self._flush_lock:
+                        self._pre_flushed_sessions.discard(entry.session_id)
+                    if self._db:
+                        try:
+                            self._db.end_session(entry.session_id, "session_reset")
+                        except Exception as e:
+                            logger.debug("Session DB operation failed: %s", e)
             else:
-                # Session is being auto-reset.  The background expiry watcher
-                # should have already flushed memories proactively; discard
-                # the marker so it doesn't accumulate.
-                was_auto_reset = True
-                auto_reset_reason = reset_reason
-                # Track whether the expired session had any real conversation
-                reset_had_activity = entry.total_tokens > 0
-                self._pre_flushed_sessions.discard(entry.session_id)
-                if self._db:
-                    try:
-                        self._db.end_session(entry.session_id, "session_reset")
-                    except Exception as e:
-                        logger.debug("Session DB operation failed: %s", e)
-        else:
-            was_auto_reset = False
-            auto_reset_reason = None
-            reset_had_activity = False
-        
-        # Create new session
-        session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        
-        entry = SessionEntry(
-            session_key=session_key,
-            session_id=session_id,
-            created_at=now,
-            updated_at=now,
-            origin=source,
-            display_name=source.chat_name,
-            platform=source.platform,
-            chat_type=source.chat_type,
-            was_auto_reset=was_auto_reset,
-            auto_reset_reason=auto_reset_reason,
-            reset_had_activity=reset_had_activity,
-        )
-        
-        self._entries[session_key] = entry
-        self._save()
-        
-        # Create session in SQLite
-        if self._db:
-            try:
-                self._db.create_session(
-                    session_id=session_id,
-                    source=source.platform.value,
-                    user_id=source.user_id,
-                )
-            except Exception as e:
-                print(f"[gateway] Warning: Failed to create SQLite session: {e}")
-        
-        return entry
+                was_auto_reset = False
+                auto_reset_reason = None
+                reset_had_activity = False
+            
+            # Create new session
+            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            
+            entry = SessionEntry(
+                session_key=session_key,
+                session_id=session_id,
+                created_at=now,
+                updated_at=now,
+                origin=source,
+                display_name=source.chat_name,
+                platform=source.platform,
+                chat_type=source.chat_type,
+                was_auto_reset=was_auto_reset,
+                auto_reset_reason=auto_reset_reason,
+                reset_had_activity=reset_had_activity,
+            )
+            
+            self._entries[session_key] = entry
+            self._save()
+            
+            # Create session in SQLite
+            if self._db:
+                try:
+                    self._db.create_session(
+                        session_id=session_id,
+                        source=source.platform.value,
+                        user_id=source.user_id,
+                    )
+                except Exception as e:
+                    print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+            
+            return entry
     
     def update_session(
         self, 
@@ -732,9 +737,12 @@ class SessionStore:
         base_url: Optional[str] = None,
     ) -> None:
         """Update a session's metadata after an interaction."""
-        self._ensure_loaded()
-        
-        if session_key in self._entries:
+        with self._lock:
+            self._ensure_loaded()
+            
+            if session_key not in self._entries:
+                return
+            
             entry = self._entries[session_key]
             entry.updated_at = datetime.now()
             entry.input_tokens += input_tokens
@@ -775,49 +783,50 @@ class SessionStore:
     
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
-        self._ensure_loaded()
-        
-        if session_key not in self._entries:
-            return None
-        
-        old_entry = self._entries[session_key]
-        
-        # End old session in SQLite
-        if self._db:
-            try:
-                self._db.end_session(old_entry.session_id, "session_reset")
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
-        
-        now = datetime.now()
-        session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        
-        new_entry = SessionEntry(
-            session_key=session_key,
-            session_id=session_id,
-            created_at=now,
-            updated_at=now,
-            origin=old_entry.origin,
-            display_name=old_entry.display_name,
-            platform=old_entry.platform,
-            chat_type=old_entry.chat_type,
-        )
-        
-        self._entries[session_key] = new_entry
-        self._save()
-        
-        # Create new session in SQLite
-        if self._db:
-            try:
-                self._db.create_session(
-                    session_id=session_id,
-                    source=old_entry.platform.value if old_entry.platform else "unknown",
-                    user_id=old_entry.origin.user_id if old_entry.origin else None,
-                )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
-        
-        return new_entry
+        with self._lock:
+            self._ensure_loaded()
+            
+            if session_key not in self._entries:
+                return None
+            
+            old_entry = self._entries[session_key]
+            
+            # End old session in SQLite
+            if self._db:
+                try:
+                    self._db.end_session(old_entry.session_id, "session_reset")
+                except Exception as e:
+                    logger.debug("Session DB operation failed: %s", e)
+            
+            now = datetime.now()
+            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            
+            new_entry = SessionEntry(
+                session_key=session_key,
+                session_id=session_id,
+                created_at=now,
+                updated_at=now,
+                origin=old_entry.origin,
+                display_name=old_entry.display_name,
+                platform=old_entry.platform,
+                chat_type=old_entry.chat_type,
+            )
+            
+            self._entries[session_key] = new_entry
+            self._save()
+            
+            # Create new session in SQLite
+            if self._db:
+                try:
+                    self._db.create_session(
+                        session_id=session_id,
+                        source=old_entry.platform.value if old_entry.platform else "unknown",
+                        user_id=old_entry.origin.user_id if old_entry.origin else None,
+                    )
+                except Exception as e:
+                    logger.debug("Session DB operation failed: %s", e)
+            
+            return new_entry
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
@@ -827,39 +836,40 @@ class SessionStore:
         generating a fresh session ID, re-uses ``target_session_id`` so the
         old transcript is loaded on the next message.
         """
-        self._ensure_loaded()
+        with self._lock:
+            self._ensure_loaded()
 
-        if session_key not in self._entries:
-            return None
+            if session_key not in self._entries:
+                return None
 
-        old_entry = self._entries[session_key]
+            old_entry = self._entries[session_key]
 
-        # Don't switch if already on that session
-        if old_entry.session_id == target_session_id:
-            return old_entry
+            # Don't switch if already on that session
+            if old_entry.session_id == target_session_id:
+                return old_entry
 
-        # End the current session in SQLite
-        if self._db:
-            try:
-                self._db.end_session(old_entry.session_id, "session_switch")
-            except Exception as e:
-                logger.debug("Session DB end_session failed: %s", e)
+            # End the current session in SQLite
+            if self._db:
+                try:
+                    self._db.end_session(old_entry.session_id, "session_switch")
+                except Exception as e:
+                    logger.debug("Session DB end_session failed: %s", e)
 
-        now = datetime.now()
-        new_entry = SessionEntry(
-            session_key=session_key,
-            session_id=target_session_id,
-            created_at=now,
-            updated_at=now,
-            origin=old_entry.origin,
-            display_name=old_entry.display_name,
-            platform=old_entry.platform,
-            chat_type=old_entry.chat_type,
-        )
+            now = datetime.now()
+            new_entry = SessionEntry(
+                session_key=session_key,
+                session_id=target_session_id,
+                created_at=now,
+                updated_at=now,
+                origin=old_entry.origin,
+                display_name=old_entry.display_name,
+                platform=old_entry.platform,
+                chat_type=old_entry.chat_type,
+            )
 
-        self._entries[session_key] = new_entry
-        self._save()
-        return new_entry
+            self._entries[session_key] = new_entry
+            self._save()
+            return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""

@@ -118,9 +118,19 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
+    # Development
+    CommandDef("test", "Run project tests and show results", "Development",
+               args_hint="[timeout]"),
+    CommandDef("lint", "Run project linter and show results", "Development"),
+    CommandDef("architect", "Generate an implementation plan before coding", "Development",
+               args_hint="<prompt>"),
+    CommandDef("git-undo", "Undo the last git commit (soft reset)", "Development",
+               aliases=("gitundo",)),
+
     # Info
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("usage", "Show token usage for the current session", "Info"),
+    CommandDef("cost", "Show estimated cost for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",

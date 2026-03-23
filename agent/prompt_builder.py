@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -154,6 +155,31 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+DEBUGGING_GUIDANCE = (
+    "When debugging or fixing errors: "
+    "1) Read the full error trace before acting. "
+    "2) Search for related code before editing. "
+    "3) Make the smallest possible fix first. "
+    "4) Run tests or verify after making changes. "
+    "5) If stuck after 3 failed attempts, step back, reconsider the approach, "
+    "and explain your reasoning before trying again."
+)
+
+SELF_REVIEW_GUIDANCE = (
+    "After making code changes, briefly verify: "
+    "1) All imports are present. "
+    "2) Function signatures match their call sites. "
+    "3) No syntax errors in the logic. "
+    "4) Edge cases are handled. "
+    "If you spot an issue, fix it immediately rather than waiting."
+)
+
+THINK_BEFORE_ACT_GUIDANCE = (
+    "For complex code changes: Before editing, briefly state WHAT you'll change "
+    "and WHY. This catches errors early and helps you plan multi-file changes "
+    "coherently. For simple fixes, act directly."
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "
@@ -231,6 +257,15 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 # =========================================================================
 # Skills index
 # =========================================================================
+
+# Module-level cache for build_skills_system_prompt to avoid rescanning the
+# filesystem on every turn.  Keyed by (available_tools, available_toolsets).
+_skills_prompt_cache: dict = {
+    "mtime": None,      # last observed skills dir mtime
+    "timestamp": 0.0,   # time.monotonic() when cache was populated
+    "result": "",        # cached prompt string
+    "tools_key": None,   # (frozenset, frozenset) key for tool/toolset args
+}
 
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
@@ -326,6 +361,26 @@ def build_skills_system_prompt(
     if not skills_dir.exists():
         return ""
 
+    # --- mtime-based cache: avoid rescanning if nothing changed (<60s) ---
+    tools_key = (
+        frozenset(available_tools) if available_tools else frozenset(),
+        frozenset(available_toolsets) if available_toolsets else frozenset(),
+    )
+    try:
+        current_mtime = skills_dir.stat().st_mtime
+    except OSError:
+        current_mtime = None
+
+    cache = _skills_prompt_cache
+    now_mono = time.monotonic()
+    if (
+        cache["tools_key"] == tools_key
+        and cache["mtime"] == current_mtime
+        and current_mtime is not None
+        and (now_mono - cache["timestamp"]) < 60
+    ):
+        return cache["result"]
+
     # Collect skills with descriptions, grouped by category.
     # Each entry: (skill_name, description)
     # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
@@ -396,7 +451,7 @@ def build_skills_system_prompt(
             else:
                 index_lines.append(f"    - {name}")
 
-    return (
+    result = (
         "## Skills (mandatory)\n"
         "Before replying, scan the skills below. If one clearly matches your task, "
         "load it with skill_view(name) and follow its instructions. "
@@ -411,6 +466,14 @@ def build_skills_system_prompt(
         "\n"
         "If none match, proceed normally without loading a skill."
     )
+
+    # Populate cache
+    cache["mtime"] = current_mtime
+    cache["timestamp"] = now_mono
+    cache["result"] = result
+    cache["tools_key"] = tools_key
+
+    return result
 
 
 # =========================================================================
@@ -602,3 +665,65 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     if not sections:
         return ""
     return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+
+
+# =========================================================================
+# Repository map (Aider-style code map)
+# =========================================================================
+
+_repo_map_cache: dict = {
+    "root": None,
+    "timestamp": 0.0,
+    "result": "",
+}
+
+
+def build_repo_map_prompt(cwd: Optional[str] = None, max_tokens: int = 4000) -> str:
+    """Build repository map prompt section if cwd is a git repo.
+
+    Returns a formatted string with the repo map, or empty string if:
+    - cwd is not a git repo
+    - no source files found
+    - repo_map is disabled in config
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+
+    cwd_path = Path(cwd).resolve()
+
+    # Only include for git repos
+    if not _find_git_root(cwd_path):
+        return ""
+
+    # Cache: reuse if same root and < 60s old
+    cache = _repo_map_cache
+    now = time.monotonic()
+    if (
+        cache["root"] == str(cwd_path)
+        and (now - cache["timestamp"]) < 60
+        and cache["result"]
+    ):
+        return cache["result"]
+
+    try:
+        from agent.repo_map import build_repo_map
+        repo_root = str(_find_git_root(cwd_path) or cwd_path)
+        map_text = build_repo_map(repo_root, max_tokens=max_tokens)
+    except Exception as e:
+        logger.debug("Could not build repo map: %s", e)
+        return ""
+
+    if not map_text:
+        return ""
+
+    result = (
+        "## Repository Map\n\n"
+        "Key symbols in the codebase:\n\n"
+        f"```\n{map_text}\n```"
+    )
+
+    cache["root"] = str(cwd_path)
+    cache["timestamp"] = now
+    cache["result"] = result
+
+    return result

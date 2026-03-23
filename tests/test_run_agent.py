@@ -798,7 +798,7 @@ class TestExecuteToolCalls:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
         # Content should be truncated
         assert len(messages[0]["content"]) < 150_000
-        assert "Truncated" in messages[0]["content"]
+        assert "truncated" in messages[0]["content"]
 
 
 class TestConcurrentToolExecution:
@@ -1031,7 +1031,7 @@ class TestConcurrentToolExecution:
         assert len(messages) == 2
         for m in messages:
             assert len(m["content"]) < 150_000
-            assert "Truncated" in m["content"]
+            assert "truncated" in m["content"]
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""

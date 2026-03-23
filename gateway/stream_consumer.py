@@ -20,12 +20,21 @@ import logging
 import queue
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Optional
 
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
+
+
+class StreamState(Enum):
+    """Explicit state machine for stream consumer lifecycle."""
+    INITIAL = 'initial'        # No message sent yet
+    STREAMING = 'streaming'    # Message sent, edits active
+    DEGRADED = 'degraded'      # Edit failed, no more intermediate updates
+    DONE = 'done'              # Stream complete
 
 
 @dataclass
@@ -69,21 +78,28 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._state = StreamState.INITIAL
 
     @property
     def already_sent(self) -> bool:
         """True if at least one message was sent/edited — signals the base
         adapter to skip re-sending the final response."""
-        return self._already_sent
+        return self._already_sent or self._state in (
+            StreamState.STREAMING, StreamState.DONE,
+        )
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread."""
+        if self._state == StreamState.DONE:
+            logger.warning("on_delta called after stream finished, ignoring")
+            return
         if text:
             self._queue.put(text)
 
     def finish(self) -> None:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
+        self._state = StreamState.DONE
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
@@ -158,6 +174,8 @@ class GatewayStreamConsumer:
 
     async def _send_or_edit(self, text: str) -> None:
         """Send or edit the streaming message."""
+        if self._state == StreamState.DONE:
+            return
         try:
             if self._message_id is not None:
                 if self._edit_supported:
@@ -180,6 +198,7 @@ class GatewayStreamConsumer:
                         # flood the chat with a new message every edit_interval.
                         logger.debug("Edit failed, disabling streaming for this adapter")
                         self._edit_supported = False
+                        self._state = StreamState.DEGRADED
                 else:
                     # Editing not supported — skip intermediate updates.
                     # The final response will be sent by the normal path.
@@ -195,8 +214,10 @@ class GatewayStreamConsumer:
                     self._message_id = result.message_id
                     self._already_sent = True
                     self._last_sent_text = text
+                    self._state = StreamState.STREAMING
                 else:
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False
+                    self._state = StreamState.DEGRADED
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)

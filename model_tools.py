@@ -292,11 +292,20 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
-    # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
-    # needed; plugins respect enabled_toolsets / disabled_toolsets like any
-    # other toolset.
+    # Always include plugin-registered tools — they bypass the toolset filter
+    # because their toolsets are dynamic (created at plugin load time, not in
+    # config).  When platform_toolsets is configured (a strict whitelist),
+    # plugin toolsets wouldn't be included otherwise.  This was the original
+    # design per PR #1555.  Fixes #2574.
+    try:
+        from hermes_cli.plugins import get_plugin_tool_names
+        plugin_tools = get_plugin_tool_names()
+        if plugin_tools:
+            tools_to_include.update(plugin_tools)
+            if not quiet_mode and plugin_tools:
+                print(f"✅ Plugin tools (bypass toolset filter): {', '.join(sorted(plugin_tools))}")
+    except Exception:
+        pass
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)

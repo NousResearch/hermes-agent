@@ -95,20 +95,27 @@ class TestReadCodexAccessToken:
         result = _read_codex_access_token()
         assert result is None
 
-    def test_malformed_json_returns_none(self, tmp_path):
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{bad json")
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+    def test_malformed_json_returns_none(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text("{bad json")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
         assert result is None
 
-    def test_missing_tokens_key_returns_none(self, tmp_path):
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text(json.dumps({"other": "data"}))
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+    def test_missing_tokens_key_returns_none(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "other": "data",
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
         assert result is None
 
 

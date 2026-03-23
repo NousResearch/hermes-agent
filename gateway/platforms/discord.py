@@ -531,6 +531,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.author == self._client.user:
                     return
                 
+                # Ignore Discord system messages (thread renames, pins, member joins, etc.)
+                if message.type != discord.MessageType.default:
+                    return
+                
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us

@@ -1676,15 +1676,60 @@ def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:
 # Requirements Check
 # ============================================================================
 
+def _playwright_registry_dir() -> Path:
+    """Return Playwright's browser cache directory.
+
+    Mirrors Playwright's registryDirectory resolution well enough for our local
+    availability checks without importing Playwright internals at runtime.
+    """
+    env_defined = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if env_defined == "0":
+        return Path(__file__).parent.parent / "node_modules" / "playwright-core" / ".local-browsers"
+    if env_defined:
+        path = Path(env_defined).expanduser()
+        return path if path.is_absolute() else (Path(os.environ.get("INIT_CWD", os.getcwd())) / path).resolve()
+
+    if sys.platform == "linux":
+        cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    elif sys.platform == "darwin":
+        cache_root = Path.home() / "Library" / "Caches"
+    elif sys.platform == "win32":
+        cache_root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        cache_root = Path.home() / ".cache"
+    return cache_root / "ms-playwright"
+
+
+
+def _has_local_playwright_browser() -> bool:
+    """Return True when the local Playwright browser payload exists.
+
+    Local browser mode needs an installed Chromium runtime, not just the
+    ``agent-browser`` wrapper script. Newer Playwright builds may use either
+    ``chromium-*`` or ``chromium_headless_shell-*`` directories depending on
+    how the launcher is configured, so accept either family.
+    """
+    registry_dir = _playwright_registry_dir()
+    if not registry_dir.exists():
+        return False
+
+    patterns = ("chromium-*", "chromium_headless_shell-*")
+    for pattern in patterns:
+        if any(registry_dir.glob(pattern)):
+            return True
+    return False
+
+
+
 def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
 
-    In **local mode** (no Browserbase credentials): only the ``agent-browser``
-    CLI must be findable.
+    In **local mode** (no Browserbase credentials): both the ``agent-browser``
+    CLI and a Playwright Chromium runtime must be installed.
 
-    In **cloud mode** (BROWSERBASE_API_KEY set): the CLI *and* both
-    ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` must be present.
+    In **cloud mode**: the CLI must be findable and the selected provider must
+    be configured.
     
     Returns:
         True if all requirements are met, False otherwise
@@ -1697,10 +1742,10 @@ def check_browser_requirements() -> bool:
 
     # In cloud mode, also require provider credentials
     provider = _get_cloud_provider()
-    if provider is not None and not provider.is_configured():
-        return False
+    if provider is not None:
+        return provider.is_configured()
 
-    return True
+    return _has_local_playwright_browser()
 
 
 # ============================================================================

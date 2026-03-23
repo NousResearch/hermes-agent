@@ -10,9 +10,8 @@ Resolution order for text tasks (auto mode):
   3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  5. Direct API-key providers (including Anthropic, z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  6. None
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below

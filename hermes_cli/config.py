@@ -893,8 +893,8 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "KASIA_BROADCAST_SUBSCRIPTIONS": {
-        "description": "Comma-separated Kasia broadcast channels Hermes should subscribe to.",
-        "prompt": "Kasia broadcast subscriptions (comma-separated)",
+        "description": "Kasia broadcast subscriptions in 'channel=publisher1|publisher2;channel2=publisher3' format.",
+        "prompt": "Kasia broadcast subscriptions (channel=publisher1|publisher2;...)",
         "url": None,
         "password": False,
         "category": "messaging",

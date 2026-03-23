@@ -48,8 +48,18 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+
+# Register Shift+Enter so it inserts a newline (like Alt+Enter / Ctrl+Enter).
+# Terminals using the kitty keyboard protocol or xterm's modifyOtherKeys send
+# distinct escape sequences for Shift+Enter. Map both formats to (Escape, ControlM)
+# which triggers the existing 'escape','enter' keybinding below.
+ANSI_SEQUENCES["\x1b[13;2u"] = (Keys.Escape, Keys.ControlM)     # kitty protocol
+ANSI_SEQUENCES["\x1b[27;2;13~"] = (Keys.Escape, Keys.ControlM)  # xterm format
+
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor

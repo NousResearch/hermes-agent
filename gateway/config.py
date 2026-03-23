@@ -236,6 +236,9 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Inbound message debounce — buffer rapid messages from the same sender
+    # and merge them into a single turn. 0 = disabled.
+    inbound_debounce_ms: int = 0
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -315,6 +318,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "inbound_debounce_ms": self.inbound_debounce_ms,
         }
     
     @classmethod
@@ -374,6 +378,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            inbound_debounce_ms=int(data.get("inbound_debounce_ms", 0)),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -456,6 +461,8 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+            if "inbound_debounce_ms" in yaml_cfg:
+                gw_data["inbound_debounce_ms"] = int(yaml_cfg["inbound_debounce_ms"])
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(

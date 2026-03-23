@@ -349,8 +349,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._previous_summary = summary
             return self._with_summary_prefix(summary)
         except RuntimeError:
-            logging.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary.")
+            logging.warning(
+                "Context compression failed: no provider configured for summarization model. "
+                "Check AUXILIARY_MODEL, API_KEY, and provider configuration. "
+                "Middle turns will be dropped without summary."
+            )
             return None
         except Exception as e:
             logging.warning("Failed to generate context summary: %s", e)

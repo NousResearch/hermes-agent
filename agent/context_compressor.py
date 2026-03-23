@@ -38,10 +38,10 @@ class ContextCompressor:
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
-        protect_first_n: int = 3,
-        protect_last_n: int = 4,
-        summary_target_tokens: int = 2500,
+        threshold_percent: float = 0.80,
+        protect_first_n: int = 0,
+        protect_last_n: int = 20,
+        summary_target_ratio: float = 0.40,
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
@@ -51,7 +51,7 @@ class ContextCompressor:
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
-        self.summary_target_tokens = summary_target_tokens
+        self.summary_target_ratio = summary_target_ratio
         self.quiet_mode = quiet_mode
 
         self.context_length = get_model_context_length(model, base_url=base_url)
@@ -112,6 +112,8 @@ class ContextCompressor:
             parts.append(f"[{role.upper()}]: {content}")
 
         content_to_summarize = "\n\n".join(parts)
+        # Compute actual target tokens from ratio + context length (model-agnostic)
+        summary_target = int(self.context_length * self.summary_target_ratio)
         prompt = f"""Create a concise handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
 
 Describe:
@@ -120,7 +122,7 @@ Describe:
 3. Important decisions, constraints, or user preferences
 4. Relevant data, file names, outputs, or next steps needed to continue
 
-Keep it factual, concise, and focused on helping the next assistant resume without repeating work. Target ~{self.summary_target_tokens} tokens.
+Keep it factual, concise, and focused on helping the next assistant resume without repeating work. Target ~{summary_target} tokens.
 
 ---
 TURNS TO SUMMARIZE:
@@ -136,7 +138,7 @@ Write only the summary body. Do not include any preamble or prefix; the system w
                 "task": "compression",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.3,
-                "max_tokens": self.summary_target_tokens * 2,
+                "max_tokens": summary_target * 2,
                 "timeout": 30.0,
             }
             if self.summary_model:

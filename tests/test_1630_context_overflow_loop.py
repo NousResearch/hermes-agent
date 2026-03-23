@@ -126,6 +126,199 @@ class TestGeneric400Heuristic:
         ])
         assert is_context_length_error
 
+    def test_zai_prompt_exceeds_max_length_needs_phrase_match(self):
+        """Z.AI returns 'Prompt exceeds max length' for context overflow."""
+        error_msg = (
+            "Error code: 400 - {'error': {'code': '1261', "
+            "'message': 'Prompt exceeds max length'}}"
+        )
+        is_context_length_error = any(phrase in error_msg.lower() for phrase in [
+            'context length', 'context size', 'maximum context',
+            'token limit', 'too many tokens', 'reduce the length',
+            'exceeds the limit', 'context window',
+            'request entity too large',
+            'prompt is too long',
+            'prompt exceeds max length',
+        ])
+        assert is_context_length_error
+
+    def test_zai_prompt_exceeds_max_length_triggers_compression_without_persisting_guess(self):
+        """Provider-specific GLM overflow should compress but not persist guessed tiers."""
+        error = Exception(
+            "Error code: 400 - {'error': {'code': '1261', "
+            "'message': 'Prompt exceeds max length'}}"
+        )
+        error.status_code = 400
+
+        agent = self._make_agent()
+        agent.model = "glm-5-turbo"
+        agent.provider = "zai"
+        agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 170_000
+        ok_resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Recovered", tool_calls=None, reasoning_content=None, reasoning=None), finish_reason="stop")],
+            model="glm-5-turbo",
+            usage=None,
+        )
+        agent.client.chat.completions.create.side_effect = [error, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context", return_value=(
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.save_context_length") as mock_save_context,
+        ):
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        mock_save_context.assert_not_called()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+
+    def test_parsed_context_limit_is_persisted(self):
+        """A provider-reported numeric limit should still be cached."""
+        error = Exception(
+            "Error code: 400 - prompt is too long: 250000 tokens > 200000 maximum"
+        )
+        error.status_code = 400
+
+        agent = self._make_agent()
+        agent.model = "glm-5-turbo"
+        agent.provider = "zai"
+        agent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.context_compressor.context_length = 250_000
+        agent.context_compressor.threshold_tokens = 212_500
+        ok_resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Recovered", tool_calls=None, reasoning_content=None, reasoning=None), finish_reason="stop")],
+            model="glm-5-turbo",
+            usage=None,
+        )
+        agent.client.chat.completions.create.side_effect = [error, ok_resp]
+
+        with (
+            patch.object(agent, "_compress_context", return_value=(
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.save_context_length") as mock_save_context,
+        ):
+            result = agent.run_conversation("hello", conversation_history=[
+                {"role": "user", "content": "previous question"},
+                {"role": "assistant", "content": "previous answer"},
+            ])
+
+        mock_save_context.assert_called_once_with(
+            "glm-5-turbo",
+            "https://api.z.ai/api/coding/paas/v4",
+            200_000,
+        )
+        assert result["completed"] is True
+
+    def test_preflight_counts_tool_schemas(self):
+        """Tool schemas should count toward preflight compression pressure."""
+        huge_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "huge_tool",
+                    "description": "d" * 400,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "payload": {
+                                "type": "string",
+                                "description": "p" * 400,
+                            }
+                        },
+                    },
+                },
+            }
+        ]
+        with (
+            patch("run_agent.get_tool_definitions", return_value=huge_tools),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="test-key-12345",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "s" * 160
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 240
+        agent.context_compressor.threshold_tokens = 200
+        agent.client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None, reasoning_content=None, reasoning=None), finish_reason="stop")],
+            model="test-model",
+            usage=None,
+        )
+
+        history = [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context", return_value=(
+                [{"role": "user", "content": "compressed summary"}],
+                "compressed prompt",
+            )) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello", conversation_history=history)
+
+        from agent.model_metadata import estimate_request_tokens_rough
+
+        assert mock_compress.call_count >= 1
+        first_call = mock_compress.call_args_list[0]
+        first_approx = first_call.kwargs["approx_tokens"]
+        request_messages = history + [{"role": "user", "content": "hello"}]
+        expected_with_tools = estimate_request_tokens_rough(
+            request_messages,
+            system_prompt="s" * 160,
+            tools=huge_tools,
+        )
+        expected_without_tools = estimate_request_tokens_rough(
+            request_messages,
+            system_prompt="s" * 160,
+        )
+
+        assert expected_without_tools < agent.context_compressor.threshold_tokens
+        assert expected_with_tools > agent.context_compressor.threshold_tokens
+        assert first_approx == expected_with_tools
+        assert result["completed"] is True
+
 
 # ---------------------------------------------------------------------------
 # Test 2: Gateway skips persistence on failed agent results

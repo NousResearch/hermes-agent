@@ -3547,6 +3547,22 @@ class GatewayRunner:
             else:
                 default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
                 enabled_toolsets = [default_toolset]
+            # Auto-include plugin toolsets that are new (not yet known for this
+            # platform). Mirrors the logic in _get_platform_tools() so gateway
+            # platforms behave consistently with the CLI.
+            try:
+                from hermes_cli.tools_config import _get_plugin_toolset_keys
+                from hermes_cli.config import load_config as _load_cfg
+                _plugin_ts = _get_plugin_toolset_keys()
+                if _plugin_ts:
+                    _cfg = _load_cfg()
+                    _known = set(_cfg.get('known_plugin_toolsets', {}).get(platform_config_key, []))
+                    _to_add = [pts for pts in _plugin_ts
+                               if pts not in enabled_toolsets and pts not in _known]
+                    if _to_add:
+                        enabled_toolsets = list(enabled_toolsets) + _to_add
+            except Exception:
+                pass
 
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
 
@@ -4711,6 +4727,22 @@ class GatewayRunner:
         else:
             default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
             enabled_toolsets = [default_toolset]
+        # Auto-include plugin toolsets that are new (not yet known for this
+        # platform). Mirrors the logic in _get_platform_tools() so gateway
+        # platforms behave consistently with the CLI.
+        try:
+            from hermes_cli.tools_config import _get_plugin_toolset_keys
+            from hermes_cli.config import load_config as _load_cfg
+            _plugin_ts = _get_plugin_toolset_keys()
+            if _plugin_ts:
+                _cfg = _load_cfg()
+                _known = set(_cfg.get('known_plugin_toolsets', {}).get(platform_config_key, []))
+                _to_add = [pts for pts in _plugin_ts
+                           if pts not in enabled_toolsets and pts not in _known]
+                if _to_add:
+                    enabled_toolsets = list(enabled_toolsets) + _to_add
+        except Exception:
+            pass
         
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility

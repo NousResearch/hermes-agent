@@ -23,6 +23,18 @@ def _ensure_discord_mock():
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        Group=type('Group', (), {
+            '__init__': lambda self, *, name, description: (
+                setattr(self, 'name', name) or
+                setattr(self, 'description', description) or
+                setattr(self, 'commands', {})
+            ),
+            'add_command': lambda self, cmd: self.commands.update({cmd.name: cmd}),
+        }),
+        command=lambda *, name, description: (lambda fn: (
+            setattr(fn, 'name', name) or
+            setattr(fn, 'description', description) or fn
+        )),
     )
 
     ext_mod = MagicMock()
@@ -51,6 +63,10 @@ class FakeTree:
 
         return decorator
 
+    def add_command(self, group):
+        self.commands[group.name] = group
+
+
 
 @pytest.fixture
 def adapter():
@@ -63,6 +79,7 @@ def adapter():
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
     return adapter
+
 
 
 # ------------------------------------------------------------------
@@ -497,3 +514,140 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+
+
+
+# ------------------------------------------------------------------
+# quick_commands -> /skills Discord app command group
+# ------------------------------------------------------------------
+
+
+def _make_fake_app_commands():
+    """Isolated fake app_commands — no global state."""
+    FakeGroup = type('Group', (), {
+        '__init__': lambda self, *, name, description: (
+            setattr(self, 'name', name) or
+            setattr(self, 'description', description) or
+            setattr(self, 'commands', {})
+        ),
+        'add_command': lambda self, cmd: self.commands.update({cmd.name: cmd}),
+    })
+    return SimpleNamespace(
+        describe=lambda **kwargs: (lambda fn: fn),
+        choices=lambda **kwargs: (lambda fn: fn),
+        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        Group=FakeGroup,
+        command=lambda *, name, description: (lambda fn: (
+            setattr(fn, 'name', name) or
+            setattr(fn, 'description', description) or fn
+        )),
+    )
+
+
+def test_skills_group_registered_for_alias_quick_commands(adapter):
+    """type:alias quick_commands are registered as /skills subcommands."""
+    with patch('gateway.platforms.discord.discord') as mock_discord:
+        mock_discord.app_commands = _make_fake_app_commands()
+        mock_discord.Interaction = object
+        adapter._quick_commands = {
+            'seal-coach': {'type': 'alias', 'target': '/seal-coach'},
+            'workout': {'type': 'alias', 'target': '/workout'},
+        }
+        adapter._register_slash_commands()
+    assert 'skills' in adapter._client.tree.commands
+    group = adapter._client.tree.commands['skills']
+    assert 'seal-coach' in group.commands
+    assert 'workout' in group.commands
+
+
+def test_skills_group_not_registered_when_no_alias_quick_commands(adapter):
+    """No /skills group when there are no type:alias quick_commands."""
+    with patch('gateway.platforms.discord.discord') as mock_discord:
+        mock_discord.app_commands = _make_fake_app_commands()
+        mock_discord.Interaction = object
+        adapter._quick_commands = {}
+        adapter._register_slash_commands()
+    assert 'skills' not in adapter._client.tree.commands
+
+
+def test_skills_group_excludes_non_alias_quick_commands(adapter):
+    """type:exec quick_commands must not appear in /skills group."""
+    with patch('gateway.platforms.discord.discord') as mock_discord:
+        mock_discord.app_commands = _make_fake_app_commands()
+        mock_discord.Interaction = object
+        adapter._quick_commands = {
+            'deploy': {'type': 'exec', 'command': 'make deploy'},
+            'seal-coach': {'type': 'alias', 'target': '/seal-coach'},
+        }
+        adapter._register_slash_commands()
+    group = adapter._client.tree.commands['skills']
+    assert 'seal-coach' in group.commands
+    assert 'deploy' not in group.commands
+
+
+@pytest.mark.asyncio
+async def test_skill_subcommand_dispatches_correct_target(adapter):
+    """Each /skills subcommand dispatches the configured target."""
+    with patch('gateway.platforms.discord.discord') as mock_discord:
+        mock_discord.app_commands = _make_fake_app_commands()
+        mock_discord.Interaction = object
+        adapter._quick_commands = {
+            'seal-coach': {'type': 'alias', 'target': '/seal-coach'},
+        }
+        adapter._register_slash_commands()
+    group = adapter._client.tree.commands['skills']
+    cmd_fn = group.commands['seal-coach']
+    dispatched = []
+    async def fake_run(interaction, text):
+        dispatched.append(text)
+    adapter._run_simple_slash = fake_run
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(defer=AsyncMock()),
+        channel=SimpleNamespace(),
+        channel_id=123,
+        user=SimpleNamespace(id=42, display_name='Jezza'),
+    )
+    await cmd_fn(interaction, instruction='')
+    assert dispatched == ['/seal-coach']
+
+
+@pytest.mark.asyncio
+async def test_skill_subcommand_passes_instruction(adapter):
+    """Instruction argument is appended to the target when provided."""
+    with patch('gateway.platforms.discord.discord') as mock_discord:
+        mock_discord.app_commands = _make_fake_app_commands()
+        mock_discord.Interaction = object
+        adapter._quick_commands = {
+            'seal-coach': {'type': 'alias', 'target': '/seal-coach'},
+        }
+        adapter._register_slash_commands()
+    group = adapter._client.tree.commands['skills']
+    cmd_fn = group.commands['seal-coach']
+    dispatched = []
+    async def fake_run(interaction, text):
+        dispatched.append(text)
+    adapter._run_simple_slash = fake_run
+    interaction = SimpleNamespace(
+        response=SimpleNamespace(defer=AsyncMock()),
+        channel=SimpleNamespace(),
+        channel_id=123,
+        user=SimpleNamespace(id=42, display_name='Jezza'),
+    )
+    await cmd_fn(interaction, instruction='hello world')
+    assert dispatched == ['/seal-coach hello world']
+
+
+def test_closure_bug_absent_each_cmd_gets_own_target(adapter):
+    """Each subcommand must capture its own target, not the last loop value."""
+    with patch('gateway.platforms.discord.discord') as mock_discord:
+        mock_discord.app_commands = _make_fake_app_commands()
+        mock_discord.Interaction = object
+        adapter._quick_commands = {
+            'alpha': {'type': 'alias', 'target': '/alpha'},
+            'beta': {'type': 'alias', 'target': '/beta'},
+        }
+        adapter._register_slash_commands()
+    group = adapter._client.tree.commands['skills']
+    assert 'alpha' in group.commands
+    assert 'beta' in group.commands
+

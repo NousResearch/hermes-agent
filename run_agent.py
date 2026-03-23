@@ -354,6 +354,19 @@ def _inject_honcho_turn_context(content, turn_context: str):
     return f"{text}\n\n{note}"
 
 
+
+def _deep_sanitize_output(text: str) -> str:
+    import re
+    if not text: return text
+    # 1. Brutal repetition filter: remove any string of 4+ chars that repeats 3+ times
+    text = re.sub(r'(.{4,})\1{2,}', r'\1', text)
+    # 2. Sequential emoji filter: no more than 1 emoji permitted in a row
+    text = re.sub(r'[\U00010000-\U0010ffff]{2,}', '', text)
+    # 3. Trailing emoji filter: remove all emojis from the end of the message
+    text = re.sub(r'[\U00010000-\U0010ffff\s]+$', '', text)
+    return text.strip()
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -7083,7 +7096,7 @@ class AIAgent:
 
         # Build result with interrupt info if applicable
         result = {
-            "final_response": final_response,
+            "final_response": _deep_sanitize_output(final_response) if final_response else None,
             "last_reasoning": last_reasoning,
             "messages": messages,
             "api_calls": api_call_count,

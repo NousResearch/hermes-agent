@@ -117,6 +117,26 @@ class TestRateLimiting:
         assert isinstance(code2, str) and len(code2) == CODE_LENGTH
         assert code2 != code1
 
+    def test_get_pending_code_returns_existing_code_for_same_user(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            existing = store.get_pending_code("telegram", "user1")
+
+        assert existing == code
+
+    def test_get_pending_code_ignores_expired_entries(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1")
+            pending = store._load_json(store._pending_path("telegram"))
+            pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
+            store._save_json(store._pending_path("telegram"), pending)
+
+            existing = store.get_pending_code("telegram", "user1")
+
+        assert existing is None
+
 
 # ---------------------------------------------------------------------------
 # Max pending limit

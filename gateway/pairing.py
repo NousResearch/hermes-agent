@@ -210,6 +210,15 @@ class PairingStore:
                 })
         return results
 
+    def get_pending_code(self, platform: str, user_id: str) -> Optional[str]:
+        """Return an existing unexpired pending code for a user, if any."""
+        self._cleanup_expired(platform)
+        pending = self._load_json(self._pending_path(platform))
+        for code, info in pending.items():
+            if info.get("user_id") == user_id:
+                return code
+        return None
+
     def clear_pending(self, platform: str = None) -> int:
         """Clear all pending requests. Returns count removed."""
         count = 0

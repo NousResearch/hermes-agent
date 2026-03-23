@@ -17,7 +17,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -50,6 +50,45 @@ def _is_local_port_in_use(port: int) -> bool:
             return sock.connect_ex(("127.0.0.1", int(port))) == 0
     except OSError:
         return False
+
+
+def _kill_port_process(port: int) -> None:
+    """Kill any process listening on the given TCP port."""
+    try:
+        if _IS_WINDOWS:
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[3] == "LISTENING":
+                    local_addr = parts[1]
+                    if local_addr.endswith(f":{port}"):
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/PID", parts[4], "/F"],
+                                capture_output=True,
+                                timeout=5,
+                            )
+                        except subprocess.SubprocessError:
+                            pass
+        else:
+            result = subprocess.run(
+                ["fuser", f"{port}/tcp"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                subprocess.run(
+                    ["fuser", "-k", f"{port}/tcp"],
+                    capture_output=True,
+                    timeout=5,
+                )
+    except Exception:
+        pass
 
 
 def check_kasia_requirements(config: Optional[PlatformConfig] = None) -> bool:
@@ -91,6 +130,7 @@ class KasiaAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._bridge_log_fh = None
         self._poll_task: Optional[asyncio.Task] = None
+        self._pending_handshake_recovery_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def _format_sompi_balance(value: Any) -> Optional[str]:
@@ -212,6 +252,111 @@ class KasiaAdapter(BasePlatformAdapter):
             timestamp=timestamp,
         )
 
+    def _load_pending_handshake_events(self) -> List[Dict[str, Any]]:
+        """Load persisted Kasia handshake requests that still need a response."""
+        state_path = self._state_dir / "state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except Exception as error:
+            logger.warning("[%s] Failed to read Kasia state from %s: %s", self.name, state_path, error)
+            return []
+
+        conversations = state.get("conversations")
+        if not isinstance(conversations, dict):
+            return []
+
+        recovered: List[tuple[int, Dict[str, Any]]] = []
+        for peer_address, conversation in conversations.items():
+            if not isinstance(conversation, dict):
+                continue
+
+            pending_handshake = conversation.get("pending_handshake")
+            if not isinstance(pending_handshake, dict):
+                continue
+
+            chat_id = str(conversation.get("peer_address") or peer_address or "").strip()
+            if not chat_id:
+                continue
+
+            try:
+                block_time = int(pending_handshake.get("block_time") or 0)
+            except (TypeError, ValueError):
+                block_time = 0
+
+            sender_name = str(
+                conversation.get("display_name")
+                or conversation.get("nickname")
+                or conversation.get("kns_name")
+                or chat_id
+            ).strip() or chat_id
+
+            recovered.append(
+                (
+                    block_time,
+                    {
+                        "eventType": "handshake_request",
+                        "messageId": pending_handshake.get("tx_id"),
+                        "chatId": chat_id,
+                        "senderId": chat_id,
+                        "senderName": sender_name,
+                        "body": "Handshake request",
+                        "timestampMs": block_time or None,
+                        "raw": {
+                            "recovered": True,
+                            "pendingHandshake": pending_handshake,
+                        },
+                    },
+                )
+            )
+
+        recovered.sort(key=lambda item: item[0])
+        return [event for _, event in recovered]
+
+    async def _recover_pending_handshakes(self, health: Optional[Dict[str, Any]] = None) -> None:
+        """Retry persisted handshake requests after the bridge comes back up."""
+        funding_state = str((health or {}).get("walletFundingState") or "").strip().lower()
+        if funding_state in {"low", "unfunded"}:
+            return
+
+        pending_events = self._load_pending_handshake_events()
+        if not pending_events:
+            return
+
+        logger.info(
+            "[%s] Replaying %s pending Kasia handshake(s) from %s",
+            self.name,
+            len(pending_events),
+            self._state_dir / "state.json",
+        )
+        for event in pending_events:
+            try:
+                await self._handle_bridge_event(event)
+            except Exception as error:
+                logger.warning(
+                    "[%s] Failed to replay pending Kasia handshake for %s: %s",
+                    self.name,
+                    event.get("chatId"),
+                    error,
+                )
+
+    def _start_pending_handshake_recovery(self, health: Optional[Dict[str, Any]] = None) -> None:
+        """Replay pending handshakes after connect() returns to the gateway runner."""
+
+        async def _run_recovery() -> None:
+            try:
+                await self._recover_pending_handshakes(health)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("[%s] Pending Kasia handshake recovery failed: %s", self.name, error)
+            finally:
+                if self._pending_handshake_recovery_task is asyncio.current_task():
+                    self._pending_handshake_recovery_task = None
+
+        self._pending_handshake_recovery_task = asyncio.create_task(_run_recovery())
+
     async def connect(self) -> bool:
         """Launch the Kasia bridge process and wait for its health endpoint."""
         if not check_kasia_requirements(self.config):
@@ -253,6 +398,11 @@ class KasiaAdapter(BasePlatformAdapter):
 
         try:
             self._state_dir.mkdir(parents=True, exist_ok=True)
+
+            # Kill any orphaned bridge from a previous gateway run.
+            _kill_port_process(self._bridge_port)
+            await asyncio.sleep(1)
+
             if _is_local_port_in_use(self._bridge_port):
                 logger.error(
                     "[%s] Refusing to start Kasia bridge on port %s because it is already in use.",
@@ -303,6 +453,7 @@ class KasiaAdapter(BasePlatformAdapter):
                         )
                         self._mark_connected()
                         self._poll_task = asyncio.create_task(self._poll_messages())
+                        self._start_pending_handshake_recovery(health)
                         print(f"[{self.name}] Bridge started on port {self._bridge_port}")
                         return True
                 except Exception:
@@ -318,6 +469,18 @@ class KasiaAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop the Kasia bridge and polling task."""
+        recovery_task = self._pending_handshake_recovery_task
+        self._pending_handshake_recovery_task = None
+        if recovery_task:
+            cancel = getattr(recovery_task, "cancel", None)
+            if callable(cancel):
+                cancel()
+            if isinstance(recovery_task, asyncio.Task):
+                try:
+                    await recovery_task
+                except asyncio.CancelledError:
+                    pass
+
         if self._poll_task:
             self._poll_task.cancel()
             try:
@@ -349,6 +512,7 @@ class KasiaAdapter(BasePlatformAdapter):
             except Exception as error:
                 logger.warning("[%s] Error stopping bridge: %s", self.name, error)
 
+        _kill_port_process(self._bridge_port)
         self._bridge_process = None
         self._close_bridge_log()
         self._mark_disconnected()

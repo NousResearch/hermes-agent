@@ -1545,27 +1545,48 @@ class GatewayRunner:
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
-                code = self.pairing_store.generate_code(
-                    platform_name, source.user_id, source.user_name or ""
+                existing_code = self.pairing_store.get_pending_code(platform_name, source.user_id)
+                code = (
+                    existing_code.strip()
+                    if isinstance(existing_code, str) and existing_code.strip()
+                    else None
                 )
+                if code is None:
+                    code = self.pairing_store.generate_code(
+                        platform_name, source.user_id, source.user_name or ""
+                    )
                 if code:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
-                        await adapter.send(
+                        send_result = await adapter.send(
                             source.chat_id,
                             f"Hi~ I don't recognize you yet!\n\n"
                             f"Here's your pairing code: `{code}`\n\n"
                             f"Ask the bot owner to run:\n"
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
+                        if hasattr(send_result, "success") and not send_result.success:
+                            logger.warning(
+                                "Failed to send pairing code to unauthorized %s user %s: %s",
+                                platform_name,
+                                source.user_id,
+                                getattr(send_result, "error", "unknown send error"),
+                            )
                 else:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
-                        await adapter.send(
+                        send_result = await adapter.send(
                             source.chat_id,
                             "Too many pairing requests right now~ "
                             "Please try again later!"
                         )
+                        if hasattr(send_result, "success") and not send_result.success:
+                            logger.warning(
+                                "Failed to send pairing backpressure notice to unauthorized %s user %s: %s",
+                                platform_name,
+                                source.user_id,
+                                getattr(send_result, "error", "unknown send error"),
+                            )
             return None
 
         if (

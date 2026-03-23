@@ -1,8 +1,10 @@
 """Tests for Kasia gateway integration."""
 
+import asyncio
+import json
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -619,7 +621,7 @@ class TestKasiaAdapter:
         adapter._request_json.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_connect_refuses_busy_port_without_killing_other_processes(self, tmp_path):
+    async def test_connect_refuses_busy_port_after_cleanup_attempt(self, tmp_path):
         from gateway.platforms.kasia import KasiaAdapter
 
         bridge_dir = tmp_path / "kasia-bridge"
@@ -632,12 +634,77 @@ class TestKasiaAdapter:
         adapter._bridge_script = bridge_script
 
         with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._kill_port_process"
+        ) as kill_port_process, patch(
             "gateway.platforms.kasia._is_local_port_in_use", return_value=True
+        ), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
         ), patch("gateway.platforms.kasia.subprocess.Popen") as popen_mock:
             result = await adapter.connect()
 
         assert result is False
+        kill_port_process.assert_called_once_with(adapter._bridge_port)
         popen_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_kills_orphaned_bridge_before_starting(self, tmp_path):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._bridge_script = bridge_script
+        adapter._request_json = AsyncMock(return_value={"status": "connected"})
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        def fake_create_task(coro):
+            coro.close()
+            return SimpleNamespace(cancel=lambda: None)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._kill_port_process"
+        ) as kill_port_process, patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch(
+            "gateway.platforms.kasia.subprocess.Popen", side_effect=fake_popen
+        ) as popen_mock, patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ), patch(
+            "gateway.platforms.kasia.asyncio.create_task", side_effect=fake_create_task
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        kill_port_process.assert_called_once_with(adapter._bridge_port)
+        popen_mock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_kills_orphaned_bridge_process_on_port(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter._bridge_process = MagicMock()
+        adapter._bridge_process.pid = 1234
+        adapter._bridge_process.poll.return_value = 0
+
+        with patch("gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()), patch(
+            "gateway.platforms.kasia._kill_port_process"
+        ) as kill_port_process, patch.object(
+            adapter, "_close_bridge_log"
+        ) as close_bridge_log, patch.object(
+            adapter, "_mark_disconnected"
+        ) as mark_disconnected:
+            await adapter.disconnect()
+
+        kill_port_process.assert_called_once_with(adapter._bridge_port)
+        close_bridge_log.assert_called_once()
+        mark_disconnected.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_connect_passes_fee_policy_to_bridge_environment(self, tmp_path):
@@ -725,6 +792,220 @@ class TestKasiaAdapter:
         assert result is True
         assert "Kasia wallet kaspa:qwallet is low on funds" in caplog.text
         assert "recommended >= 0.40000000 KAS" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_connect_replays_pending_handshakes_when_wallet_is_ready(self, tmp_path):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / "state.json").write_text(
+            json.dumps(
+                {
+                    "conversations": {
+                        "kaspa:qpeeraddress": {
+                            "peer_address": "kaspa:qpeeraddress",
+                            "display_name": "peer.kas",
+                            "pending_handshake": {
+                                "tx_id": "tx-handshake",
+                                "block_time": 1710000000000,
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        adapter = KasiaAdapter(self._make_config(state_dir=str(state_dir)))
+        adapter._bridge_script = bridge_script
+        adapter._poll_messages = AsyncMock(return_value=None)
+        adapter._request_json = AsyncMock(
+            return_value={
+                "status": "connected",
+                "walletFundingState": "ready",
+            }
+        )
+        adapter._handle_bridge_event = AsyncMock()
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch("gateway.platforms.kasia.subprocess.Popen", side_effect=fake_popen), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        await asyncio.sleep(0)
+        adapter._handle_bridge_event.assert_awaited_once()
+        replayed_event = adapter._handle_bridge_event.await_args.args[0]
+        assert replayed_event["eventType"] == "handshake_request"
+        assert replayed_event["messageId"] == "tx-handshake"
+        assert replayed_event["chatId"] == "kaspa:qpeeraddress"
+        assert replayed_event["senderName"] == "peer.kas"
+
+    @pytest.mark.asyncio
+    async def test_connect_defers_pending_handshakes_when_wallet_funding_is_low(self, tmp_path):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / "state.json").write_text(
+            json.dumps(
+                {
+                    "conversations": {
+                        "kaspa:qpeeraddress": {
+                            "peer_address": "kaspa:qpeeraddress",
+                            "pending_handshake": {
+                                "tx_id": "tx-handshake",
+                                "block_time": 1710000000000,
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        adapter = KasiaAdapter(self._make_config(state_dir=str(state_dir)))
+        adapter._bridge_script = bridge_script
+        adapter._poll_messages = AsyncMock(return_value=None)
+        adapter._request_json = AsyncMock(
+            return_value={
+                "status": "connected",
+                "walletFundingState": "low",
+            }
+        )
+        adapter._handle_bridge_event = AsyncMock()
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch("gateway.platforms.kasia.subprocess.Popen", side_effect=fake_popen), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        await asyncio.sleep(0)
+        adapter._handle_bridge_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_replays_pending_handshakes_after_runner_registers_adapter(self, tmp_path):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / "state.json").write_text(
+            json.dumps(
+                {
+                    "conversations": {
+                        "kaspa:qpeeraddress1": {
+                            "peer_address": "kaspa:qpeeraddress1",
+                            "display_name": "peer-1.kas",
+                            "pending_handshake": {
+                                "tx_id": "tx-handshake-1",
+                                "block_time": 1710000000000,
+                            },
+                        },
+                        "kaspa:qpeeraddress2": {
+                            "peer_address": "kaspa:qpeeraddress2",
+                            "display_name": "peer-2.kas",
+                            "pending_handshake": {
+                                "tx_id": "tx-handshake-2",
+                                "block_time": 1710000001000,
+                            },
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        adapter = KasiaAdapter(
+            self._make_config(
+                state_dir=str(state_dir),
+                unauthorized_dm_behavior="pair",
+            )
+        )
+        adapter._bridge_script = bridge_script
+        adapter._poll_messages = AsyncMock(return_value=None)
+        real_sleep = asyncio.sleep
+
+        async def fake_request_json(method, path, payload=None, total=None):
+            if method == "GET" and path == "/health":
+                return {
+                    "status": "connected",
+                    "walletFundingState": "ready",
+                }
+            if method == "POST" and path == "/handshakes/respond":
+                await real_sleep(0)
+                return {
+                    "status": "sent",
+                    "txId": f"reply-{payload['chatId']}",
+                }
+            raise AssertionError(f"Unexpected request: {method} {path}")
+
+        adapter._request_json = AsyncMock(side_effect=fake_request_json)
+
+        registered_during_handler: list[bool] = []
+        runner = SimpleNamespace(adapters={})
+
+        async def fake_message_handler(event):
+            registered_during_handler.append(
+                runner.adapters.get(event.source.platform) is adapter
+            )
+            return None
+
+        adapter.set_message_handler(fake_message_handler)
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        with patch.object(adapter, "_is_address_authorized", return_value=False), patch(
+            "gateway.platforms.kasia.check_kasia_requirements",
+            return_value=True,
+        ), patch(
+            "gateway.platforms.kasia._is_local_port_in_use",
+            return_value=False,
+        ), patch(
+            "gateway.platforms.kasia.subprocess.Popen",
+            side_effect=fake_popen,
+        ), patch(
+            "gateway.platforms.kasia.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        runner.adapters[Platform.KASIA] = adapter
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert registered_during_handler == [True, True]
 
     @pytest.mark.asyncio
     async def test_handshake_funding_failure_logs_wallet_warning(self, caplog):

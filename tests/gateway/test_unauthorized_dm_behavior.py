@@ -92,6 +92,29 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_dm_reuses_existing_pending_code(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store.get_pending_code.return_value = "ABC12DEF"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_awaited_once()
+    assert "ABC12DEF" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(

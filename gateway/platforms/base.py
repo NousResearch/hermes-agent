@@ -857,7 +857,8 @@ class BasePlatformAdapter(ABC):
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
-            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
+            if session_key not in self._pending_messages:
+                print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
             self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()

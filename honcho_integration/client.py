@@ -201,7 +201,10 @@ class HonchoClientConfig:
         )
 
         base_url = (
-            raw.get("baseUrl")
+            host_block.get("base_url")   # snake_case from host block
+            or host_block.get("baseUrl") # camelCase from host block
+            or raw.get("base_url")       # snake_case from root
+            or raw.get("baseUrl")        # camelCase from root
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )

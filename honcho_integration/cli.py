@@ -45,6 +45,22 @@ def _resolve_api_key(cfg: dict) -> str:
     return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
 
 
+def _resolve_base_url(cfg: dict) -> str:
+    """Resolve base_url (snake_case or camelCase) from host block, root, or env."""
+    host_block = (cfg.get("hosts") or {}).get(HOST) or {}
+    return (
+        host_block.get("base_url") or host_block.get("baseUrl")
+        or cfg.get("base_url") or cfg.get("baseUrl")
+        or os.environ.get("HONCHO_BASE_URL", "").strip()
+        or ""
+    )
+
+
+def _is_configured(cfg: dict) -> bool:
+    """Return True if Honcho is configured (API key OR base_url present)."""
+    return bool(_resolve_api_key(cfg) or _resolve_base_url(cfg))
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
     sys.stdout.write(f"  {label}{suffix}: ")
@@ -121,9 +137,17 @@ def cmd_setup(args) -> None:
         cfg["apiKey"] = new_key
 
     effective_key = cfg.get("apiKey", "")
-    if not effective_key:
-        print("\n  No API key configured. Get your API key at https://app.honcho.dev")
-        print("  Run 'hermes honcho setup' again once you have a key.\n")
+    effective_base_url = (
+        hermes_host.get("base_url") or hermes_host.get("baseUrl")
+        or cfg.get("base_url") or cfg.get("baseUrl")
+        or os.environ.get("HONCHO_BASE_URL", "").strip()
+        or ""
+    )
+    if not effective_key and not effective_base_url:
+        print("\n  No API key or base_url configured.")
+        print("  For Honcho Cloud: get your API key at https://app.honcho.dev")
+        print("  For local Honcho: set base_url in ~/.honcho/config.json or HONCHO_BASE_URL env var")
+        print("  Run 'hermes honcho setup' again once configured.\n")
         return
 
     # Peer name
@@ -455,8 +479,8 @@ def cmd_tokens(args) -> None:
 def cmd_identity(args) -> None:
     """Seed AI peer identity or show both peer representations."""
     cfg = _read_config()
-    if not _resolve_api_key(cfg):
-        print("  No API key configured. Run 'hermes honcho setup' first.\n")
+    if not _is_configured(cfg):
+        print("  No API key or base_url configured. Run 'hermes honcho setup' first.\n")
         return
 
     file_path = getattr(args, "file", None)

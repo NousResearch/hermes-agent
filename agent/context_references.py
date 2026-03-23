@@ -17,6 +17,23 @@ REFERENCE_PATTERN = re.compile(
     r"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
+_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube")
+_SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
+_SENSITIVE_HOME_FILES = (
+    Path(".ssh") / "authorized_keys",
+    Path(".ssh") / "id_rsa",
+    Path(".ssh") / "id_ed25519",
+    Path(".ssh") / "config",
+    Path(".bashrc"),
+    Path(".zshrc"),
+    Path(".profile"),
+    Path(".bash_profile"),
+    Path(".zprofile"),
+    Path(".netrc"),
+    Path(".pgpass"),
+    Path(".npmrc"),
+    Path(".pypirc"),
+)
 
 
 @dataclass(frozen=True)
@@ -128,7 +145,11 @@ async def preprocess_context_references_async(
         return ContextReferenceResult(message=message, original_message=message)
 
     cwd_path = Path(cwd).expanduser().resolve()
-    allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else None
+    # Default to the current working directory so @ references cannot escape
+    # the active workspace unless a caller explicitly widens the root.
+    allowed_root_path = (
+        Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    )
     warnings: list[str] = []
     blocks: list[str] = []
     injected_tokens = 0
@@ -222,6 +243,7 @@ def _expand_file_reference(
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: file not found", None
     if not path.is_file():
@@ -248,6 +270,7 @@ def _expand_folder_reference(
     allowed_root: Path | None = None,
 ) -> tuple[str | None, str | None]:
     path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: folder not found", None
     if not path.is_dir():
@@ -313,6 +336,28 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
         except ValueError as exc:
             raise ValueError("path is outside the allowed workspace") from exc
     return resolved
+
+
+def _ensure_reference_path_allowed(path: Path) -> None:
+    home = Path(os.path.expanduser("~")).resolve()
+    hermes_home = Path(
+        os.getenv("HERMES_HOME", str(home / ".hermes"))
+    ).expanduser().resolve()
+
+    blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES}
+    blocked_exact.add(hermes_home / ".env")
+    blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS]
+    blocked_dirs.extend(hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS)
+
+    if path in blocked_exact:
+        raise ValueError("path is a sensitive credential file and cannot be attached")
+
+    for blocked_dir in blocked_dirs:
+        try:
+            path.relative_to(blocked_dir)
+        except ValueError:
+            continue
+        raise ValueError("path is a sensitive credential or internal Hermes path and cannot be attached")
 
 
 def _strip_trailing_punctuation(value: str) -> str:

@@ -71,13 +71,28 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         return None
 
     if deliver == "origin":
-        if not origin:
-            return None
-        return {
-            "platform": origin["platform"],
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
-        }
+        if origin:
+            return {
+                "platform": origin["platform"],
+                "chat_id": str(origin["chat_id"]),
+                "thread_id": origin.get("thread_id"),
+            }
+        # Origin missing (e.g. job created via API/setup script) — try each
+        # platform's home channel as a fallback instead of silently dropping.
+        for platform_name in ("matrix", "telegram", "discord", "slack"):
+            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+            if chat_id:
+                logger.info(
+                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
+                    job.get("name", job.get("id", "?")),
+                    platform_name,
+                )
+                return {
+                    "platform": platform_name,
+                    "chat_id": chat_id,
+                    "thread_id": None,
+                }
+        return None
 
     if ":" in deliver:
         platform_name, chat_id = deliver.split(":", 1)
@@ -136,6 +151,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "matrix": Platform.MATRIX,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }

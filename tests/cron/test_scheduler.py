@@ -94,6 +94,34 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_origin_no_origin_falls_back_to_home_channel(self, monkeypatch):
+        """deliver='origin' with no origin should fall back to platform home channel."""
+        monkeypatch.setenv("MATRIX_HOME_CHANNEL", "!abc:server")
+        job = {"deliver": "origin", "origin": None}
+        assert _resolve_delivery_target(job) == {
+            "platform": "matrix",
+            "chat_id": "!abc:server",
+            "thread_id": None,
+        }
+
+    def test_origin_no_origin_no_home_channel_returns_none(self, monkeypatch):
+        """deliver='origin' with no origin and no home channel should return None."""
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
+        job = {"deliver": "origin", "origin": None}
+        assert _resolve_delivery_target(job) is None
+
+    def test_origin_no_origin_prefers_first_configured_platform(self, monkeypatch):
+        """Fallback order: matrix, telegram, discord, slack."""
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-999")
+        job = {"deliver": "origin"}
+        result = _resolve_delivery_target(job)
+        assert result["platform"] == "telegram"
+        assert result["chat_id"] == "-999"
+
 
 class TestDeliverResultMirrorLogging:
     """Verify that mirror_to_session failures are logged, not silently swallowed."""

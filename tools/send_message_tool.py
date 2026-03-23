@@ -124,6 +124,7 @@ def _handle_send(args):
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "matrix": Platform.MATRIX,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -339,6 +340,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
+        elif platform == Platform.MATRIX:
+            result = await _send_matrix(pconfig.token, pconfig.extra.get("homeserver", ""), chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -660,6 +663,55 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_matrix(token, homeserver, chat_id, message):
+    """Send via Matrix client-server API (one-shot HTTP PUT, no E2EE).
+
+    Uses a simple PUT to the /send endpoint with an access token.
+    Converts basic markdown to HTML for rich rendering in Matrix clients.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    if not token or not homeserver:
+        return {"error": "Matrix not configured (MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER required)"}
+
+    import time
+    import urllib.parse
+
+    txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+    encoded_room = urllib.parse.quote(chat_id)
+    url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # Basic markdown to HTML for Matrix formatted_body
+    html_body = message
+    html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body, flags=re.DOTALL)
+    html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body, flags=re.DOTALL)
+    html_body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', html_body)
+    html_body = html_body.replace("\n", "<br>")
+
+    body = {
+        "msgtype": "m.text",
+        "body": message,
+        "format": "org.matrix.custom.html",
+        "formatted_body": html_body,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.put(url, json=body, headers=headers, ssl=False) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {"success": True, "platform": "matrix", "chat_id": chat_id, "event_id": data.get("event_id")}
+                else:
+                    text = await resp.text()
+                    return {"error": f"Matrix send failed ({resp.status}): {text}"}
+    except Exception as e:
+        return {"error": f"Matrix send failed: {e}"}
 
 
 def _check_send_message():

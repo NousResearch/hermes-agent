@@ -1137,9 +1137,20 @@ def _model_flow_custom(config):
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
         api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
         model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
 
     if not base_url and not current_url:
         print("No URL provided. Cancelled.")
@@ -1203,14 +1214,14 @@ def _model_flow_custom(config):
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
-    _save_custom_provider(effective_url, effective_key, model_name or "")
+    _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length)
 
 
-def _save_custom_provider(base_url, api_key="", model=""):
+def _save_custom_provider(base_url, api_key="", model="", context_length=None):
     """Save a custom endpoint to custom_providers in config.yaml.
 
     Deduplicates by base_url — if the URL already exists, updates the
-    model name but doesn't add a duplicate entry.
+    model name and context_length but doesn't add a duplicate entry.
     Auto-generates a display name from the URL hostname.
     """
     from hermes_cli.config import load_config, save_config
@@ -1220,14 +1231,24 @@ def _save_custom_provider(base_url, api_key="", model=""):
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model if so
+    # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/"):
+            changed = False
             if model and entry.get("model") != model:
                 entry["model"] = model
+                changed = True
+            if model and context_length:
+                models_cfg = entry.get("models", {})
+                if not isinstance(models_cfg, dict):
+                    models_cfg = {}
+                models_cfg[model] = {"context_length": context_length}
+                entry["models"] = models_cfg
+                changed = True
+            if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
-            return  # already saved, updated model if needed
+            return  # already saved, updated if needed
 
     # Auto-generate a name from the URL
     import re
@@ -1249,6 +1270,8 @@ def _save_custom_provider(base_url, api_key="", model=""):
         entry["api_key"] = api_key
     if model:
         entry["model"] = model
+    if model and context_length:
+        entry["models"] = {model: {"context_length": context_length}}
 
     providers.append(entry)
     cfg["custom_providers"] = providers
@@ -2536,14 +2559,55 @@ def _restore_stashed_changes(
         capture_output=True,
         text=True,
     )
-    if restore.returncode != 0:
-        print("✗ Update pulled new code, but restoring local changes failed.")
+
+    # Check for unmerged (conflicted) files — can happen even when returncode is 0
+    unmerged = subprocess.run(
+        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    has_conflicts = bool(unmerged.stdout.strip())
+
+    if restore.returncode != 0 or has_conflicts:
+        print("✗ Update pulled new code, but restoring local changes hit conflicts.")
         if restore.stdout.strip():
             print(restore.stdout.strip())
         if restore.stderr.strip():
             print(restore.stderr.strip())
-        print("Your changes are still preserved in git stash.")
-        print(f"Resolve manually with: git stash apply {stash_ref}")
+
+        # Show which files conflicted
+        conflicted_files = unmerged.stdout.strip()
+        if conflicted_files:
+            print("\nConflicted files:")
+            for f in conflicted_files.splitlines():
+                print(f"  • {f}")
+
+        print("\nYour stashed changes are preserved — nothing is lost.")
+        print(f"  Stash ref: {stash_ref}")
+
+        # Ask before resetting (if interactive)
+        do_reset = True
+        if prompt_user:
+            print("\nReset working tree to clean state so Hermes can run?")
+            print("  (You can re-apply your changes later with: git stash apply)")
+            print("[Y/n] ", end="", flush=True)
+            response = input().strip().lower()
+            if response not in ("", "y", "yes"):
+                do_reset = False
+
+        if do_reset:
+            subprocess.run(
+                git_cmd + ["reset", "--hard", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+            )
+            print("Working tree reset to clean state.")
+        else:
+            print("Working tree left as-is (may have conflict markers).")
+            print("Resolve conflicts manually, then run: git stash drop")
+
+        print(f"Restore your changes with: git stash apply {stash_ref}")
         sys.exit(1)
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
@@ -2665,7 +2729,7 @@ def cmd_update(args):
 
         print("→ Pulling updates...")
         try:
-            subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
+            subprocess.run(git_cmd + ["pull", "--ff-only", "origin", branch], cwd=PROJECT_ROOT, check=True)
         finally:
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
@@ -2918,7 +2982,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
-        "sessions", "insights", "version", "update", "uninstall",
+        "mcp", "sessions", "insights", "version", "update", "uninstall",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -3507,6 +3571,46 @@ For more help on a command:
     skills_parser.set_defaults(func=cmd_skills)
 
     # =========================================================================
+    # plugins command
+    # =========================================================================
+    plugins_parser = subparsers.add_parser(
+        "plugins",
+        help="Manage plugins — install, update, remove, list",
+        description="Install plugins from Git repositories, update, remove, or list them.",
+    )
+    plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
+
+    plugins_install = plugins_subparsers.add_parser(
+        "install", help="Install a plugin from a Git URL or owner/repo"
+    )
+    plugins_install.add_argument(
+        "identifier",
+        help="Git URL or owner/repo shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)",
+    )
+    plugins_install.add_argument(
+        "--force", "-f", action="store_true",
+        help="Remove existing plugin and reinstall",
+    )
+
+    plugins_update = plugins_subparsers.add_parser(
+        "update", help="Pull latest changes for an installed plugin"
+    )
+    plugins_update.add_argument("name", help="Plugin name to update")
+
+    plugins_remove = plugins_subparsers.add_parser(
+        "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin"
+    )
+    plugins_remove.add_argument("name", help="Plugin directory name to remove")
+
+    plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
+
+    def cmd_plugins(args):
+        from hermes_cli.plugins_cmd import plugins_command
+        plugins_command(args)
+
+    plugins_parser.set_defaults(func=cmd_plugins)
+
+    # =========================================================================
     # honcho command
     # =========================================================================
     honcho_parser = subparsers.add_parser(
@@ -3663,6 +3767,45 @@ For more help on a command:
 
     tools_parser.set_defaults(func=cmd_tools)
     # =========================================================================
+    # mcp command — manage MCP server connections
+    # =========================================================================
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Manage MCP server connections",
+        description=(
+            "Add, remove, list, test, and configure MCP server connections.\n\n"
+            "MCP servers provide additional tools via the Model Context Protocol.\n"
+            "Use 'hermes mcp add' to connect to a new server with interactive\n"
+            "tool discovery. Run 'hermes mcp' with no subcommand to list servers."
+        ),
+    )
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+
+    mcp_add_p = mcp_sub.add_parser("add", help="Add an MCP server (discovery-first install)")
+    mcp_add_p.add_argument("name", help="Server name (used as config key)")
+    mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
+    mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
+    mcp_add_p.add_argument("--args", nargs="*", default=[], help="Arguments for stdio command")
+    mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+
+    mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
+    mcp_rm_p.add_argument("name", help="Server name to remove")
+
+    mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
+
+    mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
+    mcp_test_p.add_argument("name", help="Server name to test")
+
+    mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
+    mcp_cfg_p.add_argument("name", help="Server name to configure")
+
+    def cmd_mcp(args):
+        from hermes_cli.mcp_config import mcp_command
+        mcp_command(args)
+
+    mcp_parser.set_defaults(func=cmd_mcp)
+
+    # =========================================================================
     # sessions command
     # =========================================================================
     sessions_parser = subparsers.add_parser(
@@ -3721,20 +3864,20 @@ For more help on a command:
                 return
             has_titles = any(s.get("title") for s in sessions)
             if has_titles:
-                print(f"{'Title':<22} {'Preview':<40} {'Last Active':<13} {'ID'}")
-                print("─" * 100)
+                print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+                print("─" * 110)
             else:
                 print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
-                print("─" * 90)
+                print("─" * 95)
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 preview = s.get("preview", "")[:38] if has_titles else s.get("preview", "")[:48]
                 if has_titles:
-                    title = (s.get("title") or "—")[:20]
-                    sid = s["id"][:20]
-                    print(f"{title:<22} {preview:<40} {last_active:<13} {sid}")
+                    title = (s.get("title") or "—")[:30]
+                    sid = s["id"]
+                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
                 else:
-                    sid = s["id"][:20]
+                    sid = s["id"]
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":

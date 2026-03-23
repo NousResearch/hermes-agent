@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -325,9 +326,10 @@ class AsyncCodexAuxiliaryClient:
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str):
+    def __init__(self, real_client: Any, model: str, is_oauth: bool = False):
         self._client = real_client
         self._model = model
+        self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
         from agent.anthropic_adapter import build_anthropic_kwargs, normalize_anthropic_response
@@ -356,6 +358,7 @@ class _AnthropicCompletionsAdapter:
             max_tokens=max_tokens,
             reasoning_config=None,
             tool_choice=normalized_tool_choice,
+            is_oauth=self._is_oauth,
         )
         if temperature is not None:
             anthropic_kwargs["temperature"] = temperature
@@ -394,9 +397,9 @@ class _AnthropicChatShim:
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str):
+    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
-        adapter = _AnthropicCompletionsAdapter(real_client, model)
+        adapter = _AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth)
         self.chat = _AnthropicChatShim(adapter)
         self.api_key = api_key
         self.base_url = base_url
@@ -463,15 +466,30 @@ def _nous_base_url() -> str:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid Codex OAuth access token from Hermes auth store (~/.hermes/auth.json)."""
+    """Read a valid, non-expired Codex OAuth access token from Hermes auth store."""
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
         tokens = data.get("tokens", {})
         access_token = tokens.get("access_token")
-        if isinstance(access_token, str) and access_token.strip():
-            return access_token.strip()
-        return None
+        if not isinstance(access_token, str) or not access_token.strip():
+            return None
+
+        # Check JWT expiry — expired tokens block the auto chain and
+        # prevent fallback to working providers (e.g. Anthropic).
+        try:
+            import base64
+            payload = access_token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload))
+            exp = claims.get("exp", 0)
+            if exp and time.time() > exp:
+                logger.debug("Codex access token expired (exp=%s), skipping", exp)
+                return None
+        except Exception:
+            pass  # Non-JWT token or decode error — use as-is
+
+        return access_token.strip()
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
@@ -654,23 +672,29 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     if not token:
         return None, None
 
-    # Allow base URL override from config.yaml model.base_url
+    # Allow base URL override from config.yaml model.base_url, but only
+    # when the configured provider is anthropic — otherwise a non-Anthropic
+    # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
     base_url = _ANTHROPIC_DEFAULT_BASE_URL
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-            if cfg_base_url:
-                base_url = cfg_base_url
+            cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            if cfg_provider == "anthropic":
+                cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+                if cfg_base_url:
+                    base_url = cfg_base_url
     except Exception:
         pass
 
+    from agent.anthropic_adapter import _is_oauth_token
+    is_oauth = _is_oauth_token(token)
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
-    logger.debug("Auxiliary client: Anthropic native (%s) at %s", model, base_url)
+    logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     real_client = build_anthropic_client(token, base_url)
-    return AnthropicAuxiliaryClient(real_client, model, token, base_url), model
+    return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
 def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1180,6 +1204,53 @@ _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 
 
+def _force_close_async_httpx(client: Any) -> None:
+    """Mark the httpx AsyncClient inside an AsyncOpenAI client as closed.
+
+    This prevents ``AsyncHttpxClientWrapper.__del__`` from scheduling
+    ``aclose()`` on a (potentially closed) event loop, which causes
+    ``RuntimeError: Event loop is closed`` → prompt_toolkit's
+    "Press ENTER to continue..." handler.
+
+    We intentionally do NOT run the full async close path — the
+    connections will be dropped by the OS when the process exits.
+    """
+    try:
+        from httpx._client import ClientState
+        inner = getattr(client, "_client", None)
+        if inner is not None and not getattr(inner, "is_closed", True):
+            inner._state = ClientState.CLOSED
+    except Exception:
+        pass
+
+
+def shutdown_cached_clients() -> None:
+    """Close all cached clients (sync and async) to prevent event-loop errors.
+
+    Call this during CLI shutdown, *before* the event loop is closed, to
+    avoid ``AsyncHttpxClientWrapper.__del__`` raising on a dead loop.
+    """
+    import inspect
+
+    with _client_cache_lock:
+        for key, entry in list(_client_cache.items()):
+            client = entry[0]
+            if client is None:
+                continue
+            # Mark any async httpx transport as closed first (prevents __del__
+            # from scheduling aclose() on a dead event loop).
+            _force_close_async_httpx(client)
+            # Sync clients: close the httpx connection pool cleanly.
+            # Async clients: skip — we already neutered __del__ above.
+            try:
+                close_fn = getattr(client, "close", None)
+                if close_fn and not inspect.iscoroutinefunction(close_fn):
+                    close_fn()
+            except Exception:
+                pass
+        _client_cache.clear()
+
+
 def _get_cached_client(
     provider: str,
     model: str = None,
@@ -1191,8 +1262,19 @@ def _get_cached_client(
     cache_key = (provider, async_mode, base_url or "", api_key or "")
     with _client_cache_lock:
         if cache_key in _client_cache:
-            cached_client, cached_default = _client_cache[cache_key]
-            return cached_client, model or cached_default
+            cached_client, cached_default, cached_loop = _client_cache[cache_key]
+            if async_mode:
+                # Async clients are bound to the event loop that created them.
+                # A cached async client whose loop has been closed will raise
+                # "Event loop is closed" when httpx tries to clean up its
+                # transport.  Discard the stale client and create a fresh one.
+                if cached_loop is not None and cached_loop.is_closed():
+                    _force_close_async_httpx(cached_client)
+                    del _client_cache[cache_key]
+                else:
+                    return cached_client, model or cached_default
+            else:
+                return cached_client, model or cached_default
     # Build outside the lock
     client, default_model = resolve_provider_client(
         provider,
@@ -1202,11 +1284,20 @@ def _get_cached_client(
         explicit_api_key=api_key,
     )
     if client is not None:
+        # For async clients, remember which loop they were created on so we
+        # can detect stale entries later.
+        bound_loop = None
+        if async_mode:
+            try:
+                import asyncio as _aio
+                bound_loop = _aio.get_event_loop()
+            except RuntimeError:
+                pass
         with _client_cache_lock:
             if cache_key not in _client_cache:
-                _client_cache[cache_key] = (client, default_model)
+                _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
-                client, default_model = _client_cache[cache_key]
+                client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model
 
 
@@ -1408,8 +1499,18 @@ def call_llm(
             api_key=resolved_api_key,
         )
         if client is None:
-            # Fallback: try openrouter
-            if resolved_provider != "openrouter" and not resolved_base_url:
+            # When the user explicitly chose a non-OpenRouter provider but no
+            # credentials were found, fail fast instead of silently routing
+            # through OpenRouter (which causes confusing 404s).
+            _explicit = (resolved_provider or "").strip().lower()
+            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                raise RuntimeError(
+                    f"Provider '{_explicit}' is set in config.yaml but no API key "
+                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                    f"variable, or switch to a different provider with `hermes model`."
+                )
+            # For auto/custom, fall back to OpenRouter
+            if not resolved_base_url:
                 logger.warning("Provider %s unavailable, falling back to openrouter",
                                resolved_provider)
                 client, final_model = _get_cached_client(
@@ -1491,7 +1592,14 @@ async def async_call_llm(
             api_key=resolved_api_key,
         )
         if client is None:
-            if resolved_provider != "openrouter" and not resolved_base_url:
+            _explicit = (resolved_provider or "").strip().lower()
+            if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                raise RuntimeError(
+                    f"Provider '{_explicit}' is set in config.yaml but no API key "
+                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                    f"variable, or switch to a different provider with `hermes model`."
+                )
+            if not resolved_base_url:
                 logger.warning("Provider %s unavailable, falling back to openrouter",
                                resolved_provider)
                 client, final_model = _get_cached_client(

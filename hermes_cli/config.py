@@ -162,7 +162,7 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,
-        "summary_model": "google/gemini-3-flash-preview",
+        "summary_model": "",  # empty = use main configured model
         "summary_provider": "auto",
         "summary_base_url": None,
     },
@@ -185,6 +185,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
+            "timeout": 30,         # seconds — increase for slow local vision models
         },
         "web_extract": {
             "provider": "auto",
@@ -673,6 +674,11 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HONCHO_BASE_URL": {
+        "description": "Base URL for self-hosted Honcho instances (no API key needed)",
+        "prompt": "Honcho base URL (e.g. http://localhost:8000)",
+        "category": "tool",
+    },
 
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": {
@@ -809,6 +815,27 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
         "advanced": True,
+    },
+    "WEBHOOK_ENABLED": {
+        "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
+        "prompt": "Enable webhooks (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "WEBHOOK_PORT": {
+        "description": "Port for the webhook HTTP server (default: 8644).",
+        "prompt": "Webhook port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "WEBHOOK_SECRET": {
+        "description": "Global HMAC secret for webhook signature validation (overridable per route in config.yaml).",
+        "prompt": "Webhook secret",
+        "url": None,
+        "password": True,
+        "category": "messaging",
     },
 
     # ── Agent settings ──
@@ -1584,7 +1611,6 @@ def show_config():
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
-    print(f"  Toolsets:     {', '.join(config.get('toolsets', ['all']))}")
     
     # Display
     print()
@@ -1603,11 +1629,11 @@ def show_config():
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
     
     if terminal.get('backend') == 'docker':
-        print(f"  Docker image: {terminal.get('docker_image', 'python:3.11-slim')}")
+        print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
-        print(f"  Image:        {terminal.get('singularity_image', 'docker://python:3.11')}")
+        print(f"  Image:        {terminal.get('singularity_image', 'docker://nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'modal':
-        print(f"  Modal image:  {terminal.get('modal_image', 'python:3.11')}")
+        print(f"  Modal image:  {terminal.get('modal_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         modal_token = get_env_value('MODAL_TOKEN_ID')
         print(f"  Modal token:  {'configured' if modal_token else '(not set)'}")
     elif terminal.get('backend') == 'daytona':
@@ -1637,7 +1663,8 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
-        print(f"  Model:        {compression.get('summary_model', 'google/gemini-3-flash-preview')}")
+        _sm = compression.get('summary_model', '') or '(main model)'
+        print(f"  Model:        {_sm}")
         comp_provider = compression.get('summary_provider', 'auto')
         if comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")

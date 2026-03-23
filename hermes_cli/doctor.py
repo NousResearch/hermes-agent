@@ -717,13 +717,14 @@ def run_doctor(args):
     print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
 
     try:
-        from honcho_integration.client import HonchoClientConfig, GLOBAL_CONFIG_PATH
+        from honcho_integration.client import HonchoClientConfig, resolve_config_path
         hcfg = HonchoClientConfig.from_global_config()
+        _honcho_cfg_path = resolve_config_path()
 
-        if not GLOBAL_CONFIG_PATH.exists():
+        if not _honcho_cfg_path.exists():
             check_warn("Honcho config not found", f"run: hermes honcho setup")
         elif not hcfg.enabled:
-            check_info("Honcho disabled (set enabled: true in ~/.honcho/config.json to activate)")
+            check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
         elif not hcfg.api_key:
             check_fail("Honcho API key not set", "run: hermes honcho setup")
             issues.append("No Honcho API key — run 'hermes honcho setup'")

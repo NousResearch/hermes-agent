@@ -128,6 +128,7 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
         # Track tool calls from assistant messages
         if msg["role"] == "assistant" and "tool_calls" in msg and msg["tool_calls"]:
             for tool_call in msg["tool_calls"]:
+                if not tool_call or not isinstance(tool_call, dict): continue
                 tool_name = tool_call["function"]["name"]
                 tool_call_id = tool_call["id"]
                 

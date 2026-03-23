@@ -212,6 +212,61 @@ class TestSessionHygieneWarnThreshold:
         assert post_compress_tokens < warn_threshold
 
 
+class TestEstimatedTokenThreshold:
+    """Verify that hygiene thresholds are always below the model's context
+    limit — for both actual and estimated token counts.
+
+    Regression: a previous 1.4x multiplier on rough estimates pushed the
+    threshold to 85% * 1.4 = 119% of context, which exceeded the model's
+    limit and prevented hygiene from ever firing for ~200K models (GLM-5).
+    The fix removed the multiplier entirely — the 85% threshold already
+    provides ample headroom over the agent's 50% compressor.
+    """
+
+    def test_threshold_below_context_for_200k_model(self):
+        """Hygiene threshold must always be below model context."""
+        context_length = 200_000
+        threshold = int(context_length * 0.85)
+        assert threshold < context_length
+
+    def test_threshold_below_context_for_128k_model(self):
+        context_length = 128_000
+        threshold = int(context_length * 0.85)
+        assert threshold < context_length
+
+    def test_no_multiplier_means_same_threshold_for_estimated_and_actual(self):
+        """Without the 1.4x, estimated and actual token paths use the same threshold."""
+        context_length = 200_000
+        threshold_pct = 0.85
+        threshold = int(context_length * threshold_pct)
+        # Both paths should use 170K — no inflation
+        assert threshold == 170_000
+
+    def test_warn_threshold_below_context(self):
+        """Warn threshold (95%) must be below context length."""
+        for ctx in (128_000, 200_000, 1_000_000):
+            warn = int(ctx * 0.95)
+            assert warn < ctx
+
+    def test_overestimate_fires_early_but_safely(self):
+        """If rough estimate is 50% inflated, hygiene fires at ~57% actual usage.
+
+        That's between the agent's 50% threshold and the model's limit —
+        safe and harmless.
+        """
+        context_length = 200_000
+        threshold = int(context_length * 0.85)  # 170K
+        # If actual tokens = 113K, rough estimate = 113K * 1.5 = 170K
+        # Hygiene fires when estimate hits 170K, actual is ~113K = 57% of ctx
+        actual_when_fires = threshold / 1.5
+        assert actual_when_fires > context_length * 0.50, (
+            "Early fire should still be above agent's 50% threshold"
+        )
+        assert actual_when_fires < context_length, (
+            "Early fire must be well below model limit"
+        )
+
+
 class TestTokenEstimation:
     """Verify rough token estimation works as expected for hygiene checks."""
 

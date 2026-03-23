@@ -378,6 +378,62 @@ class TestVisionRequirements:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Tilde expansion in local file paths
+# ---------------------------------------------------------------------------
+
+
+class TestTildeExpansion:
+    """Verify that ~/path style paths are expanded correctly."""
+
+    @pytest.mark.asyncio
+    async def test_tilde_path_expanded_to_local_file(self, tmp_path, monkeypatch):
+        """vision_analyze_tool should expand ~ in file paths."""
+        # Create a fake image file under a fake home directory
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        img = fake_home / "test_image.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = await vision_analyze_tool(
+                "~/test_image.png", "describe this", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is True
+            assert data["analysis"] == "A test image"
+
+    @pytest.mark.asyncio
+    async def test_tilde_path_nonexistent_file_gives_error(self, tmp_path, monkeypatch):
+        """A tilde path that doesn't resolve to a real file should fail gracefully."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        result = await vision_analyze_tool(
+            "~/nonexistent.png", "describe this", "test/model"
+        )
+        data = json.loads(result)
+        assert data["success"] is False
+
+
 class TestVisionRegistration:
     def test_vision_analyze_registered(self):
         from tools.registry import registry

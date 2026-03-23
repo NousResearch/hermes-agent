@@ -4,9 +4,9 @@ Interactive setup wizard for Hermes Agent.
 Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
   2. Terminal Backend — where your agent runs commands
-  3. Messaging Platforms — connect Telegram, Discord, etc.
-  4. Tools — configure TTS, web search, image generation, etc.
-  5. Agent Settings — iterations, compression, session reset
+  3. Agent Settings — iterations, compression, session reset
+  4. Messaging Platforms — connect Telegram, Discord, etc.
+  5. Tools — configure TTS, web search, image generation, etc.
 
 Config files are stored in ~/.hermes/ for easy access.
 """
@@ -1070,93 +1070,17 @@ def setup_model_provider(config: dict):
         print()
         print_header("Custom OpenAI-Compatible Endpoint")
         print_info("Works with any API that follows OpenAI's chat completions spec")
+        print()
 
-        current_url = get_env_value("OPENAI_BASE_URL") or ""
-        current_key = get_env_value("OPENAI_API_KEY")
-        _raw_model = config.get("model", "")
-        current_model = (
-            _raw_model.get("default", "")
-            if isinstance(_raw_model, dict)
-            else (_raw_model or "")
-        )
-
-        if current_url:
-            print_info(f"  Current URL: {current_url}")
-        if current_key:
-            print_info(f"  Current key: {current_key[:8]}... (configured)")
-
-        base_url = prompt(
-            "  API base URL (e.g., https://api.example.com/v1)", current_url
-        ).strip()
-        api_key = prompt("  API key", password=True)
-        model_name = prompt("  Model name (e.g., gpt-4, claude-3-opus)", current_model)
-
-        if base_url:
-            from hermes_cli.models import probe_api_models
-
-            probe = probe_api_models(api_key, base_url)
-            if probe.get("used_fallback") and probe.get("resolved_base_url"):
-                print_warning(
-                    f"Endpoint verification worked at {probe['resolved_base_url']}/models, "
-                    f"not the exact URL you entered. Saving the working base URL instead."
-                )
-                base_url = probe["resolved_base_url"]
-            elif probe.get("models") is not None:
-                print_success(
-                    f"Verified endpoint via {probe.get('probed_url')} "
-                    f"({len(probe.get('models') or [])} model(s) visible)"
-                )
-            else:
-                print_warning(
-                    f"Could not verify this endpoint via {probe.get('probed_url')}. "
-                    f"Hermes will still save it."
-                )
-                if probe.get("suggested_base_url"):
-                    print_info(
-                        f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}"
-                    )
-
-            save_env_value("OPENAI_BASE_URL", base_url)
-        if api_key:
-            save_env_value("OPENAI_API_KEY", api_key)
-        if model_name:
-            _set_default_model(config, model_name)
-
-        try:
-            from hermes_cli.auth import deactivate_provider
-
-            deactivate_provider()
-        except Exception:
-            pass
-
-        # Save provider and base_url to config.yaml so the gateway and CLI
-        # both resolve the correct provider without relying on env-var heuristics.
-        if base_url:
-            import yaml
-
-            config_path = (
-                Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-                / "config.yaml"
-            )
-            try:
-                disk_cfg = {}
-                if config_path.exists():
-                    disk_cfg = yaml.safe_load(config_path.read_text()) or {}
-                model_section = disk_cfg.get("model", {})
-                if isinstance(model_section, str):
-                    model_section = {"default": model_section}
-                model_section["provider"] = "custom"
-                model_section["base_url"] = base_url.rstrip("/")
-                if model_name:
-                    model_section["default"] = model_name
-                disk_cfg["model"] = model_section
-                config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
-            except Exception as e:
-                logger.debug("Could not save provider to config.yaml: %s", e)
-
-            _set_model_provider(config, "custom", base_url)
-
-        print_success("Custom endpoint configured")
+        # Reuse the shared custom endpoint flow from `hermes model`.
+        # This handles: URL/key/model/context-length prompts, endpoint probing,
+        # env saving, config.yaml updates, and custom_providers persistence.
+        from hermes_cli.main import _model_flow_custom
+        _model_flow_custom(config)
+        # _model_flow_custom handles model selection, config, env vars,
+        # and custom_providers. Keep selected_provider = "custom" so
+        # the model selection step below is skipped (line 1631 check)
+        # but vision and TTS setup still run.
 
     elif provider_idx == 4:  # Z.AI / GLM
         selected_provider = "zai"
@@ -1815,7 +1739,7 @@ def setup_model_provider(config: dict):
             model_cfg = _model_config_dict(config)
             model_cfg["api_mode"] = "chat_completions"
             config["model"] = model_cfg
-        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway"):
+        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "opencode-zen", "opencode-go", "alibaba"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -2138,7 +2062,7 @@ def setup_terminal_backend(config: dict):
 
         # Docker image
         current_image = config.get("terminal", {}).get(
-            "docker_image", "python:3.11-slim"
+            "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
         image = prompt("  Docker image", current_image)
         config["terminal"]["docker_image"] = image
@@ -2160,7 +2084,7 @@ def setup_terminal_backend(config: dict):
             print_info(f"Found: {sing_bin}")
 
         current_image = config.get("terminal", {}).get(
-            "singularity_image", "docker://python:3.11-slim"
+            "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
         )
         image = prompt("  Container image", current_image)
         config["terminal"]["singularity_image"] = image
@@ -2362,7 +2286,7 @@ def setup_agent_settings(config: dict):
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Recommended: 30-60 for most tasks, 100+ for open exploration.")
+    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
 
     max_iter_str = prompt("Max iterations", current_max)
     try:
@@ -2404,7 +2328,7 @@ def setup_agent_settings(config: dict):
 
     config.setdefault("compression", {})["enabled"] = True
 
-    current_threshold = config.get("compression", {}).get("threshold", 0.85)
+    current_threshold = config.get("compression", {}).get("threshold", 0.50)
     threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
@@ -2414,7 +2338,7 @@ def setup_agent_settings(config: dict):
         pass
 
     print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.85)}"
+        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
     )
 
     # ── Session Reset Policy ──
@@ -2922,6 +2846,61 @@ def setup_gateway(config: dict):
             print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
             print_info("or personal self-chat) and pair via QR code.")
 
+    # ── Webhooks ──
+    existing_webhook = get_env_value("WEBHOOK_ENABLED")
+    if existing_webhook:
+        print_info("Webhooks: already configured")
+        if prompt_yes_no("Reconfigure webhooks?", False):
+            existing_webhook = None
+
+    if not existing_webhook and prompt_yes_no("Set up webhooks? (GitHub, GitLab, etc.)", False):
+        print()
+        print_warning(
+            "⚠  Webhook and SMS platforms require exposing gateway ports to the"
+        )
+        print_warning(
+            "   internet. For security, run the gateway in a sandboxed environment"
+        )
+        print_warning(
+            "   (Docker, VM, etc.) to limit blast radius from prompt injection."
+        )
+        print()
+        print_info(
+            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/"
+        )
+        print()
+
+        port = prompt("Webhook port (default 8644)")
+        if port:
+            try:
+                save_env_value("WEBHOOK_PORT", str(int(port)))
+                print_success(f"Webhook port set to {port}")
+            except ValueError:
+                print_warning("Invalid port number, using default 8644")
+
+        secret = prompt("Global HMAC secret (shared across all routes)", password=True)
+        if secret:
+            save_env_value("WEBHOOK_SECRET", secret)
+            print_success("Webhook secret saved")
+        else:
+            print_warning("No secret set — you must configure per-route secrets in config.yaml")
+
+        save_env_value("WEBHOOK_ENABLED", "true")
+        print()
+        print_success("Webhooks enabled! Next steps:")
+        print_info("   1. Define webhook routes in ~/.hermes/config.yaml")
+        print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
+        print_info("      http://your-server:8644/webhooks/<route-name>")
+        print()
+        print_info(
+            "   Route configuration guide:"
+        )
+        print_info(
+            "   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes"
+        )
+        print()
+        print_info("   Open config in your editor:  hermes config edit")
+
     # ── Gateway Service Setup ──
     any_messaging = (
         get_env_value("TELEGRAM_BOT_TOKEN")
@@ -2932,6 +2911,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WECOM_BOT_ID")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("WEBHOOK_ENABLED")
     )
     if any_messaging:
         print()
@@ -3342,9 +3322,9 @@ def run_setup_wizard(args):
         print_info("We'll walk you through:")
         print_info("  1. Model & Provider — choose your AI provider and model")
         print_info("  2. Terminal Backend — where your agent runs commands")
-        print_info("  3. Messaging Platforms — connect Telegram, Discord, etc.")
-        print_info("  4. Tools — configure TTS, web search, image generation, etc.")
-        print_info("  5. Agent Settings — iterations, compression, session reset")
+        print_info("  3. Agent Settings — iterations, compression, session reset")
+        print_info("  4. Messaging Platforms — connect Telegram, Discord, etc.")
+        print_info("  5. Tools — configure TTS, web search, image generation, etc.")
         print()
         print_info("Press Enter to begin, or Ctrl+C to exit.")
         try:

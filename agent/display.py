@@ -254,6 +254,15 @@ class KawaiiSpinner:
             pass
 
     def _animate(self):
+        # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
+        # skip the animation entirely — it creates massive log bloat.
+        # Just log the start once and let stop() log the completion.
+        if not hasattr(self._out, 'isatty') or not self._out.isatty():
+            self._write(f"  [tool] {self.message}", flush=True)
+            while self.running:
+                time.sleep(0.5)
+            return
+
         # Cache skin wings at start (avoid per-frame imports)
         skin = _get_skin()
         wings = skin.get_spinner_wings() if skin else []
@@ -319,12 +328,19 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        # Clear the spinner line with spaces instead of \033[K to avoid
-        # garbled escape codes when prompt_toolkit's patch_stdout is active.
-        blanks = ' ' * max(self.last_line_len + 5, 40)
-        self._write(f"\r{blanks}\r", end='', flush=True)
+
+        is_tty = hasattr(self._out, 'isatty') and self._out.isatty()
+        if is_tty:
+            # Clear the spinner line with spaces instead of \033[K to avoid
+            # garbled escape codes when prompt_toolkit's patch_stdout is active.
+            blanks = ' ' * max(self.last_line_len + 5, 40)
+            self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
-            self._write(f"  {final_message}", flush=True)
+            elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
+            if is_tty:
+                self._write(f"  {final_message}", flush=True)
+            else:
+                self._write(f"  [done] {final_message}{elapsed}", flush=True)
 
     def __enter__(self):
         self.start()
@@ -612,3 +628,95 @@ def write_tty(text: str) -> None:
     except OSError:
         sys.stdout.write(text)
         sys.stdout.flush()
+
+
+# =========================================================================
+# Context pressure display (CLI user-facing warnings)
+# =========================================================================
+
+# ANSI color codes for context pressure tiers
+_CYAN = "\033[36m"
+_YELLOW = "\033[33m"
+_BOLD = "\033[1m"
+_DIM_ANSI = "\033[2m"
+
+# Bar characters
+_BAR_FILLED = "▰"
+_BAR_EMPTY = "▱"
+_BAR_WIDTH = 20
+
+
+def format_context_pressure(
+    compaction_progress: float,
+    threshold_tokens: int,
+    threshold_percent: float,
+    compression_enabled: bool = True,
+) -> str:
+    """Build a formatted context pressure line for CLI display.
+
+    The bar and percentage show progress toward the compaction threshold,
+    NOT the raw context window.  100% = compaction fires.
+
+    Uses ANSI colors:
+      - cyan at ~60% to compaction = informational
+      - bold yellow at ~85% to compaction = warning
+
+    Args:
+        compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
+        threshold_tokens: Compaction threshold in tokens.
+        threshold_percent: Compaction threshold as a fraction of context window.
+        compression_enabled: Whether auto-compression is active.
+    """
+    pct_int = int(compaction_progress * 100)
+    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
+    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+
+    threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
+    threshold_pct_int = int(threshold_percent * 100)
+
+    # Tier styling
+    if compaction_progress >= 0.85:
+        color = f"{_BOLD}{_YELLOW}"
+        icon = "⚠"
+        if compression_enabled:
+            hint = "compaction imminent"
+        else:
+            hint = "no auto-compaction"
+    else:
+        color = _CYAN
+        icon = "◐"
+        hint = "approaching compaction"
+
+    return (
+        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
+        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
+    )
+
+
+def format_context_pressure_gateway(
+    compaction_progress: float,
+    threshold_percent: float,
+    compression_enabled: bool = True,
+) -> str:
+    """Build a plain-text context pressure notification for messaging platforms.
+
+    No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
+    The percentage shows progress toward the compaction threshold.
+    """
+    pct_int = int(compaction_progress * 100)
+    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
+    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
+
+    threshold_pct_int = int(threshold_percent * 100)
+
+    if compaction_progress >= 0.85:
+        icon = "⚠️"
+        if compression_enabled:
+            hint = f"Context compaction is imminent (threshold: {threshold_pct_int}% of window)."
+        else:
+            hint = "Auto-compaction is disabled — context may be truncated."
+    else:
+        icon = "ℹ️"
+        hint = f"Compaction threshold is at {threshold_pct_int}% of context window."
+
+    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

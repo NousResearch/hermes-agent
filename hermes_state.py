@@ -181,7 +181,11 @@ class SessionDB:
                 ]
                 for name, column_type in new_columns:
                     try:
-                        cursor.execute(f"ALTER TABLE sessions ADD COLUMN {name} {column_type}")
+                        # name and column_type come from the hardcoded tuple above,
+                        # not user input. Double-quote identifier escaping is applied
+                        # as defense-in-depth; SQLite DDL cannot be parameterized.
+                        safe_name = name.replace('"', '""')
+                        cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")
@@ -851,23 +855,25 @@ class SessionDB:
 
     def session_count(self, source: str = None) -> int:
         """Count sessions, optionally filtered by source."""
-        if source:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
-            )
-        else:
-            cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
-        return cursor.fetchone()[0]
+        with self._lock:
+            if source:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE source = ?", (source,)
+                )
+            else:
+                cursor = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            return cursor.fetchone()[0]
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
-        if session_id:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
-            )
-        else:
-            cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
-        return cursor.fetchone()[0]
+        with self._lock:
+            if session_id:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+                )
+            else:
+                cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
+            return cursor.fetchone()[0]
 
     # =========================================================================
     # Export and cleanup

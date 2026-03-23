@@ -450,6 +450,12 @@ class TestNormalizeModelName:
         assert normalize_model_name("claude-opus-4-6") == "claude-opus-4-6"
         assert normalize_model_name("claude-opus-4-5-20251101") == "claude-opus-4-5-20251101"
 
+    def test_preserve_dots_for_alibaba_dashscope(self):
+        """Alibaba/DashScope use dots in model names (e.g. qwen3.5-plus). Fixes #1739."""
+        assert normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion
@@ -578,21 +584,39 @@ class TestConvertMessages:
 
     def test_converts_tool_results(self):
         messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result data"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        assert result[0]["role"] == "user"
-        assert result[0]["content"][0]["type"] == "tool_result"
-        assert result[0]["content"][0]["tool_use_id"] == "tc_1"
+        # tool result is in the second message (user role)
+        user_msg = [m for m in result if m["role"] == "user"][0]
+        assert user_msg["content"][0]["type"] == "tool_result"
+        assert user_msg["content"][0]["tool_use_id"] == "tc_1"
 
     def test_merges_consecutive_tool_results(self):
         messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
             {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        assert len(result) == 1
-        assert len(result[0]["content"]) == 2
+        # assistant + merged user (with 2 tool_results)
+        user_msgs = [m for m in result if m["role"] == "user"]
+        assert len(user_msgs) == 1
+        assert len(user_msgs[0]["content"]) == 2
 
     def test_strips_orphaned_tool_use(self):
         messages = [
@@ -609,6 +633,51 @@ class TestConvertMessages:
         # tc_orphan has no matching tool_result, should be stripped
         assistant_blocks = result[0]["content"]
         assert all(b.get("type") != "tool_use" for b in assistant_blocks)
+
+    def test_strips_orphaned_tool_result(self):
+        """tool_result with no matching tool_use should be stripped.
+
+        This happens when context compression removes the assistant message
+        containing the tool_use but leaves the subsequent tool_result intact.
+        Anthropic rejects orphaned tool_results with a 400.
+        """
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+            # The assistant tool_use message was removed by compression,
+            # but the tool_result survived:
+            {"role": "tool", "tool_call_id": "tc_gone", "content": "stale result"},
+            {"role": "user", "content": "Thanks"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        # tc_gone has no matching tool_use — its tool_result should be stripped
+        for m in result:
+            if m["role"] == "user" and isinstance(m["content"], list):
+                assert all(
+                    b.get("type") != "tool_result"
+                    for b in m["content"]
+                ), "Orphaned tool_result should have been stripped"
+
+    def test_strips_orphaned_tool_result_preserves_valid(self):
+        """Orphaned tool_results are stripped while valid ones survive."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_valid", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_valid", "content": "good result"},
+            {"role": "tool", "tool_call_id": "tc_orphan", "content": "stale result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        user_msg = [m for m in result if m["role"] == "user"][0]
+        tool_results = [
+            b for b in user_msg["content"] if b.get("type") == "tool_result"
+        ]
+        assert len(tool_results) == 1
+        assert tool_results[0]["tool_use_id"] == "tc_valid"
 
     def test_system_with_cache_control(self):
         messages = [
@@ -641,11 +710,19 @@ class TestConvertMessages:
     def test_tool_cache_control_is_preserved_on_tool_result_block(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ])
+        ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        tool_block = result[0]["content"][0]
+        user_msg = [m for m in result if m["role"] == "user"][0]
+        tool_block = user_msg["content"][0]
 
         assert tool_block["type"] == "tool_result"
         assert tool_block["tool_use_id"] == "tc_1"

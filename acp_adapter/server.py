@@ -304,6 +304,8 @@ class HermesACPAgent(acp.Agent):
 
         if result.get("messages"):
             state.history = result["messages"]
+            # Persist updated history so sessions survive process restarts.
+            self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
         if final_response and conn:
@@ -381,11 +383,11 @@ class HermesACPAgent(acp.Agent):
 
         new_model = args.strip()
         target_provider = None
+        current_provider = getattr(state.agent, "provider", None) or "openrouter"
 
         # Auto-detect provider for the requested model
         try:
             from hermes_cli.models import parse_model_input, detect_provider_for_model
-            current_provider = getattr(state.agent, "provider", None) or "openrouter"
             target_provider, new_model = parse_model_input(new_model, current_provider)
             if target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
@@ -399,8 +401,10 @@ class HermesACPAgent(acp.Agent):
             session_id=state.session_id,
             cwd=state.cwd,
             model=new_model,
+            requested_provider=target_provider or current_provider,
         )
-        provider_label = target_provider or getattr(state.agent, "provider", "auto")
+        self.session_manager.save_session(state.session_id)
+        provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
 
@@ -444,6 +448,7 @@ class HermesACPAgent(acp.Agent):
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:
         state.history.clear()
+        self.session_manager.save_session(state.session_id)
         return "Conversation history cleared."
 
     def _cmd_compact(self, args: str, state: SessionState) -> str:
@@ -453,6 +458,7 @@ class HermesACPAgent(acp.Agent):
             agent = state.agent
             if hasattr(agent, "compress_context"):
                 agent.compress_context(state.history)
+                self.session_manager.save_session(state.session_id)
                 return f"Context compressed. Messages: {len(state.history)}"
             return "Context compression not available for this agent."
         except Exception as e:
@@ -470,10 +476,17 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.get_session(session_id)
         if state:
             state.model = model_id
+            current_provider = getattr(state.agent, "provider", None)
+            current_base_url = getattr(state.agent, "base_url", None)
+            current_api_mode = getattr(state.agent, "api_mode", None)
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
                 model=model_id,
+                requested_provider=current_provider,
+                base_url=current_base_url,
+                api_mode=current_api_mode,
             )
+            self.session_manager.save_session(session_id)
             logger.info("Session %s: model switched to %s", session_id, model_id)
         return None

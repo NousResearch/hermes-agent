@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
 
 
 class TestResolveOrigin:
@@ -62,6 +62,28 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_explicit_telegram_topic_target_with_thread_id(self):
+        """deliver: 'telegram:chat_id:thread_id' parses correctly."""
+        job = {
+            "deliver": "telegram:-1003724596514:17",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": "17",
+        }
+
+    def test_explicit_telegram_chat_id_without_thread_id(self):
+        """deliver: 'telegram:chat_id' sets thread_id to None."""
+        job = {
+            "deliver": "telegram:-1003724596514",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": None,
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",
@@ -95,11 +117,58 @@ class TestResolveDeliveryTarget:
         }
 
 
-class TestDeliverResultMirrorLogging:
-    """Verify that mirror_to_session failures are logged, not silently swallowed."""
+class TestDeliverResultWrapping:
+    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 
-    def test_mirror_failure_is_logged(self, caplog):
-        """When mirror_to_session raises, a warning should be logged."""
+    def test_delivery_wraps_content_with_header_and_footer(self):
+        """Delivered content should include task name header and agent-invisible note."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: daily-report" in sent_content
+        assert "-------------" in sent_content
+        assert "Here is today's summary." in sent_content
+        assert "The agent cannot see this message" in sent_content
+
+    def test_delivery_uses_job_id_when_no_name(self):
+        """When a job has no name, the wrapper should fall back to job id."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "abc-123",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Output.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: abc-123" in sent_content
+
+    def test_no_mirror_to_session_call(self):
+        """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -109,20 +178,18 @@ class TestDeliverResultMirrorLogging:
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
-             patch("gateway.mirror.mirror_to_session", side_effect=ConnectionError("network down")):
+             patch("gateway.mirror.mirror_to_session") as mirror_mock:
             job = {
                 "id": "test-job",
                 "deliver": "origin",
                 "origin": {"platform": "telegram", "chat_id": "123"},
             }
-            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
-                _deliver_result(job, "Hello!")
+            _deliver_result(job, "Hello!")
 
-        assert any("mirror_to_session failed" in r.message for r in caplog.records), \
-            f"Expected 'mirror_to_session failed' warning in logs, got: {[r.message for r in caplog.records]}"
+        mirror_mock.assert_not_called()
 
     def test_origin_delivery_preserves_thread_id(self):
-        """Origin delivery should forward thread_id to send/mirror helpers."""
+        """Origin delivery should forward thread_id to the send helper."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -132,6 +199,7 @@ class TestDeliverResultMirrorLogging:
 
         job = {
             "id": "test-job",
+            "name": "topic-job",
             "deliver": "origin",
             "origin": {
                 "platform": "telegram",
@@ -141,19 +209,11 @@ class TestDeliverResultMirrorLogging:
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session") as mirror_mock:
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
             _deliver_result(job, "hello")
 
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
-        mirror_mock.assert_called_once_with(
-            "telegram",
-            "-1001",
-            "hello",
-            source_label="cron",
-            thread_id="17585",
-        )
 
 
 class TestRunJobSessionPersistence:
@@ -195,6 +255,47 @@ class TestRunJobSessionPersistence:
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"].startswith("cron_test-job_")
         fake_db.close.assert_called_once()
+
+    def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
+        """Empty final_response should stay empty for delivery logic (issue #2234).
+        
+        The placeholder '(No response generated)' should only appear in the
+        output log, not in the returned final_response that's used for delivery.
+        """
+        job = {
+            "id": "silent-job",
+            "name": "silent test",
+            "prompt": "do work via tools only",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            # Agent did work via tools but returned no text
+            mock_agent.run_conversation.return_value = {"final_response": ""}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        # final_response should be empty for delivery logic to skip
+        assert final_response == ""
+        # But the output log should show the placeholder
+        assert "(No response generated)" in output
 
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {
@@ -532,14 +633,53 @@ class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
 
     def test_hint_always_present(self):
-        from cron.scheduler import _build_job_prompt
         job = {"prompt": "Check for updates"}
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
         assert "Check for updates" in result
 
     def test_hint_present_even_without_prompt(self):
-        from cron.scheduler import _build_job_prompt
         job = {"prompt": ""}
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
+
+
+class TestBuildJobPromptMissingSkill:
+    """Verify that a missing skill logs a warning and does not crash the job."""
+
+    def _missing_skill_view(self, name: str) -> str:
+        return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+    def test_missing_skill_does_not_raise(self):
+        """Job should run even when a referenced skill is not installed."""
+        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+        # prompt is preserved even though skill was skipped
+        assert "do something" in result
+
+    def test_missing_skill_injects_user_notice_into_prompt(self):
+        """A system notice about the missing skill is injected into the prompt."""
+        with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
+        assert "ghost-skill" in result
+        assert "not found" in result.lower() or "skipped" in result.lower()
+
+    def test_missing_skill_logs_warning(self, caplog):
+        """A warning is logged when a skill cannot be found."""
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
+                _build_job_prompt({"name": "My Job", "skills": ["ghost-skill"], "prompt": "do something"})
+        assert any("ghost-skill" in record.message for record in caplog.records)
+
+    def test_valid_skill_loaded_alongside_missing(self):
+        """A valid skill is still loaded when another skill in the list is missing."""
+
+        def _mixed_skill_view(name: str) -> str:
+            if name == "real-skill":
+                return json.dumps({"success": True, "content": "Real skill content."})
+            return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
+
+        with patch("tools.skills_tool.skill_view", side_effect=_mixed_skill_view):
+            result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
+        assert "Real skill content." in result
+        assert "go" in result

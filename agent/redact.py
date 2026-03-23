@@ -100,6 +100,10 @@ def redact_sensitive_text(text: str) -> str:
     Safe to call on any string -- non-matching text passes through unchanged.
     Disabled when security.redact_secrets is false in config.yaml.
     """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
     if not text:
         return text
     if os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("0", "false", "no", "off"):

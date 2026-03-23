@@ -448,6 +448,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
+        # User-defined quick commands (type: alias) to register as Discord app commands
+        self._quick_commands: dict = {}
     
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1537,6 +1539,28 @@ class DiscordAdapter(BasePlatformAdapter):
         ):
             await interaction.response.defer(ephemeral=True)
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
+
+        # Register user-configured quick_commands (type: alias) as /skills subcommands.
+        # Uses app_commands.Group so all aliases share one command slot.
+        quick_cmds = {k: v for k, v in self._quick_commands.items()
+                      if isinstance(v, dict) and v.get('type') == 'alias'}
+        if quick_cmds:
+            skills_group = discord.app_commands.Group(
+                name='skills', description='User-configured skill commands'
+            )
+            for _cmd_name, _cmd_cfg in quick_cmds.items():
+                _target = _cmd_cfg.get('target', f'/{_cmd_name}')
+                _description = f"Run {_target.lstrip('/')} skill"[:100]
+
+                def _make_skill_cmd(target: str = _target, cmd_name: str = _cmd_name):
+                    @discord.app_commands.command(name=cmd_name, description=f'Run {target.lstrip("/")} skill'[:100])
+                    @discord.app_commands.describe(instruction='Optional instruction to pass to the skill')
+                    async def skill_cmd(interaction: discord.Interaction, instruction: str = ''):
+                        await self._run_simple_slash(interaction, f'{target} {instruction}'.strip())
+                    return skill_cmd
+
+                skills_group.add_command(_make_skill_cmd())
+            tree.add_command(skills_group)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""

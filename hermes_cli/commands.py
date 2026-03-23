@@ -289,12 +289,18 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
-def telegram_bot_commands() -> list[tuple[str, str]]:
+def telegram_bot_commands(
+    quick_commands: dict | None = None,
+) -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
+
+    If *quick_commands* is provided, entries with ``type: alias`` are appended
+    to the menu so user-configured skill shortcuts appear in the Telegram
+    command hint list.
     """
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
@@ -302,6 +308,16 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
             continue
         tg_name = cmd.name.replace("-", "_")
         result.append((tg_name, cmd.description))
+    if quick_commands:
+        for cmd_name, cmd_cfg in quick_commands.items():
+            if not isinstance(cmd_cfg, dict):
+                continue
+            if cmd_cfg.get("type") != "alias":
+                continue
+            tg_name = cmd_name.replace("-", "_")
+            target = cmd_cfg.get("target", f"/{cmd_name}")
+            description = f"Run {target.lstrip('/')} skill"[:256]
+            result.append((tg_name, description))
     return result
 
 

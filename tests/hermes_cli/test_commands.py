@@ -195,6 +195,36 @@ class TestTelegramBotCommands:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
+    def test_quick_commands_alias_appended(self):
+        """type:alias quick_commands appear in Telegram menu."""
+        qc = {
+            'seal-coach': {'type': 'alias', 'target': '/seal-coach'},
+            'workout': {'type': 'alias', 'target': '/workout'},
+        }
+        cmds = telegram_bot_commands(quick_commands=qc)
+        names = {name for name, _ in cmds}
+        assert 'seal_coach' in names
+        assert 'workout' in names
+
+    def test_quick_commands_non_alias_excluded(self):
+        """type:exec quick_commands must not appear in Telegram menu."""
+        qc = {'deploy': {'type': 'exec', 'command': 'make deploy'}}
+        cmds = telegram_bot_commands(quick_commands=qc)
+        names = {name for name, _ in cmds}
+        assert 'deploy' not in names
+
+    def test_quick_commands_none_unchanged(self):
+        """Passing no quick_commands returns same result as before."""
+        assert telegram_bot_commands() == telegram_bot_commands(quick_commands=None)
+
+    def test_quick_commands_hyphen_replaced(self):
+        """Hyphens in quick_command names are replaced with underscores."""
+        qc = {'my-skill': {'type': 'alias', 'target': '/my-skill'}}
+        cmds = telegram_bot_commands(quick_commands=qc)
+        names = {name for name, _ in cmds}
+        assert 'my_skill' in names
+        assert 'my-skill' not in names
+
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):

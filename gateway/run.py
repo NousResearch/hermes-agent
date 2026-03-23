@@ -919,6 +919,8 @@ class GatewayRunner:
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            if hasattr(adapter, '_quick_commands'):
+                adapter._quick_commands = getattr(self.config, 'quick_commands', {}) or {}
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)

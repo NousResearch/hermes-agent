@@ -168,6 +168,7 @@ hermes skills search kubernetes
 hermes skills search react --source skills-sh
 hermes skills search https://mintlify.com/docs --source well-known
 hermes skills install openai/skills/k8s
+hermes skills install huggingface/skills/hf-cli
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 ```

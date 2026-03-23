@@ -99,6 +99,14 @@ class TestTrustLevelFor:
         # No path part — still resolves repo correctly
         assert result in ("trusted", "community")
 
+    def test_huggingface_repo_is_trusted(self):
+        src = self._source()
+        assert src.trust_level_for("huggingface/skills/hf-cli") == "trusted"
+
+    def test_default_taps_include_huggingface_skills(self):
+        src = self._source()
+        assert {"repo": "huggingface/skills", "path": "skills/"} in src.taps
+
 
 # ---------------------------------------------------------------------------
 # SkillsShSource

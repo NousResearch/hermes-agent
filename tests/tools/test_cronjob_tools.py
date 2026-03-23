@@ -240,7 +240,7 @@ class TestListCronjobs:
         assert "name" in job
         assert "schedule" in job
         assert "next_run_at" in job
-        assert "enabled" in job
+        assert "state" in job
 
 
 # =========================================================================

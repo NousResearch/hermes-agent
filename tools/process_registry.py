@@ -417,6 +417,38 @@ class ProcessRegistry:
             self._finished[session.id] = session
         self._write_checkpoint()
 
+    def _check_reader_health(self, session: ProcessSession) -> bool:
+        """Check if a session's reader thread died silently.
+
+        If the reader thread is dead but the session hasn't been marked as exited,
+        the reader crashed on an exception. Mark the session as finished so it
+        doesn't stay stuck in _running forever.
+
+        Returns True if the session was moved to finished (zombie detected).
+        """
+        if session.exited or session.detached:
+            return False
+        if session._reader_thread is None:
+            return False
+        if session._reader_thread.is_alive():
+            return False
+
+        # Reader thread died but session not marked exited -- zombie detected
+        logger.warning(
+            "Reader thread for session %s (pid=%s, cmd=%r) died silently; "
+            "marking as exited with code -1",
+            session.id, session.pid, session.command,
+        )
+        session.exited = True
+        session.exit_code = -1
+        with session._lock:
+            session.output_buffer += (
+                "\n\n[hermes] Internal error: reader thread died unexpectedly. "
+                "Process output may be incomplete.\n"
+            )
+        self._move_to_finished(session)
+        return True
+
     # ----- Query Methods -----
 
     def get(self, session_id: str) -> Optional[ProcessSession]:
@@ -429,6 +461,9 @@ class ProcessRegistry:
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
+
+        # Detect zombie sessions where reader thread died silently
+        self._check_reader_health(session)
 
         with session._lock:
             output_preview = session.output_buffer[-1000:] if session.output_buffer else ""
@@ -509,6 +544,9 @@ class ProcessRegistry:
         deadline = time.monotonic() + effective_timeout
 
         while time.monotonic() < deadline:
+            # Detect zombie sessions where reader thread died silently
+            self._check_reader_health(session)
+
             if session.exited:
                 result = {
                     "status": "exited",

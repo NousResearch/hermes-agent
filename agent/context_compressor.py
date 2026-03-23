@@ -65,7 +65,7 @@ class ContextCompressor:
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
+        threshold_percent: float | None = None,
         protect_first_n: int = 3,
         protect_last_n: int = 4,
         summary_target_tokens: int = 2500,
@@ -80,7 +80,6 @@ class ContextCompressor:
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
-        self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_tokens = summary_target_tokens
@@ -91,6 +90,17 @@ class ContextCompressor:
             config_context_length=config_context_length,
             provider=provider,
         )
+
+        # Adaptive compression threshold based on context window size
+        if threshold_percent is None:
+            if self.context_length > 128_000:
+                threshold_percent = 0.70
+            elif self.context_length > 64_000:
+                threshold_percent = 0.60
+            else:
+                threshold_percent = 0.50
+
+        self.threshold_percent = threshold_percent
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
 

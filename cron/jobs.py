@@ -37,6 +37,61 @@ OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
 
+# =============================================================================
+# Cron Job State Machine
+# =============================================================================
+
+# Valid states for a cron job
+JOB_STATES = frozenset({"scheduled", "running", "paused", "completed", "failed"})
+
+# Valid state transitions: {from_state: {allowed_target_states}}
+VALID_TRANSITIONS = {
+    "scheduled": {"running", "paused"},
+    "running":   {"scheduled", "completed", "failed"},
+    "paused":    {"scheduled"},
+    "completed": set(),  # terminal
+    "failed":    {"scheduled", "paused"},
+}
+
+
+def is_valid_transition(current: str, target: str) -> bool:
+    """Check if a state transition is valid."""
+    if current not in VALID_TRANSITIONS:
+        return False
+    return target in VALID_TRANSITIONS[current]
+
+
+def job_is_active(job: Dict[str, Any]) -> bool:
+    """Check if a job is active (not paused, completed, or failed)."""
+    return job.get("state", "scheduled") not in ("paused", "completed", "failed")
+
+
+def _check_job_invariants(job: Dict[str, Any]) -> None:
+    """Runtime invariant check after any job mutation.
+
+    Uses the centralized InvariantChecker for consistent reporting.
+    Also performs per-job checks that don't need the full job list.
+    """
+    try:
+        from hermes_invariants import InvariantChecker
+        InvariantChecker.check_cron_invariants([job])
+    except ImportError:
+        pass  # invariant module not available
+
+    state = job.get("state", "scheduled")
+
+    # INV-1: State must be valid
+    if state not in JOB_STATES:
+        logger.error("INVARIANT VIOLATION: job '%s' has invalid state '%s'", job.get("id"), state)
+
+    # INV-3: Completed jobs should not be enabled-equivalent
+    if state == "completed" and job.get("next_run_at") is not None:
+        logger.warning("INVARIANT WARNING: completed job '%s' still has next_run_at", job.get("id"))
+
+    # INV-4: Running jobs should have a last_run_at or be freshly started
+    # (no strong enforcement here, just logging)
+
+
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
     """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
     if skills is None:
@@ -422,7 +477,6 @@ def create_job(
             "times": repeat,  # None = forever
             "completed": 0
         },
-        "enabled": True,
         "state": "scheduled",
         "paused_at": None,
         "paused_reason": None,
@@ -437,6 +491,7 @@ def create_job(
     }
 
     jobs = load_jobs()
+    _check_job_invariants(job)
     jobs.append(job)
     save_jobs(jobs)
 
@@ -456,7 +511,7 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
     jobs = [_apply_skill_fields(j) for j in load_jobs()]
     if not include_disabled:
-        jobs = [j for j in jobs if j.get("enabled", True)]
+        jobs = [j for j in jobs if job_is_active(j)]
     return jobs
 
 
@@ -484,7 +539,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             if updated.get("state") != "paused":
                 updated["next_run_at"] = compute_next_run(updated_schedule)
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+        if updated.get("state") not in ("paused", "completed", "failed") and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])
 
         jobs[i] = updated
@@ -498,7 +553,6 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
     return update_job(
         job_id,
         {
-            "enabled": False,
             "state": "paused",
             "paused_at": _hermes_now().isoformat(),
             "paused_reason": reason,
@@ -516,7 +570,6 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     return update_job(
         job_id,
         {
-            "enabled": True,
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
@@ -533,7 +586,6 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     return update_job(
         job_id,
         {
-            "enabled": True,
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
@@ -586,7 +638,6 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 
             # If no next run (one-shot completed), disable
             if job["next_run_at"] is None:
-                job["enabled"] = False
                 job["state"] = "completed"
             elif job.get("state") != "paused":
                 job["state"] = "scheduled"
@@ -612,7 +663,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     needs_save = False
 
     for job in jobs:
-        if not job.get("enabled", True):
+        if not job_is_active(job):
             continue
 
         next_run = job.get("next_run_at")

@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import (
+    _resolve_origin, _resolve_delivery_target, _deliver_result, run_job,
+    SILENT_MARKER, _build_job_prompt, _recover_stale_running_jobs,
+)
 
 
 class TestResolveOrigin:
@@ -561,6 +564,7 @@ class TestSilentDelivery:
             "name": "monitor",
             "deliver": "origin",
             "origin": {"platform": "telegram", "chat_id": "123"},
+            "state": "scheduled",
         }
 
     def test_normal_response_delivers(self):
@@ -568,7 +572,11 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(True, "# output", "Results here", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job"), \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_called_once()
@@ -578,7 +586,11 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job"), \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
             from cron.scheduler import tick
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
@@ -590,7 +602,11 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job"), \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
@@ -600,7 +616,11 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job"), \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
@@ -611,7 +631,11 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job"), \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_called_once()
@@ -621,12 +645,88 @@ class TestSilentDelivery:
              patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output") as save_mock, \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job"), \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
+
+
+class TestRecoverStaleRunningJobs:
+    """Verify crash recovery marks stale 'running' jobs as 'failed'."""
+
+    def test_stale_running_jobs_marked_failed(self):
+        jobs = [
+            {"id": "j1", "name": "job1", "state": "running"},
+            {"id": "j2", "name": "job2", "state": "scheduled"},
+            {"id": "j3", "name": "job3", "state": "running"},
+        ]
+        with patch("cron.jobs.load_jobs", return_value=jobs), \
+             patch("cron.jobs.save_jobs") as save_mock:
+            _recover_stale_running_jobs()
+
+        save_mock.assert_called_once()
+        saved = save_mock.call_args[0][0]
+        assert saved[0]["state"] == "failed"
+        assert saved[0]["last_error"] == "Process crashed during execution (recovered on restart)"
+        assert saved[1]["state"] == "scheduled"
+        assert saved[2]["state"] == "failed"
+
+    def test_no_stale_jobs_skips_save(self):
+        jobs = [
+            {"id": "j1", "name": "job1", "state": "scheduled"},
+        ]
+        with patch("cron.jobs.load_jobs", return_value=jobs), \
+             patch("cron.jobs.save_jobs") as save_mock:
+            _recover_stale_running_jobs()
+        save_mock.assert_not_called()
+
+
+class TestTickStateTransitions:
+    """Verify tick() sets job state to 'running' before execution."""
+
+    def _make_job(self):
+        return {
+            "id": "state-job",
+            "name": "state test",
+            "state": "scheduled",
+            "deliver": "local",
+        }
+
+    def test_tick_sets_running_state_before_execution(self):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "ok", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job") as update_mock, \
+             patch("cron.scheduler.is_valid_transition", return_value=True), \
+             patch("cron.scheduler.fcntl", create=True):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        update_mock.assert_called_once_with("state-job", {"state": "running"})
+
+    def test_tick_skips_invalid_transition(self, caplog):
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "ok", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._recover_stale_running_jobs"), \
+             patch("cron.scheduler.update_job") as update_mock, \
+             patch("cron.scheduler.is_valid_transition", return_value=False), \
+             patch("cron.scheduler.fcntl", create=True):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+                tick(verbose=False)
+        # update_job should NOT be called when transition is invalid
+        update_mock.assert_not_called()
 
 
 class TestBuildJobPromptSilentHint:

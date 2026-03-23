@@ -420,6 +420,12 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
+    # Preserve the user-facing provider name when "custom" was explicitly
+    # requested.  The OpenRouter runtime path handles custom base_urls
+    # correctly, but the display name should reflect what the user set in
+    # config.yaml instead of silently showing "openrouter".  (Fixes #2562)
+    if provider == "custom":
+        runtime["provider"] = "custom"
     return runtime
 
 

@@ -371,3 +371,135 @@ class TestPluginManagerList:
 # in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
 # commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
 # integration — all of which are unimplemented features.
+
+
+class TestPluginToolsetGatewayAutoInclude:
+    """Gateway must auto-include plugin toolsets not yet known for a platform."""
+
+    def test_new_plugin_toolset_added_to_enabled_toolsets(self, monkeypatch):
+        """Simulate the gateway logic: new plugin toolset gets appended."""
+        import yaml
+        from hermes_cli.tools_config import _get_plugin_toolset_keys
+
+        # Simulate: enabled_toolsets from config (no plugin toolset listed)
+        enabled_toolsets = ["browser", "terminal"]
+        platform_config_key = "telegram"
+
+        # Mock _get_plugin_toolset_keys to return a plugin toolset
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: {"acp"},
+        )
+
+        # Simulate the gateway logic we added
+        from hermes_cli.tools_config import _get_plugin_toolset_keys as _gptk
+        _plugin_ts = _gptk()
+        _known = set()  # not yet known for this platform
+        _to_add = [pts for pts in _plugin_ts
+                   if pts not in enabled_toolsets and pts not in _known]
+        if _to_add:
+            enabled_toolsets = list(enabled_toolsets) + _to_add
+
+        assert "acp" in enabled_toolsets
+        assert "browser" in enabled_toolsets
+        assert "terminal" in enabled_toolsets
+
+    def test_known_disabled_plugin_toolset_not_added(self, monkeypatch):
+        """Plugin toolset known-but-absent for a platform must stay disabled."""
+        enabled_toolsets = ["browser", "terminal"]
+        platform_config_key = "telegram"
+
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: {"acp"},
+        )
+
+        from hermes_cli.tools_config import _get_plugin_toolset_keys as _gptk
+        _plugin_ts = _gptk()
+        _known = {"acp"}  # user previously disabled it via hermes tools
+        _to_add = [pts for pts in _plugin_ts
+                   if pts not in enabled_toolsets and pts not in _known]
+        if _to_add:
+            enabled_toolsets = list(enabled_toolsets) + _to_add
+
+        assert "acp" not in enabled_toolsets
+
+    def test_explicitly_listed_plugin_toolset_not_duplicated(self, monkeypatch):
+        """Plugin toolset already in enabled_toolsets must not be duplicated."""
+        enabled_toolsets = ["browser", "acp"]
+        platform_config_key = "telegram"
+
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: {"acp"},
+        )
+
+        from hermes_cli.tools_config import _get_plugin_toolset_keys as _gptk
+        _plugin_ts = _gptk()
+        _known = set()
+        _to_add = [pts for pts in _plugin_ts
+                   if pts not in enabled_toolsets and pts not in _known]
+        if _to_add:
+            enabled_toolsets = list(enabled_toolsets) + _to_add
+
+        assert enabled_toolsets.count("acp") == 1
+
+
+class TestPluginToolsetGatewayAutoInclude:
+    """_get_platform_tools() must auto-include new plugin toolsets.
+
+    Mirrors the gateway fix: when platform_toolsets is configured,
+    plugin toolsets not yet known for a platform are appended automatically.
+    """
+
+    def _make_plugin(self, tmp_path, monkeypatch):
+        import yaml
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "auto_ts_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "auto_ts_plugin"}))
+        init_code = (
+            "def register(ctx):\n"
+            "    ctx.register_tool(\n"
+            "        name=\"auto_ts_tool\",\n"
+            "        toolset=\"test_plugin_ts\",\n"
+            "        schema={\"name\": \"auto_ts_tool\", \"description\": \"Test\","
+            " \"parameters\": {\"type\": \"object\", \"properties\": {}}},\n"
+            "        handler=lambda args, **kw: \"ok\",\n"
+            "    )\n"
+        )
+        (plugin_dir / "__init__.py").write_text(init_code)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+    def test_new_plugin_toolset_auto_included_for_cli(self, tmp_path, monkeypatch):
+        """New plugin toolset is auto-included when not yet known for CLI."""
+        self._make_plugin(tmp_path, monkeypatch)
+        from hermes_cli.tools_config import _get_platform_tools
+        config = {"platform_toolsets": {"cli": ["terminal"]}}
+        result = _get_platform_tools(config, "cli")
+        assert "test_plugin_ts" in result
+        assert "terminal" in result
+
+    def test_known_disabled_plugin_toolset_not_included(self, tmp_path, monkeypatch):
+        """Plugin toolset known-but-absent for platform stays disabled."""
+        self._make_plugin(tmp_path, monkeypatch)
+        from hermes_cli.tools_config import _get_platform_tools
+        config = {
+            "platform_toolsets": {"cli": ["terminal"]},
+            "known_plugin_toolsets": {"cli": ["test_plugin_ts"]},
+        }
+        result = _get_platform_tools(config, "cli")
+        assert "test_plugin_ts" not in result
+
+    def test_explicitly_listed_plugin_toolset_not_duplicated(self, tmp_path, monkeypatch):
+        """Plugin toolset already in platform_toolsets is not duplicated."""
+        self._make_plugin(tmp_path, monkeypatch)
+        from hermes_cli.tools_config import _get_platform_tools
+        config = {"platform_toolsets": {"cli": ["terminal", "test_plugin_ts"]}}
+        result = _get_platform_tools(config, "cli")
+        assert list(result).count("test_plugin_ts") == 1

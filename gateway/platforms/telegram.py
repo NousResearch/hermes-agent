@@ -1064,6 +1064,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
 
+        # Optional: React to incoming messages
+        react_emoji = self.config.extra.get("react_emoji")
+        if react_emoji and isinstance(react_emoji, str):
+            try:
+                await update.message.set_reaction(reaction=react_emoji)
+            except Exception as e:
+                logger.debug("[%s] Failed to set reaction: %s", self.name, e)
+
         event = self._build_message_event(update.message, MessageType.TEXT)
         self._enqueue_text_event(event)
     

@@ -55,7 +55,7 @@ class ToolEntry:
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
 
@@ -74,7 +74,7 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
-    ):
+    ) -> None:
         """Register a tool.  Called at module-import time by each tool file."""
         self._tools[name] = ToolEntry(
             name=name,
@@ -222,7 +222,7 @@ class ToolRegistry:
                     result[ts]["env_vars"].append(env)
         return result
 
-    def check_tool_availability(self, quiet: bool = False):
+    def check_tool_availability(self, quiet: bool = False) -> tuple:
         """Return (available_toolsets, unavailable_info) like the old function."""
         available = []
         unavailable = []

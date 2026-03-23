@@ -78,7 +78,7 @@ import re
 import shutil
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     This prevents accidentally leaking secrets like API keys, tokens, or
     credentials to MCP server subprocesses.
     """
-    env = {}
+    env: dict = {}
     for key, value in os.environ.items():
         if key in _SAFE_ENV_KEYS or key.startswith("XDG_"):
             env[key] = value
@@ -179,7 +179,7 @@ def _sanitize_error(text: str) -> str:
 
 def _prepend_path(env: dict, directory: str) -> dict:
     """Prepend *directory* to env PATH if it is not already present."""
-    updated = dict(env or {})
+    updated: dict = dict(env or {})
     if not directory:
         return updated
 
@@ -291,7 +291,7 @@ def _format_connect_error(exc: BaseException) -> str:
 # Sampling -- server-initiated LLM requests (MCP sampling/createMessage)
 # ---------------------------------------------------------------------------
 
-def _safe_numeric(value, default, coerce=int, minimum=1):
+def _safe_numeric(value, default, coerce=int, minimum=1) -> Any:
     """Coerce a config value to a numeric type, returning *default* on failure.
 
     Handles string values from YAML (e.g. ``"10"`` instead of ``10``),
@@ -964,7 +964,7 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float) -> Callable[[dict], str]:
     """Return a sync handler that calls an MCP tool via the background loop.
 
     The handler conforms to the registry's dispatch interface:
@@ -1016,7 +1016,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_list_resources_handler(server_name: str, tool_timeout: float):
+def _make_list_resources_handler(server_name: str, tool_timeout: float) -> Callable[[dict], str]:
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
@@ -1058,7 +1058,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_read_resource_handler(server_name: str, tool_timeout: float):
+def _make_read_resource_handler(server_name: str, tool_timeout: float) -> Callable[[dict], str]:
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
@@ -1100,7 +1100,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_list_prompts_handler(server_name: str, tool_timeout: float):
+def _make_list_prompts_handler(server_name: str, tool_timeout: float) -> Callable[[dict], str]:
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
@@ -1147,7 +1147,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_get_prompt_handler(server_name: str, tool_timeout: float):
+def _make_get_prompt_handler(server_name: str, tool_timeout: float) -> Callable[[dict], str]:
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
@@ -1200,7 +1200,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_check_fn(server_name: str):
+def _make_check_fn(server_name: str) -> Callable[[], bool]:
     """Return a check function that verifies the MCP connection is alive."""
 
     def _check() -> bool:
@@ -1745,7 +1745,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     return result
 
 
-def shutdown_mcp_servers():
+def shutdown_mcp_servers() -> None:
     """Close all MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
@@ -1785,7 +1785,7 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
-def _stop_mcp_loop():
+def _stop_mcp_loop() -> None:
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
     with _lock:

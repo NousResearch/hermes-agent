@@ -62,7 +62,7 @@ from tools.environments.singularity import _get_scratch_dir
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
 
 
-def _check_disk_usage_warning():
+def _check_disk_usage_warning() -> bool:
     """Check if total disk usage exceeds warning threshold."""
     try:
         scratch_dir = _get_scratch_dir()
@@ -103,13 +103,13 @@ _sudo_password_callback = None
 _approval_callback = None
 
 
-def set_sudo_password_callback(cb):
+def set_sudo_password_callback(cb) -> None:
     """Register a callback for sudo password prompts (used by CLI)."""
     global _sudo_password_callback
     _sudo_password_callback = cb
 
 
-def set_approval_callback(cb):
+def set_approval_callback(cb) -> None:
     """Register a callback for dangerous command approval prompts (used by CLI)."""
     global _approval_callback
     _approval_callback = cb
@@ -401,7 +401,7 @@ _cleanup_running = False
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 
-def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]) -> None:
     """
     Register environment overrides for a specific task/rollout.
 
@@ -420,7 +420,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     _task_env_overrides[task_id] = overrides
 
 
-def clear_task_env_overrides(task_id: str):
+def clear_task_env_overrides(task_id: str) -> None:
     """
     Clear environment overrides for a task after rollout completes.
 
@@ -430,7 +430,7 @@ def clear_task_env_overrides(task_id: str):
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
+def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer") -> Any:
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
@@ -1340,7 +1340,7 @@ TERMINAL_SCHEMA = {
 }
 
 
-def _handle_terminal(args, **kw):
+def _handle_terminal(args, **kw) -> str:
     return terminal_tool(
         command=args.get("command"),
         background=args.get("background", False),

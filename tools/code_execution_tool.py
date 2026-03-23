@@ -226,7 +226,7 @@ def _rpc_server_loop(
     tool_call_counter: list,   # mutable [int] so the thread can increment
     max_tool_calls: int,
     allowed_tools: frozenset,
-):
+) -> None:
     """
     Accept one client connection and dispatch tool-call requests until
     the client disconnects or the call limit is reached.

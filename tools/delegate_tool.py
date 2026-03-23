@@ -160,7 +160,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-):
+) -> Any:
     """
     Build a child AIAgent on the main thread (thread-safe construction).
     Returns the constructed child agent without running it.
@@ -561,7 +561,7 @@ def delegate_task(
     }, ensure_ascii=False)
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(cfg: dict, parent_agent) -> Dict[str, Any]:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -650,7 +650,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
-def _load_config() -> dict:
+def _load_config() -> Dict[str, Any]:
     """Load delegation config from CLI_CONFIG or persistent config.
 
     Checks the runtime config (cli.py CLI_CONFIG) first, then falls back

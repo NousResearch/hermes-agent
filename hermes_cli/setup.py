@@ -3234,12 +3234,17 @@ def run_setup_wizard(args):
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
         elif 3 <= choice <= 7:
-            # Individual section
-            section_idx = choice - 3
-            _, label, func = SETUP_SECTIONS[section_idx]
-            func(config)
-            save_config(config)
-            _print_setup_summary(config, hermes_home)
+            # Individual section — map by key, not by position.
+            # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
+            # so positional indexing (choice - 3) would dispatch the wrong section.
+            _RETURNING_USER_SECTION_KEYS = ["model", "terminal", "gateway", "tools", "agent"]
+            section_key = _RETURNING_USER_SECTION_KEYS[choice - 3]
+            section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
+            if section:
+                _, label, func = section
+                func(config)
+                save_config(config)
+                _print_setup_summary(config, hermes_home)
             return
     else:
         # ── First-Time Setup ──

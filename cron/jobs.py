@@ -13,6 +13,8 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
@@ -390,6 +392,19 @@ def create_job(
     # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
+    # If deliver is "origin" but we have no origin (e.g. job created outside gateway),
+    # force to local so the job still runs and we don't silently fail delivery (Fixes #1938).
+    delivery_note = None
+    if deliver == "origin" and not origin:
+        logger.warning(
+            "Cron job created with deliver=origin but no session origin (HERMES_SESSION_* not set). "
+            "Setting deliver=local. Create the job from a gateway channel (Discord/Telegram/etc.) to get replies there."
+        )
+        deliver = "local"
+        delivery_note = (
+            "Delivery set to local (no session origin). "
+            "Create cron jobs from this channel to receive results here."
+        )
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
@@ -436,6 +451,8 @@ def create_job(
     jobs.append(job)
     save_jobs(jobs)
 
+    if delivery_note:
+        return {**job, "delivery_note": delivery_note}
     return job
 
 

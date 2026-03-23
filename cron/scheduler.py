@@ -73,10 +73,11 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     if deliver == "origin":
         if not origin:
             return None
+        thread_id = origin.get("thread_id")
         return {
             "platform": origin["platform"],
             "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
+            "thread_id": str(thread_id) if thread_id is not None else None,
         }
 
     if ":" in deliver:
@@ -94,10 +95,11 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     platform_name = deliver
     if origin and origin.get("platform") == platform_name:
+        thread_id = origin.get("thread_id")
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
+            "thread_id": str(thread_id) if thread_id is not None else None,
         }
 
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
@@ -121,10 +123,15 @@ def _deliver_result(job: dict, content: str) -> None:
     target = _resolve_delivery_target(job)
     if not target:
         if job.get("deliver", "local") != "local":
+            deliver = job.get("deliver", "local")
+            origin = job.get("origin")
             logger.warning(
-                "Job '%s' deliver=%s but no concrete delivery target could be resolved",
+                "Job '%s' deliver=%s but no delivery target resolved (origin=%s). "
+                "Ensure the job was created from a gateway channel (Discord/Telegram/etc.) so "
+                "HERMES_SESSION_PLATFORM and HERMES_SESSION_CHAT_ID were set.",
                 job["id"],
-                job.get("deliver", "local"),
+                deliver,
+                "present" if origin else "missing",
             )
         return
 

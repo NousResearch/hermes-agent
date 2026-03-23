@@ -1657,6 +1657,252 @@ class ClawHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# agentskill.sh source adapter
+# ---------------------------------------------------------------------------
+
+class AgentSkillShSource(SkillSource):
+    """
+    Fetch skills from agentskill.sh — a cross-platform directory of 110,000+
+    agent skills following the agentskills.io open standard.
+
+    API docs: https://agentskill.sh
+    Skills are indexed from GitHub, GitLab, and community submissions with
+    security scanning, quality scoring, and install tracking.
+    """
+
+    BASE_URL = "https://agentskill.sh"
+    SEARCH_URL = f"{BASE_URL}/api/agent/search"
+    INSTALL_URL = f"{BASE_URL}/api/agent/skills"
+
+    def source_id(self) -> str:
+        return "agentskill-sh"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        if not query.strip():
+            return self._trending(limit)
+
+        cache_key = f"agentskillsh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**item) for item in cached][:limit]
+
+        try:
+            resp = httpx.get(
+                self.SEARCH_URL,
+                params={"q": query, "limit": min(limit, 20)},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return []
+
+        items = data if isinstance(data, list) else data.get("results", [])
+        if not isinstance(items, list):
+            return []
+
+        results: List[SkillMeta] = []
+        for item in items[:limit]:
+            slug = item.get("slug") or item.get("name", "")
+            if not slug:
+                continue
+            results.append(SkillMeta(
+                name=slug,
+                description=item.get("description", "")[:200],
+                source="agentskill.sh",
+                identifier=f"agentskill-sh/{slug}",
+                trust_level="community",
+                tags=item.get("tags", []) if isinstance(item.get("tags"), list) else [],
+                extra={
+                    "owner": item.get("owner", ""),
+                    "install_count": item.get("installCount", 0),
+                    "security_score": item.get("securityScore"),
+                    "score": item.get("score", 0),
+                    "detail_url": f"{self.BASE_URL}/{slug}",
+                },
+            ))
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(r) for r in results])
+        return results
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        composite_slug = self._extract_slug(identifier)
+        if not composite_slug:
+            return None
+
+        try:
+            from urllib.parse import quote
+            encoded = quote(composite_slug, safe="")
+            resp = httpx.get(
+                f"{self.INSTALL_URL}/{encoded}/install",
+                params={"platform": "hermes"},
+                follow_redirects=True,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            logger.debug("agentskill.sh fetch failed for %s: %s", identifier, e)
+            return None
+
+        skill_md = data.get("skillMd", "")
+        if not skill_md:
+            return None
+
+        files: Dict[str, str] = {"SKILL.md": skill_md}
+        for sf in data.get("skillFiles", []):
+            path = sf.get("path", "")
+            file_content = sf.get("content", "")
+            if path and file_content:
+                files[path] = file_content
+
+        security_score = data.get("securityScore")
+        trust = "community"
+        if isinstance(security_score, (int, float)) and security_score >= 80:
+            trust = "trusted"
+
+        return SkillBundle(
+            name=data.get("slug", composite_slug),
+            files=files,
+            source="agentskill.sh",
+            identifier=identifier,
+            trust_level=trust,
+            metadata={
+                "owner": data.get("owner", ""),
+                "description": data.get("description", ""),
+                "install_count": data.get("installCount", 0),
+                "security_score": security_score,
+                "content_sha": data.get("contentSha", ""),
+                "source_url": f"{self.BASE_URL}/{composite_slug}",
+            },
+        )
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        composite_slug = self._extract_slug(identifier)
+        if not composite_slug:
+            return None
+
+        try:
+            from urllib.parse import quote
+            encoded = quote(composite_slug, safe="")
+            resp = httpx.get(
+                f"{self.INSTALL_URL}/{encoded}/install",
+                params={"platform": "hermes"},
+                follow_redirects=True,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            logger.debug("agentskill.sh inspect failed for %s: %s", identifier, e)
+            return None
+
+        return SkillMeta(
+            name=data.get("slug", composite_slug),
+            description=data.get("description", "")[:200],
+            source="agentskill.sh",
+            identifier=identifier,
+            trust_level="community",
+            extra={
+                "owner": data.get("owner", ""),
+                "install_count": data.get("installCount", 0),
+                "security_score": data.get("securityScore"),
+                "content_sha": data.get("contentSha", ""),
+                "detail_url": f"{self.BASE_URL}/{composite_slug}",
+                "skill_md_preview": (data.get("skillMd", "") or "")[:500],
+            },
+        )
+
+    def _trending(self, limit: int) -> List[SkillMeta]:
+        """Return trending skills when search query is empty."""
+        cache_key = f"agentskillsh_trending_{limit}"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            return [SkillMeta(**item) for item in cached][:limit]
+
+        try:
+            resp = httpx.get(
+                self.SEARCH_URL,
+                params={"section": "trending", "limit": min(limit, 20)},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return []
+
+        items = data if isinstance(data, list) else data.get("results", [])
+        if not isinstance(items, list):
+            return []
+
+        results: List[SkillMeta] = []
+        for item in items[:limit]:
+            slug = item.get("slug") or item.get("name", "")
+            if not slug:
+                continue
+            results.append(SkillMeta(
+                name=slug,
+                description=item.get("description", "")[:200],
+                source="agentskill.sh",
+                identifier=f"agentskill-sh/{slug}",
+                trust_level="community",
+                extra={
+                    "owner": item.get("owner", ""),
+                    "install_count": item.get("installCount", 0),
+                    "detail_url": f"{self.BASE_URL}/{slug}",
+                },
+            ))
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(r) for r in results])
+        return results
+
+    @staticmethod
+    def _extract_slug(identifier: str) -> Optional[str]:
+        """Extract the composite slug from an identifier.
+
+        agentskill.sh uses composite slugs like 'owner/skill-name'.
+        Identifiers from search results look like 'agentskill-sh/owner/skill-name'.
+        We strip the source prefix and return the rest as-is for URL-encoded API calls.
+
+        Examples:
+            'agentskill-sh/anthropics/pdf'  -> 'anthropics/pdf'
+            'agentskill-sh/my-skill'        -> 'my-skill'
+            'anthropics/pdf'                -> 'anthropics/pdf'
+            'my-skill'                      -> 'my-skill'
+            ''                              -> None
+        """
+        path = identifier
+        if path.startswith("agentskill-sh/"):
+            path = path[len("agentskill-sh/"):]
+        path = path.strip("/")
+        return path if path else None
+
+    @staticmethod
+    def _parse_identifier(identifier: str) -> Tuple[Optional[str], Optional[str]]:
+        """Parse agentskill-sh/<slug> or agentskill-sh/<owner>/<slug>.
+
+        Kept for backward compatibility. Prefer _extract_slug for API calls.
+        """
+        path = identifier
+        if path.startswith("agentskill-sh/"):
+            path = path[len("agentskill-sh/"):]
+
+        parts = path.strip("/").split("/")
+        if len(parts) == 2:
+            return parts[1], parts[0]  # owner/slug -> (slug, owner)
+        elif len(parts) == 1 and parts[0]:
+            return parts[0], None
+        return None, None
+
+
+# ---------------------------------------------------------------------------
 # Claude Code marketplace source adapter
 # ---------------------------------------------------------------------------
 
@@ -2454,6 +2700,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         WellKnownSkillSource(),
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
+        AgentSkillShSource(),
         ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
     ]

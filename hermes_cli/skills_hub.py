@@ -201,7 +201,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     # Use empty query to get everything; per-source limits prevent overload
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
     _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50}
+                         "agentskill-sh": 100, "claude-marketplace": 50, "lobehub": 50}
 
     all_results: list = []
     source_counts: dict = {}
@@ -1035,7 +1035,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "search":
         if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N]\n")
+            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|agentskill-sh|well-known|github|official] [--limit N]\n")
             return
         source = "all"
         limit = 10

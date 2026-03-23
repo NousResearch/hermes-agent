@@ -55,6 +55,7 @@ class Platform(Enum):
     EMAIL = "email"
     SMS = "sms"
     DINGTALK = "dingtalk"
+    WECOM = "wecom"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
 
@@ -259,6 +260,11 @@ class GatewayConfig:
                 connected.append(platform)
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
+                connected.append(platform)
+            # DingTalk and WeCom store credentials in extra
+            elif platform == Platform.DINGTALK and config.extra.get("client_id") and config.extra.get("client_secret"):
+                connected.append(platform)
+            elif platform == Platform.WECOM and config.extra.get("bot_id") and config.extra.get("secret"):
                 connected.append(platform)
             # API Server uses enabled flag only (no token needed)
             elif platform == Platform.API_SERVER:
@@ -743,6 +749,40 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
             )
 
+    # DingTalk
+    dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")
+    dingtalk_client_secret = os.getenv("DINGTALK_CLIENT_SECRET")
+    if dingtalk_client_id or dingtalk_client_secret:
+        if Platform.DINGTALK not in config.platforms:
+            config.platforms[Platform.DINGTALK] = PlatformConfig()
+        config.platforms[Platform.DINGTALK].enabled = True
+        if dingtalk_client_id:
+            config.platforms[Platform.DINGTALK].extra["client_id"] = dingtalk_client_id
+        if dingtalk_client_secret:
+            config.platforms[Platform.DINGTALK].extra["client_secret"] = dingtalk_client_secret
+
+    # WeCom
+    wecom_bot_id = os.getenv("WECOM_BOT_ID")
+    wecom_secret = os.getenv("WECOM_SECRET")
+    if wecom_bot_id or wecom_secret:
+        if Platform.WECOM not in config.platforms:
+            config.platforms[Platform.WECOM] = PlatformConfig()
+        config.platforms[Platform.WECOM].enabled = True
+        if wecom_bot_id:
+            config.platforms[Platform.WECOM].extra["bot_id"] = wecom_bot_id
+        if wecom_secret:
+            config.platforms[Platform.WECOM].extra["secret"] = wecom_secret
+        wecom_ws_url = os.getenv("WECOM_WEBSOCKET_URL")
+        if wecom_ws_url:
+            config.platforms[Platform.WECOM].extra["websocket_url"] = wecom_ws_url
+        wecom_home = os.getenv("WECOM_HOME_CHANNEL")
+        if wecom_home:
+            config.platforms[Platform.WECOM].home_channel = HomeChannel(
+                platform=Platform.WECOM,
+                chat_id=wecom_home,
+                name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
     api_server_key = os.getenv("API_SERVER_KEY", "")
@@ -797,5 +837,4 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 

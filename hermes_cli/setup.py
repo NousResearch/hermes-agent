@@ -380,10 +380,17 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
             cursor = default
+            scroll_offset = 0
 
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
+                visible_rows = max(1, max_y - 4)
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible_rows:
+                    scroll_offset = cursor - visible_rows + 1
+
                 try:
                     stdscr.addnstr(
                         0,
@@ -395,10 +402,10 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 except curses.error:
                     pass
 
-                for i, choice in enumerate(choices):
-                    y = i + 2
-                    if y >= max_y - 1:
-                        break
+                visible_choices = choices[scroll_offset : scroll_offset + visible_rows]
+                for row, choice in enumerate(visible_choices):
+                    i = scroll_offset + row
+                    y = row + 2
                     arrow = "→" if i == cursor else " "
                     line = f" {arrow}  {choice}"
                     attr = curses.A_NORMAL
@@ -408,6 +415,24 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                             attr |= curses.color_pair(1)
                     try:
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                if len(choices) > visible_rows:
+                    hints = []
+                    if scroll_offset > 0:
+                        hints.append("↑ more")
+                    if scroll_offset + visible_rows < len(choices):
+                        hints.append("↓ more")
+                    hint_line = "   ".join(hints)
+                    try:
+                        stdscr.addnstr(
+                            max_y - 1,
+                            0,
+                            hint_line,
+                            max_x - 1,
+                            curses.A_DIM,
+                        )
                     except curses.error:
                         pass
 
@@ -2763,6 +2788,52 @@ def setup_gateway(config: dict):
             if home_channel:
                 save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
+    # ── WeCom ──
+    existing_wecom = get_env_value("WECOM_BOT_ID")
+    if existing_wecom:
+        print_info("WeCom: already configured")
+        if prompt_yes_no("Reconfigure WeCom?", False):
+            existing_wecom = None
+
+    if not existing_wecom and prompt_yes_no("Set up WeCom AI Bot?", False):
+        print_info("Create or configure a WeCom AI Bot with WebSocket access.")
+        print_info("   1. Create/configure the bot in the WeCom admin console")
+        print_info("   2. Copy the Bot ID and Secret")
+        print_info("   3. Keep the default WebSocket URL unless Tencent gave you a custom one")
+        print()
+        bot_id = prompt("WeCom Bot ID")
+        if bot_id:
+            save_env_value("WECOM_BOT_ID", bot_id)
+            secret = prompt("WeCom Bot Secret", password=True)
+            if secret:
+                save_env_value("WECOM_SECRET", secret)
+            ws_url = prompt("WebSocket URL (leave empty for default)")
+            if ws_url:
+                save_env_value("WECOM_WEBSOCKET_URL", ws_url.strip())
+            print_success("WeCom credentials saved")
+
+            print()
+            print_info("🔒 Security: Restrict who can use your bot")
+            print_info("   Use WeCom user IDs, not display names.")
+            print()
+            allowed_users = prompt(
+                "Allowed user IDs (comma-separated, leave empty for open access)"
+            )
+            if allowed_users:
+                save_env_value("WECOM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                print_success("WeCom allowlist configured")
+            else:
+                print_info(
+                    "⚠️  No allowlist set - anyone who can message the bot can use it!"
+                )
+
+            print()
+            print_info("📬 Home Chat: where Hermes delivers cron job results and notifications.")
+            print_info("   Use a WeCom userid for DMs or a chatid for group delivery.")
+            home_chat = prompt("Home chat/group ID (leave empty to set later)")
+            if home_chat:
+                save_env_value("WECOM_HOME_CHANNEL", home_chat)
+
     # ── WhatsApp ──
     existing_whatsapp = get_env_value("WHATSAPP_ENABLED")
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
@@ -2838,6 +2909,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATTERMOST_TOKEN")
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
+        or get_env_value("WECOM_BOT_ID")
         or get_env_value("WHATSAPP_ENABLED")
         or get_env_value("WEBHOOK_ENABLED")
     )
@@ -2858,6 +2930,8 @@ def setup_gateway(config: dict):
             missing_home.append("Discord")
         if get_env_value("SLACK_BOT_TOKEN") and not get_env_value("SLACK_HOME_CHANNEL"):
             missing_home.append("Slack")
+        if get_env_value("WECOM_BOT_ID") and not get_env_value("WECOM_HOME_CHANNEL"):
+            missing_home.append("WeCom")
 
         if missing_home:
             print()

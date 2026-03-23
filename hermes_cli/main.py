@@ -3184,7 +3184,7 @@ For more help on a command:
     gateway_parser = subparsers.add_parser(
         "gateway",
         help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp)"
+        description="Manage the messaging gateway (Telegram, Discord, Slack, WhatsApp, WeCom, and more)"
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     

@@ -303,10 +303,22 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-dingtalk": {
+        "description": "DingTalk bot toolset - full access for stream-mode enterprise chat",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-wecom": {
+        "description": "WeCom bot toolset - full access for Enterprise WeChat chats",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-dingtalk", "hermes-wecom"]
     }
 }
 

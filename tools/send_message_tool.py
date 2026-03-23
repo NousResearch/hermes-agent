@@ -130,6 +130,7 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "wecom": Platform.WECOM,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -279,6 +280,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.wecom import WeComAdapter
 
     media_files = media_files or []
 
@@ -287,6 +289,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.WECOM: WeComAdapter.MAX_MESSAGE_LENGTH,
     }
 
     # Smart-chunk the message to fit within platform limits.
@@ -313,6 +316,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
+
+    if platform == Platform.WECOM:
+        return await _send_wecom_bundle(pconfig.extra, chat_id, chunks, media_files)
 
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
@@ -664,6 +670,62 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_wecom(extra, chat_id, message):
+    """Send via a short-lived WeCom websocket session."""
+    return await _send_wecom_bundle(extra, chat_id, [message], [])
+
+
+async def _send_wecom_bundle(extra, chat_id, message_chunks, media_files):
+    """Send WeCom text and media over a single short-lived websocket session."""
+    try:
+        from gateway.config import PlatformConfig
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+        connected = await adapter.connect()
+        if not connected:
+            return {"error": "Failed to connect to WeCom. Check WECOM_BOT_ID/WECOM_SECRET configuration."}
+
+        try:
+            last_result = None
+
+            for chunk in message_chunks:
+                if not chunk.strip():
+                    continue
+                send_result = await adapter.send(chat_id, chunk)
+                if not send_result.success:
+                    return {"error": send_result.error or "WeCom send failed"}
+                last_result = send_result
+
+            for media_path, is_voice in media_files or []:
+                ext = Path(media_path).suffix.lower()
+                if is_voice or ext in _AUDIO_EXTS:
+                    send_result = await adapter.send_voice(chat_id, media_path)
+                elif ext in _VIDEO_EXTS:
+                    send_result = await adapter.send_video(chat_id, media_path)
+                elif ext in _IMAGE_EXTS:
+                    send_result = await adapter.send_image_file(chat_id, media_path)
+                else:
+                    send_result = await adapter.send_document(chat_id, media_path)
+
+                if not send_result.success:
+                    return {"error": send_result.error or f"WeCom media send failed: {media_path}"}
+                last_result = send_result
+        finally:
+            await adapter.disconnect()
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained for WeCom send"}
+        return {
+            "success": True,
+            "platform": "wecom",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+    except Exception as e:
+        return {"error": f"WeCom send failed: {e}"}
 
 
 def _check_send_message():

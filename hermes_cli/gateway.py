@@ -1195,6 +1195,31 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "wecom",
+        "label": "WeCom",
+        "emoji": "🏢",
+        "token_var": "WECOM_BOT_ID",
+        "setup_instructions": [
+            "1. Create or configure a WeCom AI Bot in the WeCom admin console",
+            "2. Copy the Bot ID and Secret for WebSocket access",
+            "3. Keep the default WebSocket URL unless Tencent provided a custom endpoint",
+            "4. Add the bot to the target direct chat or group chat",
+        ],
+        "vars": [
+            {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
+             "help": "The WeCom AI Bot identifier used for WebSocket authentication."},
+            {"name": "WECOM_SECRET", "prompt": "Bot Secret", "password": True,
+             "help": "The WeCom AI Bot secret used for WebSocket authentication."},
+            {"name": "WECOM_WEBSOCKET_URL", "prompt": "WebSocket URL (optional)", "password": False,
+             "help": "Optional override. Leave empty to use wss://openws.work.weixin.qq.com."},
+            {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, optional)", "password": False,
+             "is_allowlist": True,
+             "help": "Only these WeCom user IDs can talk to Hermes unless allow-all is enabled."},
+            {"name": "WECOM_HOME_CHANNEL", "prompt": "Home chat/group ID (optional)", "password": False,
+             "help": "Default WeCom chat ID for cron/notification delivery."},
+        ],
+    },
 ]
 
 

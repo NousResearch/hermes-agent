@@ -856,6 +856,18 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages[session_key] = event
                 return  # Don't interrupt now - will run after current task completes
 
+            # /stop command: fire the interrupt but do NOT queue the event.
+            # Queuing '/stop' would cause it to be replayed as a user prompt
+            # after the agent winds down (via monitor_for_interrupt or adapter replay).
+            # Also clear any already-queued follow-up so it doesn't replay after stop.
+            if event.get_command() == 'stop':
+                print(f"[{self.name}] 🛑 /stop while session {session_key} is active - interrupt only, no queue")
+                self._pending_messages.pop(session_key, None)
+                self._active_sessions[session_key].set()
+                _thread_md = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                asyncio.create_task(self.send(event.source.chat_id, "⚙️ Agent was aborted.", metadata=_thread_md))
+                return
+
             # Default behavior for non-photo follow-ups: interrupt the running agent
             print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
             self._pending_messages[session_key] = event

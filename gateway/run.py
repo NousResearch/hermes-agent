@@ -5254,12 +5254,17 @@ class GatewayRunner:
         
         tracking_task = asyncio.create_task(track_agent())
         
-        # Monitor for interrupts from the adapter (new messages arriving)
+        # Monitor for interrupts from the adapter (new messages arriving).
+        # _monitor_pending_text holds the message text popped by the monitor
+        # so that the post-executor drain can recover it even if the agent
+        # finished before the interrupt landed (race window fix for #2483).
+        _monitor_pending_text = [None]
+
         async def monitor_for_interrupt():
             adapter = self.adapters.get(source.platform)
             if not adapter or not session_key:
                 return
-            
+
             while True:
                 await asyncio.sleep(0.2)  # Check every 200ms
                 # Check if adapter has a pending interrupt for this session.
@@ -5271,6 +5276,7 @@ class GatewayRunner:
                     if agent:
                         pending_event = adapter.get_pending_message(session_key)
                         pending_text = pending_event.text if pending_event else None
+                        _monitor_pending_text[0] = pending_text
                         logger.debug("Interrupt detected from adapter, signaling agent...")
                         agent.interrupt(pending_text)
                         break
@@ -5300,9 +5306,11 @@ class GatewayRunner:
                     self._effective_provider = None
 
             # Check if we were interrupted OR have a queued message (/queue).
+            # Also recover messages consumed by the interrupt monitor but not
+            # seen by the agent (race window fix for #2483).
             result = result_holder[0]
             adapter = self.adapters.get(source.platform)
-            
+
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
             pending = None
@@ -5321,6 +5329,15 @@ class GatewayRunner:
                     if pending_event:
                         pending = pending_event.text
                         logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+
+            # Recover a message the interrupt monitor popped but the agent
+            # never saw (monitor fired after executor returned). (#2483)
+            if not pending and session_key and _monitor_pending_text[0]:
+                pending = _monitor_pending_text[0]
+                logger.debug(
+                    "Recovered monitor-consumed pending for %s: '%s...'",
+                    session_key, pending[:40],
+                )
             
             if pending:
                 logger.debug("Processing pending message: '%s...'", pending[:40])

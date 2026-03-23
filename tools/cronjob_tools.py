@@ -34,21 +34,35 @@ from cron.jobs import (
 # ---------------------------------------------------------------------------
 
 _CRON_THREAT_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'/etc/sudoers|visudo', "sudoers_mod"),
-    (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    (
+        r"ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions",
+        "prompt_injection",
+    ),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (
+        r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+        "disregard_rules",
+    ),
+    (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl"),
+    (r"wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_wget"),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)", "read_secrets"),
+    (r"authorized_keys", "ssh_backdoor"),
+    (r"/etc/sudoers|visudo", "sudoers_mod"),
+    (r"rm\s+-rf\s+/", "destructive_root_rm"),
 ]
 
 _CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
 }
 
 
@@ -86,7 +100,9 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
-def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+def _canonical_skills(
+    skill: Optional[str] = None, skills: Optional[Any] = None
+) -> List[str]:
     if skills is None:
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
@@ -102,15 +118,15 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
     return normalized
 
 
-
-def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
+def _normalize_optional_job_value(
+    value: Optional[Any], *, strip_trailing_slash: bool = False
+) -> Optional[str]:
     if value is None:
         return None
     text = str(value).strip()
     if strip_trailing_slash:
         text = text.rstrip("/")
     return text or None
-
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,7 +148,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "enabled": job.get("enabled", True),
-        "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
+        "state": job.get(
+            "state", "scheduled" if job.get("enabled", True) else "paused"
+        ),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
@@ -163,10 +181,19 @@ def cronjob(
 
         if normalized == "create":
             if not schedule:
-                return json.dumps({"success": False, "error": "schedule is required for create"}, indent=2)
+                return json.dumps(
+                    {"success": False, "error": "schedule is required for create"},
+                    indent=2,
+                )
             canonical_skills = _canonical_skills(skill, skills)
             if not prompt and not canonical_skills:
-                return json.dumps({"success": False, "error": "create requires either prompt or at least one skill"}, indent=2)
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "create requires either prompt or at least one skill",
+                    },
+                    indent=2,
+                )
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -182,7 +209,9 @@ def cronjob(
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                base_url=_normalize_optional_job_value(
+                    base_url, strip_trailing_slash=True
+                ),
             )
             return json.dumps(
                 {
@@ -202,23 +231,41 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
-            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+            jobs = [
+                _format_job(job) for job in list_jobs(include_disabled=include_disabled)
+            ]
+            return json.dumps(
+                {"success": True, "count": len(jobs), "jobs": jobs}, indent=2
+            )
 
         if not job_id:
-            return json.dumps({"success": False, "error": f"job_id is required for action '{normalized}'"}, indent=2)
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"job_id is required for action '{normalized}'",
+                },
+                indent=2,
+            )
 
         job = get_job(job_id)
         if not job:
             return json.dumps(
-                {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                {
+                    "success": False,
+                    "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs.",
+                },
                 indent=2,
             )
+        # Resolve to canonical ID (supports name-based lookup)
+        job_id = job["id"]
 
         if normalized == "remove":
             removed = remove_job(job_id)
             if not removed:
-                return json.dumps({"success": False, "error": f"Failed to remove job '{job_id}'"}, indent=2)
+                return json.dumps(
+                    {"success": False, "error": f"Failed to remove job '{job_id}'"},
+                    indent=2,
+                )
             return json.dumps(
                 {
                     "success": True,
@@ -264,7 +311,9 @@ def cronjob(
             if provider is not None:
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
-                updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+                updates["base_url"] = _normalize_optional_job_value(
+                    base_url, strip_trailing_slash=True
+                )
             if repeat is not None:
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = repeat
@@ -277,11 +326,15 @@ def cronjob(
                     updates["state"] = "scheduled"
                     updates["enabled"] = True
             if not updates:
-                return json.dumps({"success": False, "error": "No updates provided."}, indent=2)
+                return json.dumps(
+                    {"success": False, "error": "No updates provided."}, indent=2
+                )
             updated = update_job(job_id, updates)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
-        return json.dumps({"success": False, "error": f"Unknown cron action '{action}'"}, indent=2)
+        return json.dumps(
+            {"success": False, "error": f"Unknown cron action '{action}'"}, indent=2
+        )
 
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, indent=2)
@@ -290,6 +343,7 @@ def cronjob(
 # ---------------------------------------------------------------------------
 # Compatibility wrappers
 # ---------------------------------------------------------------------------
+
 
 def schedule_cronjob(
     prompt: str,
@@ -346,64 +400,58 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run"
+                "description": "One of: create, list, update, pause, resume, remove, run",
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for update/pause/resume/remove/run",
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skill or skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "For create: the full self-contained prompt. If skill or skills are also provided, this becomes the task instruction paired with those skills.",
             },
             "schedule": {
                 "type": "string",
-                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp"
+                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp",
             },
-            "name": {
-                "type": "string",
-                "description": "Optional human-friendly name"
-            },
+            "name": {"type": "string", "description": "Optional human-friendly name"},
             "repeat": {
                 "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring).",
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, signal, sms, or platform:chat_id"
+                "description": "Delivery target: origin, local, telegram, discord, signal, sms, or platform:chat_id",
             },
             "model": {
                 "type": "string",
-                "description": "Optional per-job model override used when the cron job runs"
+                "description": "Optional per-job model override used when the cron job runs",
             },
             "provider": {
                 "type": "string",
-                "description": "Optional per-job provider override used when resolving runtime credentials"
+                "description": "Optional per-job provider override used when resolving runtime credentials",
             },
             "base_url": {
                 "type": "string",
-                "description": "Optional per-job base URL override paired with provider/model routing"
+                "description": "Optional per-job base URL override paired with provider/model routing",
             },
             "include_disabled": {
                 "type": "boolean",
-                "description": "For list: include paused/completed jobs"
+                "description": "For list: include paused/completed jobs",
             },
             "skill": {
                 "type": "string",
-                "description": "Optional single skill name to load before executing the cron prompt"
+                "description": "Optional single skill name to load before executing the cron prompt",
             },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional ordered list of skills to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
+                "description": "Optional ordered list of skills to load before executing the cron prompt. On update, pass an empty array to clear attached skills.",
             },
-            "reason": {
-                "type": "string",
-                "description": "Optional pause reason"
-            }
+            "reason": {"type": "string", "description": "Optional pause reason"},
         },
-        "required": ["action"]
-    }
+        "required": ["action"],
+    },
 }
 
 

@@ -2834,6 +2834,91 @@ class HermesCLI:
         if not silent:
             print("(^_^)v New session started!")
 
+    def resume_session(self, name: str = ""):
+        """Resume a previously titled session."""
+        if not self._session_db:
+            print("Session database not available.")
+            return
+
+        name = name.strip()
+        if not name:
+            # List recent titled sessions
+            try:
+                sessions = self._session_db.list_sessions_rich(source="cli", limit=10)
+                titled = [s for s in sessions if s.get("title")]
+                if not titled:
+                    print("No named sessions found.")
+                    print("Use /title My Session to name your current session, then /resume My Session to return to it later.")
+                    return
+                print("📋 Named Sessions")
+                for s in titled[:10]:
+                    title = s["title"]
+                    preview = s.get("preview", "")[:40]
+                    preview_part = f" — {preview}" if preview else ""
+                    print(f"• {title}{preview_part}")
+                print("\nUsage: /resume <session name>")
+                return
+            except Exception as e:
+                print(f"Could not list sessions: {e}")
+                return
+
+        # Resolve the name to a session ID
+        target_id = self._session_db.resolve_session_by_title(name)
+        if not target_id:
+            print(f"No session found matching '{name}'.")
+            print("Use /resume with no arguments to see available sessions.")
+            return
+
+        if self.session_id == target_id:
+            print(f"📌 Already on session {name}.")
+            return
+
+        # Flush memories for current session before switching
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.flush_memories(self.conversation_history)
+            except Exception:
+                pass
+
+        old_session_id = self.session_id
+        if old_session_id:
+            try:
+                self._session_db.end_session(old_session_id, "resume_session")
+            except Exception:
+                pass
+
+        # Switch session
+        self.session_id = target_id
+        self._resumed = True
+        
+        # Reload history
+        try:
+            from hermes_state import load_session_history
+            self.conversation_history = load_session_history(self._session_db, target_id)
+        except Exception as e:
+            print(f"Failed to load history: {e}")
+            self.conversation_history = []
+
+        # Reset agent state
+        if self.agent:
+            self.agent.session_id = self.session_id
+            self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = len(self.conversation_history)
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from tools.todo_tool import TodoStore
+                    self.agent._todo_store = TodoStore()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+        title = self._session_db.get_session_title(target_id) or name
+        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+        print(f"↻ Resumed session {title}{msg_part}. Conversation restored.")
+
     def reset_conversation(self):
         """Reset the conversation by starting a new session."""
         self.new_session()
@@ -3560,6 +3645,8 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
+        elif canonical == "resume":
+            self.resume_session(cmd_original.split(maxsplit=1)[1] if len(cmd_original.split(maxsplit=1)) > 1 else "")
         elif canonical == "model":
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)

@@ -17,6 +17,7 @@ pydantic>=2.0
 PyJWT[crypto]
 
 # Web tools
+ddgs  # free web search, no API key required (formerly duckduckgo-search)
 firecrawl-py
 parallel-web>=0.4.2
 

@@ -71,9 +71,13 @@ def _get_backend() -> str:
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
+
+    Backend priority (when no explicit config):
+      duckduckgo > parallel > tavily > firecrawl
+    DuckDuckGo requires no API key and is always available.
     """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily"):
+    if configured in ("parallel", "firecrawl", "tavily", "duckduckgo"):
         return configured
 
     # Fallback for manual / legacy config — use whichever key is present.
@@ -81,13 +85,15 @@ def _get_backend() -> str:
     has_parallel = _has_env("PARALLEL_API_KEY")
     has_tavily = _has_env("TAVILY_API_KEY")
 
-    if has_tavily and not has_firecrawl and not has_parallel:
-        return "tavily"
-    if has_parallel and not has_firecrawl:
+    if has_parallel:
         return "parallel"
+    if has_tavily:
+        return "tavily"
+    if has_firecrawl:
+        return "firecrawl"
 
-    # Default to firecrawl (backward compat, or when both are set)
-    return "firecrawl"
+    # Default: DuckDuckGo — no API key required
+    return "duckduckgo"
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -665,6 +671,39 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── DuckDuckGo Backend ───────────────────────────────────────────────────────
+
+def _duckduckgo_search(query: str, limit: int = 5) -> dict:
+    """Search via DuckDuckGo (no API key required).
+
+    Uses the ``duckduckgo_search`` package (``pip install duckduckgo-search``).
+    Returns a dict in the standard ``{"success": True, "data": {"web": [...]}}``
+    format used by all backends.
+    """
+    try:
+        try:
+            from ddgs import DDGS  # ddgs >= 1.0 (renamed from duckduckgo_search)
+        except ImportError:
+            from duckduckgo_search import DDGS  # legacy name
+    except ImportError:
+        raise RuntimeError(
+            "ddgs package not installed. "
+            "Run: pip install ddgs"
+        )
+
+    results = []
+    with DDGS() as ddgs:
+        for i, r in enumerate(ddgs.text(query, max_results=limit)):
+            results.append({
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "description": r.get("body", ""),
+                "position": i + 1,
+            })
+
+    return {"success": True, "data": {"web": results}}
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -717,6 +756,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured backend
         backend = _get_backend()
+        if backend == "duckduckgo":
+            logger.info("DuckDuckGo search: '%s' (limit: %d)", query, limit)
+            response_data = _duckduckgo_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1522,7 +1571,19 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check if any web backend API key is available (Parallel, Firecrawl, or Tavily)."""
+    """Check if any web backend is available (DuckDuckGo, Parallel, Firecrawl, or Tavily).
+
+    DuckDuckGo requires no API key, so this always returns True when the
+    duckduckgo-search package is installed.
+    """
+    try:
+        try:
+            import ddgs  # noqa: F401
+        except ImportError:
+            import duckduckgo_search  # noqa: F401
+        return True
+    except ImportError:
+        pass
     return bool(
         os.getenv("PARALLEL_API_KEY")
         or os.getenv("FIRECRAWL_API_KEY")
@@ -1563,7 +1624,9 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "parallel":
+        if backend == "duckduckgo":
+            print("   Using DuckDuckGo (no API key required)")
+        elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
@@ -1571,7 +1634,7 @@ if __name__ == "__main__":
             print("   Using Firecrawl API (https://firecrawl.dev)")
     else:
         print("❌ No web search backend configured")
-        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
+        print("Install duckduckgo-search (free, no key) or set PARALLEL_API_KEY / TAVILY_API_KEY / FIRECRAWL_API_KEY")
 
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")

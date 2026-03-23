@@ -6187,6 +6187,16 @@ class AIAgent:
                     # A 413 is a payload-size error — the correct response is to
                     # compress history and retry, not abort immediately.
                     status_code = getattr(api_error, "status_code", None)
+                    # APIConnectionError is a network-level exception and has no
+                    # status_code itself, but its __cause__ may be an httpx
+                    # HTTPStatusError that carries one (e.g. a 429 received while
+                    # the connection was being torn down).
+                    if status_code is None:
+                        _cause = getattr(api_error, "__cause__", None)
+                        if _cause is not None:
+                            _cause_resp = getattr(_cause, "response", None)
+                            if _cause_resp is not None:
+                                status_code = getattr(_cause_resp, "status_code", None)
 
                     # Eager fallback for rate-limit errors (429 or quota exhaustion).
                     # When a fallback model is configured, switch immediately instead
@@ -6200,6 +6210,31 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
+
+                    # Extract Retry-After header so we can honour the provider's
+                    # requested wait time instead of guessing with backoff.
+                    # Works for direct APIStatusError responses and for
+                    # APIConnectionError where the response lives on __cause__.
+                    # Initialised unconditionally so the wait-time block below
+                    # can reference it regardless of which error path was taken.
+                    retry_after_seconds = None
+                    if is_rate_limited:
+                        _ra_response = getattr(api_error, "response", None)
+                        if _ra_response is None:
+                            _cause = getattr(api_error, "__cause__", None)
+                            if _cause is not None:
+                                _ra_response = getattr(_cause, "response", None)
+                        if _ra_response is not None:
+                            _ra_header = (
+                                getattr(_ra_response, "headers", {}).get("retry-after")
+                                or getattr(_ra_response, "headers", {}).get("Retry-After")
+                            )
+                            if _ra_header is not None:
+                                try:
+                                    retry_after_seconds = float(_ra_header)
+                                except (ValueError, TypeError):
+                                    pass
+
                     if is_rate_limited and not self._fallback_activated:
                         if self._try_activate_fallback():
                             retry_count = 0
@@ -6423,14 +6458,35 @@ class AIAgent:
                         logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
                         raise api_error
 
-                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    # Use the provider's Retry-After value when available (rate
+                    # limits); fall back to exponential backoff for everything else.
+                    # Cap is configurable via HERMES_RETRY_AFTER_MAX_WAIT (default 300s).
+                    _retry_after_max = int(os.getenv("HERMES_RETRY_AFTER_MAX_WAIT", "300"))
+                    if retry_after_seconds is not None:
+                        wait_time = min(retry_after_seconds, _retry_after_max)
+                        if retry_after_seconds > _retry_after_max:
+                            self._vprint(
+                                f"{self.log_prefix}⏳ Server requested {retry_after_seconds:.0f}s wait "
+                                f"(Retry-After); capped at {_retry_after_max}s "
+                                f"(set HERMES_RETRY_AFTER_MAX_WAIT to override).",
+                                force=True,
+                            )
+                        else:
+                            self._vprint(
+                                f"{self.log_prefix}⏳ Honouring server Retry-After: "
+                                f"waiting {wait_time:.0f}s before retry...",
+                                force=True,
+                            )
+                    else:
+                        wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
                     logger.warning(
-                        "Retrying API call in %ss (attempt %s/%s) %s error=%s",
+                        "Retrying API call in %ss (attempt %s/%s) %s error=%s%s",
                         wait_time,
                         retry_count,
                         max_retries,
                         self._client_log_context(),
                         api_error,
+                        " [Retry-After header]" if retry_after_seconds is not None else "",
                     )
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call

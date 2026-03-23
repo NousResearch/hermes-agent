@@ -7,6 +7,7 @@ Covers all error paths in run_agent.py's run_conversation() for api_mode=anthrop
 - 401 unauthorized → credential refresh + retry
 - 500 server error → retried with backoff
 - "prompt is too long" → context length error triggers compression
+- Retry-After header → wait time is honoured / capped
 """
 
 import asyncio
@@ -478,3 +479,138 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
 
     assert result["final_response"] == "Compressed and recovered"
     assert _PromptTooLongThenSuccessAgent.compress_called >= 1
+
+
+# ---------------------------------------------------------------------------
+# Retry-After header tests
+# ---------------------------------------------------------------------------
+
+
+class _RateLimitWithRetryAfterError(Exception):
+    """Simulates a 429 that carries a Retry-After response header."""
+
+    def __init__(self, retry_after: str = "45"):
+        super().__init__("Error code: 429 - Rate limit exceeded.")
+        self.status_code = 429
+        self.response = SimpleNamespace(headers={"retry-after": retry_after})
+
+
+class _ConnectionErrorWrapping429(Exception):
+    """Simulates openai.APIConnectionError whose __cause__ holds a 429 response.
+
+    APIConnectionError is a network-layer exception with no status_code; the
+    underlying httpx HTTPStatusError on __cause__ carries both the status code
+    and the response headers.  __cause__ must be a BaseException, not a plain
+    object, so we attach the response as an attribute on a real exception.
+    """
+
+    def __init__(self, retry_after: str = "30"):
+        super().__init__("Connection closed unexpectedly.")
+        # No status_code attribute — mirrors the real APIConnectionError.
+        cause_response = SimpleNamespace(
+            status_code=429,
+            headers={"retry-after": retry_after},
+        )
+        # Python requires __cause__ to be a BaseException (or None).
+        _inner = Exception("HTTP 429 Too Many Requests")
+        _inner.response = cause_response  # type: ignore[attr-defined]
+        self.__cause__ = _inner
+
+
+def _make_fast_time():
+    """Return a time() stub that advances by 500s per call.
+
+    This ensures the interruptible-sleep loop (``while time.time() < sleep_end``)
+    exits after a single iteration without actually blocking the test.
+    """
+    t = [0.0]
+
+    def _time():
+        t[0] += 500.0
+        return t[0]
+
+    return _time
+
+
+def test_retry_after_header_sets_wait_time(monkeypatch, capsys):
+    """A 429 with Retry-After: 45 should wait 45s (printed to output), not use backoff."""
+    monkeypatch.setattr(run_agent.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_agent.time, "time", _make_fast_time())
+
+    agent_cls = _make_agent_cls(_RateLimitWithRetryAfterError, recover_after=1)
+    result = _run_with_agent(monkeypatch, agent_cls)
+    captured = capsys.readouterr()
+
+    assert result["final_response"] == "Recovered"
+    assert "Honouring server Retry-After: waiting 45s before retry" in captured.out
+
+
+def test_retry_after_header_is_capped_at_default_max(monkeypatch, capsys):
+    """Retry-After values above the 300s default cap are clipped."""
+    monkeypatch.setattr(run_agent.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_agent.time, "time", _make_fast_time())
+    monkeypatch.delenv("HERMES_RETRY_AFTER_MAX_WAIT", raising=False)
+
+    class _LargeRetryAfter(_RateLimitWithRetryAfterError):
+        def __init__(self):
+            super().__init__(retry_after="600")
+
+    agent_cls = _make_agent_cls(_LargeRetryAfter, recover_after=1)
+    result = _run_with_agent(monkeypatch, agent_cls)
+    captured = capsys.readouterr()
+
+    assert result["final_response"] == "Recovered"
+    # The cap message shows both the server value and the applied cap.
+    assert "600s wait" in captured.out
+    assert "capped at 300s" in captured.out
+
+
+def test_retry_after_cap_is_configurable_via_env(monkeypatch, capsys):
+    """HERMES_RETRY_AFTER_MAX_WAIT overrides the default 300s cap."""
+    monkeypatch.setattr(run_agent.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_agent.time, "time", _make_fast_time())
+    monkeypatch.setenv("HERMES_RETRY_AFTER_MAX_WAIT", "60")
+
+    class _LargeRetryAfter(_RateLimitWithRetryAfterError):
+        def __init__(self):
+            super().__init__(retry_after="600")
+
+    agent_cls = _make_agent_cls(_LargeRetryAfter, recover_after=1)
+    result = _run_with_agent(monkeypatch, agent_cls)
+    captured = capsys.readouterr()
+
+    assert result["final_response"] == "Recovered"
+    assert "600s wait" in captured.out
+    assert "capped at 60s" in captured.out
+
+
+def test_retry_after_on_connection_error_cause(monkeypatch, capsys):
+    """APIConnectionError whose __cause__ carries a 429 + Retry-After should be honoured."""
+    monkeypatch.setattr(run_agent.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_agent.time, "time", _make_fast_time())
+
+    class _ConnError429(_ConnectionErrorWrapping429):
+        def __init__(self):
+            super().__init__(retry_after="30")
+
+    agent_cls = _make_agent_cls(_ConnError429, recover_after=1)
+    result = _run_with_agent(monkeypatch, agent_cls)
+    captured = capsys.readouterr()
+
+    assert result["final_response"] == "Recovered"
+    assert "Honouring server Retry-After: waiting 30s before retry" in captured.out
+
+
+def test_retry_after_missing_falls_back_to_exponential_backoff(monkeypatch, capsys):
+    """A plain 429 without a Retry-After header does not print a Retry-After message."""
+    monkeypatch.setattr(run_agent.time, "sleep", lambda s: None)
+    monkeypatch.setattr(run_agent.time, "time", _make_fast_time())
+
+    # _RateLimitError has no .response attribute → no Retry-After header.
+    agent_cls = _make_agent_cls(_RateLimitError, recover_after=1)
+    result = _run_with_agent(monkeypatch, agent_cls)
+    captured = capsys.readouterr()
+
+    assert result["final_response"] == "Recovered"
+    assert "Honouring server Retry-After" not in captured.out
+    assert "capped at" not in captured.out

@@ -69,7 +69,12 @@ def _validate_image_url(url: str) -> bool:
     if not parsed.netloc:
         return False
 
-    return True  # Allow all well-formed HTTP/HTTPS URLs for flexibility
+    # Block private/internal addresses to prevent SSRF
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        return False
+
+    return True
 
 
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -92,12 +97,31 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)
     
+    def _ssrf_redirect_guard(response):
+        """Re-validate each redirect target to prevent redirect-based SSRF.
+
+        Without this, an attacker can host a public URL that 302-redirects
+        to http://169.254.169.254/ and bypass the pre-flight is_safe_url check.
+        """
+        if response.is_redirect and response.next_request:
+            redirect_url = str(response.next_request.url)
+            from tools.url_safety import is_safe_url
+            if not is_safe_url(redirect_url):
+                raise ValueError(
+                    f"Blocked redirect to private/internal address: {redirect_url}"
+                )
+
     last_error = None
     for attempt in range(max_retries):
         try:
             # Download the image with appropriate headers using async httpx
             # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            # SSRF: event_hooks validates each redirect target against private IP ranges
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            ) as client:
                 response = await client.get(
                     image_url,
                     headers={

@@ -46,6 +46,7 @@ import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
+from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
@@ -861,136 +862,155 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
 
-        # Dispatch to the configured backend
-        backend = _get_backend()
-
-        if backend == "parallel":
-            results = await _parallel_extract(urls)
-        elif backend == "tavily":
-            logger.info("Tavily extract: %d URL(s)", len(urls))
-            raw = _tavily_request("extract", {
-                "urls": urls,
-                "include_images": False,
-            })
-            results = _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
-        else:
-            # ── Firecrawl extraction ──
-            # Determine requested formats for Firecrawl v2
-            formats: List[str] = []
-            if format == "markdown":
-                formats = ["markdown"]
-            elif format == "html":
-                formats = ["html"]
+        # ── SSRF protection — filter out private/internal URLs before any backend ──
+        safe_urls = []
+        ssrf_blocked: List[Dict[str, Any]] = []
+        for url in urls:
+            if not is_safe_url(url):
+                ssrf_blocked.append({
+                    "url": url, "title": "", "content": "",
+                    "error": "Blocked: URL targets a private or internal network address",
+                })
             else:
-                # Default: request markdown for LLM-readiness and include html as backup
-                formats = ["markdown", "html"]
+                safe_urls.append(url)
 
-            # Always use individual scraping for simplicity and reliability
-            # Batch scraping adds complexity without much benefit for small numbers of URLs
-            results: List[Dict[str, Any]] = []
+        # Dispatch only safe URLs to the configured backend
+        if not safe_urls:
+            results = []
+        else:
+            backend = _get_backend()
 
-            from tools.interrupt import is_interrupted as _is_interrupted
-            for url in urls:
-                if _is_interrupted():
-                    results.append({"url": url, "error": "Interrupted", "title": ""})
-                    continue
+            if backend == "parallel":
+                results = await _parallel_extract(safe_urls)
+            elif backend == "tavily":
+                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
+                raw = _tavily_request("extract", {
+                    "urls": safe_urls,
+                    "include_images": False,
+                })
+                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            else:
+                # ── Firecrawl extraction ──
+                # Determine requested formats for Firecrawl v2
+                formats: List[str] = []
+                if format == "markdown":
+                    formats = ["markdown"]
+                elif format == "html":
+                    formats = ["html"]
+                else:
+                    # Default: request markdown for LLM-readiness and include html as backup
+                    formats = ["markdown", "html"]
 
-                # Website policy check — block before fetching
-                blocked = check_website_access(url)
-                if blocked:
-                    logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
-                    results.append({
-                        "url": url, "title": "", "content": "",
-                        "error": blocked["message"],
-                        "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
-                    })
-                    continue
+                # Always use individual scraping for simplicity and reliability
+                # Batch scraping adds complexity without much benefit for small numbers of URLs
+                results: List[Dict[str, Any]] = []
 
-                try:
-                    logger.info("Scraping: %s", url)
-                    scrape_result = _get_firecrawl_client().scrape(
-                        url=url,
-                        formats=formats
-                    )
+                from tools.interrupt import is_interrupted as _is_interrupted
+                for url in safe_urls:
+                    if _is_interrupted():
+                        results.append({"url": url, "error": "Interrupted", "title": ""})
+                        continue
 
-                    # Process the result - properly handle object serialization
-                    metadata = {}
-                    title = ""
-                    content_markdown = None
-                    content_html = None
-
-                    # Extract data from the scrape result
-                    if hasattr(scrape_result, 'model_dump'):
-                        # Pydantic model - use model_dump to get dict
-                        result_dict = scrape_result.model_dump()
-                        content_markdown = result_dict.get('markdown')
-                        content_html = result_dict.get('html')
-                        metadata = result_dict.get('metadata', {})
-                    elif hasattr(scrape_result, '__dict__'):
-                        # Regular object with attributes
-                        content_markdown = getattr(scrape_result, 'markdown', None)
-                        content_html = getattr(scrape_result, 'html', None)
-
-                        # Handle metadata - convert to dict if it's an object
-                        metadata_obj = getattr(scrape_result, 'metadata', {})
-                        if hasattr(metadata_obj, 'model_dump'):
-                            metadata = metadata_obj.model_dump()
-                        elif hasattr(metadata_obj, '__dict__'):
-                            metadata = metadata_obj.__dict__
-                        elif isinstance(metadata_obj, dict):
-                            metadata = metadata_obj
-                        else:
-                            metadata = {}
-                    elif isinstance(scrape_result, dict):
-                        # Already a dictionary
-                        content_markdown = scrape_result.get('markdown')
-                        content_html = scrape_result.get('html')
-                        metadata = scrape_result.get('metadata', {})
-
-                    # Ensure metadata is a dict (not an object)
-                    if not isinstance(metadata, dict):
-                        if hasattr(metadata, 'model_dump'):
-                            metadata = metadata.model_dump()
-                        elif hasattr(metadata, '__dict__'):
-                            metadata = metadata.__dict__
-                        else:
-                            metadata = {}
-
-                    # Get title from metadata
-                    title = metadata.get("title", "")
-
-                    # Re-check final URL after redirect
-                    final_url = metadata.get("sourceURL", url)
-                    final_blocked = check_website_access(final_url)
-                    if final_blocked:
-                        logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                    # Website policy check — block before fetching
+                    blocked = check_website_access(url)
+                    if blocked:
+                        logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
                         results.append({
-                            "url": final_url, "title": title, "content": "", "raw_content": "",
-                            "error": final_blocked["message"],
-                            "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                            "url": url, "title": "", "content": "",
+                            "error": blocked["message"],
+                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
                         })
                         continue
 
-                    # Choose content based on requested format
-                    chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+                    try:
+                        logger.info("Scraping: %s", url)
+                        scrape_result = _get_firecrawl_client().scrape(
+                            url=url,
+                            formats=formats
+                        )
 
-                    results.append({
-                        "url": final_url,
-                        "title": title,
-                        "content": chosen_content,
-                        "raw_content": chosen_content,
-                        "metadata": metadata  # Now guaranteed to be a dict
-                    })
+                        # Process the result - properly handle object serialization
+                        metadata = {}
+                        title = ""
+                        content_markdown = None
+                        content_html = None
 
-                except Exception as scrape_err:
-                    logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                    results.append({
-                        "url": url,
-                        "title": "",
-                        "content": "",
-                        "raw_content": "",
-                        "error": str(scrape_err)
-                    })
+                        # Extract data from the scrape result
+                        if hasattr(scrape_result, 'model_dump'):
+                            # Pydantic model - use model_dump to get dict
+                            result_dict = scrape_result.model_dump()
+                            content_markdown = result_dict.get('markdown')
+                            content_html = result_dict.get('html')
+                            metadata = result_dict.get('metadata', {})
+                        elif hasattr(scrape_result, '__dict__'):
+                            # Regular object with attributes
+                            content_markdown = getattr(scrape_result, 'markdown', None)
+                            content_html = getattr(scrape_result, 'html', None)
+
+                            # Handle metadata - convert to dict if it's an object
+                            metadata_obj = getattr(scrape_result, 'metadata', {})
+                            if hasattr(metadata_obj, 'model_dump'):
+                                metadata = metadata_obj.model_dump()
+                            elif hasattr(metadata_obj, '__dict__'):
+                                metadata = metadata_obj.__dict__
+                            elif isinstance(metadata_obj, dict):
+                                metadata = metadata_obj
+                            else:
+                                metadata = {}
+                        elif isinstance(scrape_result, dict):
+                            # Already a dictionary
+                            content_markdown = scrape_result.get('markdown')
+                            content_html = scrape_result.get('html')
+                            metadata = scrape_result.get('metadata', {})
+
+                        # Ensure metadata is a dict (not an object)
+                        if not isinstance(metadata, dict):
+                            if hasattr(metadata, 'model_dump'):
+                                metadata = metadata.model_dump()
+                            elif hasattr(metadata, '__dict__'):
+                                metadata = metadata.__dict__
+                            else:
+                                metadata = {}
+
+                        # Get title from metadata
+                        title = metadata.get("title", "")
+
+                        # Re-check final URL after redirect
+                        final_url = metadata.get("sourceURL", url)
+                        final_blocked = check_website_access(final_url)
+                        if final_blocked:
+                            logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
+                            results.append({
+                                "url": final_url, "title": title, "content": "", "raw_content": "",
+                                "error": final_blocked["message"],
+                                "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
+                            })
+                            continue
+
+                        # Choose content based on requested format
+                        chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
+
+                        results.append({
+                            "url": final_url,
+                            "title": title,
+                            "content": chosen_content,
+                            "raw_content": chosen_content,
+                            "metadata": metadata  # Now guaranteed to be a dict
+                        })
+
+                    except Exception as scrape_err:
+                        logger.debug("Scrape failed for %s: %s", url, scrape_err)
+                        results.append({
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "raw_content": "",
+                            "error": str(scrape_err)
+                        })
+
+        # Merge any SSRF-blocked results back in
+        if ssrf_blocked:
+            results = ssrf_blocked + results
 
         response = {"results": results}
         
@@ -1173,6 +1193,11 @@ async def web_crawl_tool(
             if not url.startswith(('http://', 'https://')):
                 url = f'https://{url}'
 
+            # SSRF protection — block private/internal addresses
+            if not is_safe_url(url):
+                return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+
             # Website policy check
             blocked = check_website_access(url)
             if blocked:
@@ -1258,6 +1283,11 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
+        # SSRF protection — block private/internal addresses
+        if not is_safe_url(url):
+            return json.dumps({"results": [{"url": url, "title": "", "content": "",
+                "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
+
         # Website policy check — block before crawling
         blocked = check_website_access(url)
         if blocked:

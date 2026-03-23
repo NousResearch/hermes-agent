@@ -1963,13 +1963,6 @@ class HermesCLI:
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
-        if self.preloaded_skills and not self._startup_skills_line_shown:
-            skills_label = ", ".join(self.preloaded_skills)
-            self.console.print(
-                f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
-            )
-            self.console.print()
-            self._startup_skills_line_shown = True
         
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.
@@ -5949,6 +5942,12 @@ class HermesCLI:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
+        if self.preloaded_skills and not self._startup_skills_line_shown:
+            skills_label = ", ".join(self.preloaded_skills)
+            self.console.print(
+                f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
+            )
+            self._startup_skills_line_shown = True
         self.console.print()
         
         # State for async operation

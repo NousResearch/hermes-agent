@@ -2759,8 +2759,9 @@ def cmd_update(args):
                     cwd=PROJECT_ROOT, check=True, env=uv_env,
                 )
         else:
-            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+            # Use sys.executable to explicitly call the venv's pip module, 
+            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu
+            pip_cmd = [sys.executable, "-m", "pip"]
             try:
                 subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
             except subprocess.CalledProcessError:

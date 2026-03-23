@@ -309,6 +309,22 @@ def _process_single_prompt(
         
         # Initialize agent with sampled toolsets and log prefix for identification
         log_prefix = f"[B{batch_num}:P{prompt_index}]"
+
+        # Load fallback_model from config for batch agents
+        _fallback_model = None
+        try:
+            import yaml as _yaml
+            from pathlib import Path as _Path
+            _cfg_path = _Path(os.getenv('HERMES_HOME', _Path.home() / '.hermes')) / 'config.yaml'
+            if _cfg_path.exists():
+                with open(_cfg_path) as _f:
+                    _cfg = _yaml.safe_load(_f) or {}
+                _fb = _cfg.get('fallback_model', {}) or {}
+                if _fb.get('provider') and _fb.get('model'):
+                    _fallback_model = _fb
+        except Exception:
+            pass
+
         agent = AIAgent(
             base_url=config.get("base_url"),
             api_key=config.get("api_key"),
@@ -329,6 +345,7 @@ def _process_single_prompt(
             prefill_messages=config.get("prefill_messages"),
             skip_context_files=True,  # Don't pollute trajectories with SOUL.md/AGENTS.md
             skip_memory=True,  # Don't use persistent memory in batch runs
+            fallback_model=_fallback_model,
         )
 
         # Run the agent with task_id to ensure each task gets its own isolated VM

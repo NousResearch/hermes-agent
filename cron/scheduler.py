@@ -393,6 +393,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             },
         )
 
+        # Load fallback_model from config for cron agents
+        _fallback_model = None
+        try:
+            import yaml as _yaml
+            _cfg_path = Path(os.getenv('HERMES_HOME', Path.home() / '.hermes')) / 'config.yaml'
+            if _cfg_path.exists():
+                with open(_cfg_path) as _f:
+                    _cfg = _yaml.safe_load(_f) or {}
+                _fb = _cfg.get('fallback_model', {}) or {}
+                if _fb.get('provider') and _fb.get('model'):
+                    _fallback_model = _fb
+        except Exception:
+            pass
+
         agent = AIAgent(
             model=turn_route["model"],
             api_key=turn_route["runtime"].get("api_key"),
@@ -413,6 +427,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
             session_db=_session_db,
+            fallback_model=_fallback_model,
         )
         
         result = agent.run_conversation(prompt)

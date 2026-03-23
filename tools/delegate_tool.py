@@ -204,6 +204,22 @@ def _build_child_agent(
     effective_acp_command = getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(getattr(parent_agent, "acp_args", []) or [])
 
+    # Inherit fallback_model from parent agent, or load from config
+    _fallback_model = getattr(parent_agent, "fallback_model", None)
+    if not _fallback_model:
+        try:
+            import yaml as _yaml
+            from pathlib import Path as _Path
+            _cfg_path = _Path(os.getenv('HERMES_HOME', _Path.home() / '.hermes')) / 'config.yaml'
+            if _cfg_path.exists():
+                with open(_cfg_path) as _f:
+                    _cfg = _yaml.safe_load(_f) or {}
+                _fb = _cfg.get('fallback_model', {}) or {}
+                if _fb.get('provider') and _fb.get('model'):
+                    _fallback_model = _fb
+        except Exception:
+            pass
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -231,6 +247,7 @@ def _build_child_agent(
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=shared_budget,
+        fallback_model=_fallback_model,
     )
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1

@@ -65,6 +65,10 @@ from agent.usage_pricing import (
     format_token_count_compact,
 )
 from hermes_cli.banner import _format_context_length
+from hermes_cli.paste_collapse import (
+    expand_paste_references,
+    materialize_paste_for_insertion,
+)
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -6372,14 +6376,26 @@ class HermesCLI:
             """Handle terminal paste — detect clipboard images.
 
             When the terminal supports bracketed paste, Ctrl+V / Cmd+V
-            triggers this with the pasted text.  We also check the
+            triggers this with the pasted text. We also check the
             clipboard for an image on every paste event.
             """
             pasted_text = event.data or ""
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
-            if pasted_text:
-                event.current_buffer.insert_text(pasted_text)
+            if not pasted_text:
+                return
+
+            next_counter = _paste_counter[0] + 1
+            inserted_text, collapsed = materialize_paste_for_insertion(
+                pasted_text,
+                current_buffer_text=event.current_buffer.text or "",
+                paste_dir=_hermes_home / "pastes",
+                counter=next_counter,
+                now=datetime.now(),
+            )
+            if collapsed:
+                _paste_counter[0] = next_counter
+            event.current_buffer.insert_text(inserted_text)
 
         @kb.add('c-v')
         def handle_ctrl_v(event):
@@ -6490,30 +6506,10 @@ class HermesCLI:
 
         input_area.window.height = _input_height
 
-        # Paste collapsing: detect large pastes and save to temp file
+        # Paste collapsing: large bracketed pastes are collapsed to file references.
+        # The decision now happens in the paste handler so we only ever collapse
+        # the pasted chunk, not the whole draft buffer.
         _paste_counter = [0]
-        _prev_text_len = [0]
-
-        def _on_text_changed(buf):
-            """Detect large pastes and collapse them to a file reference."""
-            text = buf.text
-            line_count = text.count('\n')
-            chars_added = len(text) - _prev_text_len[0]
-            _prev_text_len[0] = len(text)
-            # Heuristic: a real paste adds many characters at once (not just a
-            # single newline from Alt+Enter) AND the result has 5+ lines.
-            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
-                _paste_counter[0] += 1
-                # Save to temp file
-                paste_dir = _hermes_home / "pastes"
-                paste_dir.mkdir(parents=True, exist_ok=True)
-                paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
-                buf.cursor_position = len(buf.text)
-
-        input_area.buffer.on_text_changed += _on_text_changed
 
         # --- Input processors for password masking and inline placeholder ---
 
@@ -7023,30 +7019,29 @@ class HermesCLI:
                                 app.exit()
                         continue
                     
-                    # Expand paste references back to full content
-                    import re as _re
-                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input) if isinstance(user_input, str) else None
-                    if paste_match:
-                        paste_path = Path(paste_match.group(1))
-                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if paste_path.exists():
-                            full_text = paste_path.read_text(encoding="utf-8")
-                            line_count = full_text.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]"
-                            )
-                            user_input = full_text
-                        else:
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                    # Expand paste references back to full content for the
+                    # actual agent payload, but keep the compact placeholders in
+                    # the local echo so large pasted chunks do not flood the TUI.
+                    display_input = user_input
+                    expanded_user_input = (
+                        expand_paste_references(user_input)
+                        if isinstance(user_input, str)
+                        else user_input
+                    )
+
+                    _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
+                    if isinstance(display_input, str) and display_input != expanded_user_input:
+                        expanded_line_count = expanded_user_input.count('\n') + 1 if isinstance(expanded_user_input, str) else 1
+                        print()
+                        ChatConsole().print(_user_bar)
+                        ChatConsole().print(
+                            f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {expanded_line_count} lines]')}[/]"
+                        )
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if '\n' in user_input:
-                            first_line = user_input.split('\n')[0]
-                            line_count = user_input.count('\n') + 1
+                        if '\n' in display_input:
+                            first_line = display_input.split('\n')[0]
+                            line_count = display_input.count('\n') + 1
                             print()
                             ChatConsole().print(_user_bar)
                             ChatConsole().print(
@@ -7056,7 +7051,7 @@ class HermesCLI:
                         else:
                             print()
                             ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(display_input)}[/]")
                     
                     # Show image attachment count
                     if submit_images:
@@ -7068,7 +7063,7 @@ class HermesCLI:
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(expanded_user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

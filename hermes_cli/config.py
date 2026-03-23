@@ -1172,6 +1172,26 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _expand_env_vars(obj):
+    """Recursively expand ``${VAR}`` references in config values.
+
+    Only string values are processed; dict keys, numbers, booleans, and
+    None are left untouched.  Unresolved references (variable not in
+    ``os.environ``) are kept verbatim so callers can detect them.
+    """
+    if isinstance(obj, str):
+        return re.sub(
+            r"\${([^}]+)}",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            obj,
+        )
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    return obj
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -1213,7 +1233,7 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _normalize_max_turns_config(config)
+    return _expand_env_vars(_normalize_max_turns_config(config))
 
 
 _SECURITY_COMMENT = """

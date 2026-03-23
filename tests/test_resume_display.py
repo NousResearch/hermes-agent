@@ -364,6 +364,8 @@ class TestPreloadResumedSession:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "empty_session", "title": None}
         mock_db.get_messages_as_conversation.return_value = []
+        mock_conn = MagicMock()
+        mock_db._conn = mock_conn
         cli._session_db = mock_db
 
         buf = StringIO()
@@ -371,8 +373,11 @@ class TestPreloadResumedSession:
         result = cli._preload_resumed_session()
 
         assert result is False
+        assert cli._resumed is False
         output = buf.getvalue()
         assert "no messages" in output
+        mock_conn.execute.assert_called_once()
+        mock_conn.commit.assert_called_once()
 
     def test_loads_session_successfully(self):
         cli = _make_cli(resume="good_session")

@@ -220,3 +220,85 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_resume_command_restores_named_session_and_resets_agent_state(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    target_id = "20260323_000000_resume"
+    cli._session_db.create_session(session_id=target_id, source="cli", model=cli.model)
+    cli._session_db.set_session_title(target_id, "forkwerk")
+    cli._session_db.append_message(target_id, role="user", content="pick up where we left off")
+    cli._session_db.append_message(target_id, role="assistant", content="ready")
+    cli._session_db.end_session(target_id, "idle")
+
+    cli.process_command("/resume forkwerk")
+
+    assert cli.session_id == target_id
+    assert cli._resumed is True
+    assert cli._session_db.get_session(old_session_id)["end_reason"] == "resume_session"
+    assert cli._session_db.get_session(target_id)["ended_at"] is None
+
+    assert cli.conversation_history == [
+        {"role": "user", "content": "pick up where we left off"},
+        {"role": "assistant", "content": "ready"},
+    ]
+
+    assert cli.agent.session_id == target_id
+    assert cli.agent.session_start == cli.session_start
+    assert cli.agent._last_flushed_db_idx == len(cli.conversation_history)
+    assert cli.agent._todo_store.read() == []
+    cli.agent.flush_memories.assert_called_once_with([{"role": "user", "content": "hello"}])
+    cli.agent._invalidate_system_prompt.assert_called_once()
+
+
+def test_resume_command_without_args_lists_named_cli_sessions(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    target_id = "20260323_000000_named"
+    cli._session_db.create_session(session_id=target_id, source="cli", model=cli.model)
+    cli._session_db.set_session_title(target_id, "forkwerk")
+    cli._session_db.append_message(target_id, role="user", content="pick up where we left off")
+
+    printed_lines = []
+
+    def _record_print(text):
+        printed_lines.append(text)
+
+    with patch.dict(cli.resume_session.__globals__, {"_cprint": _record_print}):
+        cli.process_command("/resume")
+
+    printed = "\n".join(printed_lines)
+    assert "Named sessions:" in printed
+    assert "forkwerk" in printed
+    assert "Usage: /resume <session name>" in printed
+
+    assert cli.session_id == old_session_id
+    assert cli._resumed is False
+    cli.agent.flush_memories.assert_not_called()
+
+
+def test_resume_command_to_empty_named_session_reopens_without_pending_resume_state(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    target_id = "20260323_000000_empty"
+    cli._session_db.create_session(session_id=target_id, source="cli", model=cli.model)
+    cli._session_db.set_session_title(target_id, "forkwerk")
+    cli._session_db.end_session(target_id, "idle")
+
+    cli.process_command("/resume forkwerk")
+
+    assert cli.session_id == target_id
+    assert cli.conversation_history == []
+    assert cli._resumed is False
+    assert cli._session_db.get_session(old_session_id)["end_reason"] == "resume_session"
+    assert cli._session_db.get_session(target_id)["ended_at"] is None
+
+    assert cli.agent.session_id == target_id
+    assert cli.agent.session_start == cli.session_start
+    assert cli.agent._last_flushed_db_idx == 0
+    cli.agent.flush_memories.assert_called_once_with([{"role": "user", "content": "hello"}])
+    cli.agent._invalidate_system_prompt.assert_called_once()

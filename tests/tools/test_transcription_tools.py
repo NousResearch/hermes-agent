@@ -5,6 +5,7 @@ model auto-correction, config loading, validation edge cases, and
 end-to-end dispatch.  All external dependencies are mocked.
 """
 
+import sys
 import os
 import struct
 import subprocess
@@ -405,6 +406,17 @@ class TestTranscribeLocalCommand:
 # ============================================================================
 
 class TestTranscribeLocalExtended:
+    def setup_method(self):
+        import sys
+        from unittest.mock import MagicMock
+        self._fw_mock = MagicMock()
+        self._fw_mock.__spec__ = MagicMock()
+        sys.modules.setdefault('faster_whisper', self._fw_mock)
+
+    def teardown_method(self):
+        import sys
+        sys.modules.pop('faster_whisper', None)
+
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
         audio = tmp_path / "test.ogg"

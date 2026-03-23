@@ -9,6 +9,7 @@ Coverage:
 """
 
 import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -245,11 +246,18 @@ class TestParallelClientConfig:
     def setup_method(self):
         import tools.web_tools
         tools.web_tools._parallel_client = None
+        self._parallel_mock = MagicMock()
+        class FakeParallel:
+            def __init__(self, api_key=None): pass
+        self._parallel_mock.Parallel = FakeParallel
+        self._parallel_mock.Parallel.return_value = FakeParallel()
+        sys.modules['parallel'] = self._parallel_mock
         os.environ.pop("PARALLEL_API_KEY", None)
 
     def teardown_method(self):
         import tools.web_tools
         tools.web_tools._parallel_client = None
+        sys.modules.pop('parallel', None)
         os.environ.pop("PARALLEL_API_KEY", None)
 
     def test_creates_client_with_key(self):

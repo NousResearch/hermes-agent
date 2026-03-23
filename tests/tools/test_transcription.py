@@ -5,6 +5,7 @@ dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 """
 
 import json
+import sys
 import os
 import tempfile
 from pathlib import Path
@@ -37,6 +38,7 @@ class TestGetProvider:
 
     def test_local_nothing_available(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch("tools.transcription_tools._HAS_OPENAI", False):
             from tools.transcription_tools import _get_provider
@@ -51,8 +53,11 @@ class TestGetProvider:
     def test_explicit_openai_no_key_returns_none(self, monkeypatch):
         """Explicit openai without key returns none — no cross-provider fallback."""
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
+             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._resolve_openai_api_key", return_value=""):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "openai"}) == "none"
 
@@ -118,7 +123,11 @@ class TestValidateAudioFile:
 class TestTranscribeLocal:
 
     def test_successful_transcription(self, tmp_path):
-        audio_file = tmp_path / "test.ogg"
+        import sys
+        fake_fw = MagicMock()
+        fake_fw.__spec__ = MagicMock()
+        sys.modules['faster_whisper'] = fake_fw
+        audio_file = tmp_path / 'test.ogg'
         audio_file.write_bytes(b"fake audio")
 
         mock_segment = MagicMock()
@@ -138,6 +147,7 @@ class TestTranscribeLocal:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
+        sys.modules.pop('faster_whisper', None)
 
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
@@ -156,6 +166,7 @@ class TestTranscribeOpenAI:
 
     def test_no_key(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         from tools.transcription_tools import _transcribe_openai
         result = _transcribe_openai("/tmp/test.ogg", "whisper-1")
         assert result["success"] is False

@@ -13,7 +13,6 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Union
-from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 

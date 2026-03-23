@@ -17,12 +17,11 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import re
 import urllib.parse
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     import aiohttp

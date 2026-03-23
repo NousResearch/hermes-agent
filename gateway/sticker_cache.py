@@ -9,9 +9,7 @@ Cache location: ~/.hermes/sticker_cache.json
 """
 
 import json
-import os
 import time
-from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home

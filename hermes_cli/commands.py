@@ -13,8 +13,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion

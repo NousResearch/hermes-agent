@@ -11,7 +11,7 @@ Config stored in ~/.hermes/config.yaml under:
       telegram: [skill-c]
       cli: []
 """
-from typing import Dict, List, Optional, Set
+from typing import List, Optional, Set
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.colors import Colors, color

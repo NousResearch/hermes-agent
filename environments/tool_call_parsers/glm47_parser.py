@@ -10,7 +10,7 @@ Based on VLLM's Glm47MoeModelToolParser (extends Glm4MoeModelToolParser).
 
 import re
 
-from environments.tool_call_parsers import ParseResult, register_parser
+from environments.tool_call_parsers import register_parser
 from environments.tool_call_parsers.glm45_parser import Glm45ToolCallParser
 
 

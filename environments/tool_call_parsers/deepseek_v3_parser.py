@@ -16,7 +16,7 @@ Fixes Issue #989: Support for multiple simultaneous tool calls.
 import re
 import uuid
 import logging
-from typing import List, Optional, Tuple
+from typing import List
 
 from openai.types.chat.chat_completion_message_tool_call import (
     ChatCompletionMessageToolCall,

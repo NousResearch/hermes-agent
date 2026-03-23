@@ -10,8 +10,7 @@ The [TOOL_CALLS] token is the bot_token used by Mistral models.
 """
 
 import json
-import uuid
-from typing import List, Optional
+from typing import List
 
 from openai.types.chat.chat_completion_message_tool_call import (
     ChatCompletionMessageToolCall,

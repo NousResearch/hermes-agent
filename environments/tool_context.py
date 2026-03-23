@@ -26,7 +26,7 @@ Example usage in a compute_reward():
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import asyncio
 import concurrent.futures

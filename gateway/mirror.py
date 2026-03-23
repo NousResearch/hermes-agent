@@ -12,7 +12,6 @@ the full SessionStore machinery.
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home

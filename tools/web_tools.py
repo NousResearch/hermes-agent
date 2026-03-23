@@ -1761,7 +1761,7 @@ async def web_crawl_tool(
 
                 tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
                 processed_results = await asyncio.gather(*tasks)
-                for result, metrics, status in processed_results:
+                for _result, metrics, status in processed_results:
                     if status == "processed":
                         debug_call_data["compression_metrics"].append(metrics)
                         debug_call_data["pages_processed_with_llm"] += 1

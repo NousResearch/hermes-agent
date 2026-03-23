@@ -369,7 +369,6 @@ class HermesAgentLoop:
                         if args is not None:
                             try:
                                 if tool_name == "terminal":
-                                    backend = os.getenv("TERMINAL_ENV", "local")
                                     cmd_preview = args.get("command", "")[:80]
                                     logger.info(
                                         "[%s] $ %s", self.task_id[:8], cmd_preview,

@@ -1386,6 +1386,11 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        api_mode=self.api_mode,
+                        acp_command=self.acp_command,
+                        acp_args=list(self.acp_args or []),
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled

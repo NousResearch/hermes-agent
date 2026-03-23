@@ -1521,6 +1521,12 @@ class AIAgent:
         try:
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            # After context compression, messages is shorter than the
+            # pre-compression conversation_history.  The compressed list
+            # is a brand-new session and every message must be persisted
+            # from index 0; skipping would write nothing (#860 follow-up).
+            if flush_from > len(messages):
+                flush_from = 0
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")

@@ -2495,10 +2495,29 @@ class GatewayRunner:
             # entries that were stripped before the agent saw them.
             if not agent_failed_early:
                 history_len = agent_result.get("history_offset", len(history))
+                compressed_mid_turn = len(agent_messages) < history_len
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
-                
-                # If no new messages found (edge case), fall back to simple user/assistant
-                if not new_messages:
+
+                if compressed_mid_turn:
+                    # Context compression fired during this turn: the agent's
+                    # message list is now shorter than the history we loaded.
+                    # The old transcript is stale — rewrite it with the full
+                    # compressed conversation so the next turn sees the
+                    # compressed summary instead of losing all context.
+                    timestamped = []
+                    for msg in agent_messages:
+                        if msg.get("role") == "system":
+                            continue
+                        timestamped.append({**msg, "timestamp": ts})
+                    self.session_store.rewrite_transcript(
+                        session_entry.session_id, timestamped
+                    )
+                    # Reset stored token count — transcript was rewritten
+                    self.session_store.update_session(
+                        session_entry.session_key, last_prompt_tokens=0,
+                    )
+                elif not new_messages:
+                    # If no new messages found (edge case), fall back to simple user/assistant
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
                         {"role": "user", "content": message_text, "timestamp": ts}

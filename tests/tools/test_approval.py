@@ -464,3 +464,361 @@ class TestForkBombDetection:
         dangerous, key, desc = detect_dangerous_command("echo hello:world")
         assert dangerous is False
 
+
+# =========================================================================
+# Blocking sub-agent approval tests (TDD RED phase)
+#
+# These test a NEW handle-based blocking approval API for sub-agents.
+# The functions below do NOT exist yet — tests are expected to FAIL
+# with ImportError or AttributeError until the implementation is written.
+# =========================================================================
+
+import threading
+import time
+
+import pytest
+
+# These imports target the NEW handle-based blocking API that doesn't exist yet.
+# We guard them so the rest of the test file still collects normally.
+# Each test that needs them will fail with a clear error if the import failed.
+try:
+    from tools.approval import (
+        BlockingApprovalHandle,
+        get_blocking_waiter_details,
+        has_blocking_waiters,
+        resolve_pending,
+        submit_pending_blocking,
+        submit_pending_blocking_handle,
+    )
+    _BLOCKING_API_AVAILABLE = True
+except ImportError:
+    _BLOCKING_API_AVAILABLE = False
+
+# These already exist in the current implementation
+from tools.approval import set_subagent_context, is_subagent_context
+
+def _require_blocking_api():
+    """Call at the start of each blocking API test to fail fast if not implemented."""
+    if not _BLOCKING_API_AVAILABLE:
+        pytest.fail(
+            "ImportError: cannot import BlockingApprovalHandle, "
+            "submit_pending_blocking_handle, resolve_pending, "
+            "has_blocking_waiters, get_blocking_waiter_details from "
+            "tools.approval — blocking handle API not yet implemented"
+        )
+
+
+class TestBlockingSubagentApproval:
+    """Tests for the handle-based blocking approval mechanism for sub-agents."""
+
+    def _cleanup(self, *session_keys):
+        """Clear all state for given session keys."""
+        for key in session_keys:
+            clear_session(key)
+
+    # ------------------------------------------------------------------
+    # 1. submit_pending_blocking_handle creates a waiter with a handle
+    # ------------------------------------------------------------------
+
+    def test_submit_blocking_creates_waiter(self):
+        """submit_pending_blocking_handle() should return a BlockingApprovalHandle
+        with a .wait(timeout) method and a .request_id attribute."""
+        _require_blocking_api()
+        session_key = "test_blocking_handle_create"
+        approval = {"command": "rm -rf /tmp/test", "pattern_key": "recursive delete",
+                     "description": "recursive delete"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+
+        try:
+            assert isinstance(handle, BlockingApprovalHandle), \
+                f"Expected BlockingApprovalHandle, got {type(handle)}"
+            assert hasattr(handle, "request_id"), "Handle missing .request_id"
+            assert isinstance(handle.request_id, str), "request_id must be a string"
+            assert len(handle.request_id) > 0, "request_id must not be empty"
+            assert hasattr(handle, "wait"), "Handle missing .wait() method"
+            assert callable(handle.wait), ".wait must be callable"
+        finally:
+            # Resolve to unblock any internal state, then cleanup
+            try:
+                resolve_pending(handle.request_id, approved=False)
+            except Exception:
+                pass
+            self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 2. resolve_pending unblocks waiter with approved=True
+    # ------------------------------------------------------------------
+
+    def test_resolve_pending_unblocks_waiter(self):
+        """Calling resolve_pending(request_id, approved=True) should unblock
+        a thread waiting on handle.wait() and return {"approved": True}."""
+        _require_blocking_api()
+        session_key = "test_blocking_resolve_approve"
+        approval = {"command": "rm -rf /danger", "pattern_key": "recursive delete",
+                     "description": "recursive delete"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+        result_holder = {}
+
+        def waiter():
+            result_holder["result"] = handle.wait(timeout=5)
+
+        t = threading.Thread(target=waiter, daemon=True)
+        t.start()
+
+        # Give the thread a moment to start blocking
+        time.sleep(0.1)
+
+        # Resolve from the main thread
+        resolve_pending(handle.request_id, approved=True)
+        t.join(timeout=3)
+
+        assert not t.is_alive(), "Waiter thread did not unblock"
+        assert result_holder.get("result") is not None, "No result returned"
+        assert result_holder["result"]["approved"] is True
+        self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 3. resolve_pending with denied unblocks waiter with approved=False
+    # ------------------------------------------------------------------
+
+    def test_resolve_pending_denied_unblocks_with_false(self):
+        """resolve_pending(request_id, approved=False) should unblock the
+        waiter and return {"approved": False}."""
+        _require_blocking_api()
+        session_key = "test_blocking_resolve_deny"
+        approval = {"command": "dd if=/dev/zero of=/dev/sda", "pattern_key": "disk copy",
+                     "description": "disk copy"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+        result_holder = {}
+
+        def waiter():
+            result_holder["result"] = handle.wait(timeout=5)
+
+        t = threading.Thread(target=waiter, daemon=True)
+        t.start()
+        time.sleep(0.1)
+
+        resolve_pending(handle.request_id, approved=False)
+        t.join(timeout=3)
+
+        assert not t.is_alive(), "Waiter thread did not unblock"
+        assert result_holder["result"]["approved"] is False
+        self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 4. Blocking wait times out
+    # ------------------------------------------------------------------
+
+    def test_blocking_wait_timeout(self):
+        """handle.wait(timeout=0.1) with no resolve should return
+        {"approved": False, "timed_out": True} after the timeout."""
+        _require_blocking_api()
+        session_key = "test_blocking_timeout"
+        approval = {"command": "mkfs /dev/sda1", "pattern_key": "format filesystem",
+                     "description": "format filesystem"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+
+        start = time.monotonic()
+        result = handle.wait(timeout=0.1)
+        elapsed = time.monotonic() - start
+
+        assert result["approved"] is False, "Timed-out wait should not be approved"
+        assert result.get("timed_out") is True, "Result should have timed_out=True"
+        assert elapsed < 2.0, f"Wait took too long ({elapsed:.2f}s), should be ~0.1s"
+        self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 5. has_blocking_waiters
+    # ------------------------------------------------------------------
+
+    def test_has_blocking_waiters(self):
+        """has_blocking_waiters(session_key) returns True when a waiter is
+        pending, and False after it's resolved."""
+        _require_blocking_api()
+        session_key = "test_has_blocking_waiters"
+        approval = {"command": "rm -rf /var", "pattern_key": "recursive delete",
+                     "description": "recursive delete"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+
+        assert has_blocking_waiters(session_key) is True, \
+            "Should have blocking waiters after submit"
+
+        # Resolve it
+        resolve_pending(handle.request_id, approved=True)
+        # Give internal cleanup a moment
+        time.sleep(0.05)
+
+        assert has_blocking_waiters(session_key) is False, \
+            "Should not have blocking waiters after resolve"
+
+        # Unrelated session should never have waiters
+        assert has_blocking_waiters("nonexistent_session") is False
+
+        self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 6. get_blocking_waiter_details
+    # ------------------------------------------------------------------
+
+    def test_get_pending_blocking_details(self):
+        """get_blocking_waiter_details(session_key) returns a list of dicts
+        with command info for all blocked sub-agents on that session."""
+        _require_blocking_api()
+        session_key = "test_blocking_details"
+        approval = {"command": "DROP TABLE users", "pattern_key": "SQL DROP",
+                     "description": "SQL DROP"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+
+        details = get_blocking_waiter_details(session_key)
+        assert isinstance(details, list), f"Expected list, got {type(details)}"
+        assert len(details) >= 1, "Should have at least one blocked waiter"
+
+        entry = details[0]
+        assert isinstance(entry, dict), f"Each entry should be a dict, got {type(entry)}"
+        assert "command" in entry, "Entry should contain 'command'"
+        assert entry["command"] == "DROP TABLE users"
+        assert "request_id" in entry, "Entry should contain 'request_id'"
+        assert entry["request_id"] == handle.request_id
+
+        # Cleanup
+        resolve_pending(handle.request_id, approved=False)
+        time.sleep(0.05)
+
+        # After resolve, details should be empty
+        details_after = get_blocking_waiter_details(session_key)
+        assert len(details_after) == 0, "Should be empty after resolve"
+
+        self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 7. Parallel sub-agents can block independently
+    # ------------------------------------------------------------------
+
+    def test_parallel_subagents_independent_blocking(self):
+        """Two concurrent submit_pending_blocking_handle() calls with the same
+        session_key but different request IDs can be independently resolved."""
+        _require_blocking_api()
+        session_key = "test_parallel_blocking"
+        approval_1 = {"command": "rm -rf /tmp/a", "pattern_key": "recursive delete",
+                       "description": "recursive delete"}
+        approval_2 = {"command": "rm -rf /tmp/b", "pattern_key": "recursive delete",
+                       "description": "recursive delete"}
+
+        handle_1 = submit_pending_blocking_handle(session_key, approval_1)
+        handle_2 = submit_pending_blocking_handle(session_key, approval_2)
+
+        # They must have distinct request IDs
+        assert handle_1.request_id != handle_2.request_id, \
+            "Parallel handles must have unique request_ids"
+
+        results = {}
+
+        def wait_1():
+            results["r1"] = handle_1.wait(timeout=5)
+
+        def wait_2():
+            results["r2"] = handle_2.wait(timeout=5)
+
+        t1 = threading.Thread(target=wait_1, daemon=True)
+        t2 = threading.Thread(target=wait_2, daemon=True)
+        t1.start()
+        t2.start()
+        time.sleep(0.1)
+
+        # Resolve the second one first — first should remain blocked
+        resolve_pending(handle_2.request_id, approved=True)
+        t2.join(timeout=2)
+        assert not t2.is_alive(), "Thread 2 should be unblocked"
+        assert results["r2"]["approved"] is True
+        assert t1.is_alive(), "Thread 1 should still be blocked"
+
+        # Now resolve the first one (denied)
+        resolve_pending(handle_1.request_id, approved=False)
+        t1.join(timeout=2)
+        assert not t1.is_alive(), "Thread 1 should be unblocked now"
+        assert results["r1"]["approved"] is False
+
+        self._cleanup(session_key)
+
+    # ------------------------------------------------------------------
+    # 8. Thread-local sub-agent context flag
+    # ------------------------------------------------------------------
+
+    def test_subagent_context_flag(self):
+        """set_subagent_context(True) sets a thread-local; is_subagent_context()
+        returns True in the same thread but False in another thread."""
+        # Start clean — should be False by default
+        assert is_subagent_context() is False, \
+            "Default context should be False"
+
+        set_subagent_context(True)
+        assert is_subagent_context() is True, \
+            "After set_subagent_context(True), should be True in same thread"
+
+        # Check from another thread — should be False (thread-local)
+        other_thread_result = {}
+
+        def check_other():
+            other_thread_result["value"] = is_subagent_context()
+
+        t = threading.Thread(target=check_other, daemon=True)
+        t.start()
+        t.join(timeout=2)
+
+        assert other_thread_result["value"] is False, \
+            "is_subagent_context() should be False in a different thread"
+
+        # Reset
+        set_subagent_context(False)
+        assert is_subagent_context() is False, \
+            "After set_subagent_context(False), should be False again"
+
+    # ------------------------------------------------------------------
+    # 9. Timeout cleans up waiter (Issue 1)
+    # ------------------------------------------------------------------
+
+    def test_timeout_cleans_up_waiter(self):
+        """After submit_pending_blocking times out, waiter should be cleaned up."""
+        _require_blocking_api()
+        session_key = "test_timeout_cleanup"
+        approval = {"command": "rm -rf /", "pattern_key": "rm", "description": "delete"}
+
+        # This should time out and clean up
+        result = submit_pending_blocking(session_key, approval, timeout=0.1)
+        assert result["approved"] is False
+
+        # Waiter should be cleaned up
+        assert has_blocking_waiters(session_key) is False, \
+            "Waiter should be cleaned up after timeout"
+        assert get_blocking_waiter_details(session_key) == [], \
+            "Details should be empty after timeout cleanup"
+
+    # ------------------------------------------------------------------
+    # 10. clear_session cleans up blocking waiters (Issue 2)
+    # ------------------------------------------------------------------
+
+    def test_clear_session_cleans_blocking_waiters(self):
+        """clear_session() should resolve and remove blocking waiters."""
+        _require_blocking_api()
+        session_key = "test_clear_blocking"
+        approval = {"command": "rm -rf /tmp", "pattern_key": "rm", "description": "delete"}
+
+        handle = submit_pending_blocking_handle(session_key, approval)
+        assert has_blocking_waiters(session_key) is True
+
+        # Clear the session
+        clear_session(session_key)
+
+        # Waiter should be gone
+        assert has_blocking_waiters(session_key) is False
+
+        # The handle should be resolved (denied)
+        result = handle.wait(timeout=0.5)
+        assert result["approved"] is False
+

@@ -268,6 +268,8 @@ def _run_single_child(
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
 
+    from tools.approval import set_subagent_context
+    set_subagent_context(True)
     try:
         result = child.run_conversation(user_message=goal)
 
@@ -375,6 +377,7 @@ def _run_single_child(
         }
 
     finally:
+        set_subagent_context(False)
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools

@@ -4077,6 +4077,44 @@ class GatewayRunner:
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+    async def _poll_blocking_approvals(self, session_key: str, source):
+        """Poll for blocking sub-agent approvals and surface them to the user."""
+        from tools.approval import has_blocking_waiters, get_blocking_waiter_details
+        surfaced_ids = set()  # Track which request_ids we've already shown
+        try:
+            while True:
+                await asyncio.sleep(1)  # Poll every second
+                if has_blocking_waiters(session_key):
+                    details = get_blocking_waiter_details(session_key)
+                    for detail in details:
+                        rid = detail.get("request_id", "")
+                        if rid in surfaced_ids:
+                            continue
+                        surfaced_ids.add(rid)
+                        cmd_preview = detail.get("command", "")
+                        if len(cmd_preview) > 200:
+                            cmd_preview = cmd_preview[:200] + "..."
+                        desc = detail.get("description", "dangerous command")
+                        msg = (
+                            f"\n\n⚠️ **Sub-agent needs approval for dangerous command ({desc}):**\n"
+                            f"```\n{cmd_preview}\n```\n"
+                            f"Reply `/approve` to execute, `/approve session` to approve this pattern "
+                            f"for the session, or `/deny` to cancel."
+                        )
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            try:
+                                _send_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                                await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=msg,
+                                    metadata=_send_meta,
+                                )
+                            except Exception as e:
+                                logger.debug("Failed to send blocking approval prompt: %s", e)
+        except asyncio.CancelledError:
+            pass
+
     async def _handle_approve_command(self, event: MessageEvent) -> str:
         """Handle /approve command — execute a pending dangerous command.
 
@@ -4088,6 +4126,41 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
+        # Check for blocking sub-agent approvals first
+        from tools.approval import has_blocking_waiters, get_blocking_waiter_details, resolve_pending as resolve_blocking
+        if has_blocking_waiters(session_key):
+            details = get_blocking_waiter_details(session_key)
+            if details:
+                args = event.get_command_args().strip().lower()
+                from tools.approval import approve_session as _approve_session, approve_permanent as _approve_permanent
+                from tools.approval import save_permanent_allowlist, _permanent_approved
+
+                for detail in details:
+                    rid = detail["request_id"]
+                    resolve_blocking(rid, approved=True)
+                    # Handle scope
+                    pk = detail.get("pattern_key", "")
+                    if pk:
+                        if args in ("always", "permanent", "permanently"):
+                            _approve_permanent(pk)
+                        elif args in ("session", "ses"):
+                            _approve_session(session_key, pk)
+                        else:
+                            _approve_session(session_key, pk)  # one-time
+
+                # Persist permanent approvals to disk
+                if args in ("always", "permanent", "permanently"):
+                    save_permanent_allowlist(_permanent_approved)
+
+                n = len(details)
+                scope_msg = ""
+                if args in ("always", "permanent", "permanently"):
+                    scope_msg = " (pattern approved permanently)"
+                elif args in ("session", "ses"):
+                    scope_msg = " (pattern approved for this session)"
+                return f"✅ Approved {n} sub-agent command{'s' if n > 1 else ''}{scope_msg}. The sub-agent will continue."
+
+        # Fall through to existing non-blocking approval handling
         if session_key not in self._pending_approvals:
             return "No pending command to approve."
 
@@ -4136,6 +4209,16 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
+        # Check for blocking sub-agent approvals first
+        from tools.approval import has_blocking_waiters, get_blocking_waiter_details, resolve_pending as resolve_blocking
+        if has_blocking_waiters(session_key):
+            details = get_blocking_waiter_details(session_key)
+            for detail in details:
+                resolve_blocking(detail["request_id"], approved=False)
+            logger.info("User denied %d sub-agent dangerous command(s) via /deny", len(details))
+            return f"❌ Denied {len(details)} sub-agent command{'s' if len(details) > 1 else ''}."
+
+        # Fall through to existing non-blocking denial
         if session_key not in self._pending_approvals:
             return "No pending command to deny."
 
@@ -5277,10 +5360,22 @@ class GatewayRunner:
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
         
+        # Start polling for sub-agent blocking approvals
+        _approval_poll_task = asyncio.create_task(
+            self._poll_blocking_approvals(session_key, source)
+        )
+
         try:
             # Run in thread pool to not block
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, run_sync)
+
+            # Stop polling for sub-agent approvals
+            _approval_poll_task.cancel()
+            try:
+                await _approval_poll_task
+            except asyncio.CancelledError:
+                pass
 
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
@@ -5375,10 +5470,11 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                 )
         finally:
-            # Stop progress sender and interrupt monitor
+            # Stop progress sender, interrupt monitor, and approval poller
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
+            _approval_poll_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -5397,7 +5493,7 @@ class GatewayRunner:
                 del self._running_agents[session_key]
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _approval_poll_task]:
                 if task:
                     try:
                         await task

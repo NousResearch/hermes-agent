@@ -1,0 +1,35 @@
+name: Nix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'hermes_cli/**'
+      - 'run_agent.py'
+      - 'acp_adapter/**'
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Check flake
+        run: nix flake check --print-build-logs
+      - name: Build package
+        run: nix build --print-build-logs

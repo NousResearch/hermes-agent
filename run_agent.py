@@ -2495,6 +2495,27 @@ class AIAgent:
         return truncated
 
     @staticmethod
+    def _inject_system_reminder(messages: List[Dict[str, Any]], content: str, position: str = "last_user"):
+        """Inject a system reminder into the conversation history.
+        
+        Appends a formatted <system-reminder> block to the specified message
+        to ensure the model pays attention to it at the end of the context window.
+        """
+        if not messages:
+            return
+
+        reminder = f"\n\n<system-reminder>\n{content}\n</system-reminder>"
+        
+        if position == "last_user":
+            # Find the last message from the user (or tool) and append
+            for msg in reversed(messages):
+                if msg.get("role") in ("user", "tool") and isinstance(msg.get("content"), str):
+                    msg["content"] += reminder
+                    break
+        elif position == "new_user":
+            messages.append({"role": "user", "content": reminder})    
+
+    @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 
@@ -4813,6 +4834,13 @@ class AIAgent:
                 if is_error:
                     result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                    
+                    function_result += (
+                        "\n\n<system-reminder>\n"
+                        "The tool execution failed. Please analyze the error, reconsider your approach, "
+                        "and try a DIFFERENT method or parameter set. Do not repeat the exact same action."
+                        "\n</system-reminder>"
+                    )
 
                 if self.verbose_logging:
                     logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -5073,7 +5101,15 @@ class AIAgent:
             # in the UI always have a corresponding detailed entry on disk.
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
             if _is_error_result:
+                result_preview = function_result[:200] if len(function_result) > 200 else function_result
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                
+                function_result += (
+                    "\n\n<system-reminder>\n"
+                    "The tool execution failed. Please analyze the error, reconsider your approach, "
+                    "and try a DIFFERENT method or parameter set. Do not repeat the exact same action."
+                    "\n</system-reminder>"
+                )
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -5145,7 +5181,7 @@ class AIAgent:
                 print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
 
     def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
-        """Return a budget pressure string, or None if not yet needed.
+        """Return a budget pressure string formatted as a system reminder, or None if not yet needed.
 
         Two-tier system:
           - Caution (70%): nudge to consolidate work
@@ -5157,14 +5193,19 @@ class AIAgent:
         remaining = self.max_iterations - api_call_count
         if progress >= self._budget_warning_threshold:
             return (
-                f"[BUDGET WARNING: Iteration {api_call_count}/{self.max_iterations}. "
-                f"Only {remaining} iteration(s) left. "
-                "Provide your final response NOW. No more tool calls unless absolutely critical.]"
+                "<system-reminder>\n"
+                f"BUDGET WARNING: Iteration {api_call_count}/{self.max_iterations}. "
+                f"Only {remaining} iteration(s) left.\n"
+                "Provide your final response NOW summarizing what you've accomplished. "
+                "No more tool calls unless absolutely critical."
+                "\n</system-reminder>"
             )
         if progress >= self._budget_caution_threshold:
             return (
-                f"[BUDGET: Iteration {api_call_count}/{self.max_iterations}. "
-                f"{remaining} iterations left. Start consolidating your work.]"
+                "<system-reminder>\n"
+                f"BUDGET CAUTION: Iteration {api_call_count}/{self.max_iterations}. "
+                f"{remaining} iterations left. Start consolidating your work and preparing your final answer."
+                "\n</system-reminder>"
             )
         return None
 
@@ -5211,12 +5252,10 @@ class AIAgent:
         """Request a summary when max iterations are reached. Returns the final response text."""
         print(f"⚠️  Reached maximum iterations ({self.max_iterations}). Requesting summary...")
 
-        summary_request = (
-            "You've reached the maximum number of tool-calling iterations allowed. "
-            "Please provide a final response summarizing what you've found and accomplished so far, "
-            "without calling any more tools."
-        )
-        messages.append({"role": "user", "content": summary_request})
+        messages.append({
+            "role": "assistant",
+            "content": "I've reached my iteration limit. Let me summarize what I've accomplished and what remains..."
+        })
 
         try:
             # Build API messages, stripping internal-only fields

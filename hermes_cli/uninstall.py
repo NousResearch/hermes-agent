@@ -118,57 +118,90 @@ def remove_wrapper_script():
 
 
 def uninstall_gateway_service():
-    """Stop and uninstall the gateway service if running."""
+    """Stop and uninstall the gateway service (systemd, launchd) and kill any
+    standalone gateway processes.
+
+    Delegates to the gateway module which handles:
+    - Linux: user + system systemd services (with proper DBUS env setup)
+    - macOS: launchd plists
+    - All platforms: standalone ``hermes gateway run`` processes
+    - Termux/Android: skips systemd (no systemd on Android), still kills standalone processes
+    """
     import platform
-    
-    if platform.system() != "Linux":
-        return False
+    stopped_something = False
 
-    prefix = os.getenv("PREFIX", "")
-    if os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix:
-        return False
-    
+    # 1. Kill any standalone gateway processes (all platforms, including Termux)
     try:
-        from hermes_cli.gateway import get_service_name
-        svc_name = get_service_name()
-    except Exception:
-        svc_name = "hermes-gateway"
-
-    service_file = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
-    
-    if not service_file.exists():
-        return False
-    
-    try:
-        # Stop the service
-        subprocess.run(
-            ["systemctl", "--user", "stop", svc_name],
-            capture_output=True,
-            check=False
-        )
-        
-        # Disable the service
-        subprocess.run(
-            ["systemctl", "--user", "disable", svc_name],
-            capture_output=True,
-            check=False
-        )
-        
-        # Remove service file
-        service_file.unlink()
-        
-        # Reload systemd
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"],
-            capture_output=True,
-            check=False
-        )
-        
-        return True
-        
+        from hermes_cli.gateway import kill_gateway_processes, find_gateway_pids
+        pids = find_gateway_pids()
+        if pids:
+            killed = kill_gateway_processes()
+            if killed:
+                log_success(f"Killed {killed} running gateway process(es)")
+                stopped_something = True
     except Exception as e:
-        log_warn(f"Could not fully remove gateway service: {e}")
-        return False
+        log_warn(f"Could not check for gateway processes: {e}")
+
+    system = platform.system()
+
+    # Termux/Android has no systemd and no launchd — nothing left to do.
+    prefix = os.getenv("PREFIX", "")
+    is_termux = bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+    if is_termux:
+        return stopped_something
+
+    # 2. Linux: uninstall systemd services (both user and system scopes)
+    if system == "Linux":
+        try:
+            from hermes_cli.gateway import (
+                get_systemd_unit_path,
+                get_service_name,
+                _systemctl_cmd,
+            )
+            svc_name = get_service_name()
+
+            for is_system in (False, True):
+                unit_path = get_systemd_unit_path(system=is_system)
+                if not unit_path.exists():
+                    continue
+
+                scope = "system" if is_system else "user"
+                try:
+                    if is_system and os.geteuid() != 0:
+                        log_warn(f"System gateway service exists at {unit_path} "
+                                 f"but needs sudo to remove")
+                        continue
+
+                    cmd = _systemctl_cmd(is_system)
+                    subprocess.run(cmd + ["stop", svc_name],
+                                   capture_output=True, check=False)
+                    subprocess.run(cmd + ["disable", svc_name],
+                                   capture_output=True, check=False)
+                    unit_path.unlink()
+                    subprocess.run(cmd + ["daemon-reload"],
+                                   capture_output=True, check=False)
+                    log_success(f"Removed {scope} gateway service ({unit_path})")
+                    stopped_something = True
+                except Exception as e:
+                    log_warn(f"Could not remove {scope} gateway service: {e}")
+        except Exception as e:
+            log_warn(f"Could not check systemd gateway services: {e}")
+
+    # 3. macOS: uninstall launchd plist
+    elif system == "Darwin":
+        try:
+            from hermes_cli.gateway import get_launchd_plist_path
+            plist_path = get_launchd_plist_path()
+            if plist_path.exists():
+                subprocess.run(["launchctl", "unload", str(plist_path)],
+                               capture_output=True, check=False)
+                plist_path.unlink()
+                log_success(f"Removed macOS gateway service ({plist_path})")
+                stopped_something = True
+        except Exception as e:
+            log_warn(f"Could not remove launchd gateway service: {e}")
+
+    return stopped_something
 
 
 def run_uninstall(args):
@@ -247,12 +280,10 @@ def run_uninstall(args):
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
     print()
     
-    # 1. Stop and uninstall gateway service
-    log_info("Checking for gateway service...")
-    if uninstall_gateway_service():
-        log_success("Gateway service stopped and removed")
-    else:
-        log_info("No gateway service found")
+    # 1. Stop and uninstall gateway service + kill standalone processes
+    log_info("Checking for running gateway...")
+    if not uninstall_gateway_service():
+        log_info("No gateway service or processes found")
     
     # 2. Remove PATH entries from shell configs
     log_info("Removing PATH entries from shell configs...")

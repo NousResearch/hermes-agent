@@ -33,17 +33,30 @@ class TestValidateImageUrl:
         assert _validate_image_url("https://example.com/image.jpg") is True
 
     def test_valid_http_url(self):
-        assert _validate_image_url("http://cdn.example.org/photo.png") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("http://cdn.example.org/photo.png") is True
 
     def test_valid_url_without_extension(self):
         """CDN endpoints that redirect to images should still pass."""
-        assert _validate_image_url("https://cdn.example.com/abcdef123") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://cdn.example.com/abcdef123") is True
 
     def test_valid_url_with_query_params(self):
-        assert _validate_image_url("https://img.example.com/pic?w=200&h=200") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://img.example.com/pic?w=200&h=200") is True
+
+    def test_localhost_url_blocked_by_ssrf(self):
+        """localhost URLs are now blocked by SSRF protection."""
+        assert _validate_image_url("http://localhost:8080/image.png") is False
 
     def test_valid_url_with_port(self):
-        assert _validate_image_url("http://localhost:8080/image.png") is True
+        assert _validate_image_url("http://example.com:8080/image.png") is True
 
     def test_valid_url_with_path_only(self):
         assert _validate_image_url("https://example.com/") is True

@@ -20,7 +20,7 @@ import threading
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,7 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
 
         try:
-            import nacl.secret  # noqa: delayed import – only in voice path
+            import nacl.secret  # noqa: F401 - delayed import, only in voice path
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:

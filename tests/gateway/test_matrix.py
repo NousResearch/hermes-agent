@@ -1,4 +1,5 @@
 """Tests for Matrix platform adapter."""
+import asyncio
 import json
 import re
 import pytest
@@ -446,3 +447,192 @@ class TestMatrixRequirements:
         monkeypatch.delenv("MATRIX_HOMESERVER", raising=False)
         from gateway.platforms.matrix import check_matrix_requirements
         assert check_matrix_requirements() is False
+
+
+# ---------------------------------------------------------------------------
+# Access-token auth / E2EE bootstrap
+# ---------------------------------------------------------------------------
+
+class TestMatrixAccessTokenAuth:
+    @pytest.mark.asyncio
+    async def test_connect_fetches_device_id_from_whoami_for_access_token(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeWhoamiResponse:
+            def __init__(self, user_id, device_id):
+                self.user_id = user_id
+                self.device_id = device_id
+
+        class FakeSyncResponse:
+            def __init__(self):
+                self.rooms = MagicMock(join={})
+
+        fake_client = MagicMock()
+        fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
+        fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.keys_upload = AsyncMock()
+        fake_client.keys_query = AsyncMock()
+        fake_client.keys_claim = AsyncMock()
+        fake_client.send_to_device_messages = AsyncMock(return_value=[])
+        fake_client.get_users_for_key_claiming = MagicMock(return_value={})
+        fake_client.close = AsyncMock()
+        fake_client.add_event_callback = MagicMock()
+        fake_client.rooms = {}
+        fake_client.account_data = {}
+        fake_client.olm = object()
+        fake_client.should_upload_keys = False
+        fake_client.should_query_keys = False
+        fake_client.should_claim_keys = False
+
+        def _restore_login(user_id, device_id, access_token):
+            fake_client.user_id = user_id
+            fake_client.device_id = device_id
+            fake_client.access_token = access_token
+            fake_client.olm = object()
+
+        fake_client.restore_login = MagicMock(side_effect=_restore_login)
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(return_value=fake_client)
+        fake_nio.WhoamiResponse = FakeWhoamiResponse
+        fake_nio.SyncResponse = FakeSyncResponse
+        fake_nio.LoginResponse = type("LoginResponse", (), {})
+        fake_nio.RoomMessageText = type("RoomMessageText", (), {})
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.InviteMemberEvent = type("InviteMemberEvent", (), {})
+        fake_nio.MegolmEvent = type("MegolmEvent", (), {})
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    assert await adapter.connect() is True
+
+        fake_client.restore_login.assert_called_once_with(
+            "@bot:example.org", "DEV123", "syt_test_access_token"
+        )
+        assert fake_client.access_token == "syt_test_access_token"
+        assert fake_client.user_id == "@bot:example.org"
+        assert fake_client.device_id == "DEV123"
+        fake_client.whoami.assert_awaited_once()
+
+        await adapter.disconnect()
+
+
+class TestMatrixE2EEMaintenance:
+    @pytest.mark.asyncio
+    async def test_sync_loop_runs_e2ee_maintenance_requests(self):
+        adapter = _make_adapter()
+        adapter._encryption = True
+        adapter._closing = False
+
+        async def _sync_once(timeout=30000):
+            adapter._closing = True
+            return MagicMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.send_to_device_messages = AsyncMock(return_value=[])
+        fake_client.keys_upload = AsyncMock()
+        fake_client.keys_query = AsyncMock()
+        fake_client.get_users_for_key_claiming = MagicMock(
+            return_value={"@alice:example.org": ["DEVICE1"]}
+        )
+        fake_client.keys_claim = AsyncMock()
+        fake_client.olm = object()
+        fake_client.should_upload_keys = True
+        fake_client.should_query_keys = True
+        fake_client.should_claim_keys = True
+
+        adapter._client = fake_client
+
+        await adapter._sync_loop()
+
+        fake_client.sync.assert_awaited_once_with(timeout=30000)
+        fake_client.send_to_device_messages.assert_awaited_once()
+        fake_client.keys_upload.assert_awaited_once()
+        fake_client.keys_query.assert_awaited_once()
+        fake_client.keys_claim.assert_awaited_once_with(
+            {"@alice:example.org": ["DEVICE1"]}
+        )
+
+
+class TestMatrixEncryptedSendFallback:
+    @pytest.mark.asyncio
+    async def test_send_retries_with_ignored_unverified_devices(self):
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        class FakeRoomSendResponse:
+            def __init__(self, event_id):
+                self.event_id = event_id
+
+        class FakeOlmUnverifiedDeviceError(Exception):
+            pass
+
+        fake_client = MagicMock()
+        fake_client.room_send = AsyncMock(side_effect=[
+            FakeOlmUnverifiedDeviceError("unverified"),
+            FakeRoomSendResponse("$event123"),
+        ])
+        adapter._client = fake_client
+        adapter._run_e2ee_maintenance = AsyncMock()
+
+        fake_nio = MagicMock()
+        fake_nio.RoomSendResponse = FakeRoomSendResponse
+        fake_nio.OlmUnverifiedDeviceError = FakeOlmUnverifiedDeviceError
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        assert result.message_id == "$event123"
+        adapter._run_e2ee_maintenance.assert_awaited_once()
+        assert fake_client.room_send.await_count == 2
+        first_call = fake_client.room_send.await_args_list[0]
+        second_call = fake_client.room_send.await_args_list[1]
+        assert first_call.kwargs.get("ignore_unverified_devices") is False
+        assert second_call.kwargs.get("ignore_unverified_devices") is True
+
+    @pytest.mark.asyncio
+    async def test_send_retries_after_timeout_in_encrypted_room(self):
+        adapter = _make_adapter()
+        adapter._encryption = True
+
+        class FakeRoomSendResponse:
+            def __init__(self, event_id):
+                self.event_id = event_id
+
+        fake_client = MagicMock()
+        fake_client.room_send = AsyncMock(side_effect=[
+            asyncio.TimeoutError(),
+            FakeRoomSendResponse("$event456"),
+        ])
+        adapter._client = fake_client
+        adapter._run_e2ee_maintenance = AsyncMock()
+
+        fake_nio = MagicMock()
+        fake_nio.RoomSendResponse = FakeRoomSendResponse
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        assert result.message_id == "$event456"
+        adapter._run_e2ee_maintenance.assert_awaited_once()
+        assert fake_client.room_send.await_count == 2
+        second_call = fake_client.room_send.await_args_list[1]
+        assert second_call.kwargs.get("ignore_unverified_devices") is True

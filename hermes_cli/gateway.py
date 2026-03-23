@@ -371,13 +371,37 @@ def print_systemd_linger_guidance() -> None:
 def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
+def _detect_venv_dir() -> Path | None:
+    """Detect the active virtualenv directory.
+
+    Checks ``sys.prefix`` first (works regardless of the directory name),
+    then falls back to probing common directory names under PROJECT_ROOT.
+    Returns ``None`` when no virtualenv can be found.
+    """
+    # If we're running inside a virtualenv, sys.prefix points to it.
+    if sys.prefix != sys.base_prefix:
+        venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    # Fallback: check common virtualenv directory names under the project root.
+    for candidate in (".venv", "venv"):
+        venv = PROJECT_ROOT / candidate
+        if venv.is_dir():
+            return venv
+
+    return None
+
+
 def get_python_path() -> str:
-    if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    venv = _detect_venv_dir()
+    if venv is not None:
+        if is_windows():
+            venv_python = venv / "Scripts" / "python.exe"
+        else:
+            venv_python = venv / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
     return sys.executable
 
 def get_hermes_cli_path() -> str:
@@ -399,8 +423,9 @@ def get_hermes_cli_path() -> str:
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    detected_venv = _detect_venv_dir()
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]

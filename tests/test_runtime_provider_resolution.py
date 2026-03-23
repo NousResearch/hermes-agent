@@ -1,4 +1,5 @@
 from hermes_cli import runtime_provider as rp
+from hermes_cli.auth import resolve_provider
 
 
 def test_resolve_runtime_provider_codex(monkeypatch):
@@ -579,3 +580,84 @@ def test_named_custom_provider_anthropic_api_mode(monkeypatch):
 
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
+
+
+# ── Custom provider preservation (Fixes #2562) ────────────────────────────
+
+
+def test_custom_provider_not_remapped_to_openrouter(monkeypatch):
+    """provider: custom in config.yaml should stay 'custom', not become 'openrouter'.
+
+    Regression test for #2562: resolve_provider() silently converted 'custom'
+    to 'openrouter', causing /model to display the wrong provider name and
+    overwriting the user's config.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://localhost:11434/v1",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["requested_provider"] == "custom"
+
+
+def test_custom_provider_uses_config_base_url(monkeypatch):
+    """Custom provider should use base_url from config.yaml."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://192.168.1.100:8080/v1",
+            "api_key": "local-key",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://192.168.1.100:8080/v1"
+    assert resolved["api_key"] == "local-key"
+
+
+def test_openrouter_provider_still_returns_openrouter(monkeypatch):
+    """Explicit 'openrouter' should still resolve to 'openrouter' (not affected by fix)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+
+    assert resolved["provider"] == "openrouter"
+
+
+def test_resolve_provider_custom_returns_custom():
+    """resolve_provider('custom') must return 'custom', not 'openrouter'.
+
+    Regression test for #2562.
+    """
+    assert resolve_provider("custom") == "custom"
+
+
+def test_resolve_provider_openrouter_unchanged():
+    """resolve_provider('openrouter') must still return 'openrouter'."""
+    assert resolve_provider("openrouter") == "openrouter"

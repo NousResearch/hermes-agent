@@ -391,18 +391,29 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
         default_ts = PLATFORMS[platform]["default_toolset"]
         toolset_names = [default_ts]
 
-    # Resolve to individual tool names, then map back to which
-    # configurable toolsets are covered
-    all_tool_names = set()
-    for ts_name in toolset_names:
-        all_tool_names.update(resolve_toolset(ts_name))
+    configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
-    # Map individual tool names back to configurable toolset keys
-    enabled_toolsets = set()
-    for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
-        ts_tools = set(resolve_toolset(ts_key))
-        if ts_tools and ts_tools.issubset(all_tool_names):
-            enabled_toolsets.add(ts_key)
+    # If the saved list contains any configurable keys directly, the user
+    # has explicitly configured this platform — use direct membership.
+    # This avoids the subset-inference bug where composite toolsets like
+    # "hermes-cli" (which include all _HERMES_CORE_TOOLS) cause disabled
+    # toolsets to re-appear as enabled.
+    has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
+
+    if has_explicit_config:
+        enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
+    else:
+        # No explicit config — fall back to resolving composite toolset names
+        # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
+        all_tool_names = set()
+        for ts_name in toolset_names:
+            all_tool_names.update(resolve_toolset(ts_name))
+
+        enabled_toolsets = set()
+        for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+            ts_tools = set(resolve_toolset(ts_key))
+            if ts_tools and ts_tools.issubset(all_tool_names):
+                enabled_toolsets.add(ts_key)
 
     # Plugin toolsets: enabled by default unless explicitly disabled.
     # A plugin toolset is "known" for a platform once `hermes tools`
@@ -437,15 +448,21 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     plugin_keys = _get_plugin_toolset_keys()
     configurable_keys |= plugin_keys
 
+    # Also exclude platform default toolsets (hermes-cli, hermes-telegram, etc.)
+    # These are "super" toolsets that resolve to ALL tools, so preserving them
+    # would silently override the user's unchecked selections on the next read.
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
+
     # Get existing toolsets for this platform
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
 
-    # Preserve any entries that are NOT configurable toolsets (i.e. MCP server names)
+    # Preserve any entries that are NOT configurable toolsets and NOT platform
+    # defaults (i.e. only MCP server names should be preserved)
     preserved_entries = {
         entry for entry in existing_toolsets
-        if entry not in configurable_keys
+        if entry not in configurable_keys and entry not in platform_default_keys
     }
 
     # Merge preserved entries with new enabled toolsets

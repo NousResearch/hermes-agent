@@ -1518,6 +1518,28 @@ class GatewayRunner:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
+            # /stop must hard-kill the session when an agent is running.
+            # A soft interrupt (agent.interrupt()) doesn't help when the agent
+            # is truly hung — the executor thread is blocked and never checks
+            # _interrupt_requested.  Force-clean _running_agents so the session
+            # is unlocked and subsequent messages are processed normally.
+            from hermes_cli.commands import resolve_command as _resolve_stop_cmd
+            _stop_cmd = event.get_command()
+            _stop_def = _resolve_stop_cmd(_stop_cmd) if _stop_cmd else None
+            if _stop_def and _stop_def.name == "stop":
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                    running_agent.interrupt("Stop requested")
+                # Force-clean: remove the session lock regardless of agent state
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, 'get_pending_message'):
+                    adapter.get_pending_message(_quick_key)  # consume and discard
+                self._pending_messages.pop(_quick_key, None)
+                if _quick_key in self._running_agents:
+                    del self._running_agents[_quick_key]
+                logger.info("HARD STOP for session %s — session lock released", _quick_key[:20])
+                return "⚡ Force-stopped. The session is unlocked — you can send a new message."
+
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
             # text (which would be fed back to the agent with the same
@@ -1585,8 +1607,11 @@ class GatewayRunner:
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
                 if event.get_command() == "stop":
-                    # Nothing to interrupt — agent hasn't started yet.
-                    return "⏳ The agent is still starting up — nothing to stop yet."
+                    # Force-clean the sentinel so the session is unlocked.
+                    if _quick_key in self._running_agents:
+                        del self._running_agents[_quick_key]
+                    logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key[:20])
+                    return "⚡ Force-stopped. The agent was still starting — session unlocked."
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
@@ -4756,6 +4781,7 @@ class GatewayRunner:
         logger.debug("Process watcher ended: %s", session_id)
 
     _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
+    _AGENT_RUN_TIMEOUT = 600  # 10 minutes — hard timeout for run_in_executor (#2491)
 
     @staticmethod
     def _agent_config_signature(
@@ -5434,9 +5460,35 @@ class GatewayRunner:
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
         
         try:
-            # Run in thread pool to not block
+            # Run in thread pool to not block.
+            # Wrap in wait_for to prevent hung agents from locking the
+            # session forever.  When the timeout fires, the finally block
+            # cleans up _running_agents so the session is unlocked.
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, run_sync)
+            try:
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, run_sync),
+                    timeout=self._AGENT_RUN_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Agent run timed out after %ds for session %s — force-killing",
+                    self._AGENT_RUN_TIMEOUT, session_key,
+                )
+                # Try to interrupt the hung agent so the thread can exit
+                agent = agent_holder[0]
+                if agent:
+                    agent.interrupt("Agent timed out")
+                response = {
+                    "final_response": (
+                        "⚠️ The agent timed out after "
+                        f"{self._AGENT_RUN_TIMEOUT // 60} minutes and was stopped. "
+                        "Send a new message to continue."
+                    ),
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": tools_holder[0] or [],
+                }
 
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows

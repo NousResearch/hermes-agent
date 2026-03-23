@@ -129,6 +129,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+    CommandDef("fallback", "Show fallback chain status and active model tier", "Info",
+               gateway_only=True),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",

@@ -323,7 +323,12 @@ class GatewayRunner:
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
-        self._fallback_model = self._load_fallback_model()
+        self._fallback_chain = self._load_fallback_chain()
+        self._current_fallback_tier: int = 0  # index into fallback_chain models
+        self._fallback_model = self._get_current_fallback_model()
+        self._recovery_task: Optional[asyncio.Task] = None
+        self._last_fallback_chat_id: Optional[str] = None
+        self._last_fallback_platform: Optional[str] = None
         self._smart_model_routing = self._load_smart_model_routing()
 
         # Wire process registry into session store for reset protection
@@ -826,7 +831,7 @@ class GatewayRunner:
 
     @staticmethod
     def _load_fallback_model() -> dict | None:
-        """Load fallback model config from config.yaml.
+        """Load legacy single fallback model config from config.yaml.
 
         Returns a dict with 'provider' and 'model' keys, or None if
         not configured / both fields empty.
@@ -845,6 +850,64 @@ class GatewayRunner:
         return None
 
     @staticmethod
+    def _load_fallback_chain() -> dict | None:
+        """Load multi-tier fallback chain config from config.yaml.
+
+        Returns the full fallback_chain dict with 'models' list and
+        'recovery_interval', or None if not configured.
+        Falls back to legacy single fallback_model for backward compat.
+        """
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                chain = cfg.get("fallback_chain", {}) or {}
+                models = chain.get("models", [])
+                if models and len(models) >= 2:
+                    return {
+                        "models": models,
+                        "recovery_interval": chain.get("recovery_interval", 300),
+                    }
+                # Legacy: single fallback_model → synthesize a 2-tier chain
+                fb = cfg.get("fallback_model", {}) or {}
+                if fb.get("provider") and fb.get("model"):
+                    default_model = cfg.get("model", {}) or {}
+                    primary = {
+                        "provider": default_model.get("provider", "anthropic"),
+                        "model": default_model.get("default", "anthropic/claude-opus-4.6"),
+                        "tier": "primary",
+                    }
+                    fallback = {
+                        "provider": fb["provider"],
+                        "model": fb["model"],
+                        "tier": "fallback",
+                    }
+                    return {
+                        "models": [primary, fallback],
+                        "recovery_interval": 300,
+                    }
+        except Exception:
+            pass
+        return None
+
+    def _get_current_fallback_model(self) -> dict | None:
+        """Get the NEXT fallback model based on current tier position.
+
+        When on tier N, returns tier N+1 as the fallback_model to pass
+        to AIAgent. Returns None if we're at the last tier.
+        """
+        if not self._fallback_chain:
+            return self._load_fallback_model()
+        models = self._fallback_chain["models"]
+        next_idx = self._current_fallback_tier + 1
+        if next_idx < len(models):
+            m = models[next_idx]
+            return {"provider": m["provider"], "model": m["model"]}
+        return None
+
+    @staticmethod
     def _load_smart_model_routing() -> dict:
         """Load optional smart cheap-vs-strong model routing config."""
         try:
@@ -857,6 +920,134 @@ class GatewayRunner:
         except Exception:
             pass
         return {}
+
+    # ── Fallback chain: recovery loop & notifications ────────────────────
+
+    async def _fallback_recovery_loop(self) -> None:
+        """Background task that periodically tests if the primary model is back.
+
+        Runs only when we've fallen back from primary. On success, resets
+        state to primary and notifies the user.
+        """
+        if not self._fallback_chain:
+            return
+        interval = self._fallback_chain.get("recovery_interval", 300)
+        primary = self._fallback_chain["models"][0]
+        primary_model = primary["model"]
+        primary_provider = primary["provider"]
+
+        while True:
+            await asyncio.sleep(interval)
+            # If we're back on primary already, stop
+            if self._current_fallback_tier == 0:
+                break
+            try:
+                from agent.auxiliary_client import resolve_provider_client
+                client, _model = resolve_provider_client(
+                    provider=primary_provider,
+                    model=primary_model,
+                    async_mode=True,
+                )
+                if client is None:
+                    continue
+                # Lightweight test: tiny completion
+                resp = await client.chat.completions.create(
+                    model=_model or primary_model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )
+                # If we get here without error, primary is back
+                old_model = self._effective_model or "fallback"
+                self._current_fallback_tier = 0
+                self._fallback_model = self._get_current_fallback_model()
+                self._effective_model = None
+                self._effective_provider = None
+
+                # Notify user
+                tier_label = primary.get("tier", "primary")
+                msg = (
+                    f"✅ Switched back to primary model ({primary_model}).\n"
+                    f"Previous: {old_model}"
+                )
+                await self._send_fallback_notification(msg)
+                logger.info("Fallback recovery: primary model %s is back online", primary_model)
+                break
+            except Exception as exc:
+                logger.debug("Fallback recovery test failed (will retry): %s", exc)
+                continue
+
+    async def _send_fallback_notification(self, message: str) -> None:
+        """Send a notification to the last chat that triggered fallback."""
+        platform = self._last_fallback_platform
+        chat_id = self._last_fallback_chat_id
+        if not platform or not chat_id:
+            return
+        adapter = self.adapters.get(platform)
+        if adapter:
+            try:
+                await adapter.send(chat_id, message)
+            except Exception as exc:
+                logger.debug("Failed to send fallback notification: %s", exc)
+
+    def _start_recovery_loop(self) -> None:
+        """Start the recovery background task if not already running."""
+        if self._recovery_task and not self._recovery_task.done():
+            return
+        self._recovery_task = asyncio.ensure_future(self._fallback_recovery_loop())
+
+    def _stop_recovery_loop(self) -> None:
+        """Cancel the recovery background task."""
+        if self._recovery_task and not self._recovery_task.done():
+            self._recovery_task.cancel()
+            self._recovery_task = None
+
+    async def _handle_fallback_command(self, event) -> str:
+        """Handle /fallback — show fallback chain status."""
+        lines = []
+        if not self._fallback_chain:
+            return "No fallback chain configured. Add `fallback_chain:` to config.yaml."
+
+        models = self._fallback_chain["models"]
+        interval = self._fallback_chain.get("recovery_interval", 300)
+        current_tier = self._current_fallback_tier
+
+        # Current active model
+        if self._effective_model:
+            active = self._effective_model
+            active_tier = models[current_tier].get("tier", f"tier-{current_tier}") if current_tier < len(models) else "unknown"
+        else:
+            active = models[0]["model"]
+            active_tier = models[0].get("tier", "primary")
+
+        lines.append(f"🔄 Fallback Chain Status")
+        lines.append(f"Active: {active} ({active_tier})")
+        lines.append("")
+
+        # Full chain
+        for i, m in enumerate(models):
+            tier = m.get("tier", f"tier-{i}")
+            model = m["model"]
+            provider = m["provider"]
+            if i == current_tier:
+                indicator = "▶️"
+            elif i < current_tier:
+                indicator = "⚠️"
+            else:
+                indicator = "⬚"
+            lines.append(f"  {indicator} {i+1}. {model} ({provider}) [{tier}]")
+
+        lines.append("")
+
+        # Recovery status
+        recovery_active = self._recovery_task and not self._recovery_task.done()
+        if recovery_active:
+            lines.append(f"🔁 Recovery active — testing primary every {interval}s")
+        elif current_tier > 0:
+            lines.append(f"⏸️ Recovery not running (tier {current_tier})")
+        else:
+            lines.append("✅ On primary — no recovery needed")
+
+        return "\n".join(lines)
 
     async def start(self) -> bool:
         """
@@ -1554,6 +1745,9 @@ class GatewayRunner:
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
+
+        if canonical == "fallback":
+            return await self._handle_fallback_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -2751,6 +2945,9 @@ class GatewayRunner:
         # Clear fallback state since user explicitly chose a model
         self._effective_model = None
         self._effective_provider = None
+        self._current_fallback_tier = 0
+        self._fallback_model = self._get_current_fallback_model()
+        self._stop_recovery_loop()
 
         # Helpful hint when staying on a custom/local endpoint
         custom_hint = ""
@@ -5289,13 +5486,54 @@ class GatewayRunner:
             if _agent is not None and hasattr(_agent, 'model'):
                 _cfg_model = _resolve_gateway_model()
                 if _agent.model != _cfg_model:
+                    _prev_effective = self._effective_model
                     self._effective_model = _agent.model
                     self._effective_provider = getattr(_agent, 'provider', None)
                     # Fallback activated — evict cached agent so the next
                     # message starts fresh and retries the primary model.
                     self._evict_cached_agent(session_key)
+
+                    # Fallback chain: advance tier and update next fallback
+                    if self._fallback_chain and _prev_effective != _agent.model:
+                        models = self._fallback_chain["models"]
+                        # Find which tier we landed on
+                        for _ti, _tm in enumerate(models):
+                            if _tm["model"] == _agent.model or _tm["provider"] == self._effective_provider:
+                                self._current_fallback_tier = _ti
+                                break
+                        else:
+                            # Not in chain — just advance one tier
+                            if self._current_fallback_tier + 1 < len(models):
+                                self._current_fallback_tier += 1
+                        self._fallback_model = self._get_current_fallback_model()
+
+                        # Remember chat for recovery notifications
+                        self._last_fallback_chat_id = source.chat_id
+                        self._last_fallback_platform = source.platform
+
+                        # Notify user about fallback switch
+                        _tier_info = models[self._current_fallback_tier] if self._current_fallback_tier < len(models) else {}
+                        _tier_label = _tier_info.get("tier", "fallback")
+                        _notify_msg = (
+                            f"⚠️ Switched to {_agent.model} ({_tier_label}) — "
+                            f"primary model hit rate limit. "
+                            f"Will auto-switch back when available."
+                        )
+                        try:
+                            _fb_adapter = self.adapters.get(source.platform)
+                            if _fb_adapter:
+                                await _fb_adapter.send(source.chat_id, _notify_msg)
+                        except Exception:
+                            pass
+
+                        # Start recovery loop
+                        self._start_recovery_loop()
                 else:
                     # Primary model worked — clear any stale fallback state
+                    if self._current_fallback_tier > 0:
+                        self._current_fallback_tier = 0
+                        self._fallback_model = self._get_current_fallback_model()
+                        self._stop_recovery_loop()
                     self._effective_model = None
                     self._effective_provider = None
 

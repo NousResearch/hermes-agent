@@ -18,21 +18,24 @@ never the child's intermediate tool calls or reasoning.
 
 import json
 import logging
-logger = logging.getLogger(__name__)
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
 
 # Tools that children must never have access to
-DELEGATE_BLOCKED_TOOLS = frozenset([
-    "delegate_task",   # no recursive delegation
-    "clarify",         # no user interaction
-    "memory",          # no writes to shared MEMORY.md
-    "send_message",    # no cross-platform side effects
-    "execute_code",    # children should reason step-by-step, not write scripts
-])
+DELEGATE_BLOCKED_TOOLS = frozenset(
+    [
+        "delegate_task",  # no recursive delegation
+        "clarify",  # no user interaction
+        "memory",  # no writes to shared MEMORY.md
+        "send_message",  # no cross-platform side effects
+        "execute_code",  # children should reason step-by-step, not write scripts
+    ]
+)
 
 MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
@@ -70,12 +73,17 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
-        "delegation", "clarify", "memory", "code_execution",
+        "delegation",
+        "clarify",
+        "memory",
+        "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(
+    task_index: int, parent_agent, task_count: int = 1
+) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -85,8 +93,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
     """
-    spinner = getattr(parent_agent, '_delegate_spinner', None)
-    parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
+    spinner = getattr(parent_agent, "_delegate_spinner", None)
+    parent_cb = getattr(parent_agent, "tool_progress_callback", None)
 
     if not spinner and not parent_cb:
         return None  # No display → no callback → zero behavior change
@@ -102,9 +110,13 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         # Special "_thinking" event: model produced text content (reasoning)
         if tool_name == "_thinking":
             if spinner:
-                short = (preview[:55] + "...") if preview and len(preview) > 55 else (preview or "")
+                short = (
+                    (preview[:55] + "...")
+                    if preview and len(preview) > 55
+                    else (preview or "")
+                )
                 try:
-                    spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
+                    spinner.print_above(f' {prefix}├─ 💭 "{short}"')
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             # Don't relay thinking to gateway (too noisy for chat)
@@ -112,12 +124,17 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
 
         # Regular tool call event
         if spinner:
-            short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
+            short = (
+                (preview[:35] + "...")
+                if preview and len(preview) > 35
+                else (preview or "")
+            )
             from agent.display import get_tool_emoji
+
             emoji = get_tool_emoji(tool_name)
             line = f" {prefix}├─ {emoji} {tool_name}"
             if short:
-                line += f"  \"{short}\""
+                line += f'  "{short}"'
             try:
                 spinner.print_above(line)
             except Exception as e:
@@ -224,7 +241,7 @@ def _build_child_agent(
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
-        session_db=getattr(parent_agent, '_session_db', None),
+        session_db=getattr(parent_agent, "_session_db", None),
         providers_allowed=parent_agent.providers_allowed,
         providers_ignored=parent_agent.providers_ignored,
         providers_order=parent_agent.providers_order,
@@ -233,11 +250,11 @@ def _build_child_agent(
         iteration_budget=shared_budget,
     )
     # Set delegation depth so children can't spawn grandchildren
-    child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+    child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
 
     # Register child for interrupt propagation
-    if hasattr(parent_agent, '_active_children'):
-        lock = getattr(parent_agent, '_active_children_lock', None)
+    if hasattr(parent_agent, "_active_children"):
+        lock = getattr(parent_agent, "_active_children_lock", None)
         if lock:
             with lock:
                 parent_agent._active_children.append(child)
@@ -245,6 +262,7 @@ def _build_child_agent(
             parent_agent._active_children.append(child)
 
     return child
+
 
 def _run_single_child(
     task_index: int,
@@ -260,19 +278,21 @@ def _run_single_child(
     child_start = time.monotonic()
 
     # Get the progress callback from the child agent
-    child_progress_cb = getattr(child, 'tool_progress_callback', None)
+    child_progress_cb = getattr(child, "tool_progress_callback", None)
 
     # Restore parent tool names using the value saved before child construction
     # mutated the global. This is the correct parent toolset, not the child's.
     import model_tools
-    _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
-                                list(model_tools._last_resolved_tool_names))
+
+    _saved_tool_names = getattr(
+        child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
+    )
 
     try:
         result = child.run_conversation(user_message=goal)
 
         # Flush any remaining batched progress to gateway
-        if child_progress_cb and hasattr(child_progress_cb, '_flush'):
+        if child_progress_cb and hasattr(child_progress_cb, "_flush"):
             try:
                 child_progress_cb._flush()
             except Exception as e:
@@ -302,7 +322,7 @@ def _run_single_child(
                 if not isinstance(msg, dict):
                     continue
                 if msg.get("role") == "assistant":
-                    for tc in (msg.get("tool_calls") or []):
+                    for tc in msg.get("tool_calls") or []:
                         fn = tc.get("function", {})
                         entry_t = {
                             "tool": fn.get("name", "unknown"),
@@ -314,9 +334,7 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
-                    is_error = bool(
-                        content and "error" in content[:80].lower()
-                    )
+                    is_error = bool(content and "error" in content[:80].lower())
                     result_meta = {
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",
@@ -352,8 +370,12 @@ def _run_single_child(
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
             "tokens": {
-                "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
-                "output": _output_tokens if isinstance(_output_tokens, (int, float)) else 0,
+                "input": _input_tokens
+                if isinstance(_input_tokens, (int, float))
+                else 0,
+                "output": _output_tokens
+                if isinstance(_output_tokens, (int, float))
+                else 0,
             },
             "tool_trace": tool_trace,
         }
@@ -384,9 +406,9 @@ def _run_single_child(
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
         # Unregister child from interrupt propagation
-        if hasattr(parent_agent, '_active_children'):
+        if hasattr(parent_agent, "_active_children"):
             try:
-                lock = getattr(parent_agent, '_active_children_lock', None)
+                lock = getattr(parent_agent, "_active_children_lock", None)
                 if lock:
                     with lock:
                         parent_agent._active_children.remove(child)
@@ -395,12 +417,14 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    background: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -416,14 +440,16 @@ def delegate_task(
         return json.dumps({"error": "delegate_task requires a parent agent context."})
 
     # Depth limit
-    depth = getattr(parent_agent, '_delegate_depth', 0)
+    depth = getattr(parent_agent, "_delegate_depth", 0)
     if depth >= MAX_DEPTH:
-        return json.dumps({
-            "error": (
-                f"Delegation depth limit reached ({MAX_DEPTH}). "
-                "Subagents cannot spawn further subagents."
-            )
-        })
+        return json.dumps(
+            {
+                "error": (
+                    f"Delegation depth limit reached ({MAX_DEPTH}). "
+                    "Subagents cannot spawn further subagents."
+                )
+            }
+        )
 
     # Load config
     cfg = _load_config()
@@ -446,7 +472,9 @@ def delegate_task(
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
-        return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
+        return json.dumps(
+            {"error": "Provide either 'goal' (single task) or 'tasks' (batch)."}
+        )
 
     if not task_list:
         return json.dumps({"error": "No tasks provided."})
@@ -455,6 +483,48 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return json.dumps({"error": f"Task {i} is missing a 'goal'."})
+
+    # ---- Background mode: fire-and-forget (reuse /background flow) ----
+    if background:
+        if len(task_list) != 1:
+            return json.dumps(
+                {"error": "background=true only supports a single task, not batch."}
+            )
+
+        # Grab gateway delivery info from parent agent (set by gateway/run.py)
+        source = getattr(parent_agent, "_gateway_source", None)
+        runner = getattr(parent_agent, "_gateway_runner", None)
+        loop = getattr(parent_agent, "_gateway_loop", None)
+        if not source or not runner or not loop:
+            return json.dumps(
+                {
+                    "error": "background=true requires gateway context. "
+                    "This mode is only available when running through the gateway."
+                }
+            )
+
+        t = task_list[0]
+        prompt_parts = [t["goal"]]
+        if t.get("context"):
+            prompt_parts.append(f"\nCONTEXT:\n{t['context']}")
+        prompt = "\n".join(prompt_parts)
+
+        task_id = f"bg_delegate_{os.urandom(4).hex()}"
+
+        # Reuse the gateway's existing _run_background_task — same flow as /background
+        import asyncio as _asyncio
+        _asyncio.run_coroutine_threadsafe(
+            runner._run_background_task(prompt, source, task_id),
+            loop,
+        )
+
+        return json.dumps(
+            {
+                "status": "dispatched",
+                "background_task_id": task_id,
+                "message": "Running in background. Result will be delivered when ready.",
+            }
+        )
 
     overall_start = time.monotonic()
     results = []
@@ -467,6 +537,7 @@ def delegate_task(
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
     # which overwrites model_tools._last_resolved_tool_names with child's toolset.
     import model_tools as _model_tools
+
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
     # Build all child agents on the main thread (thread-safe construction)
@@ -476,10 +547,15 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             child = _build_child_agent(
-                task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
+                task_index=i,
+                goal=t["goal"],
+                context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets,
+                model=creds["model"],
+                max_iterations=effective_max_iter,
+                parent_agent=parent_agent,
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
             )
@@ -498,7 +574,7 @@ def delegate_task(
     else:
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
-        spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
             futures = {}
@@ -535,7 +611,7 @@ def delegate_task(
                 status = entry.get("status", "?")
                 icon = "✓" if status == "completed" else "✗"
                 remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                completion_line = f"{icon} [{idx + 1}/{n_tasks}] {label}  ({dur}s)"
                 if spinner_ref:
                     try:
                         spinner_ref.print_above(completion_line)
@@ -547,7 +623,9 @@ def delegate_task(
                 # Update spinner text to show remaining count
                 if spinner_ref and remaining > 0:
                     try:
-                        spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                        spinner_ref.update_text(
+                            f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                        )
                     except Exception as e:
                         logger.debug("Spinner update_text failed: %s", e)
 
@@ -556,10 +634,13 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps({
-        "results": results,
-        "total_duration_seconds": total_duration,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "results": results,
+            "total_duration_seconds": total_duration,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -583,10 +664,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        api_key = (
-            configured_api_key
-            or os.getenv("OPENAI_API_KEY", "").strip()
-        )
+        api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
@@ -624,6 +702,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     # Provider is configured — resolve full credentials
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
+
         runtime = resolve_runtime_provider(requested=configured_provider)
     except Exception as exc:
         raise ValueError(
@@ -661,6 +740,7 @@ def _load_config() -> dict:
     """
     try:
         from cli import CLI_CONFIG
+
         cfg = CLI_CONFIG.get("delegation", {})
         if cfg:
             return cfg
@@ -668,6 +748,7 @@ def _load_config() -> dict:
         pass
     try:
         from hermes_cli.config import load_config
+
         full = load_config()
         return full.get("delegation", {})
     except Exception:
@@ -741,7 +822,10 @@ DELEGATE_TASK_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
-                        "context": {"type": "string", "description": "Task-specific context"},
+                        "context": {
+                            "type": "string",
+                            "description": "Task-specific context",
+                        },
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -764,6 +848,23 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Fire-and-forget mode. When true, the subagent runs in the "
+                    "background and the call returns immediately. The result is "
+                    "delivered to your chat when done (same as /background).\n\n"
+                    "When to use background=true:\n"
+                    "- Long-running tasks (30s+): browser automation, complex research\n"
+                    "- When you want to keep chatting while the task runs\n"
+                    "- Any delegation where blocking the conversation is worse than async delivery\n\n"
+                    "When to use background=false (default):\n"
+                    "- When you need the result to continue your current response\n"
+                    "- Quick tasks that finish in seconds\n"
+                    "- When the result must be processed before showing the user\n\n"
+                    "Note: background=true only works for single tasks, not batch."
+                ),
+            },
         },
         "required": [],
     },
@@ -783,7 +884,9 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
-        parent_agent=kw.get("parent_agent")),
+        background=args.get("background", False),
+        parent_agent=kw.get("parent_agent"),
+    ),
     check_fn=check_delegate_requirements,
     emoji="🔀",
 )

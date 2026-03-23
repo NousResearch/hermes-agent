@@ -328,6 +328,7 @@ class GatewayRunner:
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
+
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
@@ -5047,7 +5048,14 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
-            
+
+            # Set gateway context so delegate_task(background=True) can queue
+            # the delegation for async delivery via adapter.send().
+            agent._gateway_source = source
+            agent._gateway_toolsets = enabled_toolsets
+            agent._gateway_runner = self
+            agent._gateway_loop = asyncio.get_event_loop()
+
             # Store agent reference for interrupt support
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging

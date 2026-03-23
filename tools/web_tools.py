@@ -75,6 +75,7 @@ import threading
 from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import contextmanager
+from typing import Any, Dict, Generator, List, Optional
 
 # Storage directory - use ~/.hermes/data for persistence
 _STORAGE_DIR = Path.home() / ".hermes" / "data"
@@ -94,7 +95,7 @@ def _get_db_path() -> Path:
 
 
 @contextmanager
-def _get_db_connection():
+def _get_db_connection() -> Generator[sqlite3.Connection, None, None]:
     """Get a thread-local SQLite connection with proper configuration."""
     if not hasattr(_local, 'connection') or _local.connection is None:
         db_path = _get_db_path()
@@ -239,7 +240,7 @@ def store_page(
         return {"success": False, "error": str(e)}
 
 
-def store_pages_from_results(results: list, source_tool: str = "unknown") -> list:
+def store_pages_from_results(results: List[Dict[str, Any]], source_tool: str = "unknown") -> List[Dict[str, Any]]:
     """
     Store multiple pages from web_extract or web_crawl results.
     

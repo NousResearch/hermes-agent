@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import threading
+from typing import Any, Dict, List, Optional
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
@@ -154,7 +155,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     return file_ops
 
 
-def clear_file_ops_cache(task_id: str = None):
+def clear_file_ops_cache(task_id: str = None) -> None:
     """Clear the file operations cache."""
     with _file_ops_lock:
         if task_id:
@@ -232,7 +233,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-def get_read_files_summary(task_id: str = "default") -> list:
+def get_read_files_summary(task_id: str = "default") -> List[Dict[str, Any]]:
     """Return a list of files read in this session for the given task.
 
     Used by context compression to preserve file-read history across
@@ -252,7 +253,7 @@ def get_read_files_summary(task_id: str = "default") -> list:
         ]
 
 
-def clear_read_tracker(task_id: str = None):
+def clear_read_tracker(task_id: str = None) -> None:
     """Clear the read tracker.
 
     Call with a task_id to clear just that task, or without to clear all.
@@ -266,7 +267,7 @@ def clear_read_tracker(task_id: str = None):
             _read_tracker.clear()
 
 
-def notify_other_tool_call(task_id: str = "default"):
+def notify_other_tool_call(task_id: str = "default") -> None:
     """Reset consecutive read/search counter for a task.
 
     Called by the tool dispatcher (model_tools.py) whenever a tool OTHER
@@ -403,7 +404,7 @@ FILE_TOOLS = [
 ]
 
 
-def get_file_tools():
+def get_file_tools() -> list:
     """Get the list of file tool definitions."""
     return FILE_TOOLS
 
@@ -414,7 +415,7 @@ def get_file_tools():
 from tools.registry import registry
 
 
-def _check_file_reqs():
+def _check_file_reqs() -> Optional[str]:
     """Lazy wrapper to avoid circular import with tools/__init__.py."""
     from tools import check_file_requirements
     return check_file_requirements()
@@ -483,17 +484,17 @@ SEARCH_FILES_SCHEMA = {
 }
 
 
-def _handle_read_file(args, **kw):
+def _handle_read_file(args: dict, **kw) -> str:
     tid = kw.get("task_id") or "default"
     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
 
 
-def _handle_write_file(args, **kw):
+def _handle_write_file(args: dict, **kw) -> str:
     tid = kw.get("task_id") or "default"
     return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
 
 
-def _handle_patch(args, **kw):
+def _handle_patch(args: dict, **kw) -> str:
     tid = kw.get("task_id") or "default"
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
@@ -501,7 +502,7 @@ def _handle_patch(args, **kw):
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
 
 
-def _handle_search_files(args, **kw):
+def _handle_search_files(args: dict, **kw) -> str:
     tid = kw.get("task_id") or "default"
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")

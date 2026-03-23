@@ -819,6 +819,24 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Hook called when background processing begins."""
+        return None
+
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Hook called when background processing completes."""
+        return None
+
+    async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
+        """Run a lifecycle hook without letting hook failures break message flow."""
+        hook = getattr(self, hook_name, None)
+        if not callable(hook):
+            return
+        try:
+            await hook(*args, **kwargs)
+        except Exception as e:
+            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e, exc_info=True)
     
     async def handle_message(self, event: MessageEvent) -> None:
         """
@@ -897,6 +915,21 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
+        delivery_attempted = False
+        delivery_succeeded = False
+
+        def _record_delivery_result(result: Optional[SendResult]) -> None:
+            nonlocal delivery_attempted, delivery_succeeded
+            if result is None:
+                return
+            delivery_attempted = True
+            if result.success:
+                delivery_succeeded = True
+
+        def _record_delivery_attempt() -> None:
+            nonlocal delivery_attempted
+            delivery_attempted = True
+
         # Create interrupt event for this session
         interrupt_event = asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -906,8 +939,11 @@ class BasePlatformAdapter(ABC):
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
+            await self._run_processing_hook("on_processing_start", event)
+
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            processing_success = not bool(response)
             
             # Send response if any
             if not response:
@@ -955,11 +991,12 @@ class BasePlatformAdapter(ABC):
                 # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
+                        tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
                             metadata=_thread_metadata,
                         )
+                        _record_delivery_result(tts_result)
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -975,6 +1012,7 @@ class BasePlatformAdapter(ABC):
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
+                    _record_delivery_result(result)
 
                     # Log send failures (don't raise - user already saw tool progress)
                     if not result.success:
@@ -986,6 +1024,7 @@ class BasePlatformAdapter(ABC):
                             reply_to=event.message_id,
                             metadata=_thread_metadata,
                         )
+                        _record_delivery_result(fallback_result)
                         if not fallback_result.success:
                             print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
 
@@ -999,6 +1038,7 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        _record_delivery_attempt()
                         logger.info("[%s] Sending image: %s (alt=%s)", self.name, image_url[:80], alt_text[:30] if alt_text else "")
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
@@ -1015,6 +1055,7 @@ class BasePlatformAdapter(ABC):
                                 caption=alt_text if alt_text else None,
                                 metadata=_thread_metadata,
                             )
+                        _record_delivery_result(img_result)
                         if not img_result.success:
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
                     except Exception as img_err:
@@ -1029,6 +1070,7 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        _record_delivery_attempt()
                         ext = Path(media_path).suffix.lower()
                         if ext in _AUDIO_EXTS:
                             media_result = await self.send_voice(
@@ -1055,6 +1097,7 @@ class BasePlatformAdapter(ABC):
                                 metadata=_thread_metadata,
                             )
 
+                        _record_delivery_result(media_result)
                         if not media_result.success:
                             print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
                     except Exception as media_err:
@@ -1065,27 +1108,34 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        _record_delivery_attempt()
                         ext = Path(file_path).suffix.lower()
                         if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
+                            file_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=file_path,
                                 metadata=_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_thread_metadata,
                             )
+                        _record_delivery_result(file_result)
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+                if response:
+                    processing_success = delivery_succeeded if delivery_attempted else False
+
+            await self._run_processing_hook("on_processing_complete", event, processing_success)
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
@@ -1103,7 +1153,11 @@ class BasePlatformAdapter(ABC):
                 await self._process_message_background(pending_event, session_key)
                 return  # Already cleaned up
                 
+        except asyncio.CancelledError:
+            await self._run_processing_hook("on_processing_complete", event, False)
+            raise
         except Exception as e:
+            await self._run_processing_hook("on_processing_complete", event, False)
             print(f"[{self.name}] Error handling message: {e}")
             import traceback
             traceback.print_exc()

@@ -372,12 +372,14 @@ def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
 def get_python_path() -> str:
-    if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    # Check for modern .venv first, then fallback to traditional venv
+    for venv_name in [".venv", "venv"]:
+        if is_windows():
+            venv_python = PROJECT_ROOT / venv_name / "Scripts" / "python.exe"
+        else:
+            venv_python = PROJECT_ROOT / venv_name / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
     return sys.executable
 
 def get_hermes_cli_path() -> str:
@@ -399,8 +401,14 @@ def get_hermes_cli_path() -> str:
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    import sys
+    if sys.prefix != sys.base_prefix:
+        venv_dir = sys.prefix
+        venv_bin = f"{sys.prefix}/bin"
+    else:
+        venv_name = ".venv" if (PROJECT_ROOT / ".venv").exists() else "venv"
+        venv_dir = str(PROJECT_ROOT / venv_name)
+        venv_bin = str(PROJECT_ROOT / venv_name / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]

@@ -314,6 +314,45 @@ class TestKasiaGatewayRunnerBehavior:
 
         assert GatewayRunner._is_user_authorized(runner, source) is True
 
+    def test_is_user_authorized_accepts_kasia_kns_allowlist(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *args: False)
+        source = SessionSource(
+            platform=Platform.KASIA,
+            chat_id="kaspa:qpeeraddress",
+            user_id="kaspa:qpeeraddress",
+            user_name="peer.kas",
+        )
+
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "peer.kas")
+        monkeypatch.delenv("KASIA_ALLOW_ALL_USERS", raising=False)
+
+        with patch("gateway.kasia_identity.kasia_target_matches", return_value=True):
+            assert GatewayRunner._is_user_authorized(runner, source) is True
+
+    def test_is_user_authorized_accepts_matching_kasia_kns_without_lookup(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *args: False)
+        source = SessionSource(
+            platform=Platform.KASIA,
+            chat_id="kaspa:qpeeraddress",
+            user_id="kaspa:qpeeraddress",
+            user_name="peer.kas",
+        )
+
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "peer.kas")
+        monkeypatch.delenv("KASIA_ALLOW_ALL_USERS", raising=False)
+
+        with patch(
+            "gateway.kasia_identity.resolve_kasia_kns_name",
+            side_effect=AssertionError("should not resolve"),
+        ):
+            assert GatewayRunner._is_user_authorized(runner, source) is True
+
 
 class TestKasiaGatewaySetup:
     def test_setup_kasia_delegates_to_dedicated_command(self):
@@ -363,6 +402,14 @@ class TestKasiaAdapter:
 
         adapter = KasiaAdapter(self._make_config())
         assert adapter._is_address_authorized("kaspa:qpeeraddress") is True
+
+    def test_allowlist_matches_kns_target(self, monkeypatch):
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "peer.kas")
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        with patch("gateway.kasia_identity.resolve_kasia_kns_name", return_value="kaspa:qpeeraddress"):
+            assert adapter._is_address_authorized("kaspa:qpeeraddress") is True
 
     def test_build_message_event(self):
         from gateway.platforms.kasia import KasiaAdapter
@@ -429,12 +476,7 @@ class TestKasiaAdapter:
                 }
             )
 
-        adapter._request_json.assert_awaited_once_with(
-            "POST",
-            "/handshakes/respond",
-            payload={"chatId": "kaspa:qpeeraddress"},
-            total=30,
-        )
+        adapter._request_json.assert_not_awaited()
         adapter.handle_message.assert_awaited_once()
         forwarded_event = adapter.handle_message.await_args.args[0]
         assert forwarded_event.text == ""
@@ -442,6 +484,15 @@ class TestKasiaAdapter:
         assert forwarded_event.source.chat_id == "kaspa:qpeeraddress"
         assert forwarded_event.source.user_id == "kaspa:qpeeraddress"
         assert forwarded_event.source.user_name == "peer.kas"
+
+    def test_authorization_handler_controls_kasia_address_authorization(self):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        adapter = KasiaAdapter(self._make_config())
+        adapter.set_authorization_handler(lambda source: source.user_id == "kaspa:qpeeraddress")
+
+        assert adapter._is_address_authorized("kaspa:qpeeraddress", user_name="peer.kas") is True
+        assert adapter._is_address_authorized("kaspa:qunknownaddress", user_name="other.kas") is False
 
     @pytest.mark.asyncio
     async def test_handshake_request_still_ignores_unauthorized_user_when_behavior_is_ignore(self):
@@ -908,6 +959,187 @@ class TestKasiaAdapter:
         adapter._handle_bridge_event.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_connect_bootstraps_configured_handshakes_for_ready_wallet(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "qpeeraddress,kaspa:qsecondpeer")
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "kaspa:qglobalpeer,123456")
+
+        config = self._make_config()
+        config.home_channel = SimpleNamespace(
+            platform=Platform.KASIA,
+            chat_id="friend.kas",
+            name="Home",
+        )
+        adapter = KasiaAdapter(config)
+        adapter._bridge_script = bridge_script
+        adapter._poll_messages = AsyncMock(return_value=None)
+        initiated_chat_ids: list[str] = []
+        real_sleep = asyncio.sleep
+
+        async def fake_request_json(method, path, payload=None, total=None):
+            if method == "GET" and path == "/health":
+                return {
+                    "status": "connected",
+                    "walletFundingState": "ready",
+                }
+            if method == "POST" and path == "/handshakes/initiate":
+                initiated_chat_ids.append(payload["chatId"])
+                await real_sleep(0)
+                return {
+                    "status": "sent",
+                    "chatId": payload["chatId"],
+                    "txId": f"tx-{len(initiated_chat_ids)}",
+                }
+            raise AssertionError(f"Unexpected request: {method} {path}")
+
+        adapter._request_json = AsyncMock(side_effect=fake_request_json)
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch("gateway.platforms.kasia.subprocess.Popen", side_effect=fake_popen), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert initiated_chat_ids == [
+            "friend.kas",
+            "kaspa:qpeeraddress",
+            "kaspa:qsecondpeer",
+            "kaspa:qglobalpeer",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_connect_skips_configured_handshake_bootstrap_when_wallet_funding_is_low(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "kaspa:qpeeraddress")
+
+        config = self._make_config()
+        config.home_channel = SimpleNamespace(
+            platform=Platform.KASIA,
+            chat_id="kaspa:qhomeaddress",
+            name="Home",
+        )
+        adapter = KasiaAdapter(config)
+        adapter._bridge_script = bridge_script
+        adapter._poll_messages = AsyncMock(return_value=None)
+        initiated_chat_ids: list[str] = []
+        real_sleep = asyncio.sleep
+
+        async def fake_request_json(method, path, payload=None, total=None):
+            if method == "GET" and path == "/health":
+                return {
+                    "status": "connected",
+                    "walletFundingState": "low",
+                }
+            if method == "POST" and path == "/handshakes/initiate":
+                initiated_chat_ids.append(payload["chatId"])
+                await real_sleep(0)
+                return {
+                    "status": "sent",
+                    "chatId": payload["chatId"],
+                    "txId": "tx-init",
+                }
+            raise AssertionError(f"Unexpected request: {method} {path}")
+
+        adapter._request_json = AsyncMock(side_effect=fake_request_json)
+
+        def fake_popen(*args, **kwargs):
+            return SimpleNamespace(poll=lambda: None, returncode=None)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch("gateway.platforms.kasia.subprocess.Popen", side_effect=fake_popen), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert initiated_chat_ids == []
+
+    @pytest.mark.asyncio
+    async def test_connect_bootstraps_configured_handshakes_for_kns_allowlist(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms.kasia import KasiaAdapter
+
+        bridge_dir = tmp_path / "kasia-bridge"
+        bridge_dir.mkdir()
+        bridge_script = bridge_dir / "bridge.js"
+        bridge_script.write_text("// test bridge\n", encoding="utf-8")
+        (bridge_dir / "node_modules").mkdir()
+
+        monkeypatch.setenv("KASIA_ALLOWED_USERS", "peer.kas")
+
+        config = self._make_config()
+        adapter = KasiaAdapter(config)
+        adapter._bridge_script = bridge_script
+        adapter._poll_messages = AsyncMock(return_value=None)
+        initiated_chat_ids: list[str] = []
+        real_sleep = asyncio.sleep
+
+        async def fake_request_json(method, path, payload=None, total=None):
+            if method == "GET" and path == "/health":
+                return {
+                    "status": "connected",
+                    "walletFundingState": "ready",
+                }
+            if method == "POST" and path == "/handshakes/initiate":
+                initiated_chat_ids.append(payload["chatId"])
+                await real_sleep(0)
+                return {
+                    "status": "sent",
+                    "chatId": payload["chatId"],
+                    "txId": "tx-kns",
+                }
+            raise AssertionError(f"Unexpected request: {method} {path}")
+
+        adapter._request_json = AsyncMock(side_effect=fake_request_json)
+
+        with patch("gateway.platforms.kasia.check_kasia_requirements", return_value=True), patch(
+            "gateway.platforms.kasia._is_local_port_in_use", return_value=False
+        ), patch("gateway.platforms.kasia.subprocess.Popen", return_value=SimpleNamespace(poll=lambda: None, returncode=None)), patch(
+            "gateway.platforms.kasia.asyncio.sleep", new=AsyncMock()
+        ), patch(
+            "gateway.kasia_identity.resolve_kasia_kns_name",
+            side_effect=AssertionError("should not resolve"),
+        ):
+            result = await adapter.connect()
+
+        assert result is True
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert initiated_chat_ids == ["peer.kas"]
+
+    @pytest.mark.asyncio
     async def test_connect_replays_pending_handshakes_after_runner_registers_adapter(self, tmp_path):
         from gateway.platforms.kasia import KasiaAdapter
 
@@ -1008,7 +1240,7 @@ class TestKasiaAdapter:
         assert registered_during_handler == [True, True]
 
     @pytest.mark.asyncio
-    async def test_handshake_funding_failure_logs_wallet_warning(self, caplog):
+    async def test_unauthorized_handshake_no_longer_spends_or_logs_wallet_warning(self, caplog):
         from gateway.platforms.kasia import KasiaAdapter
 
         adapter = KasiaAdapter(self._make_config())
@@ -1044,6 +1276,6 @@ class TestKasiaAdapter:
                 }
             )
 
-        adapter.handle_message.assert_not_awaited()
-        assert "Kasia wallet kaspa:qwallet is low on funds" in caplog.text
-        assert "responding to unauthorized Kasia handshake from kaspa:qpeeraddress" in caplog.text
+        adapter._request_json.assert_not_awaited()
+        adapter.handle_message.assert_awaited_once()
+        assert "Kasia wallet kaspa:qwallet is low on funds" not in caplog.text

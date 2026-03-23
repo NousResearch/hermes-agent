@@ -1,19 +1,12 @@
 """
 DM Pairing System
 
-Code-based approval flow for authorizing new users on messaging platforms.
-Instead of static allowlists with user IDs, unknown users receive a one-time
+Most platforms use a code-based approval flow: unknown users receive a one-time
 pairing code that the bot owner approves via the CLI.
 
-Security features (based on OWASP + NIST SP 800-63-4 guidance):
-  - 8-char codes from 32-char unambiguous alphabet (no 0/O/1/I)
-  - Cryptographic randomness via secrets.choice()
-  - 1-hour code expiry
-  - Max 3 pending codes per platform
-  - Rate limiting: 1 request per user per 10 minutes
-  - Lockout after 5 failed approval attempts (1 hour)
-  - File permissions: chmod 0600 on all data files
-  - Codes are never logged to stdout
+Kasia is different. Unknown Kasia users are queued as pending contact requests
+keyed by canonical address so Hermes can avoid auto-spending on first contact
+while still showing both the `.kas` identity and the full `kaspa:` address.
 
 Storage: ~/.hermes/pairing/
 """
@@ -25,6 +18,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from gateway.kasia_config import normalized_kasia_address_variants
+from gateway.kasia_identity import (
+    normalize_kasia_kns_name,
+    resolve_kasia_identity,
+)
 from hermes_cli.config import get_hermes_home
 
 
@@ -42,6 +40,7 @@ MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
 
 PAIRING_DIR = get_hermes_home() / "pairing"
+_KASIA_PLATFORM = "kasia"
 
 
 def _secure_write(path: Path, data: str) -> None:
@@ -87,17 +86,62 @@ class PairingStore:
     def _save_json(self, path: Path, data: dict) -> None:
         _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
+    def _normalize_platform(self, platform: str) -> str:
+        return str(platform or "").strip().lower()
+
+    def _is_kasia_platform(self, platform: str) -> bool:
+        return self._normalize_platform(platform) == _KASIA_PLATFORM
+
+    def _find_kasia_entry(self, entries: dict, target: str) -> tuple[Optional[str], Optional[dict]]:
+        normalized_kns = normalize_kasia_kns_name(target)
+        target_variants = normalized_kasia_address_variants(target)
+        for key, info in entries.items():
+            canonical_address = info.get("canonical_address") or info.get("user_id") or key
+            entry_variants = normalized_kasia_address_variants(canonical_address)
+            entry_kns = normalize_kasia_kns_name(info.get("kns_name"))
+            if normalized_kns and entry_kns == normalized_kns:
+                return key, info
+            if target_variants and entry_variants and target_variants & entry_variants:
+                return key, info
+        return None, None
+
+    def _build_kasia_entry(
+        self,
+        *,
+        target: str,
+        display_name: str = "",
+        existing: Optional[dict] = None,
+    ) -> Optional[dict]:
+        identity = resolve_kasia_identity(target, display_name=display_name)
+        if not identity.canonical_address:
+            return None
+
+        existing = existing or {}
+        record = identity.to_record()
+        if existing.get("kns_name") and not record.get("kns_name"):
+            record["kns_name"] = existing.get("kns_name")
+        if existing.get("display_name") and record.get("display_name") == record.get("canonical_address"):
+            record["display_name"] = existing.get("display_name")
+            record["user_name"] = existing.get("display_name")
+        if existing.get("original_target") and not record.get("original_target"):
+            record["original_target"] = existing.get("original_target")
+        return record
+
     # ----- Approved users -----
 
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
+        platform = self._normalize_platform(platform)
         approved = self._load_json(self._approved_path(platform))
+        if self._is_kasia_platform(platform):
+            key, _ = self._find_kasia_entry(approved, user_id)
+            return key is not None
         return user_id in approved
 
     def list_approved(self, platform: str = None) -> list:
         """List approved users, optionally filtered by platform."""
         results = []
-        platforms = [platform] if platform else self._all_platforms("approved")
+        platforms = [self._normalize_platform(platform)] if platform else self._all_platforms("approved")
         for p in platforms:
             approved = self._load_json(self._approved_path(p))
             for uid, info in approved.items():
@@ -106,6 +150,7 @@ class PairingStore:
 
     def _approve_user(self, platform: str, user_id: str, user_name: str = "") -> None:
         """Add a user to the approved list."""
+        platform = self._normalize_platform(platform)
         approved = self._load_json(self._approved_path(platform))
         approved[user_id] = {
             "user_name": user_name,
@@ -115,8 +160,16 @@ class PairingStore:
 
     def revoke(self, platform: str, user_id: str) -> bool:
         """Remove a user from the approved list. Returns True if found."""
+        platform = self._normalize_platform(platform)
         path = self._approved_path(platform)
         approved = self._load_json(path)
+        if self._is_kasia_platform(platform):
+            key, _ = self._find_kasia_entry(approved, user_id)
+            if key:
+                del approved[key]
+                self._save_json(path, approved)
+                return True
+            return False
         if user_id in approved:
             del approved[user_id]
             self._save_json(path, approved)
@@ -136,6 +189,10 @@ class PairingStore:
           - Max pending codes reached for this platform
           - User/platform is in lockout due to failed attempts
         """
+        platform = self._normalize_platform(platform)
+        if self._is_kasia_platform(platform):
+            return None
+
         self._cleanup_expired(platform)
 
         # Check lockout
@@ -167,12 +224,90 @@ class PairingStore:
 
         return code
 
+    def get_pending_code(self, platform: str, user_id: str) -> Optional[str]:
+        """Return an existing unexpired pending code for a user, if any."""
+        platform = self._normalize_platform(platform)
+        if self._is_kasia_platform(platform):
+            return None
+        self._cleanup_expired(platform)
+        pending = self._load_json(self._pending_path(platform))
+        for code, info in pending.items():
+            if info.get("user_id") == user_id:
+                return code
+        return None
+
+    def record_pending_request(
+        self,
+        platform: str,
+        user_id: str,
+        user_name: str = "",
+    ) -> Optional[dict]:
+        """Queue a pending Kasia contact request keyed by canonical address."""
+        platform = self._normalize_platform(platform)
+        if not self._is_kasia_platform(platform):
+            return None
+
+        pending = self._load_json(self._pending_path(platform))
+        existing_key, existing = self._find_kasia_entry(pending, user_id)
+        entry = self._build_kasia_entry(
+            target=user_id,
+            display_name=user_name,
+            existing=existing,
+        )
+        if not entry:
+            return None
+
+        now = time.time()
+        entry["created_at"] = existing.get("created_at", now) if existing else now
+        entry["last_seen_at"] = now
+        pending[entry["canonical_address"]] = entry
+        if existing_key and existing_key != entry["canonical_address"]:
+            pending.pop(existing_key, None)
+        self._save_json(self._pending_path(platform), pending)
+
+        age_min = int((now - entry["created_at"]) / 60)
+        return {"platform": platform, "age_minutes": age_min, **entry}
+
+    def approve_identity(self, platform: str, target: str) -> Optional[dict]:
+        """Approve a Kasia contact by address or KNS name."""
+        platform = self._normalize_platform(platform)
+        if not self._is_kasia_platform(platform):
+            return None
+
+        pending = self._load_json(self._pending_path(platform))
+        pending_key, pending_entry = self._find_kasia_entry(pending, target)
+        record = self._build_kasia_entry(
+            target=target,
+            display_name=(pending_entry or {}).get("display_name", ""),
+            existing=pending_entry,
+        )
+        if not record and pending_entry:
+            record = dict(pending_entry)
+        if not record or not record.get("canonical_address"):
+            return None
+
+        if pending_key:
+            pending.pop(pending_key, None)
+            self._save_json(self._pending_path(platform), pending)
+
+        approved = self._load_json(self._approved_path(platform))
+        approved[record["canonical_address"]] = {
+            **record,
+            "approved_at": time.time(),
+        }
+        self._save_json(self._approved_path(platform), approved)
+        return {"platform": platform, **approved[record["canonical_address"]]}
+
     def approve_code(self, platform: str, code: str) -> Optional[dict]:
         """
         Approve a pairing code. Adds the user to the approved list.
 
         Returns {user_id, user_name} on success, None if code is invalid/expired.
         """
+        platform = self._normalize_platform(platform)
+        if self._is_kasia_platform(platform):
+            return self.approve_identity(platform, code)
+
         self._cleanup_expired(platform)
         code = code.upper().strip()
 
@@ -195,25 +330,28 @@ class PairingStore:
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform."""
         results = []
-        platforms = [platform] if platform else self._all_platforms("pending")
+        platforms = [self._normalize_platform(platform)] if platform else self._all_platforms("pending")
         for p in platforms:
             self._cleanup_expired(p)
             pending = self._load_json(self._pending_path(p))
-            for code, info in pending.items():
+            for key, info in pending.items():
                 age_min = int((time.time() - info["created_at"]) / 60)
-                results.append({
+                entry = {
                     "platform": p,
-                    "code": code,
-                    "user_id": info["user_id"],
+                    "user_id": info.get("user_id") or key,
                     "user_name": info.get("user_name", ""),
                     "age_minutes": age_min,
-                })
+                    **info,
+                }
+                if not self._is_kasia_platform(p):
+                    entry["code"] = key
+                results.append(entry)
         return results
 
     def clear_pending(self, platform: str = None) -> int:
         """Clear all pending requests. Returns count removed."""
         count = 0
-        platforms = [platform] if platform else self._all_platforms("pending")
+        platforms = [self._normalize_platform(platform)] if platform else self._all_platforms("pending")
         for p in platforms:
             pending = self._load_json(self._pending_path(p))
             count += len(pending)
@@ -224,6 +362,7 @@ class PairingStore:
 
     def _is_rate_limited(self, platform: str, user_id: str) -> bool:
         """Check if a user has requested a code too recently."""
+        platform = self._normalize_platform(platform)
         limits = self._load_json(self._rate_limit_path())
         key = f"{platform}:{user_id}"
         last_request = limits.get(key, 0)
@@ -231,6 +370,7 @@ class PairingStore:
 
     def _record_rate_limit(self, platform: str, user_id: str) -> None:
         """Record the time of a pairing request for rate limiting."""
+        platform = self._normalize_platform(platform)
         limits = self._load_json(self._rate_limit_path())
         key = f"{platform}:{user_id}"
         limits[key] = time.time()
@@ -238,6 +378,7 @@ class PairingStore:
 
     def _is_locked_out(self, platform: str) -> bool:
         """Check if a platform is in lockout due to failed approval attempts."""
+        platform = self._normalize_platform(platform)
         limits = self._load_json(self._rate_limit_path())
         lockout_key = f"_lockout:{platform}"
         lockout_until = limits.get(lockout_key, 0)
@@ -245,6 +386,7 @@ class PairingStore:
 
     def _record_failed_attempt(self, platform: str) -> None:
         """Record a failed approval attempt. Triggers lockout after MAX_FAILED_ATTEMPTS."""
+        platform = self._normalize_platform(platform)
         limits = self._load_json(self._rate_limit_path())
         fail_key = f"_failures:{platform}"
         fails = limits.get(fail_key, 0) + 1
@@ -261,6 +403,9 @@ class PairingStore:
 
     def _cleanup_expired(self, platform: str) -> None:
         """Remove expired pending codes."""
+        platform = self._normalize_platform(platform)
+        if self._is_kasia_platform(platform):
+            return
         path = self._pending_path(platform)
         pending = self._load_json(path)
         now = time.time()

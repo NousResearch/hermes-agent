@@ -86,6 +86,70 @@ def test_prompt_kasia_seed_phrase_shows_hidden_note_and_retries_invalid(
     assert errors == ["invalid mnemonic"]
 
 
+def test_complete_kasia_contact_approval_prefers_handshake_response(monkeypatch):
+    monkeypatch.setenv("KASIA_BRIDGE_PORT", "3099")
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda port: {"status": "connected", "bridge_port": port},
+    )
+
+    requests = []
+
+    def fake_request(path, **kwargs):
+        requests.append((path, kwargs.get("payload")))
+        return {"status": "sent", "chatId": "kaspa:qpeeraddress"}
+
+    monkeypatch.setattr(kasia_mod, "_request_kasia_bridge_json", fake_request)
+
+    result = kasia_mod.complete_kasia_contact_approval(
+        "kaspa:qpeeraddress",
+        display_name="peer.kas",
+    )
+
+    assert result["status"] == "responded"
+    assert requests == [
+        ("/handshakes/respond", {"chatId": "kaspa:qpeeraddress"})
+    ]
+
+
+def test_complete_kasia_contact_approval_falls_back_to_initiate(monkeypatch):
+    monkeypatch.setenv("KASIA_BRIDGE_PORT", "3099")
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda port: {"status": "connected", "bridge_port": port},
+    )
+
+    requests = []
+
+    def fake_request(path, **kwargs):
+        requests.append((path, kwargs.get("payload")))
+        if path == "/handshakes/respond":
+            raise RuntimeError("No Kasia conversation found")
+        return {"status": "sent", "chatId": "kaspa:qpeeraddress"}
+
+    monkeypatch.setattr(kasia_mod, "_request_kasia_bridge_json", fake_request)
+
+    result = kasia_mod.complete_kasia_contact_approval(
+        "kaspa:qpeeraddress",
+        display_name="peer.kas",
+    )
+
+    assert result["status"] == "initiated"
+    assert requests == [
+        ("/handshakes/respond", {"chatId": "kaspa:qpeeraddress"}),
+        (
+            "/handshakes/initiate",
+            {
+                "chatId": "kaspa:qpeeraddress",
+                "displayName": "peer.kas",
+                "retry": False,
+            },
+        ),
+    ]
+
+
 def test_validate_kasia_seed_phrase_rejects_non_12_or_24_word_lengths(monkeypatch):
     calls = []
 

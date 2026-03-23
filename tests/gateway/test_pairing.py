@@ -117,6 +117,26 @@ class TestRateLimiting:
         assert isinstance(code2, str) and len(code2) == CODE_LENGTH
         assert code2 != code1
 
+    def test_get_pending_code_returns_existing_code_for_same_user(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            existing = store.get_pending_code("telegram", "user1")
+
+        assert existing == code
+
+    def test_get_pending_code_ignores_expired_entries(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1")
+            pending = store._load_json(store._pending_path("telegram"))
+            pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
+            store._save_json(store._pending_path("telegram"), pending)
+
+            existing = store.get_pending_code("telegram", "user1")
+
+        assert existing is None
+
 # ---------------------------------------------------------------------------
 # Max pending limit
 # ---------------------------------------------------------------------------
@@ -207,6 +227,73 @@ class TestApprovalFlow:
             store = PairingStore()
             result = store.approve_code("telegram", "INVALIDCODE")
         assert result is None
+
+    def test_kasia_pending_request_is_keyed_by_canonical_address(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), patch(
+            "gateway.pairing.resolve_kasia_identity"
+        ) as resolve_identity:
+            resolve_identity.return_value = type(
+                "Identity",
+                (),
+                {
+                    "canonical_address": "kaspa:qpeeraddress",
+                    "kns_name": "peer.kas",
+                    "display_name": "peer.kas",
+                    "identity_source": "kns",
+                    "original_target": "peer.kas",
+                    "to_record": lambda self: {
+                        "user_id": "kaspa:qpeeraddress",
+                        "user_name": "peer.kas",
+                        "display_name": "peer.kas",
+                        "canonical_address": "kaspa:qpeeraddress",
+                        "kns_name": "peer.kas",
+                        "identity_source": "kns",
+                        "original_target": "peer.kas",
+                    },
+                },
+            )()
+            store = PairingStore()
+            store.record_pending_request("kasia", "kaspa:qpeeraddress", "peer.kas")
+            pending = store.list_pending("kasia")
+
+        assert len(pending) == 1
+        assert pending[0]["canonical_address"] == "kaspa:qpeeraddress"
+        assert pending[0]["kns_name"] == "peer.kas"
+        assert "code" not in pending[0]
+
+    def test_kasia_approve_identity_moves_pending_contact_to_approved(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path), patch(
+            "gateway.pairing.resolve_kasia_identity"
+        ) as resolve_identity:
+            resolve_identity.return_value = type(
+                "Identity",
+                (),
+                {
+                    "canonical_address": "kaspa:qpeeraddress",
+                    "kns_name": "peer.kas",
+                    "display_name": "peer.kas",
+                    "identity_source": "kns",
+                    "original_target": "peer.kas",
+                    "to_record": lambda self: {
+                        "user_id": "kaspa:qpeeraddress",
+                        "user_name": "peer.kas",
+                        "display_name": "peer.kas",
+                        "canonical_address": "kaspa:qpeeraddress",
+                        "kns_name": "peer.kas",
+                        "identity_source": "kns",
+                        "original_target": "peer.kas",
+                    },
+                },
+            )()
+            store = PairingStore()
+            store.record_pending_request("kasia", "kaspa:qpeeraddress", "peer.kas")
+            approved = store.approve_identity("kasia", "peer.kas")
+
+        assert approved["canonical_address"] == "kaspa:qpeeraddress"
+        assert approved["kns_name"] == "peer.kas"
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            assert store.is_approved("kasia", "kaspa:qpeeraddress") is True
+            assert store.is_approved("kasia", "peer.kas") is True
 
 
 # ---------------------------------------------------------------------------

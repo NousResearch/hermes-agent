@@ -3505,20 +3505,20 @@ For more help on a command:
     # =========================================================================
     pairing_parser = subparsers.add_parser(
         "pairing",
-        help="Manage DM pairing codes for user authorization",
-        description="Approve or revoke user access via pairing codes"
+        help="Manage DM pairing and Kasia contact approvals",
+        description="Approve or revoke user access via pairing codes and Kasia contacts"
     )
     pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
 
     pairing_list_parser = pairing_sub.add_parser("list", help="Show pending + approved users")
 
-    pairing_approve_parser = pairing_sub.add_parser("approve", help="Approve a pairing code")
+    pairing_approve_parser = pairing_sub.add_parser("approve", help="Approve a pairing code or Kasia target")
     pairing_approve_parser.add_argument("platform", help="Platform name (telegram, discord, slack, whatsapp)")
-    pairing_approve_parser.add_argument("code", help="Pairing code to approve")
+    pairing_approve_parser.add_argument("code", help="Pairing code or Kasia address/KNS target to approve")
 
     pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
     pairing_revoke_parser.add_argument("platform", help="Platform name")
-    pairing_revoke_parser.add_argument("user_id", help="User ID to revoke")
+    pairing_revoke_parser.add_argument("user_id", help="User ID or Kasia address/KNS target to revoke")
 
     pairing_clear_parser = pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
 

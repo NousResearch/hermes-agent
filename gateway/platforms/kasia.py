@@ -8,16 +8,18 @@ This adapter launches a local Node bridge that:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -37,9 +39,12 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.session import SessionSource
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+_AuthorizationHandler = Callable[[SessionSource], bool | Awaitable[bool]]
 
 
 def _is_local_port_in_use(port: int) -> bool:
@@ -114,6 +119,9 @@ class KasiaAdapter(BasePlatformAdapter):
 
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "kasia-bridge"
     _DEFAULT_SEND_WAIT_MS = DEFAULT_KASIA_SEND_WAIT_MS
+    _KASIA_ADDRESS_PREFIXES = ("kaspa:", "kaspatest:", "kaspasim:")
+    _KNS_TARGET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]*\.kas$")
+    _BARE_ADDRESS_RE = re.compile(r"^[qp][a-z0-9]{5,}$")
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.KASIA)
@@ -131,6 +139,8 @@ class KasiaAdapter(BasePlatformAdapter):
         self._bridge_log_fh = None
         self._poll_task: Optional[asyncio.Task] = None
         self._pending_handshake_recovery_task: Optional[asyncio.Task] = None
+        self._configured_handshake_bootstrap_task: Optional[asyncio.Task] = None
+        self._authorization_handler: Optional[_AuthorizationHandler] = None
 
     @staticmethod
     def _format_sompi_balance(value: Any) -> Optional[str]:
@@ -148,6 +158,153 @@ class KasiaAdapter(BasePlatformAdapter):
         return str(
             self.config.extra.get("unauthorized_dm_behavior", "pair")
         ).strip().lower() or "pair"
+
+    def _default_address_prefix(self) -> str:
+        """Return the Kaspa address prefix for the configured network."""
+        normalized_network = str(self._kasia_settings.network or "").strip().lower()
+        if normalized_network.startswith("mainnet"):
+            return "kaspa:"
+        if normalized_network.startswith("test") or normalized_network.startswith("tn"):
+            return "kaspatest:"
+        return "kaspasim:"
+
+    def _normalize_bootstrap_target(
+        self,
+        target: Optional[str],
+        *,
+        trust_bare: bool,
+    ) -> Optional[str]:
+        """Normalize a configured Kasia DM target for handshake bootstrap."""
+        normalized_target = str(target or "").strip()
+        if not normalized_target:
+            return None
+        lowered_target = normalized_target.lower()
+        if lowered_target.startswith("broadcast:") or lowered_target.startswith("#"):
+            return None
+        if lowered_target.startswith(self._KASIA_ADDRESS_PREFIXES):
+            return lowered_target
+        if self._KNS_TARGET_RE.match(lowered_target):
+            return lowered_target
+        if trust_bare or self._BARE_ADDRESS_RE.match(lowered_target):
+            return f"{self._default_address_prefix()}{lowered_target}"
+        return None
+
+    def _configured_handshake_bootstrap_targets(self) -> List[tuple[str, bool]]:
+        """Return explicit DM targets that should receive a startup handshake."""
+        configured_targets: List[tuple[str, bool]] = []
+        seen_targets: set[str] = set()
+
+        def _add_target(raw_target: Optional[str], *, trust_bare: bool, allow_without_auth: bool) -> None:
+            normalized_target = self._normalize_bootstrap_target(
+                raw_target,
+                trust_bare=trust_bare,
+            )
+            if not normalized_target or normalized_target in seen_targets:
+                return
+            seen_targets.add(normalized_target)
+            configured_targets.append((normalized_target, allow_without_auth))
+
+        home_channel = getattr(self.config, "home_channel", None)
+        if home_channel and getattr(home_channel, "chat_id", None):
+            _add_target(
+                home_channel.chat_id,
+                trust_bare=True,
+                allow_without_auth=True,
+            )
+
+        allowed_users = str(os.getenv("KASIA_ALLOWED_USERS", "") or "").split(",")
+        for raw_target in allowed_users:
+            _add_target(
+                raw_target,
+                trust_bare=True,
+                allow_without_auth=False,
+            )
+
+        global_allowed_users = str(os.getenv("GATEWAY_ALLOWED_USERS", "") or "").split(",")
+        for raw_target in global_allowed_users:
+            _add_target(
+                raw_target,
+                trust_bare=False,
+                allow_without_auth=False,
+            )
+
+        try:
+            from gateway.pairing import PairingStore
+
+            for approved_contact in PairingStore().list_approved(Platform.KASIA.value):
+                _add_target(
+                    approved_contact.get("canonical_address") or approved_contact.get("user_id"),
+                    trust_bare=True,
+                    allow_without_auth=False,
+                )
+        except Exception:
+            pass
+
+        return configured_targets
+
+    async def _bootstrap_configured_handshakes(
+        self,
+        health: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Initiate configured Kasia DM conversations after the bridge comes online."""
+        funding_state = str((health or {}).get("walletFundingState") or "").strip().lower()
+        if funding_state in {"low", "unfunded"}:
+            return
+
+        configured_targets = self._configured_handshake_bootstrap_targets()
+        if not configured_targets:
+            return
+
+        for chat_id, allow_without_auth in configured_targets:
+            if not allow_without_auth and not await self._is_address_authorized_async(
+                chat_id,
+                user_name=chat_id,
+            ):
+                continue
+            try:
+                result = await self._request_json(
+                    "POST",
+                    "/handshakes/initiate",
+                    payload={"chatId": chat_id, "retry": False},
+                    total=30,
+                )
+                logger.info(
+                    "[%s] Bootstrapped Kasia handshake for %s (%s)",
+                    self.name,
+                    chat_id,
+                    result.get("status") or "sent",
+                )
+            except Exception as error:
+                if self._looks_like_insufficient_funds_error(error):
+                    await self._log_wallet_funding_warning(
+                        context=f"bootstrapping configured Kasia handshake for {chat_id}",
+                        error=error,
+                    )
+                logger.warning(
+                    "[%s] Failed to bootstrap Kasia handshake for %s: %s",
+                    self.name,
+                    chat_id,
+                    error,
+                )
+
+    def _start_configured_handshake_bootstrap(
+        self,
+        health: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Kick off handshake bootstrap for configured Kasia DM targets."""
+
+        async def _run_bootstrap() -> None:
+            try:
+                await self._bootstrap_configured_handshakes(health)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("[%s] Configured Kasia handshake bootstrap failed: %s", self.name, error)
+            finally:
+                if self._configured_handshake_bootstrap_task is asyncio.current_task():
+                    self._configured_handshake_bootstrap_task = None
+
+        self._configured_handshake_bootstrap_task = asyncio.create_task(_run_bootstrap())
 
     def _looks_like_insufficient_funds_error(self, error: Exception) -> bool:
         """Return True when a Kasia bridge error points to wallet funding issues."""
@@ -187,6 +344,13 @@ class KasiaAdapter(BasePlatformAdapter):
             f"Kasia wallet {wallet_address} is low on funds ({balance_text}). "
             "Pairing replies and outbound DMs may fail until the wallet is topped up."
         )
+
+    def set_authorization_handler(
+        self,
+        handler: _AuthorizationHandler,
+    ) -> None:
+        """Set a central authorization callback owned by the gateway runner."""
+        self._authorization_handler = handler
 
     async def _log_wallet_funding_warning(
         self,
@@ -454,6 +618,7 @@ class KasiaAdapter(BasePlatformAdapter):
                         self._mark_connected()
                         self._poll_task = asyncio.create_task(self._poll_messages())
                         self._start_pending_handshake_recovery(health)
+                        self._start_configured_handshake_bootstrap(health)
                         print(f"[{self.name}] Bridge started on port {self._bridge_port}")
                         return True
                 except Exception:
@@ -469,6 +634,18 @@ class KasiaAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop the Kasia bridge and polling task."""
+        bootstrap_task = self._configured_handshake_bootstrap_task
+        self._configured_handshake_bootstrap_task = None
+        if bootstrap_task:
+            cancel = getattr(bootstrap_task, "cancel", None)
+            if callable(cancel):
+                cancel()
+            if isinstance(bootstrap_task, asyncio.Task):
+                try:
+                    await bootstrap_task
+                except asyncio.CancelledError:
+                    pass
+
         recovery_task = self._pending_handshake_recovery_task
         self._pending_handshake_recovery_task = None
         if recovery_task:
@@ -597,7 +774,7 @@ class KasiaAdapter(BasePlatformAdapter):
         """Explicitly start a Kasia conversation with a new peer."""
         if not self._running:
             raise RuntimeError("Kasia bridge is not connected")
-        if not self._is_address_authorized(chat_id):
+        if not await self._is_address_authorized_async(chat_id, user_name=display_name):
             raise RuntimeError(f"Kasia initiation is not authorized for {chat_id}")
         return await self._request_json(
             "POST",
@@ -629,7 +806,8 @@ class KasiaAdapter(BasePlatformAdapter):
         event_type = data.get("eventType")
         if event_type == "handshake_request":
             chat_id = data.get("chatId") or data.get("senderId")
-            if self._is_address_authorized(chat_id):
+            sender_name = data.get("senderName")
+            if await self._is_address_authorized_async(chat_id, user_name=sender_name):
                 try:
                     await self._request_json(
                         "POST",
@@ -651,31 +829,12 @@ class KasiaAdapter(BasePlatformAdapter):
                         error,
                     )
             elif self._unauthorized_dm_behavior() == "pair":
-                try:
-                    await self._request_json(
-                        "POST",
-                        "/handshakes/respond",
-                        payload={"chatId": chat_id},
-                        total=30,
-                    )
-                    logger.info(
-                        "[%s] Responded to unauthorized Kasia handshake from %s to deliver pairing instructions",
-                        self.name,
-                        chat_id,
-                    )
-                    await self.handle_message(self._build_handshake_event(data))
-                except Exception as error:
-                    if self._looks_like_insufficient_funds_error(error):
-                        await self._log_wallet_funding_warning(
-                            context=f"responding to unauthorized Kasia handshake from {chat_id}",
-                            error=error,
-                        )
-                    logger.warning(
-                        "[%s] Failed to prepare Kasia pairing response for %s: %s",
-                        self.name,
-                        chat_id,
-                        error,
-                    )
+                logger.info(
+                    "[%s] Queued unauthorized Kasia handshake from %s for approval",
+                    self.name,
+                    chat_id,
+                )
+                await self.handle_message(self._build_handshake_event(data))
             else:
                 logger.info(
                     "[%s] Ignoring unauthorized Kasia handshake from %s",
@@ -731,9 +890,70 @@ class KasiaAdapter(BasePlatformAdapter):
             timestamp=timestamp,
         )
 
-    def _is_address_authorized(self, address: Optional[str]) -> bool:
-        """Apply Kasia's address allowlist / allow-all rules for handshake responses."""
-        return is_kasia_address_authorized(address)
+    def _authorization_source(
+        self,
+        address: Optional[str],
+        *,
+        user_name: Optional[str] = None,
+    ) -> Optional[SessionSource]:
+        canonical_address = str(address or "").strip()
+        if not canonical_address:
+            return None
+        resolved_name = str(user_name or "").strip() or canonical_address
+        return SessionSource(
+            platform=Platform.KASIA,
+            chat_id=canonical_address,
+            chat_name=resolved_name,
+            chat_type="dm",
+            user_id=canonical_address,
+            user_name=resolved_name,
+        )
+
+    def _is_address_authorized(
+        self,
+        address: Optional[str],
+        *,
+        user_name: Optional[str] = None,
+    ) -> bool:
+        """Apply the gateway's central authorization rules for Kasia peers."""
+        if self._authorization_handler:
+            source = self._authorization_source(address, user_name=user_name)
+            if source is not None:
+                try:
+                    result = self._authorization_handler(source)
+                    if inspect.isawaitable(result):
+                        close = getattr(result, "close", None)
+                        if callable(close):
+                            close()
+                        logger.warning(
+                            "[%s] Async Kasia auth callback was used in sync mode for %s",
+                            self.name,
+                            address,
+                        )
+                    else:
+                        return bool(result)
+                except Exception as error:
+                    logger.warning("[%s] Kasia auth callback failed for %s: %s", self.name, address, error)
+        return is_kasia_address_authorized(address, display_name=user_name)
+
+    async def _is_address_authorized_async(
+        self,
+        address: Optional[str],
+        *,
+        user_name: Optional[str] = None,
+    ) -> bool:
+        """Apply Kasia auth rules without blocking the asyncio loop."""
+        if self._authorization_handler:
+            source = self._authorization_source(address, user_name=user_name)
+            if source is not None:
+                try:
+                    result = self._authorization_handler(source)
+                    if inspect.isawaitable(result):
+                        return bool(await result)
+                    return bool(result)
+                except Exception as error:
+                    logger.warning("[%s] Kasia auth callback failed for %s: %s", self.name, address, error)
+        return self._is_address_authorized(address, user_name=user_name)
 
     async def _request_json(
         self,

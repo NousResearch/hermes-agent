@@ -328,7 +328,10 @@ def is_kasia_address_authorized(
     address: Any,
     *,
     env: Optional[Mapping[str, str]] = None,
+    display_name: Optional[str] = None,
 ) -> bool:
+    from gateway.kasia_identity import kasia_target_matches
+
     config_env = env or os.environ
     address_variants = normalized_kasia_address_variants(address)
     if not address_variants:
@@ -342,10 +345,18 @@ def is_kasia_address_authorized(
     if not settings.allowed_users and not global_allowlist:
         return _is_truthy(config_env.get("GATEWAY_ALLOW_ALL_USERS", ""))
 
-    allowed_ids = {
-        normalized_id
+    allowed_targets = [
+        item.strip()
         for allowlist in (settings.allowed_users, global_allowlist)
         for item in allowlist.split(",")
-        for normalized_id in normalized_kasia_address_variants(item)
-    }
-    return bool(address_variants & allowed_ids)
+        if item.strip()
+    ]
+    return any(
+        kasia_target_matches(
+            address,
+            target,
+            env=config_env,
+            display_name=display_name,
+        )
+        for target in allowed_targets
+    )

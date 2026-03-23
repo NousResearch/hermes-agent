@@ -8,8 +8,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.request import urlopen
 import json
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from gateway.kasia_config import DEFAULT_KASIA_BRIDGE_PORT, load_kasia_settings
 
@@ -385,6 +386,106 @@ def fetch_kasia_bridge_health(bridge_port: Optional[int]) -> dict[str, Any] | No
             return json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
+
+
+def _request_kasia_bridge_json(
+    path: str,
+    *,
+    bridge_port: Optional[int],
+    method: str = "GET",
+    payload: Optional[dict[str, Any]] = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Send a JSON request to the local Kasia bridge."""
+    port = bridge_port or DEFAULT_KASIA_BRIDGE_PORT
+    body = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        detail = error.reason
+        try:
+            error_body = json.loads(error.read().decode("utf-8"))
+            detail = error_body.get("error") or detail
+        except Exception:
+            pass
+        raise RuntimeError(str(detail or error)) from error
+    except URLError as error:
+        raise RuntimeError(str(error.reason or error)) from error
+
+
+def complete_kasia_contact_approval(
+    target: str,
+    *,
+    display_name: Optional[str] = None,
+    bridge_port: Optional[int] = None,
+) -> dict[str, Any]:
+    """
+    Best-effort live bridge follow-up after approving a Kasia contact.
+
+    If the local bridge is reachable, prefer responding to an existing pending
+    inbound handshake; otherwise fall back to initiating a fresh outbound one.
+    """
+    port = bridge_port or load_kasia_settings(env=os.environ).bridge_port
+    if not fetch_kasia_bridge_health(port):
+        return {"status": "bridge_unavailable", "bridge_port": port}
+
+    try:
+        response = _request_kasia_bridge_json(
+            "/handshakes/respond",
+            bridge_port=port,
+            method="POST",
+            payload={"chatId": target},
+        )
+        return {
+            "status": "responded",
+            "bridge_port": port,
+            "bridge_status": response.get("status") or "sent",
+            "result": response,
+        }
+    except Exception as respond_error:
+        try:
+            response = _request_kasia_bridge_json(
+                "/handshakes/initiate",
+                bridge_port=port,
+                method="POST",
+                payload={
+                    "chatId": target,
+                    "displayName": display_name,
+                    "retry": False,
+                },
+            )
+            bridge_status = str(response.get("status") or "").strip().lower()
+            if bridge_status == "already_active":
+                status = "already_active"
+            elif bridge_status == "pending":
+                status = "pending"
+            else:
+                status = "initiated"
+            return {
+                "status": status,
+                "bridge_port": port,
+                "bridge_status": bridge_status or "sent",
+                "result": response,
+            }
+        except Exception as initiate_error:
+            return {
+                "status": "failed",
+                "bridge_port": port,
+                "respond_error": str(respond_error),
+                "initiate_error": str(initiate_error),
+            }
 
 
 def _doctor_mark(ok: bool) -> str:

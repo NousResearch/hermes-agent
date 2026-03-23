@@ -140,6 +140,39 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_kasia_dm_records_pending_request_without_reply(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.KASIA: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.KASIA, config)
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="",
+            message_id="tx-handshake",
+            raw_message={"eventType": "handshake_request"},
+            source=SessionSource(
+                platform=Platform.KASIA,
+                user_id="kaspa:qpeeraddress",
+                chat_id="kaspa:qpeeraddress",
+                user_name="peer.kas",
+                chat_type="dm",
+            ),
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.record_pending_request.assert_called_once_with(
+        "kasia",
+        "kaspa:qpeeraddress",
+        "peer.kas",
+    )
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_authorized_kasia_handshake_event_does_not_run_agent(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(

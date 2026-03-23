@@ -37,19 +37,16 @@ SEND_MESSAGE_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms.",
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'",
             },
-            "message": {
-                "type": "string",
-                "description": "The message text to send"
-            }
+            "message": {"type": "string", "description": "The message text to send"},
         },
-        "required": []
-    }
+        "required": [],
+    },
 }
 
 
@@ -67,6 +64,7 @@ def _handle_list():
     """Return formatted list of available messaging targets."""
     try:
         from gateway.channel_directory import format_directory_for_display
+
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps({"error": f"Failed to load channel directory: {e}"})
@@ -77,7 +75,9 @@ def _handle_send(args):
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:
-        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
+        return json.dumps(
+            {"error": "Both 'target' and 'message' are required when action='send'"}
+        )
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -94,26 +94,33 @@ def _handle_send(args):
     if target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
+
             resolved = resolve_channel_name(platform_name, target_ref)
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
             else:
-                return json.dumps({
-                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
-                })
+                return json.dumps(
+                    {
+                        "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                        f"Use send_message(action='list') to see available targets."
+                    }
+                )
         except Exception:
-            return json.dumps({
-                "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
-            })
+            return json.dumps(
+                {
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                    f"Try using a numeric channel ID instead."
+                }
+            )
 
     from tools.interrupt import is_interrupted
+
     if is_interrupted():
         return json.dumps({"error": "Interrupted"})
 
     try:
         from gateway.config import load_gateway_config, Platform
+
         config = load_gateway_config()
     except Exception as e:
         return json.dumps({"error": f"Failed to load gateway config: {e}"})
@@ -126,15 +133,22 @@ def _handle_send(args):
         "signal": Platform.SIGNAL,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "matrix": Platform.MATRIX,
     }
     platform = platform_map.get(platform_name)
     if not platform:
         avail = ", ".join(platform_map.keys())
-        return json.dumps({"error": f"Unknown platform: {platform_name}. Available: {avail}"})
+        return json.dumps(
+            {"error": f"Unknown platform: {platform_name}. Available: {avail}"}
+        )
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables."})
+        return json.dumps(
+            {
+                "error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables."
+            }
+        )
 
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -148,11 +162,13 @@ def _handle_send(args):
             chat_id = home.chat_id
             used_home_channel = True
         else:
-            return json.dumps({
-                "error": f"No home channel set for {platform_name} to determine where to send the message. "
-                f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
-                f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
-            })
+            return json.dumps(
+                {
+                    "error": f"No home channel set for {platform_name} to determine where to send the message. "
+                    f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
+                    f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
+                }
+            )
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -160,6 +176,7 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+
         result = _run_async(
             _send_to_platform(
                 platform,
@@ -171,14 +188,23 @@ def _handle_send(args):
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
-            result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+            result["note"] = (
+                f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+            )
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
+
                 source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
-                if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
+                if mirror_to_session(
+                    platform_name,
+                    chat_id,
+                    mirror_text,
+                    source_label=source_label,
+                    thread_id=thread_id,
+                ):
                     result["mirrored"] = True
             except Exception:
                 pass
@@ -232,7 +258,9 @@ def _get_cron_auto_delivery_target():
     }
 
 
-def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
+def _maybe_skip_cron_duplicate_send(
+    platform_name: str, chat_id: str, thread_id: str | None
+):
     """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
     auto_target = _get_cron_auto_delivery_target()
     if not auto_target:
@@ -263,7 +291,9 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+async def _send_to_platform(
+    platform, pconfig, chat_id, message, thread_id=None, media_files=None
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -297,7 +327,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         last_result = None
         for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
+            is_last = i == len(chunks) - 1
             result = await _send_telegram(
                 pconfig.token,
                 chat_id,
@@ -339,8 +369,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
+        elif platform == Platform.MATRIX:
+            result = await _send_matrix(
+                pconfig.token, pconfig.extra.get("homeserver", ""), chat_id, chunk
+            )
         else:
-            result = {"error": f"Direct sending not yet implemented for {platform.value}"}
+            result = {
+                "error": f"Direct sending not yet implemented for {platform.value}"
+            }
 
         if isinstance(result, dict) and result.get("error"):
             return result
@@ -367,7 +403,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+        _has_html = bool(re.search(r"<[a-zA-Z/][^>]*>", message))
 
         if _has_html:
             formatted = message
@@ -375,7 +411,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         else:
             # Reuse the gateway adapter's format_message for markdown→MarkdownV2
             try:
-                from gateway.platforms.telegram import TelegramAdapter, _escape_mdv2, _strip_mdv2
+                from gateway.platforms.telegram import (
+                    TelegramAdapter,
+                    _escape_mdv2,
+                    _strip_mdv2,
+                )
+
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
                 formatted = _adapter.format_message(message)
             except Exception:
@@ -396,24 +437,37 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if formatted.strip():
             try:
                 last_msg = await bot.send_message(
-                    chat_id=int_chat_id, text=formatted,
-                    parse_mode=send_parse_mode, **thread_kwargs
+                    chat_id=int_chat_id,
+                    text=formatted,
+                    parse_mode=send_parse_mode,
+                    **thread_kwargs,
                 )
             except Exception as md_error:
                 # Parse failed, fall back to plain text
-                if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
-                    logger.warning("Parse mode %s failed in _send_telegram, falling back to plain text: %s", send_parse_mode, md_error)
+                if (
+                    "parse" in str(md_error).lower()
+                    or "markdown" in str(md_error).lower()
+                    or "html" in str(md_error).lower()
+                ):
+                    logger.warning(
+                        "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
+                        send_parse_mode,
+                        md_error,
+                    )
                     if not _has_html:
                         try:
                             from gateway.platforms.telegram import _strip_mdv2
+
                             plain = _strip_mdv2(formatted)
                         except Exception:
                             plain = message
                     else:
                         plain = message
                     last_msg = await bot.send_message(
-                        chat_id=int_chat_id, text=plain,
-                        parse_mode=None, **thread_kwargs
+                        chat_id=int_chat_id,
+                        text=plain,
+                        parse_mode=None,
+                        **thread_kwargs,
                     )
                 else:
                     raise
@@ -469,7 +523,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             result["warnings"] = warnings
         return result
     except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
+        return {
+            "error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"
+        }
     except Exception as e:
         return {"error": f"Telegram send failed: {e}"}
 
@@ -487,12 +543,19 @@ async def _send_discord(token, chat_id, message):
         url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json={"content": message}) as resp:
+            async with session.post(
+                url, headers=headers, json={"content": message}
+            ) as resp:
                 if resp.status not in (200, 201):
                     body = await resp.text()
                     return {"error": f"Discord API error ({resp.status}): {body}"}
                 data = await resp.json()
-        return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": data.get("id")}
+        return {
+            "success": True,
+            "platform": "discord",
+            "chat_id": chat_id,
+            "message_id": data.get("id"),
+        }
     except Exception as e:
         return {"error": f"Discord send failed: {e}"}
 
@@ -505,12 +568,22 @@ async def _send_slack(token, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         url = "https://slack.com/api/chat.postMessage"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json={"channel": chat_id, "text": message}) as resp:
+            async with session.post(
+                url, headers=headers, json={"channel": chat_id, "text": message}
+            ) as resp:
                 data = await resp.json()
                 if data.get("ok"):
-                    return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
+                    return {
+                        "success": True,
+                        "platform": "slack",
+                        "chat_id": chat_id,
+                        "message_id": data.get("ts"),
+                    }
                 return {"error": f"Slack API error: {data.get('error', 'unknown')}"}
     except Exception as e:
         return {"error": f"Slack send failed: {e}"}
@@ -591,7 +664,9 @@ async def _send_email(extra, chat_id, message):
     smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
 
     if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        return {
+            "error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"
+        }
 
     try:
         msg = MIMEText(message, "plain", "utf-8")
@@ -625,7 +700,9 @@ async def _send_sms(auth_token, chat_id, message):
     account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
     from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
     if not account_sid or not auth_token or not from_number:
-        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+        return {
+            "error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"
+        }
 
     # Strip markdown — SMS renders it as literal characters
     message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
@@ -657,9 +734,73 @@ async def _send_sms(auth_token, chat_id, message):
                     error_msg = body.get("message", str(body))
                     return {"error": f"Twilio API error ({resp.status}): {error_msg}"}
                 msg_sid = body.get("sid", "")
-                return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
+                return {
+                    "success": True,
+                    "platform": "sms",
+                    "chat_id": chat_id,
+                    "message_id": msg_sid,
+                }
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_matrix(token, homeserver, chat_id, message):
+    """Send via Matrix client-server API (one-shot HTTP PUT, no E2EE).
+
+    Uses a simple PUT to the /send endpoint with an access token.
+    Converts basic markdown to HTML for rich rendering in Matrix clients.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    if not token or not homeserver:
+        return {
+            "error": "Matrix not configured (MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER required)"
+        }
+
+    import os
+    import time
+    import urllib.parse
+
+    txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
+    encoded_room = urllib.parse.quote(chat_id)
+    url = f"{homeserver}/_matrix/client/v3/rooms/{encoded_room}/send/m.room.message/{txn_id}"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # Basic markdown to HTML for Matrix formatted_body
+    html_body = message
+    html_body = re.sub(
+        r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body, flags=re.DOTALL
+    )
+    html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body, flags=re.DOTALL)
+    html_body = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', html_body)
+    html_body = html_body.replace("\n", "<br>")
+
+    body = {
+        "msgtype": "m.text",
+        "body": message,
+        "format": "org.matrix.custom.html",
+        "formatted_body": html_body,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.put(url, json=body, headers=headers, ssl=False) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "platform": "matrix",
+                        "chat_id": chat_id,
+                        "event_id": data.get("event_id"),
+                    }
+                else:
+                    text = await resp.text()
+                    return {"error": f"Matrix send failed ({resp.status}): {text}"}
+    except Exception as e:
+        return {"error": f"Matrix send failed: {e}"}
 
 
 def _check_send_message():
@@ -669,6 +810,7 @@ def _check_send_message():
         return True
     try:
         from gateway.status import is_gateway_running
+
         return is_gateway_running()
     except Exception:
         return False

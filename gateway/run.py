@@ -904,7 +904,9 @@ class GatewayRunner:
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "SMS_ALLOWED_USERS",
+                       "SIGNAL_ALLOWED_USERS", "EMAIL_ALLOWED_USERS",
+                       "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
+                       "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")

@@ -105,6 +105,29 @@ class TestResponseStore:
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
 
+    def test_delete_clears_conversation_mapping(self):
+        """Deleting a response also removes conversation mappings that reference it."""
+        store = ResponseStore(max_size=10)
+        store.put("resp_1", {"output": "hello"})
+        store.set_conversation("chat-a", "resp_1")
+        assert store.get_conversation("chat-a") == "resp_1"
+        store.delete("resp_1")
+        assert store.get_conversation("chat-a") is None
+
+    def test_eviction_clears_conversation_mapping(self):
+        """LRU eviction also removes conversation mappings for evicted responses."""
+        store = ResponseStore(max_size=2)
+        store.put("resp_1", {"output": "one"})
+        store.set_conversation("chat-a", "resp_1")
+        store.put("resp_2", {"output": "two"})
+        store.set_conversation("chat-b", "resp_2")
+        # Adding a 3rd should evict resp_1 and its conversation mapping
+        store.put("resp_3", {"output": "three"})
+        assert store.get("resp_1") is None
+        assert store.get_conversation("chat-a") is None
+        # resp_2 mapping should still be intact
+        assert store.get_conversation("chat-b") == "resp_2"
+
 
 # ---------------------------------------------------------------------------
 # _IdempotencyCache
@@ -2869,6 +2892,45 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+    @pytest.mark.asyncio
+    async def test_conversation_reuse_after_eviction_no_404(self, adapter):
+        """After eviction clears a conversation mapping, reusing that name starts fresh (no 404)."""
+        adapter._response_store = ResponseStore(max_size=1)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "First", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                # Create conversation -> resp stored
+                resp1 = await cli.post("/v1/responses", json={
+                    "input": "hello",
+                    "conversation": "my-chat",
+                })
+                assert resp1.status == 200
+
+                # Evict by adding another response
+                mock_run.return_value = (
+                    {"final_response": "Other", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                await cli.post("/v1/responses", json={"input": "other"})
+
+                # Conversation mapping should have been cleaned by eviction
+                assert adapter._response_store.get_conversation("my-chat") is None
+
+                # Reuse conversation name — should start fresh, not 404
+                mock_run.return_value = (
+                    {"final_response": "Restarted", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp3 = await cli.post("/v1/responses", json={
+                    "input": "hello again",
+                    "conversation": "my-chat",
+                })
+                assert resp3.status == 200
 
 
 # ---------------------------------------------------------------------------

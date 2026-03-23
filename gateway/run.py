@@ -1920,6 +1920,7 @@ class GatewayRunner:
         if history and len(history) >= 4:
             from agent.model_metadata import (
                 estimate_messages_tokens_rough,
+                estimate_request_tokens_rough,
                 get_model_context_length,
             )
 
@@ -2079,8 +2080,11 @@ class GatewayRunner:
                                 session_entry.last_prompt_tokens = 0
                                 history = _compressed
                                 _new_count = len(_compressed)
-                                _new_tokens = estimate_messages_tokens_rough(
-                                    _compressed
+                                _new_tokens = estimate_request_tokens_rough(
+                                    _compressed,
+                                    system_prompt=getattr(_hyg_agent, "_cached_system_prompt", "") or "",
+                                    tools=getattr(_hyg_agent, "tools", None),
+                                    prefill_messages=getattr(_hyg_agent, "prefill_messages", None),
                                 )
 
                                 logger.info(
@@ -2097,7 +2101,8 @@ class GatewayRunner:
                                             f"🗜️ Compressed: {_msg_count} → "
                                             f"{_new_count} messages, "
                                             f"~{_approx_tokens:,} → "
-                                            f"~{_new_tokens:,} tokens",
+                                            f"~{_new_tokens:,} tokens "
+                                            f"(full request estimate)",
                                             metadata=_hyg_meta,
                                         )
                                     except Exception:

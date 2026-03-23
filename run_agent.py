@@ -80,6 +80,7 @@ from agent.prompt_builder import (
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     save_context_length,
 )
@@ -5531,9 +5532,12 @@ class AIAgent:
             and len(messages) > self.context_compressor.protect_first_n
                                 + self.context_compressor.protect_last_n + 1
         ):
-            _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
-            _msg_tok_est = estimate_messages_tokens_rough(messages)
-            _preflight_tokens = _sys_tok_est + _msg_tok_est
+            _preflight_tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=self.tools or None,
+                prefill_messages=self.prefill_messages or None,
+            )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(
@@ -5559,9 +5563,12 @@ class AIAgent:
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
                     # Re-estimate after compression
-                    _sys_tok_est = estimate_tokens_rough(active_system_prompt or "")
-                    _msg_tok_est = estimate_messages_tokens_rough(messages)
-                    _preflight_tokens = _sys_tok_est + _msg_tok_est
+                    _preflight_tokens = estimate_request_tokens_rough(
+                        messages,
+                        system_prompt=active_system_prompt or "",
+                        tools=self.tools or None,
+                        prefill_messages=self.prefill_messages or None,
+                    )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
@@ -5686,8 +5693,11 @@ class AIAgent:
             api_messages = self._sanitize_api_messages(api_messages)
 
             # Calculate approximate request size for logging
-            total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            approx_tokens = estimate_request_tokens_rough(
+                api_messages,
+                tools=self.tools if self.tools else None,
+            )
+            total_chars = approx_tokens * 4
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
@@ -6260,6 +6270,7 @@ class AIAgent:
                         'exceeds the limit', 'context window',
                         'request entity too large',  # OpenRouter/Nous 413 safety net
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
+                        'prompt exceeds max length',  # Z.AI GLM coding endpoint
                     ])
 
                     # Fallback heuristic: Anthropic sometimes returns a generic
@@ -6300,6 +6311,12 @@ class AIAgent:
                             compressor.context_length = new_ctx
                             compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
                             compressor._context_probed = True
+                            if parsed_limit and parsed_limit == new_ctx:
+                                try:
+                                    if self.model and self.base_url:
+                                        save_context_length(self.model, self.base_url, new_ctx)
+                                except Exception as _cache_err:
+                                    logger.debug("Failed to cache stepped-down context length: %s", _cache_err)
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)

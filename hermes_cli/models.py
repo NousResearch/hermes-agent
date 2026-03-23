@@ -277,6 +277,37 @@ _KNOWN_PROVIDER_NAMES: set[str] = (
 )
 
 
+def _load_custom_providers() -> list[dict]:
+    """Load and normalize custom_providers entries from config.yaml.
+
+    Each returned dict has: name (str), norm (str), base_url (str),
+    models (dict, may be empty).
+    """
+    try:
+        from hermes_cli.config import load_config
+        entries = load_config().get("custom_providers") or []
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+    result = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        name = (e.get("name") or "").strip()
+        base_url = (e.get("base_url") or "").strip()
+        if not name or not base_url:
+            continue
+        models = e.get("models")
+        result.append({
+            "name": name,
+            "norm": name.lower().replace(" ", "-"),
+            "base_url": base_url,
+            "models": models if isinstance(models, dict) else {},
+        })
+    return result
+
+
 def list_available_providers() -> list[dict[str, str]]:
     """Return info about all providers the user could use with ``provider:model``.
 
@@ -319,6 +350,18 @@ def list_available_providers() -> list[dict[str, str]]:
             "aliases": alias_list,
             "authenticated": has_creds,
         })
+
+    # Append named custom providers from config.yaml custom_providers list
+    for cp in _load_custom_providers():
+        result.append({
+            "id": "custom:" + cp["norm"],
+            "label": cp["name"],
+            "aliases": [],
+            "authenticated": True,
+            "base_url": cp["base_url"],
+            "models": list(cp["models"].keys()),
+        })
+
     return result
 
 
@@ -344,19 +387,50 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
-            return (normalize_provider(provider_part), model_part)
+        if provider_part and model_part:
+            if provider_part in _KNOWN_PROVIDER_NAMES:
+                return (normalize_provider(provider_part), model_part)
+            # Check if it's a named custom provider (e.g. sparky-qwen-35b:legolm)
+            custom_providers = _load_custom_providers()
+            if provider_part in {cp["norm"] for cp in custom_providers}:
+                return ("custom:" + provider_part, model_part)
+
+    # If no colon or no match, check custom providers:
+    # 1. Bare provider name → auto-select sole model (or require explicit model)
+    # 2. Bare model name → find which custom provider owns it (refuse if ambiguous)
+    norm = stripped.strip().lower().replace(" ", "-")
+    custom_providers = _load_custom_providers()
+
+    for cp in custom_providers:
+        if cp["norm"] == norm:
+            if len(cp["models"]) == 1:
+                return ("custom:" + norm, next(iter(cp["models"])))
+            # Multiple models — can't auto-select
+            return (current_provider, stripped)
+
+    matches = [cp for cp in custom_providers if stripped in cp["models"]]
+    if len(matches) == 1:
+        return ("custom:" + matches[0]["norm"], stripped)
+    # len > 1 means ambiguous — fall through and let validation handle it
+
     return (current_provider, stripped)
 
 
 def _get_custom_base_url() -> str:
-    """Get the custom endpoint base_url from config.yaml."""
+    """Get the custom endpoint base_url from config.yaml.
+
+    Only returns model.base_url when the configured provider is "custom"
+    (or unset) — otherwise a non-custom provider's base_url would be
+    misattributed to the generic custom endpoint.
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
-            return str(model_cfg.get("base_url", "")).strip()
+            provider = str(model_cfg.get("provider", "")).strip().lower()
+            if provider in ("", "custom"):
+                return str(model_cfg.get("base_url", "")).strip()
     except Exception:
         pass
     return ""

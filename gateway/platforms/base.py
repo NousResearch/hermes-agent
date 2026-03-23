@@ -765,7 +765,7 @@ class BasePlatformAdapter(ABC):
         #             and relative paths (./foo.png)
         # (?:~/|/)    anchors to absolute or home-relative paths
         path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            r'(?<![/:\w.])(?:~/|/)(?:[\w.\- ]+/)*[\w.\- ]+\.(?:' + ext_part + r')\b',
             re.IGNORECASE,
         )
 

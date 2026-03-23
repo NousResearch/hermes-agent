@@ -430,7 +430,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     result = {
-        "provider": "custom",
+        "provider": requested_provider,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

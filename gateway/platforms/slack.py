@@ -198,6 +198,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Edit a previously sent Slack message."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+        content = self.format_message(content)
         try:
             await self._app.client.chat_update(
                 channel=chat_id,
@@ -362,7 +363,42 @@ class SlackAdapter(BasePlatformAdapter):
         #    no extra escaping happens to the > character)
         # Slack uses the same > prefix, so this is a no-op for content.
 
-        # 9) Restore placeholders in reverse order
+        # 9) Convert markdown tables into fenced code blocks
+        def _convert_tables(text: str) -> str:
+            lines = text.split('\n')
+            result = []
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                # Detect start of a markdown table row
+                if re.match(r'^\|.*\|', line):
+                    table_lines = []
+                    while i < len(lines) and re.match(r'^\|.*\|', lines[i]):
+                        table_lines.append(lines[i])
+                        i += 1
+                    # Filter out separator rows (lines with only |, -, :, space)
+                    data_rows = [
+                        l for l in table_lines
+                        if not re.match(r'^[\|\-\:\s]+$', l)
+                    ]
+                    if data_rows:
+                        result.append('```')
+                        for row in data_rows:
+                            # Strip leading/trailing pipes and spaces
+                            cells = re.split(r'\s*\|\s*', row.strip().strip('|'))
+                            result.append('  '.join(cells))
+                        result.append('```')
+                    continue
+                result.append(line)
+                i += 1
+            return '\n'.join(result)
+
+        text = _convert_tables(text)
+
+        # 10) Strip horizontal rules (--- / *** / ___ with 3+ chars)
+        text = re.sub(r'^(?:-{3,}|\*{3,}|_{3,})\s*$', '', text, flags=re.MULTILINE)
+
+        # 11) Restore placeholders in reverse order
         for key in reversed(list(placeholders.keys())):
             text = text.replace(key, placeholders[key])
 

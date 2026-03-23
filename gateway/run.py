@@ -5512,7 +5512,7 @@ class GatewayRunner:
                     if first_response and not _already_streamed:
                         try:
                             await adapter.send(source.chat_id, first_response,
-                                               metadata=getattr(event, "metadata", None))
+                                               metadata={"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None)
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                 # else: interrupted — discard the interrupted response ("Operation

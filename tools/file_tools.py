@@ -5,24 +5,12 @@ import errno
 import json
 import logging
 import os
-import re
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
-
-# Regex to match ANSI escape sequences (CSI codes, OSC codes, simple escapes).
-# Models occasionally copy these from terminal output into file content.
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-B012]|\x1b[=>]")
-
-
-def _strip_ansi(text: str) -> str:
-    """Remove ANSI escape sequences from text destined for file writes."""
-    if not text or "\x1b" not in text:
-        return text
-    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -301,7 +289,6 @@ def notify_other_tool_call(task_id: str = "default"):
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     try:
-        content = _strip_ansi(content)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
         return json.dumps(result.to_dict(), ensure_ascii=False)
@@ -325,13 +312,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return json.dumps({"error": "path required"})
             if old_string is None or new_string is None:
                 return json.dumps({"error": "old_string and new_string required"})
-            old_string = _strip_ansi(old_string)
-            new_string = _strip_ansi(new_string)
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
                 return json.dumps({"error": "patch content required"})
-            patch = _strip_ansi(patch)
             result = file_ops.patch_v4a(patch)
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})

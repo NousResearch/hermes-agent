@@ -577,6 +577,12 @@ def execute_code(
         server_sock = None  # prevent double close in finally
         rpc_thread.join(timeout=3)
 
+        # Strip ANSI escape sequences so the model never sees terminal
+        # formatting — prevents it from copying escapes into file writes.
+        from tools.ansi_strip import strip_ansi
+        stdout_text = strip_ansi(stdout_text)
+        stderr_text = strip_ansi(stderr_text)
+
         # Build response
         result: Dict[str, Any] = {
             "status": status,

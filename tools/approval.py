@@ -280,12 +280,28 @@ def prompt_dangerous_approval(command: str, description: str,
         sys.stdout.flush()
 
 
+def _normalize_approval_mode(mode) -> str:
+    """Normalize approval mode values loaded from YAML/config.
+
+    YAML 1.1 treats bare words like `off` as booleans, so a config entry like
+    `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
+    intended string mode instead of falling back to manual approvals.
+    """
+    if isinstance(mode, bool):
+        return "off" if mode is False else "manual"
+    if isinstance(mode, str):
+        normalized = mode.strip().lower()
+        return normalized or "manual"
+    return "manual"
+
+
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("approvals", {}).get("mode", "manual")
+        mode = config.get("approvals", {}).get("mode", "manual")
+        return _normalize_approval_mode(mode)
     except Exception:
         return "manual"
 

@@ -198,7 +198,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     return {
-        "provider": "openrouter",
+        "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -280,7 +280,7 @@ def _resolve_openrouter_runtime(
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
     return {
-        "provider": "openrouter",
+        "provider": requested_norm if requested_norm in {"openrouter", "custom"} else "openrouter",
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

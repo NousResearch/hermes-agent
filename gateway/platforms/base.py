@@ -1052,13 +1052,12 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
-                                metadata=_thread_metadata,
                             )
 
                         if not media_result.success:
-                            print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
+                            logger.error("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                     except Exception as media_err:
-                        print(f"[{self.name}] Error sending media: {media_err}")
+                        logger.error("[%s] Error sending media: %s", self.name, media_err, exc_info=True)
 
                 # Send auto-detected local files as native attachments
                 for file_path in local_files:
@@ -1082,7 +1081,6 @@ class BasePlatformAdapter(ABC):
                             await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
-                                metadata=_thread_metadata,
                             )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)

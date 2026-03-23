@@ -310,10 +310,13 @@ class TestPluginToolVisibility:
         tool_names = [t["function"]["name"] for t in tools]
         assert "vis_tool" in tool_names
 
-        # Plugin tools are excluded when only other toolsets are enabled
+        # Plugin tools bypass the toolset filter — they are included even when
+        # only other toolsets are in enabled_toolsets (#2574).  This is the
+        # original design from PR #1555: plugins shouldn't require manual
+        # config updates to platform_toolsets.
         tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
         tool_names2 = [t["function"]["name"] for t in tools2]
-        assert "vis_tool" not in tool_names2
+        assert "vis_tool" in tool_names2  # included via plugin bypass
 
         # Plugin tools are included when no toolset filter is active (all enabled)
         tools3 = get_tool_definitions(quiet_mode=True)

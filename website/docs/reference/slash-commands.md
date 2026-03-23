@@ -90,7 +90,7 @@ User-defined quick commands from `quick_commands` in `~/.hermes/config.yaml` are
 
 ## Messaging slash commands
 
-The messaging gateway supports the following built-in commands inside Telegram, Discord, Slack, WhatsApp, Signal, Email, and Home Assistant chats:
+The messaging gateway supports the following built-in commands inside Telegram, Discord, Slack, WhatsApp, Kasia, Signal, Email, and Home Assistant chats:
 
 | Command | Description |
 |---------|-------------|

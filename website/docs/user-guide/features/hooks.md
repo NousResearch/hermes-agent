@@ -178,5 +178,5 @@ async def handle(event_type: str, context: dict):
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
-Hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not currently load hooks.
+Hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Kasia). The CLI does not currently load hooks.
 :::

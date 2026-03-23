@@ -51,7 +51,7 @@ The only prerequisite is **Git**. The installer automatically handles everything
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
-- **Node.js v22** (for browser automation and WhatsApp bridge)
+- **Node.js v22** (for browser automation plus the WhatsApp and Kasia bridges)
 - **ripgrep** (fast file search)
 - **ffmpeg** (audio format conversion for TTS)
 
@@ -146,17 +146,19 @@ Both are optional — if you skip them, the corresponding toolsets simply won't 
 
 ### Step 5: Install Node.js Dependencies (Optional)
 
-Only needed for **browser automation** (Browserbase-powered) and **WhatsApp bridge**:
+Only needed for **browser automation** (Browserbase-powered):
 
 ```bash
 npm install
 ```
 
+The **WhatsApp** and **Kasia** bridges install their own Node.js dependencies automatically the first time you run their setup flow or start the gateway.
+
 ### Step 6: Create the Configuration Directory
 
 ```bash
 # Create the directory structure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,kasia,whatsapp/session}
 
 # Copy the example config file
 cp cli-config.yaml.example ~/.hermes/config.yaml
@@ -240,10 +242,10 @@ export VIRTUAL_ENV="$(pwd)/venv"
 uv pip install -e ".[all]"
 uv pip install -e "./mini-swe-agent"
 uv pip install -e "./tinker-atropos"
-npm install  # optional, for browser tools and WhatsApp
+npm install  # optional, for browser tools
 
 # Configure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,kasia,whatsapp/session}
 cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env

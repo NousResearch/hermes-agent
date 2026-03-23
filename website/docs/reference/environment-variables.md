@@ -144,6 +144,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 ## Messaging
 
+### Telegram, Discord, Slack, and WhatsApp
+
 | Variable | Description |
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (from @BotFather) |
@@ -165,6 +167,58 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `WHATSAPP_ENABLED` | Enable the WhatsApp bridge (`true`/`false`) |
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`) |
+
+### Kasia
+
+Kasia exposes wallet and network settings in addition to the normal messaging allowlist. Most users only need the core variables below.
+
+#### Core
+
+| Variable | Description |
+|----------|-------------|
+| `KASIA_ENABLED` | Enable the Kasia bridge (`true`/`false`) |
+| `KASIA_SEED_PHRASE` | Kaspa seed phrase used to derive Hermes' Kasia wallet identity |
+| `KASIA_INDEXER_URL` | Primary Kasia indexer URL |
+| `KASIA_NODE_WBORSH_URL` | Primary Kaspa wRPC node URL |
+| `KASIA_ALLOWED_USERS` | Comma-separated Kasia addresses allowed to chat |
+| `KASIA_ALLOW_ALL_USERS` | Allow all Kasia users without an allowlist |
+
+#### Optional Routing
+
+These are only needed for proactive delivery, such as cron jobs or cross-platform sends. Normal Kasia chats work without them.
+
+| Variable | Description |
+|----------|-------------|
+| `KASIA_HOME_CHANNEL` | Default Kasia chat or broadcast target for cron delivery |
+| `KASIA_HOME_CHANNEL_NAME` | Display name for the Kasia home channel |
+
+#### Advanced Network and Runtime
+
+| Variable | Description |
+|----------|-------------|
+| `KASIA_INDEXER_URLS` | Comma-separated Kasia indexer URLs for failover |
+| `KASIA_NODE_WBORSH_URLS` | Comma-separated Kaspa wRPC node URLs for failover |
+| `KASIA_NETWORK` | Kaspa network name (default: `mainnet`) |
+| `KASIA_KNS_URL` | Optional KNS API URL override |
+| `KASIA_FEE_POLICY` | Kasia fee policy for outbound messages (default: `auto`) |
+| `KASIA_BRIDGE_PORT` | Local port for the Kasia bridge health/send API (default: `3010`) |
+| `KASIA_SEND_WAIT_MS` | How long the bridge waits for transaction visibility before returning (default: `5000`) |
+| `KASIA_MAX_MULTIPARTS` | Optional maximum number of multipart Kasia segments Hermes may emit |
+
+#### Broadcasts
+
+These are only relevant if you want Hermes to publish to or subscribe to Kasia broadcast channels.
+
+| Variable | Description |
+|----------|-------------|
+| `KASIA_ALLOWED_BROADCAST_CHANNELS` | Comma-separated broadcast channels Hermes is allowed to publish to |
+| `KASIA_BROADCAST_SUBSCRIPTIONS` | Broadcast subscriptions in `channel=publisher1\|publisher2;channel2=publisher3` format |
+| `KASIA_ALLOW_ALL_BROADCAST_CHANNELS` | Allow publishing to all Kasia broadcast channels |
+
+### Signal, SMS, Email, and Other Messaging Platforms
+
+| Variable | Description |
+|----------|-------------|
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |

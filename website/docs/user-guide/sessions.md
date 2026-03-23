@@ -149,7 +149,7 @@ When you resume by name (`hermes -c "my project"`), it automatically picks the m
 
 ### /title in Messaging Platforms
 
-The `/title` command works in all gateway platforms (Telegram, Discord, Slack, WhatsApp):
+The `/title` command works in all gateway platforms (Telegram, Discord, Slack, WhatsApp, Kasia):
 
 - `/title My Research` — set the session title
 - `/title` — show the current title

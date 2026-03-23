@@ -36,6 +36,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes kasia` | Configure and diagnose the Kasia bridge. |
 | `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
@@ -149,6 +150,17 @@ hermes whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes kasia`
+
+```bash
+hermes kasia [setup|doctor]
+```
+
+Runs the Kasia setup flow or the Kasia-specific diagnostics:
+
+- `hermes kasia` or `hermes kasia setup` - configure the Kasia bridge, wallet seed phrase, indexer, node, and access settings
+- `hermes kasia doctor` - inspect Kasia config, bridge health, active endpoints, and wallet funding status
 
 ## `hermes login` / `hermes logout`
 

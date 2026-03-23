@@ -114,6 +114,47 @@ def validate_kasia_seed_phrase(seed_phrase: str) -> tuple[bool, str | None]:
     return True, None
 
 
+def _kasia_bridge_paths() -> tuple[Path, Path, Path]:
+    """Return the Kasia bridge directory plus its key runtime paths."""
+    bridge_dir = PROJECT_ROOT / "scripts" / "kasia-bridge"
+    return bridge_dir, bridge_dir / "bridge.js", bridge_dir / "node_modules"
+
+
+def _ensure_kasia_bridge_dependencies(io: KasiaCLIIO) -> bool:
+    """Install Kasia bridge dependencies before setup validation uses them."""
+    bridge_dir, bridge_script, node_modules_dir = _kasia_bridge_paths()
+    if not bridge_script.exists():
+        io.print_error(f"Kasia bridge script not found at {bridge_script}")
+        return False
+
+    if node_modules_dir.exists():
+        return True
+
+    io.print_info("Installing Kasia bridge dependencies...")
+    try:
+        result = subprocess.run(
+            ["npm", "install", "--silent"],
+            cwd=str(bridge_dir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError:
+        io.print_error("npm not found on PATH. Install Node.js/npm first.")
+        return False
+    except Exception as exc:
+        io.print_error(f"Failed to install Kasia bridge dependencies: {exc}")
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or f"exit code {result.returncode}"
+        io.print_error(f"Kasia bridge dependency install failed: {detail}")
+        return False
+
+    io.print_success("Kasia bridge dependencies installed")
+    return True
+
+
 def prompt_kasia_seed_phrase(
     *,
     get_env_value: Callable[[str], Optional[str]],
@@ -324,6 +365,9 @@ def run_kasia_setup(
     io.print_info("Press Enter to use the recommended default shown in brackets.")
     print()
 
+    if not _ensure_kasia_bridge_dependencies(io):
+        return False
+
     _run_kasia_setup_prompts(io, prompt_seed_phrase=prompt_seed_phrase)
 
     print()
@@ -345,6 +389,17 @@ def fetch_kasia_bridge_health(bridge_port: Optional[int]) -> dict[str, Any] | No
 
 def _doctor_mark(ok: bool) -> str:
     return "✓" if ok else "✗"
+
+
+def _format_sompi_balance(value: Any) -> Optional[str]:
+    """Render a sompi integer value as a KAS string with 8 decimals."""
+    try:
+        sompi = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    sign = "-" if sompi < 0 else ""
+    whole, fractional = divmod(abs(sompi), 100_000_000)
+    return f"{sign}{whole}.{fractional:08d}"
 
 
 def default_kasia_kns_url(network: Optional[str]) -> str:
@@ -397,6 +452,34 @@ def _active_health_url(health: dict[str, Any] | None, pool_key: str, direct_key:
     return str(pool.get("activeUrl") or health.get(direct_key) or "").strip()
 
 
+def _wallet_funding_status_line(
+    health: dict[str, Any] | None,
+) -> tuple[bool, str] | None:
+    """Build an operator-facing wallet funding summary from bridge health."""
+    if not health:
+        return None
+
+    funding_state = str(health.get("walletFundingState") or "").strip().lower()
+    on_chain = _format_sompi_balance(health.get("walletBalanceSompi"))
+    spendable = _format_sompi_balance(health.get("availableMatureBalanceSompi"))
+    recommended = _format_sompi_balance(health.get("recommendedMinBalanceSompi"))
+
+    balance_parts = []
+    if on_chain is not None:
+        balance_parts.append(f"{on_chain} KAS on-chain")
+    if spendable is not None:
+        balance_parts.append(f"{spendable} KAS spendable")
+    if recommended is not None:
+        balance_parts.append(f"recommended >= {recommended} KAS")
+
+    balance_text = ", ".join(balance_parts)
+    detail = funding_state or "unknown"
+    if balance_text:
+        detail = f"{detail} ({balance_text})"
+
+    return funding_state not in {"low", "unfunded"}, detail
+
+
 def _kasia_paired_user_count() -> int:
     """Return the number of approved Kasia DM pairings stored on disk."""
     from hermes_cli.config import get_hermes_home
@@ -419,9 +502,7 @@ def _kasia_paired_user_count() -> int:
 def run_kasia_doctor() -> bool:
     """Run Kasia-specific diagnostics without affecting shared Hermes status."""
     settings = load_kasia_settings(env=os.environ)
-    bridge_dir = PROJECT_ROOT / "scripts" / "kasia-bridge"
-    bridge_script = bridge_dir / "bridge.js"
-    node_modules_dir = bridge_dir / "node_modules"
+    bridge_dir, bridge_script, node_modules_dir = _kasia_bridge_paths()
     node_ok, node_detail = _node_runtime_status()
     health = fetch_kasia_bridge_health(settings.bridge_port)
 
@@ -484,6 +565,12 @@ def run_kasia_doctor() -> bool:
     print("Runtime")
     if health:
         print(_doctor_line("Bridge health", True, f"reachable on 127.0.0.1:{settings.bridge_port}"))
+        wallet_funding = _wallet_funding_status_line(health)
+        if wallet_funding:
+            funding_ok, funding_detail = wallet_funding
+            print(_doctor_line("Wallet funding", funding_ok, funding_detail))
+            if not funding_ok:
+                issues += 1
         active_indexer = _active_health_url(health, "indexerPool", "indexerUrl")
         active_node = _active_health_url(health, "nodePool", "nodeUrl")
         if active_indexer:

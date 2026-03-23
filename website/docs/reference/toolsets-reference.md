@@ -23,6 +23,7 @@ Toolsets are named bundles of tools that you can enable with `hermes chat --tool
 | `hermes-email` | platform | _(same as hermes-cli)_ |
 | `hermes-gateway` | composite | Union of all messaging platform toolsets |
 | `hermes-homeassistant` | platform | _(same as hermes-cli)_ |
+| `hermes-kasia` | platform | _(same as hermes-cli)_ |
 | `hermes-signal` | platform | _(same as hermes-cli)_ |
 | `hermes-slack` | platform | _(same as hermes-cli)_ |
 | `hermes-sms` | platform | _(same as hermes-cli)_ |

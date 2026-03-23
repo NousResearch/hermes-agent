@@ -104,7 +104,67 @@ def test_validate_kasia_seed_phrase_rejects_non_12_or_24_word_lengths(monkeypatc
     assert calls == []
 
 
+def test_run_kasia_setup_installs_bridge_dependencies_before_prompting(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(kasia_mod.subprocess, "run", fake_run)
+
+    env_values = {}
+    saved_env = {}
+    prompt_values = {
+        "Kasia indexer URL": "https://indexer.kasia.fyi",
+        "Kaspa node URL": "wss://wrpc.kasia.fyi",
+        "Kaspa network": "mainnet",
+        "Allowed Kasia addresses (comma-separated, leave empty to set later)": "kaspa:qpeeraddress",
+        "Kasia home channel address (leave empty to set later)": "kaspa:qhomeaddress",
+    }
+    yes_no_answers = {
+        "Allow all Kasia users to message Hermes?": False,
+    }
+
+    io, _infos, successes, _warnings, errors = _test_io(
+        env_values,
+        saved_env,
+        prompt_values=prompt_values,
+        yes_no_answers=yes_no_answers,
+    )
+
+    configured = kasia_mod.run_kasia_setup(
+        io,
+        prompt_seed_phrase=lambda: "seed words go here",
+    )
+
+    assert configured is True
+    assert calls == [
+        (
+            (["npm", "install", "--silent"],),
+            {
+                "cwd": str(bridge_dir),
+                "capture_output": True,
+                "text": True,
+                "timeout": 120,
+            },
+        )
+    ]
+    assert any("Kasia bridge dependencies installed" in line for line in successes)
+    assert errors == []
+
+
 def test_run_kasia_setup_saves_expected_values(monkeypatch):
+    monkeypatch.setattr(kasia_mod, "_ensure_kasia_bridge_dependencies", lambda _io: True)
     env_values = {}
     saved_env = {}
     prompt_values = {
@@ -151,6 +211,7 @@ def test_run_kasia_setup_saves_expected_values(monkeypatch):
 
 
 def test_run_kasia_setup_defaults_allow_all_to_false(monkeypatch):
+    monkeypatch.setattr(kasia_mod, "_ensure_kasia_bridge_dependencies", lambda _io: True)
     env_values = {}
     saved_env = {}
     prompt_values = {
@@ -178,6 +239,7 @@ def test_run_kasia_setup_defaults_allow_all_to_false(monkeypatch):
 
 
 def test_run_kasia_setup_resets_existing_priority_fee_policy_to_auto(monkeypatch):
+    monkeypatch.setattr(kasia_mod, "_ensure_kasia_bridge_dependencies", lambda _io: True)
     env_values = {
         "KASIA_FEE_POLICY": "priority",
     }
@@ -240,6 +302,10 @@ def test_run_kasia_doctor_includes_live_health(monkeypatch, capsys, tmp_path):
         lambda _port: {
             "indexerPool": {"activeUrl": "https://indexer-backup.example.com", "degraded": True},
             "nodePool": {"activeUrl": "wss://node-backup.example.com"},
+            "walletFundingState": "ready",
+            "walletBalanceSompi": "500000000",
+            "availableMatureBalanceSompi": "500000000",
+            "recommendedMinBalanceSompi": "40000000",
         },
     )
     monkeypatch.setattr(
@@ -256,6 +322,8 @@ def test_run_kasia_doctor_includes_live_health(monkeypatch, capsys, tmp_path):
     assert "Indexers:   2 configured" in output
     assert "Nodes:      2 configured" in output
     assert "Broadcasts: publish allowlist for #alerts, #ops" in output
+    assert "✓ Wallet funding" in output
+    assert "ready (5.00000000 KAS on-chain, 5.00000000 KAS spendable, recommended >= 0.40000000 KAS)" in output
     assert "Active indexer: https://indexer-backup.example.com" in output
     assert "Active node:    wss://node-backup.example.com" in output
     assert "Indexer pool is degraded / failover active" in output
@@ -323,6 +391,45 @@ def test_run_kasia_doctor_fails_when_bridge_is_unreachable(monkeypatch, capsys, 
     assert "Bridge health" in output
     assert "Kasia doctor found configuration or dependency issues." in output
     assert "Kasia configuration looks good." not in output
+
+
+def test_run_kasia_doctor_fails_when_wallet_funding_is_low(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KASIA_ENABLED", "true")
+    monkeypatch.setenv("KASIA_SEED_PHRASE", "seed words go here")
+    monkeypatch.setenv("KASIA_INDEXER_URL", "https://indexer.example.com")
+    monkeypatch.setenv("KASIA_NODE_WBORSH_URL", "wss://node.example.com")
+    monkeypatch.setattr(kasia_mod, "PROJECT_ROOT", tmp_path)
+
+    bridge_dir = tmp_path / "scripts" / "kasia-bridge"
+    bridge_dir.mkdir(parents=True)
+    (bridge_dir / "bridge.js").write_text("// test bridge\n")
+    (bridge_dir / "node_modules").mkdir()
+
+    monkeypatch.setattr(
+        kasia_mod,
+        "fetch_kasia_bridge_health",
+        lambda _port: {
+            "indexerPool": {"activeUrl": "https://indexer.example.com"},
+            "nodePool": {"activeUrl": "wss://node.example.com"},
+            "walletFundingState": "low",
+            "walletBalanceSompi": "27881431",
+            "availableMatureBalanceSompi": "27881431",
+            "recommendedMinBalanceSompi": "40000000",
+        },
+    )
+    monkeypatch.setattr(
+        kasia_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.1.0", stderr=""),
+    )
+
+    assert kasia_mod.run_kasia_doctor() is False
+
+    output = capsys.readouterr().out
+    assert "✗ Wallet funding" in output
+    assert "low (0.27881431 KAS on-chain, 0.27881431 KAS spendable, recommended >= 0.40000000 KAS)" in output
+    assert "Kasia doctor found configuration or dependency issues." in output
 
 
 def test_run_kasia_doctor_counts_paired_users_as_access(monkeypatch, capsys, tmp_path):

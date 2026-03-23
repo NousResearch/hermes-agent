@@ -523,6 +523,22 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Telegram settings → env vars (env vars take precedence)
+            telegram_cfg = yaml_cfg.get("telegram", {})
+            if isinstance(telegram_cfg, dict):
+                if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+                    os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+                frc = telegram_cfg.get("free_response_channels")
+                if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHANNELS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["TELEGRAM_FREE_RESPONSE_CHANNELS"] = str(frc)
+                tw = telegram_cfg.get("trigger_words")
+                if tw is not None and not os.getenv("TELEGRAM_TRIGGER_WORDS"):
+                    if isinstance(tw, list):
+                        tw = ",".join(str(v) for v in tw)
+                    os.environ["TELEGRAM_TRIGGER_WORDS"] = str(tw)
     except Exception:
         pass
 

@@ -1053,7 +1053,69 @@ class TelegramAdapter(BasePlatformAdapter):
         text = ''.join(_safe_parts)
 
         return text
-    
+
+    def _is_bot_mentioned(self, message: Message) -> bool:
+        """Check if the bot is @mentioned in a Telegram message."""
+        if not self._bot or not self._bot.username:
+            return False
+        bot_username = self._bot.username.lower()
+        # Check message entities for @mention
+        for entity in (message.entities or []):
+            if entity.type == "mention":
+                mentioned = message.text[entity.offset:entity.offset + entity.length].lstrip("@").lower()
+                if mentioned == bot_username:
+                    return True
+            elif entity.type == "text_mention" and entity.user:
+                if entity.user.id == self._bot.id:
+                    return True
+        return False
+
+    def _is_reply_to_bot(self, message: Message) -> bool:
+        """Check if the message is a reply to one of the bot's messages."""
+        if not message.reply_to_message or not message.reply_to_message.from_user:
+            return False
+        return self._bot is not None and message.reply_to_message.from_user.id == self._bot.id
+
+    def _strip_bot_mention(self, text: str) -> str:
+        """Remove the bot's @mention from the message text."""
+        if not self._bot or not self._bot.username:
+            return text
+        return re.sub(rf"@{re.escape(self._bot.username)}\b", "", text, flags=re.IGNORECASE).strip()
+
+    def _should_skip_group_message(self, message: Message) -> bool:
+        """Return True if a group message should be ignored (require_mention mode)."""
+        chat = message.chat
+        if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return False  # Always process DMs and channels
+
+        require_mention = os.getenv("TELEGRAM_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+        if not require_mention:
+            return False
+
+        # Allow if bot is @mentioned
+        if self._is_bot_mentioned(message):
+            return False
+
+        # Allow if replying to the bot
+        if self._is_reply_to_bot(message):
+            return False
+
+        # Check free response channels (chats where bot responds without mention)
+        free_channels_raw = os.getenv("TELEGRAM_FREE_RESPONSE_CHANNELS", "")
+        if free_channels_raw:
+            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            if str(chat.id) in free_channels:
+                return False
+
+        # Check trigger words (respond without @mention if message contains a trigger)
+        trigger_words_raw = os.getenv("TELEGRAM_TRIGGER_WORDS", "")
+        if trigger_words_raw and message.text:
+            triggers = {w.strip().lower() for w in trigger_words_raw.split(",") if w.strip()}
+            if any(t in message.text.lower() for t in triggers):
+                return False
+
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -1064,7 +1126,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
 
+        # In groups, skip messages that don't @mention or reply to the bot
+        if self._should_skip_group_message(update.message):
+            return
+
         event = self._build_message_event(update.message, MessageType.TEXT)
+
+        # Strip the bot @mention from the text so the agent sees clean input
+        if update.message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            if self._is_bot_mentioned(update.message):
+                event.text = self._strip_bot_mention(event.text)
+
         self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1222,7 +1294,11 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
-        
+
+        # In groups, skip media that doesn't @mention or reply to the bot
+        if self._should_skip_group_message(update.message):
+            return
+
         msg = update.message
         
         # Determine media type

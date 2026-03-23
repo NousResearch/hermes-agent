@@ -373,6 +373,9 @@ Tool schema descriptions must not mention tools from other toolsets by name (e.g
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
 
+### Context length auto-detection for custom providers
+When users save a custom provider via `/model` without specifying context length, the system now auto-detects it using `get_model_context_length()` and displays the result. If detection fails, it falls back to `DEFAULT_FALLBACK_CONTEXT` (128K) and shows a 📏 emoji indicator. See `hermes_cli/main.py::_model_flow_custom()` for the implementation.
+
 ---
 
 ## Testing

@@ -989,7 +989,7 @@ def probe_api_models(
                     "models": [m.get("id", "") for m in data.get("data", [])],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
-                    "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
+                    "suggested_base_url": alternate_base if is_fallback else normalized,
                     "used_fallback": is_fallback,
                 }
         except Exception:
@@ -1050,6 +1050,7 @@ def validate_requested_model(
     *,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    context_length: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Validate a ``/model`` value for the active provider.

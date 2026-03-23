@@ -70,6 +70,7 @@ from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
+from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -1215,6 +1216,24 @@ def _model_flow_custom(config):
 
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length)
+
+    # If we used auto-detect (context_length was blank), try to resolve it now
+    # and display the result to the user
+    if context_length is None and model_name:
+        from agent.model_metadata import get_model_context_length
+        
+       # Try to auto-detect context length
+        detected_length = get_model_context_length(
+            model_name,
+            base_url=effective_url,
+            api_key=effective_key,
+            provider="custom",
+        )
+        
+        if detected_length:
+            print(f"  💡 Context length auto-detected: {detected_length:,} tokens")
+        else:
+            print(f"  📏 Context length: Using default of {DEFAULT_FALLBACK_CONTEXT:,} tokens")
 
 
 def _save_custom_provider(base_url, api_key="", model="", context_length=None):

@@ -3573,29 +3573,59 @@ class HermesCLI:
 
                 raw_input = parts[1].strip()
 
-                # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
+                # Parse flags to get context_length, base_url, api_key
+                # Look for flags FIRST before extracting model_part
+                import re
+                context_length = None
+                base_url_flag = None
+                api_key_flag = None
+                
+               # Look for --context-length or --context_length (supports both = and space separators)
+                ctx_match = re.search(r'--(context-length|context_length)[\s=]+(\S+)', raw_input, re.IGNORECASE)
+                if ctx_match:
+                    context_length_str = ctx_match.group(2).strip()
+                    context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
+                    if context_length <= 0:
+                        context_length = None
+                
+                # Look for --base-url (supports both = and space separators)
+                url_match = re.search(r'--base-url[\s=]+(\S+)', raw_input, re.IGNORECASE)
+                if url_match:
+                    base_url_flag = url_match.group(1).strip()
+                
+               # Look for --api-key (supports both = and space separators)
+                key_match = re.search(r'--api-key[\s=]+(\S+)', raw_input, re.IGNORECASE)
+                if key_match:
+                    api_key_flag = key_match.group(1).strip()
+                
+                # Now extract model_part (flags have been parsed out)
+                model_part = raw_input.split()[0] if raw_input.split() else raw_input
+                raw_input = model_part
+
+              # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
                 current_provider = self.provider or self.requested_provider or "openrouter"
                 target_provider, new_model = parse_model_input(raw_input, current_provider)
-                # Auto-detect provider when no explicit provider:model syntax was used.
-                # Skip auto-detection for custom providers — the model name might
-                # coincidentally match a known provider's catalog, but the user
-                # intends to use it on their custom endpoint.  Require explicit
-                # provider:model syntax (e.g. /model openai-codex:gpt-5.2-codex)
-                # to switch away from a custom endpoint.
-                _base = self.base_url or ""
-                is_custom = current_provider == "custom" or (
-                    "localhost" in _base or "127.0.0.1" in _base
+                
+                # Determine if this is a custom endpoint
+                # Check the base_url from flags first, then fall back to self.base_url
+                effective_base = base_url_flag or self.base_url
+                # If base_url_flag is set, treat it as custom (user explicitly specified a URL)
+                is_custom = bool(base_url_flag) or (
+                    current_provider == "custom" or (
+                        "localhost" in effective_base or "127.0.0.1" in effective_base
+                    )
                 )
+                
                 if target_provider == current_provider and not is_custom:
                     from hermes_cli.models import detect_provider_for_model
                     detected = detect_provider_for_model(new_model, current_provider)
                     if detected:
-                        target_provider, new_model = detected
+                         target_provider, new_model = detected
                 provider_changed = target_provider != current_provider
 
                 # If provider is changing, re-resolve credentials for the new provider
                 api_key_for_probe = self.api_key
-                base_url_for_probe = self.base_url
+                base_url_for_probe = base_url_flag or self.base_url
                 if provider_changed:
                     try:
                         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -3618,6 +3648,7 @@ class HermesCLI:
                         target_provider,
                         api_key=api_key_for_probe,
                         base_url=base_url_for_probe,
+                        context_length=context_length,
                     )
                 except Exception:
                     validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
@@ -3661,6 +3692,33 @@ class HermesCLI:
                         print(f"  Endpoint: {endpoint}")
                         print(f"  Tip: To switch providers, use /model provider:model")
                         print(f"       e.g. /model openai-codex:gpt-5.2-codex")
+                        
+                        # Auto-save to custom_providers and detect context length
+                        from hermes_cli.main import _save_custom_provider
+                        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+                        
+                        _save_custom_provider(
+                            base_url=self.base_url,
+                            api_key=self.api_key,
+                            model=self.model,
+                            context_length=context_length  # Will be set if provided
+                        )
+                        
+                        # If we used auto-detect (context_length was None), try to resolve it now
+                        # and display the result to the user
+                        if context_length is None and self.model:
+                            # Try to auto-detect context length
+                            detected_length = get_model_context_length(
+                                self.model,
+                                base_url=self.base_url,
+                                api_key=self.api_key,
+                                provider="custom",
+                            )
+                            
+                            if detected_length:
+                                print(f"  💡 Context length auto-detected: {detected_length:,} tokens")
+                            else:
+                                print(f"  📏 Context length: Using default of {DEFAULT_FALLBACK_CONTEXT:,} tokens")
             else:
                 self._show_model_and_providers()
         elif canonical == "provider":

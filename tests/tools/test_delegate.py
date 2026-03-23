@@ -576,16 +576,22 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")
 
-    def test_direct_endpoint_falls_back_to_openai_api_key_env(self):
+    def test_direct_endpoint_requires_explicit_api_key_not_openai_env(self):
+        """When base_url is configured without explicit api_key, it should NOT fall back to OPENAI_API_KEY env var.
+        
+        This ensures users explicitly set delegation.api_key in their config rather than
+        relying on environment variable fallbacks for direct endpoints.
+        """
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
         }
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
-            creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertEqual(creds["api_key"], "env-openai-key")
-        self.assertEqual(creds["provider"], "custom")
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials(cfg, parent)
+        self.assertIn("OPENAI_API_KEY", str(ctx.exception))
+        self.assertIn("NOT used", str(ctx.exception))
 
     def test_direct_endpoint_does_not_fall_back_to_openrouter_api_key_env(self):
         parent = _make_mock_parent(depth=0)
@@ -593,7 +599,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "model": "qwen2.5-coder",
             "base_url": "http://localhost:1234/v1",
         }
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "env-openrouter-key"}, clear=False):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
             with self.assertRaises(ValueError) as ctx:
                 _resolve_delegation_credentials(cfg, parent)
         self.assertIn("OPENAI_API_KEY", str(ctx.exception))

@@ -54,6 +54,14 @@ class TestGetProvider:
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
+            # Also need to ensure the key is not set in the module's namespace
+            import os
+            if "VOICE_TOOLS_OPENAI_KEY" in os.environ:
+                del os.environ["VOICE_TOOLS_OPENAI_KEY"]
+            # Clear the cached value if it exists
+            from tools import transcription_tools
+            if hasattr(transcription_tools, "_resolved_openai_key"):
+                transcription_tools._resolved_openai_key = None
             assert _get_provider({"provider": "openai"}) == "none"
 
     def test_default_provider_is_local(self):
@@ -156,10 +164,18 @@ class TestTranscribeOpenAI:
 
     def test_no_key(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        from tools.transcription_tools import _transcribe_openai
-        result = _transcribe_openai("/tmp/test.ogg", "whisper-1")
-        assert result["success"] is False
-        assert "VOICE_TOOLS_OPENAI_KEY" in result["error"]
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(b"fake audio")
+            temp_file = f.name
+        try:
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(temp_file, "whisper-1")
+            assert result["success"] is False
+            assert "VOICE_TOOLS_OPENAI_KEY" in result["error"]
+        finally:
+            import os
+            os.unlink(temp_file)
 
     def test_successful_transcription(self, monkeypatch, tmp_path):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")

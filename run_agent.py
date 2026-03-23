@@ -2032,6 +2032,28 @@ class AIAgent:
             tool["function"]["name"] for tool in self.tools
         } if self.tools else set()
 
+    @staticmethod
+    def _extract_agent_name_from_soul(soul_content: str) -> str | None:
+        """Extract agent name from SOUL.md content.
+
+        Looks for 'You are <Name>' at the start of the identity text.
+        Returns the name (sanitized for Honcho peer ID), or None.
+        """
+        import re
+        # Match "You are <Name>" — capture up to the first comma, period,
+        # newline, or sentence connector (and/who/that/an/a).
+        match = re.search(
+            r"(?i)you are\s+(.+?)(?:\s*[,.\n;]|\s+(?:and|who|that|which)\s|\s+an?\s)",
+            soul_content,
+        )
+        if not match:
+            return None
+        raw_name = match.group(1).strip()
+        if not raw_name or raw_name.lower() in ("a", "an", "the"):
+            return None
+        # Sanitize for Honcho peer ID: lowercase, replace spaces with hyphens
+        return re.sub(r"[^a-zA-Z0-9_-]", "-", raw_name).strip("-").lower() or None
+
     def _activate_honcho(
         self,
         hcfg,
@@ -2043,6 +2065,22 @@ class AIAgent:
         """Finish Honcho setup once a session manager is available."""
         if not self._honcho:
             return
+
+        # Sync aiPeer with SOUL.md identity at runtime so renamed agents
+        # don't create duplicate Honcho entities.
+        if not self.skip_context_files:
+            try:
+                soul_content = load_soul_md()
+                if soul_content:
+                    soul_name = self._extract_agent_name_from_soul(soul_content)
+                    if soul_name and soul_name != hcfg.ai_peer:
+                        logger.info(
+                            "Honcho aiPeer overridden from SOUL.md: %s → %s",
+                            hcfg.ai_peer, soul_name,
+                        )
+                        hcfg.ai_peer = soul_name
+            except Exception:
+                pass
 
         if not self._honcho_session_key:
             session_title = None

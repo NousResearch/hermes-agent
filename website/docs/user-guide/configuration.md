@@ -485,12 +485,41 @@ You can switch between providers at any time with `hermes model` — no restart 
 | Feature | Provider | Env Variable |
 |---------|----------|--------------|
 | Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` |
+| Web search (self-hosted) | [SearXNG](https://searxng.org/) | `SEARXNG_URL` |
 | Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
 | Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
 | Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
 | OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
+
+### Self-Hosting Web Search with SearXNG
+
+Hermes supports **SearXNG** as a self-hosted, privacy-respecting web search backend. Unlike Firecrawl which requires API keys and has per-search costs, SearXNG gives you complete control over your search infrastructure with no rate limits or costs.
+
+**What you get:**
+- No API keys required
+- No rate limits or per-search costs
+- Full data sovereignty and privacy
+- Aggregates results from multiple search engines (Google, Bing, DuckDuckGo, etc.)
+- Open-source and self-hosted
+
+**Setup:**
+
+1. **Install SearXNG** (see [SearXNG documentation](https://docs.searxng.org/admin/installation.html)):
+   ```bash
+   # Docker installation (recommended)
+   docker run -d -p 8080:8080 --name searxng -v $(pwd)/settings.yml:/etc/searxng/settings.yml:ro -v searxng-data:/data searxng/searxng:latest
+   ```
+
+2. **Configure your SearXNG instance** - Edit `settings.yml` to enable search engines you want to use (Google, Bing, DuckDuckGo, etc.)
+
+3. **Point Hermes at your SearXNG instance:**
+   ```bash
+   echo "SEARXNG_URL=http://localhost:8080" >> ~/.hermes/.env
+   ```
+
+Once configured, Hermes will automatically use SearXNG for all web searches. No additional configuration needed - it auto-detects the `SEARXNG_URL` environment variable.
 
 ### Self-Hosting Firecrawl
 

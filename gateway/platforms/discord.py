@@ -1469,6 +1469,21 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
+        @tree.command(name="approve", description="Approve a pending dangerous command")
+        @discord.app_commands.describe(scope="Approval scope: once, session, or always")
+        @discord.app_commands.choices(scope=[
+            discord.app_commands.Choice(name="once", value="once"),
+            discord.app_commands.Choice(name="session", value="session"),
+            discord.app_commands.Choice(name="always", value="always"),
+        ])
+        async def slash_approve(interaction: discord.Interaction, scope: str = "once"):
+            scope = (scope or "once").strip().lower()
+            cmd = "/approve" if scope == "once" else f"/approve {scope}"
+            await self._run_simple_slash(interaction, cmd, "Approval sent~")
+
+        @tree.command(name="deny", description="Deny a pending dangerous command")
+        async def slash_deny(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/deny", "Denied~")
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/compress")

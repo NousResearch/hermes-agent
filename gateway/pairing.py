@@ -21,6 +21,7 @@ Storage: ~/.hermes/pairing/
 import json
 import os
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -45,13 +46,29 @@ PAIRING_DIR = get_hermes_home() / "pairing"
 
 
 def _secure_write(path: Path, data: str) -> None:
-    """Write data to file with restrictive permissions (owner read/write only)."""
+    """Write data atomically with restrictive permissions (owner read/write only).
+
+    Uses a tempfile + os.replace() pattern so a crash mid-write never leaves
+    the target file in a corrupt/partial state.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(data, encoding="utf-8")
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass  # Windows doesn't support chmod the same way
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass  # Windows doesn't support chmod the same way
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 class PairingStore:

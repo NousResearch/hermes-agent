@@ -2834,6 +2834,121 @@ class HermesCLI:
         if not silent:
             print("(^_^)v New session started!")
 
+    def resume_session(self, name: str = ""):
+        """Resume a previously-titled session by name or ID.
+
+        With no argument, lists recent titled CLI sessions.
+        With an argument, resolves the session by title (or ID), flushes
+        current-session memories, switches to the target session, reloads
+        its conversation history, and resets agent bookkeeping.
+        """
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        name = name.strip()
+
+        if not name:
+            # List recent titled CLI sessions
+            try:
+                sessions = self._session_db.list_sessions_rich(source="cli", limit=10)
+                titled = [s for s in sessions if s.get("title")]
+                if not titled:
+                    _cprint("  No named sessions found.")
+                    _cprint("  Use /title My Session to name your current session,")
+                    _cprint("  then /resume My Session to return to it later.")
+                    return
+                _cprint("  Named Sessions:")
+                _cprint("")
+                for s in titled[:10]:
+                    title = s["title"]
+                    preview = (s.get("preview", "") or "")[:40]
+                    preview_part = f" — {preview}" if preview else ""
+                    _cprint(f"    {title}{preview_part}")
+                _cprint("")
+                _cprint("  Usage: /resume <session name>")
+            except Exception as e:
+                _cprint(f"  Could not list sessions: {e}")
+            return
+
+        # Resolve the name to a session ID
+        target_id = self._session_db.resolve_session_by_title(name)
+        if not target_id:
+            # Try as a literal session ID
+            session = self._session_db.get_session(name)
+            if session:
+                target_id = name
+            else:
+                _cprint(f"  No session found matching '{name}'.")
+                _cprint("  Use /resume with no arguments to see available sessions.")
+                return
+
+        # Check if already on that session
+        if self.session_id == target_id:
+            title = self._session_db.get_session_title(target_id) or target_id
+            _cprint(f"  Already on session {title}.")
+            return
+
+        # Flush memories for current session before switching
+        if self.agent and self.conversation_history:
+            try:
+                self.agent.flush_memories(self.conversation_history)
+            except Exception:
+                pass
+
+        # End the current session
+        old_session_id = self.session_id
+        if old_session_id:
+            try:
+                self._session_db.end_session(old_session_id, "resume_session")
+            except Exception:
+                pass
+
+        # Switch to the target session
+        self.session_id = target_id
+        self._resumed = True
+        self._pending_title = None
+
+        # Reload conversation history
+        restored = self._session_db.get_messages_as_conversation(target_id)
+        self.conversation_history = restored if restored else []
+
+        # Re-open the session (clear ended_at so it's active again)
+        try:
+            self._session_db._conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ?",
+                (target_id,),
+            )
+            self._session_db._conn.commit()
+        except Exception:
+            pass
+
+        # Reset agent session state
+        if self.agent:
+            self.agent.session_id = self.session_id
+            self.agent.session_start = self.session_start
+            self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = 0
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from tools.todo_tool import TodoStore
+                    self.agent._todo_store = TodoStore()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+        # Display confirmation
+        title = self._session_db.get_session_title(target_id) or target_id
+        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+        _cprint(f"  ↻ Resumed session {title}{msg_part}.")
+
+        # Display history recap
+        self._display_resumed_history()
+
     def reset_conversation(self):
         """Reset the conversation by starting a new session."""
         self.new_session()
@@ -3560,6 +3675,10 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
+        elif canonical == "resume":
+            parts = cmd_original.split(maxsplit=1)
+            resume_arg = parts[1].strip() if len(parts) > 1 else ""
+            self.resume_session(resume_arg)
         elif canonical == "model":
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)

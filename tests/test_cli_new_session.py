@@ -220,3 +220,106 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+# ── /resume command tests ────────────────────────────────────────────
+
+
+def _prepare_cli_with_titled_session(tmp_path):
+    """Create a CLI with an active session, then create a second titled session to resume."""
+    cli = _make_cli()
+    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+
+    # Create the "old" session with a title and some messages
+    old_id = "20260101_120000_aaaaaa"
+    cli._session_db.create_session(session_id=old_id, source="cli", model=cli.model)
+    cli._session_db.set_session_title(old_id, "My Old Session")
+    cli._session_db.append_message(old_id, role="user", content="hello from old session")
+    cli._session_db.append_message(old_id, role="assistant", content="hi there")
+    cli._session_db.end_session(old_id, "new_session")
+
+    # Set up the current (active) session
+    cli._session_db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
+    cli.agent = _FakeAgent(cli.session_id, cli.session_start)
+    cli.conversation_history = [{"role": "user", "content": "current msg"}]
+
+    return cli, old_id
+
+
+def test_resume_switches_to_titled_session(tmp_path):
+    """``/resume My Old Session`` should switch to that session and load its history."""
+    cli, old_id = _prepare_cli_with_titled_session(tmp_path)
+    original_session_id = cli.session_id
+
+    cli.process_command("/resume My Old Session")
+
+    assert cli.session_id == old_id
+    assert cli.session_id != original_session_id
+    assert cli._resumed is True
+    # History should be restored from the old session
+    assert len(cli.conversation_history) >= 2
+    user_msgs = [m for m in cli.conversation_history if m.get("role") == "user"]
+    assert any("hello from old session" in (m.get("content") or "") for m in user_msgs)
+    # Old current session should be ended
+    old_current = cli._session_db.get_session(original_session_id)
+    assert old_current["end_reason"] == "resume_session"
+    # Agent should be pointed at the new session
+    assert cli.agent.session_id == old_id
+    # Memories should have been flushed for the previous session
+    cli.agent.flush_memories.assert_called_once()
+
+
+def _capture_cprint(cli_instance):
+    """Return (printed_lines, original_cprint) for capturing _cprint output.
+
+    Because _make_cli reloads the module, we patch via the method's __globals__
+    which always points at the correct module namespace.
+    """
+    mod_globals = type(cli_instance).resume_session.__globals__
+    original = mod_globals["_cprint"]
+    lines: list = []
+    mod_globals["_cprint"] = lambda t: lines.append(t)
+    return lines, original, mod_globals
+
+
+def test_resume_no_args_lists_sessions(tmp_path):
+    """``/resume`` with no argument should list titled sessions."""
+    cli, _ = _prepare_cli_with_titled_session(tmp_path)
+    printed, orig, globs = _capture_cprint(cli)
+    try:
+        cli.process_command("/resume")
+    finally:
+        globs["_cprint"] = orig
+
+    text = "\n".join(printed)
+    assert "My Old Session" in text
+    assert "Named Sessions" in text
+
+
+def test_resume_unknown_session(tmp_path):
+    """``/resume NonExistent`` should show an error."""
+    cli, _ = _prepare_cli_with_titled_session(tmp_path)
+    printed, orig, globs = _capture_cprint(cli)
+    try:
+        cli.process_command("/resume NonExistent")
+    finally:
+        globs["_cprint"] = orig
+
+    text = "\n".join(printed)
+    assert "No session found" in text
+
+
+def test_resume_already_on_session(tmp_path):
+    """``/resume`` to the current session should say already on it."""
+    cli, old_id = _prepare_cli_with_titled_session(tmp_path)
+    # First resume to old session
+    cli.process_command("/resume My Old Session")
+    printed, orig, globs = _capture_cprint(cli)
+    try:
+        # Then try to resume again
+        cli.process_command("/resume My Old Session")
+    finally:
+        globs["_cprint"] = orig
+
+    text = "\n".join(printed)
+    assert "Already on session" in text

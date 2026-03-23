@@ -88,7 +88,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +99,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("searxng", _has_env("SEARXNG_URL")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -361,6 +362,7 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
     return documents
 
 
+<<<<<<< HEAD
 def _to_plain_object(value: Any) -> Any:
     """Convert SDK objects to plain python data structures when possible."""
     if value is None:
@@ -440,6 +442,46 @@ def _extract_scrape_payload(scrape_result: Any) -> Dict[str, Any]:
 
     return result_plain
 
+=======
+
+
+# ─── SearXNG Client ──────────────────────────────────────────────────────────
+
+_SEARXNG_BASE_URL = None
+
+def _get_searxng_url() -> str:
+    global _SEARXNG_BASE_URL
+    if _SEARXNG_BASE_URL is None:
+        url = os.getenv("SEARXNG_URL")
+        if not url:
+            raise ValueError("SEARXNG_URL environment variable not set.")
+        _SEARXNG_BASE_URL = url.rstrip("/")
+    return _SEARXNG_BASE_URL
+
+def _searxng_search(query: str, limit: int = 5) -> dict:
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+    base_url = _get_searxng_url()
+    params = {"q": query, "format": "json", "categories": "general"}
+    logger.info("SearXNG search: '%s' (limit: %d)", query, limit)
+    try:
+        response = httpx.get(f"{base_url}/search", params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        web_results = []
+        for i, result in enumerate(data.get("results", [])[:limit]):
+            web_results.append({
+                "title": result.get("title", ""),
+                "url": result.get("url", ""),
+                "description": result.get("content", ""),
+                "position": i + 1,
+            })
+        return {"success": True, "data": {"web": web_results}}
+    except Exception as e:
+        logger.debug("SearXNG search failed: %s", str(e))
+        return {"error": f"SearXNG search failed: {str(e)}", "success": False}
+>>>>>>> a9355735 (feat: Add SearXNG self-hosted web search backend)
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
@@ -1081,6 +1123,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "searxng":
+            logger.info("SearXNG search: '%s' (limit: %d)", query, limit)
+            response_data = _searxng_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)

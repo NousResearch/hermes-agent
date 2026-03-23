@@ -301,7 +301,11 @@ def load_cli_config() -> Dict[str, Any]:
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
-    
+
+    # Expand ${ENV_VAR} references in config values before bridging to env vars.
+    from hermes_cli.config import _expand_env_vars
+    defaults = _expand_env_vars(defaults)
+
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
     

@@ -107,22 +107,30 @@ class ResponseStore:
         self._conn.commit()
         return json.loads(row[0])
 
-    def put(self, response_id: str, data: Dict[str, Any]) -> None:
-        """Store a response, evicting the oldest if at capacity."""
+    def put(self, response_id: str, data: Dict[str, Any]) -> List[str]:
+        """Store a response, evicting the oldest if at capacity.
+        Returns list of evicted response IDs so callers can clean up references."""
         import time
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
         )
-        # Evict oldest entries beyond max_size
+        # Collect evicted IDs before deleting
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
+        evicted: List[str] = []
         if count > self._max_size:
+            rows = self._conn.execute(
+                "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
+                (count - self._max_size,),
+            ).fetchall()
+            evicted = [r[0] for r in rows]
             self._conn.execute(
                 "DELETE FROM responses WHERE response_id IN "
                 "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
                 (count - self._max_size,),
             )
         self._conn.commit()
+        return evicted
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
@@ -701,11 +709,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
-            self._response_store.put(response_id, {
+            evicted_ids = self._response_store.put(response_id, {
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
             })
+            # Clean up conversation mappings for evicted responses
+            if evicted_ids:
+                for evicted_id in evicted_ids:
+                    stale = [k for k, v in self._conversations.items() if v == evicted_id]
+                    for conv in stale:
+                        del self._conversations[conv]
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
@@ -746,6 +760,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": f"Response not found: {response_id}", "type": "invalid_request_error"}},
                 status=404,
             )
+
+        # Also remove any conversation mappings pointing to this response_id
+        # so reusing the conversation name starts a fresh conversation instead
+        # of returning 404 "Previous response not found".
+        stale_convs = [k for k, v in self._conversations.items() if v == response_id]
+        for conv in stale_convs:
+            del self._conversations[conv]
 
         return web.json_response({
             "id": response_id,

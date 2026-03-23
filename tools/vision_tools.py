@@ -263,16 +263,26 @@ async def vision_analyze_tool(
         # Get image file size for logging
         image_size_bytes = temp_image_path.stat().st_size
         image_size_kb = image_size_bytes / 1024
-        logger.info("Image ready (%.1f KB)", image_size_kb)
+        image_size_mb = image_size_kb / 1024
+        
+        # Warn if image is large — models may timeout on images >2MB
+        if image_size_mb > 2:
+            logger.warning("Large image detected (%.2f MB). Vision may timeout. Consider cropping to viewport (1280x900).", image_size_mb)
+        elif image_size_mb > 1:
+            logger.info("Image size: %.2f MB (acceptable, but may be slow on some models)", image_size_mb)
+        else:
+            logger.info("Image ready (%.1f KB)", image_size_kb)
         
         # Convert image to base64 data URL
         logger.info("Converting image to base64...")
         image_data_url = _image_to_base64_data_url(temp_image_path)
         # Calculate size in KB for better readability
         data_size_kb = len(image_data_url) / 1024
-        logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
+        data_size_mb = data_size_kb / 1024
+        logger.info("Image converted to base64 (%.2f MB)", data_size_mb)
         
         debug_call_data["image_size_bytes"] = image_size_bytes
+        debug_call_data["image_size_mb"] = image_size_mb
         
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt

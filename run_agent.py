@@ -735,6 +735,16 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                # Anthropic OAuth tokens (sk-ant-oat) require Claude Code identity headers
+                # to unlock Sonnet/Opus access. Without these, only Haiku works.
+                if api_key and api_key.startswith("sk-ant-oat"):
+                    existing = client_kwargs.get("default_headers", {})
+                    existing.update({
+                        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+                        "user-agent": "claude-cli/2.1.75",
+                        "x-app": "cli",
+                    })
+                    client_kwargs["default_headers"] = existing
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client

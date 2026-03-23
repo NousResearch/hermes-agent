@@ -203,6 +203,17 @@ _configured_cwd = os.environ.get("TERMINAL_CWD", "")
 if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
     messaging_cwd = os.getenv("MESSAGING_CWD") or str(Path.home())
     os.environ["TERMINAL_CWD"] = messaging_cwd
+else:
+    messaging_cwd = _configured_cwd
+
+# Change process working directory so context file loaders (AGENTS.md,
+# HERMES.md, .cursorrules) resolve relative to the user's project, not
+# the hermes-agent installation directory.
+if os.getenv("MESSAGING_CWD") or (_configured_cwd and _configured_cwd not in (".", "auto", "cwd")):
+    try:
+        os.chdir(messaging_cwd)
+    except OSError:
+        pass
 
 from gateway.config import (
     Platform,

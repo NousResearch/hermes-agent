@@ -437,15 +437,21 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     plugin_keys = _get_plugin_toolset_keys()
     configurable_keys |= plugin_keys
 
+    # Also exclude platform default toolsets (hermes-cli, hermes-telegram, etc.)
+    # These are "super" toolsets that resolve to ALL tools, so preserving them
+    # would silently override the user's unchecked selections on the next read.
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
+
     # Get existing toolsets for this platform
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
 
-    # Preserve any entries that are NOT configurable toolsets (i.e. MCP server names)
+    # Preserve any entries that are NOT configurable toolsets and NOT platform
+    # defaults (i.e. only MCP server names should be preserved)
     preserved_entries = {
         entry for entry in existing_toolsets
-        if entry not in configurable_keys
+        if entry not in configurable_keys and entry not in platform_default_keys
     }
 
     # Merge preserved entries with new enabled toolsets

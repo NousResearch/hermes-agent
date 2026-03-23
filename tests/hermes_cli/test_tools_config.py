@@ -100,3 +100,107 @@ def test_save_platform_tools_handles_invalid_existing_config():
 
     saved_toolsets = config["platform_toolsets"]["cli"]
     assert "web" in saved_toolsets
+
+
+def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
+    """Platform default toolsets (hermes-cli, hermes-telegram, etc.) must NOT
+    be preserved across saves.
+
+    These "super" toolsets resolve to ALL tools, so if they survive in the
+    config, they silently override any tools the user unchecked. Previously,
+    the preserve filter only excluded configurable toolset keys (web, browser,
+    terminal, etc.) and treated platform defaults as unknown custom entries
+    (like MCP server names), causing them to be kept unconditionally.
+
+    Regression test: user unchecks image_gen and homeassistant via
+    ``hermes tools``, but hermes-cli stays in the config and re-enables
+    everything on the next read.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": [
+                "browser", "clarify", "code_execution", "cronjob",
+                "delegation", "file", "hermes-cli",  # <-- the culprit
+                "memory", "session_search", "skills", "terminal",
+                "todo", "tts", "vision", "web",
+            ]
+        }
+    }
+
+    # User unchecks image_gen, homeassistant, moa — keeps the rest
+    new_selection = {
+        "browser", "clarify", "code_execution", "cronjob",
+        "delegation", "file", "memory", "session_search",
+        "skills", "terminal", "todo", "tts", "vision", "web",
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", new_selection)
+
+    saved = config["platform_toolsets"]["cli"]
+
+    # hermes-cli must NOT survive — it's a platform default, not an MCP server
+    assert "hermes-cli" not in saved
+
+    # The individual toolset keys the user selected must be present
+    assert "web" in saved
+    assert "terminal" in saved
+    assert "browser" in saved
+
+    # Tools the user unchecked must NOT be present
+    assert "image_gen" not in saved
+    assert "homeassistant" not in saved
+    assert "moa" not in saved
+
+
+def test_save_platform_tools_does_not_preserve_hermes_telegram():
+    """Same bug for Telegram — hermes-telegram must not be preserved."""
+    config = {
+        "platform_toolsets": {
+            "telegram": [
+                "browser", "file", "hermes-telegram", "terminal", "web",
+            ]
+        }
+    }
+
+    new_selection = {"browser", "file", "terminal", "web"}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", new_selection)
+
+    saved = config["platform_toolsets"]["telegram"]
+    assert "hermes-telegram" not in saved
+    assert "web" in saved
+
+
+def test_save_platform_tools_still_preserves_mcp_with_platform_default_present():
+    """MCP server names must still be preserved even when platform defaults
+    are being stripped out."""
+    config = {
+        "platform_toolsets": {
+            "cli": [
+                "web", "terminal", "hermes-cli", "my-mcp-server", "github-tools",
+            ]
+        }
+    }
+
+    new_selection = {"web", "browser"}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", new_selection)
+
+    saved = config["platform_toolsets"]["cli"]
+
+    # MCP servers preserved
+    assert "my-mcp-server" in saved
+    assert "github-tools" in saved
+
+    # Platform default stripped
+    assert "hermes-cli" not in saved
+
+    # User selections present
+    assert "web" in saved
+    assert "browser" in saved
+
+    # Deselected configurable toolset removed
+    assert "terminal" not in saved

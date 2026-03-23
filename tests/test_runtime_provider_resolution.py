@@ -579,3 +579,54 @@ def test_named_custom_provider_anthropic_api_mode(monkeypatch):
 
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
+
+
+# ------------------------------------------------------------------
+# fix #2562 — resolve_provider("custom") must not remap to "openrouter"
+# ------------------------------------------------------------------
+
+def test_resolve_provider_custom_returns_custom():
+    """resolve_provider('custom') must return 'custom', not 'openrouter'."""
+    from hermes_cli.auth import resolve_provider
+    assert resolve_provider("custom") == "custom"
+
+
+def test_resolve_provider_openrouter_unchanged():
+    """resolve_provider('openrouter') must still return 'openrouter'."""
+    from hermes_cli.auth import resolve_provider
+    assert resolve_provider("openrouter") == "openrouter"
+
+
+def test_resolve_runtime_provider_custom_preserves_provider_name(monkeypatch):
+    """resolve_runtime_provider(requested='custom') must return provider='custom'."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://my-llm.example.com/v1",
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom", (
+        f"Expected provider='custom', got provider='{resolved['provider']}'"
+    )
+
+
+def test_resolve_runtime_provider_custom_base_url_preserved(monkeypatch):
+    """Custom base_url from config must be passed through unchanged."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://my-llm.example.com/v1",
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["base_url"] == "https://my-llm.example.com/v1"
+
+
+def test_resolve_runtime_provider_openrouter_not_affected(monkeypatch):
+    """Fixing custom must not change openrouter behavior."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+    assert resolved["provider"] == "openrouter"

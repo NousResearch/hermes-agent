@@ -115,6 +115,8 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._bot_username: Optional[str] = None  # Bot username for mention checking
+        self._require_mention: bool = os.getenv("TELEGRAM_REQUIRE_MENTION", "").lower() in ("true", "1", "yes", "on")
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -348,6 +350,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     else:
                         raise
             await self._app.start()
+
+            # Fetch bot username for mention checking
+            try:
+                bot_info = await self._bot.get_me()
+                self._bot_username = bot_info.username
+                logger.info("[%s] Bot username: @%s (require_mention=%s)", self.name, self._bot_username, self._require_mention)
+            except Exception as e:
+                logger.warning("[%s] Could not fetch bot username: %s", self.name, e)
+
             loop = asyncio.get_running_loop()
 
             def _polling_error_callback(error: Exception) -> None:
@@ -1054,6 +1065,25 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return text
     
+    def _is_bot_mentioned(self, message) -> bool:
+        """Check if the bot is mentioned in the message (for group chats)."""
+        if not self._bot_username:
+            return False
+
+        # Check for @username mention in text
+        if message.text and f"@{self._bot_username}" in message.text:
+            return True
+
+        # Check for entity mentions (for users with usernames hidden)
+        if message.entities:
+            for entity in message.entities:
+                if entity.type == "mention":
+                    mention_text = message.text[entity.offset:entity.offset + entity.length]
+                    if mention_text == f"@{self._bot_username}":
+                        return True
+
+        return False
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -1063,6 +1093,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not update.message or not update.message.text:
             return
+
+        # In group chats, if require_mention is enabled, only respond when mentioned
+        if self._require_mention and update.message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            if not self._is_bot_mentioned(update.message):
+                logger.debug(
+                    "[%s] Ignoring group message without mention (chat_id=%s)",
+                    self.name,
+                    update.message.chat.id,
+                )
+                return
 
         event = self._build_message_event(update.message, MessageType.TEXT)
         self._enqueue_text_event(event)

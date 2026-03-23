@@ -34,11 +34,21 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-# Load .env file
-from dotenv import load_dotenv
-env_path = PROJECT_DIR / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+# Load .env file if available (optional)
+try:
+    from dotenv import load_dotenv
+    # Try multiple locations
+    env_paths = [
+        PROJECT_DIR / '.env',
+        Path.home() / '.hermes' / 'telegram' / '.env',
+        Path.home() / '.hermes' / '.env',
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path, override=True)
+            break
+except ImportError:
+    pass  # dotenv not installed, config will be loaded from ~/.hermes/config.yaml
 
 
 # =============================================================================

@@ -54,18 +54,24 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
 
 
 def _format_conversation(messages: List[Dict[str, Any]]) -> str:
-    """Format session messages into a readable transcript for summarization."""
+    """Format session messages into a readable transcript for summarization.
+    
+    Prioritizes USER and ASSISTANT content for better summarization quality.
+    TOOL outputs are truncated more aggressively to reduce noise.
+    """
     parts = []
     for msg in messages:
         role = msg.get("role", "unknown").upper()
         content = msg.get("content") or ""
         tool_name = msg.get("tool_name")
 
-        if role == "TOOL" and tool_name:
-            # Truncate long tool outputs
-            if len(content) > 500:
-                content = content[:250] + "\n...[truncated]...\n" + content[-250:]
-            parts.append(f"[TOOL:{tool_name}]: {content}")
+        # Check role directly - tool_name may be None even for tool messages
+        if role == "TOOL":
+            # More aggressive truncation for tool outputs — they are often noise
+            tool_display = f":{tool_name}" if tool_name else ""
+            if len(content) > 300:
+                content = content[:150] + "\n...[truncated]...\n" + content[-150:]
+            parts.append(f"[TOOL{tool_display}]: {content}")
         elif role == "ASSISTANT":
             # Include tool call names if present
             tool_calls = msg.get("tool_calls")
@@ -82,6 +88,9 @@ def _format_conversation(messages: List[Dict[str, Any]]) -> str:
             else:
                 parts.append(f"[ASSISTANT]: {content}")
         else:
+            # USER content — keep it all (medical/professional content needs precision)
+            if role == "USER" and len(content) > 2000:
+                content = content[:2000] + "\n...[content truncated]...\n"
             parts.append(f"[{role}]: {content}")
 
     return "\n\n".join(parts)
@@ -91,29 +100,55 @@ def _truncate_around_matches(
     full_text: str, query: str, max_chars: int = MAX_SESSION_CHARS
 ) -> str:
     """
-    Truncate a conversation transcript to max_chars, centered around
-    where the query terms appear. Keeps content near matches, trims the edges.
+    Truncate a conversation transcript to max_chars, prioritizing content near
+    the END of the conversation (where conclusions and root causes are found)
+    rather than centering around the first match which is often noise.
+    
+    Strategy:
+    1. If text fits within max_chars, return it all
+    2. Find the LAST occurrence of query terms (conclusions are at the end)
+    3. Center the window around the LAST match, not the first
+    4. If last match is near the end, include trailing content
     """
     if len(full_text) <= max_chars:
         return full_text
 
-    # Find the first occurrence of any query term
     query_terms = query.lower().split()
     text_lower = full_text.lower()
+    
+    # Find the LAST occurrence of any query term (conclusions usually at the end)
+    last_match = -1
     first_match = len(full_text)
+    
     for term in query_terms:
-        pos = text_lower.find(term)
-        if pos != -1 and pos < first_match:
-            first_match = pos
+        # Find first occurrence
+        first_pos = text_lower.find(term)
+        if first_pos != -1 and first_pos < first_match:
+            first_match = first_pos
+        
+        # Find last occurrence  
+        last_pos = text_lower.rfind(term)
+        if last_pos != -1 and last_pos > last_match:
+            last_match = last_pos
 
-    if first_match == len(full_text):
-        # No match found, take from the start
-        first_match = 0
+    # Use LAST match as anchor (prioritizes conclusions at end of session)
+    anchor = last_match if last_match != -1 else (first_match if first_match != len(full_text) else 0)
+    
+    if anchor == -1:
+        anchor = 0
 
-    # Center the window around the first match
+    # Center window around the anchor, but bias toward END of text
     half = max_chars // 2
-    start = max(0, first_match - half)
+    start = max(0, anchor - half)
     end = min(len(full_text), start + max_chars)
+    
+    # If there's more content after the window, include it (don't cut off conclusions)
+    if end < len(full_text) and anchor > len(full_text) - max_chars:
+        # Anchor is near the end — extend to include all remaining content
+        start = max(0, len(full_text) - max_chars)
+        end = len(full_text)
+    
+    # If still not using full capacity, try to include from the start too
     if end - start < max_chars:
         start = max(0, end - max_chars)
 
@@ -129,13 +164,18 @@ async def _summarize_session(
     """Summarize a single session conversation focused on the search query."""
     system_prompt = (
         "You are reviewing a past conversation transcript to help recall what happened. "
-        "Summarize the conversation with a focus on the search topic. Include:\n"
-        "1. What the user asked about or wanted to accomplish\n"
-        "2. What actions were taken and what the outcomes were\n"
-        "3. Key decisions, solutions found, or conclusions reached\n"
-        "4. Any specific commands, files, URLs, or technical details that were important\n"
-        "5. Anything left unresolved or notable\n\n"
-        "Be thorough but concise. Preserve specific details (commands, paths, error messages) "
+        "This is a CRITICAL recall task — the user depends on you to find specific technical details. "
+        "The query is: " + query + "\n\n"
+        "IMPORTANT: Prioritize finding:\n"
+        "1. ROOT CAUSES of any problem (not just symptoms)\n"
+        "2. Specific error messages, file paths, commands mentioned\n"
+        "3. Technical configurations or settings that were identified as problematic\n"
+        "4. Conclusions and decisions reached at the END of the conversation\n"
+        "5. Any unresolved issues or notable observations\n\n"
+        "The end of a conversation usually contains the most important conclusions. "
+        "If the query terms appear in tool outputs (file paths, configs), look for the actual "
+        "discussion in ASSISTANT and USER messages that explains what those mean.\n\n"
+        "Be thorough. Preserve specific details (commands, paths, error messages) "
         "that would be useful to recall. Write in past tense as a factual recap."
     )
 

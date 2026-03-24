@@ -107,6 +107,10 @@ required_environment_variables:
 
 The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
 
+:::tip Sandbox Passthrough
+When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+:::
+
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
 
 ## Skill Guidelines

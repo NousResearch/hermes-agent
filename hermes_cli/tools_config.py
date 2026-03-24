@@ -399,9 +399,20 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
     # "hermes-cli" (which include all _HERMES_CORE_TOOLS) cause disabled
     # toolsets to re-appear as enabled.
     has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     if has_explicit_config:
-        enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
+        enabled_toolsets = {
+            ts for ts in toolset_names if ts in configurable_keys
+        }
+        # Preserve any non-configurable toolset entries already stored for the
+        # platform, such as MCP server aliases. These are intentionally not part
+        # of CONFIGURABLE_TOOLSETS, but they still need to reach the agent.
+        enabled_toolsets |= {
+            ts
+            for ts in toolset_names
+            if ts not in configurable_keys and ts not in platform_default_keys
+        }
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.

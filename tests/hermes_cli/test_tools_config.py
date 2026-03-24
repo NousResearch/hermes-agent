@@ -49,6 +49,23 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     assert _toolset_has_keys("vision") is True
 
 
+def test_get_platform_tools_preserves_mcp_server_aliases():
+    """MCP server aliases must survive _get_platform_tools() round-trip."""
+    config = {
+        "platform_toolsets": {
+            "cli": ["terminal", "web", "file", "my-mcp-server", "another-mcp"]
+        }
+    }
+
+    result = _get_platform_tools(config, "cli")
+
+    assert "my-mcp-server" in result
+    assert "another-mcp" in result
+    assert "terminal" in result
+    assert "web" in result
+    assert "file" in result
+
+
 def test_save_platform_tools_preserves_mcp_server_names():
     """Ensure MCP server names are preserved when saving platform tools.
 

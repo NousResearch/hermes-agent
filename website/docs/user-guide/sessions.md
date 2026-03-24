@@ -114,7 +114,13 @@ Session IDs follow the format `YYYYMMDD_HHMMSS_<8-char-hex>`, e.g. `20250305_091
 
 Give sessions human-readable titles so you can find and resume them easily.
 
-### Setting a Title
+### Auto-Generated Titles
+
+Hermes automatically generates a short descriptive title (3–7 words) for each session after the first exchange. This runs in a background thread using a fast auxiliary model, so it adds no latency. You'll see auto-generated titles when browsing sessions with `hermes sessions list` or `hermes sessions browse`.
+
+Auto-titling only fires once per session and is skipped if you've already set a title manually.
+
+### Setting a Title Manually
 
 Use the `/title` slash command inside any chat session (CLI or gateway):
 

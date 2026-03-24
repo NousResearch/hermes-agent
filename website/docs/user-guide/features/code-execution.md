@@ -169,10 +169,25 @@ The response always includes `status` (success/error/timeout/interrupted), `outp
 ## Security
 
 :::danger Security Model
-The child process runs with a **minimal environment**. API keys, tokens, and credentials are stripped entirely. The script accesses tools exclusively via the RPC channel — it cannot read secrets from environment variables.
+The child process runs with a **minimal environment**. API keys, tokens, and credentials are stripped by default. The script accesses tools exclusively via the RPC channel — it cannot read secrets from environment variables unless explicitly allowed.
 :::
 
 Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, or `AUTH` in their names are excluded. Only safe system variables (`PATH`, `HOME`, `LANG`, `SHELL`, `PYTHONPATH`, `VIRTUAL_ENV`, etc.) are passed through.
+
+### Skill Environment Variable Passthrough
+
+When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` sandboxes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code.
+
+For non-skill use cases, you can explicitly allowlist variables in `config.yaml`:
+
+```yaml
+terminal:
+  env_passthrough:
+    - MY_CUSTOM_KEY
+    - ANOTHER_TOKEN
+```
+
+See the [Security guide](/docs/user-guide/security#environment-variable-passthrough) for full details.
 
 The script runs in a temporary directory that is cleaned up after execution. The child process runs in its own process group so it can be cleanly killed on timeout or interruption.
 
@@ -186,7 +201,7 @@ The script runs in a temporary directory that is cleaned up after execution. The
 | Running a build or test suite | ❌ | ✅ |
 | Looping over search results | ✅ | ❌ |
 | Interactive/background processes | ❌ | ✅ |
-| Needs API keys in environment | ❌ | ✅ |
+| Needs API keys in environment | ⚠️ Only via [passthrough](/docs/user-guide/security#environment-variable-passthrough) | ✅ (most pass through) |
 
 **Rule of thumb:** Use `execute_code` when you need to call Hermes tools programmatically with logic between calls. Use `terminal` for running shell commands, builds, and processes.
 

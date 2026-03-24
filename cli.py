@@ -2710,8 +2710,28 @@ class HermesCLI:
     
     def show_history(self):
         """Display conversation history."""
+        # If no current history, try to load from database
+        if not self.conversation_history and self._session_db and self.session_id:
+            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            if restored:
+                self.conversation_history = restored
+                print(f"  ( Loaded {len(restored)} messages from session)")
+        
         if not self.conversation_history:
             print("(._.) No conversation history yet.")
+            # Offer to list saved sessions
+            if self._session_db:
+                try:
+                    sessions = self._session_db.list_sessions_rich(limit=5)
+                    if sessions:
+                        print("\n  Saved sessions:")
+                        for s in sessions:
+                            sid = s.get("id", "")[:25]
+                            title = s.get("title", "Untitled")[:25]
+                            print(f"    {sid} - {title}")
+                        print("\n  Use /resume <session-id> to view a saved session.")
+                except:
+                    pass
             return
 
         preview_limit = 400
@@ -3555,6 +3575,44 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
+        elif canonical == "resume":
+            # Handle /resume command - resume a previous session
+            parts = cmd_original.split(maxsplit=1)
+            session_id = parts[1].strip() if len(parts) > 1 else ""
+            
+            if not session_id:
+                # List available sessions
+                if self._session_db:
+                    try:
+                        sessions = self._session_db.list_sessions_rich(limit=10)
+                        if sessions:
+                            _cprint("  Available sessions:")
+                            for s in sessions:
+                                sid = s.get("id", "")[:30]
+                                title = s.get("title", "Untitled")[:30]
+                                _cprint(f"    {sid} - {title}")
+                            _cprint("")
+                            _cprint("  Usage: /resume <session-id>")
+                        else:
+                            _cprint("  No saved sessions found.")
+                    except Exception as e:
+                        _cprint(f"  Error listing sessions: {e}")
+                else:
+                    _cprint("  Session database not available.")
+            else:
+                # Resume the specified session
+                self.session_id = session_id
+                self._resumed = True
+                _cprint(f"  Resuming session: {session_id}")
+                # Load session history
+                if self._session_db:
+                    restored = self._session_db.get_messages_as_conversation(session_id)
+                    if restored:
+                        self.conversation_history = restored
+                        _cprint(f"  Loaded {len(restored)} messages from session.")
+                    else:
+                        _cprint("  Session found but no messages. Starting fresh.")
+        
         elif canonical == "model":
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)

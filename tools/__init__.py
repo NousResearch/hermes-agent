@@ -6,7 +6,7 @@ This package contains all the specific tool implementations for the Hermes Agent
 Each module provides specialized functionality for different capabilities:
 
 - web_tools: Web search, content extraction, and crawling
-- terminal_tool: Command execution using mini-swe-agent (local/docker/modal/daytona backends)
+- terminal_tool: Command execution (local/docker/modal/daytona/ssh/singularity backends)
 - vision_tools: Image analysis and understanding
 - mixture_of_agents_tool: Multi-model collaborative reasoning
 - image_generation_tool: Text-to-image generation with upscaling
@@ -23,7 +23,7 @@ from .web_tools import (
     check_firecrawl_api_key
 )
 
-# Primary terminal tool (mini-swe-agent backend: local/docker/singularity/modal/daytona)
+# Primary terminal tool (local/docker/singularity/modal/daytona/ssh)
 from .terminal_tool import (
     terminal_tool,
     check_terminal_requirements,
@@ -166,7 +166,7 @@ __all__ = [
     'web_extract_tool',
     'web_crawl_tool',
     'check_firecrawl_api_key',
-    # Terminal tools (mini-swe-agent backend)
+    # Terminal tools
     'terminal_tool',
     'check_terminal_requirements',
     'cleanup_vm',

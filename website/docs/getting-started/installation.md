@@ -132,13 +132,10 @@ You can combine extras: `uv pip install -e ".[messaging,cron]"`
 
 </details>
 
-### Step 4: Install Submodule Packages
+### Step 4: Install Optional Submodules (if needed)
 
 ```bash
-# Terminal tool backend (required for terminal/command-execution)
-uv pip install -e "./mini-swe-agent"
-
-# RL training backend
+# RL training backend (optional)
 uv pip install -e "./tinker-atropos"
 ```
 
@@ -238,7 +235,6 @@ export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install everything
 uv pip install -e ".[all]"
-uv pip install -e "./mini-swe-agent"
 uv pip install -e "./tinker-atropos"
 npm install  # optional, for browser tools and WhatsApp
 

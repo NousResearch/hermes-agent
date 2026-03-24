@@ -44,7 +44,6 @@ git submodule update --init --recursive
 
 # Reinstall (picks up new dependencies)
 uv pip install -e ".[all]"
-uv pip install -e "./mini-swe-agent"
 uv pip install -e "./tinker-atropos"
 
 # Check for new config options

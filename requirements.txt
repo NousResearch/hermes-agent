@@ -23,12 +23,6 @@ parallel-web>=0.4.2
 # Image generation
 fal-client
 
-# mini-swe-agent dependencies (for terminal tool)
-# Note: Install mini-swe-agent itself with: pip install -e ./mini-swe-agent
-litellm>=1.75.5
-typer
-platformdirs
-
 # Text-to-speech (Edge TTS is free, no API key needed)
 edge-tts
 

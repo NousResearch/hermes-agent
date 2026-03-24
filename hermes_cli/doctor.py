@@ -26,10 +26,6 @@ if _env_path.exists():
 # Also try project .env as dev fallback
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(HERMES_HOME))
-os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
-
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -617,18 +613,6 @@ def run_doctor(args):
     # =========================================================================
     print()
     print(color("◆ Submodules", Colors.CYAN, Colors.BOLD))
-    
-    # mini-swe-agent (terminal tool backend)
-    mini_swe_dir = PROJECT_ROOT / "mini-swe-agent"
-    if mini_swe_dir.exists() and (mini_swe_dir / "pyproject.toml").exists():
-        try:
-            __import__("minisweagent")
-            check_ok("mini-swe-agent", "(terminal backend)")
-        except ImportError:
-            check_warn("mini-swe-agent found but not installed", "(run: uv pip install -e ./mini-swe-agent)")
-            issues.append("Install mini-swe-agent: uv pip install -e ./mini-swe-agent")
-    else:
-        check_warn("mini-swe-agent not found", "(run: git submodule update --init --recursive)")
     
     # tinker-atropos (RL training backend)
     tinker_dir = PROJECT_ROOT / "tinker-atropos"

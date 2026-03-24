@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Terminal Tool Module (mini-swe-agent backend)
+Terminal Tool Module
 
-A terminal tool that executes commands using mini-swe-agent's execution environments.
+A terminal tool that executes commands in local, Docker, Modal, SSH, Singularity, and Daytona environments.
 Supports local execution, Docker containers, and Modal cloud sandboxes.
 
 Environment Selection (via TERMINAL_ENV environment variable):
@@ -532,7 +532,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         task_id: str = "default",
                         host_cwd: str = None):
     """
-    Create an execution environment from mini-swe-agent.
+    Create an execution environment for sandboxed command execution.
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
@@ -847,7 +847,7 @@ def terminal_tool(
     pty: bool = False,
 ) -> str:
     """
-    Execute a command using mini-swe-agent's execution environments.
+    Execute a command in the configured terminal environment.
 
     Args:
         command: The command to execute
@@ -982,7 +982,7 @@ def terminal_tool(
                         return json.dumps({
                             "output": "",
                             "exit_code": -1,
-                            "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                            "error": f"Terminal tool disabled: environment creation failed ({e})",
                             "status": "disabled"
                         }, ensure_ascii=False)
 
@@ -1267,7 +1267,7 @@ if __name__ == "__main__":
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")
-    print("  - terminal_tool: Execute commands using mini-swe-agent environments")
+    print("  - terminal_tool: Execute commands in sandboxed environments")
 
     print("\nUsage Examples:")
     print("  # Execute a command")

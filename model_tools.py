@@ -156,6 +156,8 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
+        "tools.service_expose_tool",
+        "tools.plannotator_tool",
         "tools.honcho_tools",
         "tools.homeassistant_tool",
     ]

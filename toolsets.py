@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Local-service exposure and Plannotator review flows
+    "service_expose", "plannotator_session",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -133,6 +135,18 @@ TOOLSETS = {
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
+        "includes": []
+    },
+
+    "service_exposure": {
+        "description": "Expose local HTTP services via localhost or configurable router/tunnel command templates",
+        "tools": ["service_expose"],
+        "includes": []
+    },
+
+    "plannotator": {
+        "description": "Launch Plannotator review and annotation sessions using configurable bridge/launcher templates",
+        "tools": ["plannotator_session", "service_expose"],
         "includes": []
     },
     

@@ -32,10 +32,6 @@ dependencies = [
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts",
   "faster-whisper>=1.0.0",
-  # mini-swe-agent deps (terminal tool)
-  "litellm>=1.75.5",
-  "typer",
-  "platformdirs",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]",
 ]

@@ -130,7 +130,7 @@ echo -e "${CYAN}→${NC} Installing submodules..."
 if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
     $UV_CMD pip install -e "./mini-swe-agent" && \
         echo -e "${GREEN}✓${NC} mini-swe-agent installed" || \
-        echo -e "${YELLOW}⚠${NC} mini-swe-agent install failed (terminal tools may not work)"
+        echo -e "${YELLOW}⚠${NC} mini-swe-agent install failed (Docker/Modal terminal backends may not work, local terminal is unaffected)"
 else
     echo -e "${YELLOW}⚠${NC} mini-swe-agent not found (run: git submodule update --init --recursive)"
 fi

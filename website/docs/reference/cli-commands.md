@@ -344,6 +344,41 @@ pip install -e '.[acp]'
 
 See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
 
+## `hermes mcp`
+
+```bash
+hermes mcp <subcommand>
+```
+
+Manage MCP (Model Context Protocol) server configurations.
+
+| Subcommand | Description |
+|------------|-------------|
+| `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add an MCP server with automatic tool discovery. |
+| `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
+| `list` (alias: `ls`) | List configured MCP servers. |
+| `test <name>` | Test connection to an MCP server. |
+| `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
+
+See [MCP Config Reference](./mcp-config-reference.md) and [Use MCP with Hermes](../guides/use-mcp-with-hermes.md).
+
+## `hermes plugins`
+
+```bash
+hermes plugins <subcommand>
+```
+
+Manage Hermes Agent plugins.
+
+| Subcommand | Description |
+|------------|-------------|
+| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
+| `update <name>` | Pull latest changes for an installed plugin. |
+| `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
+| `list` (alias: `ls`) | List installed plugins. |
+
+See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
+
 ## `hermes tools`
 
 ```bash

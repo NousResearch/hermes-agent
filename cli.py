@@ -31,7 +31,7 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 # Suppress startup messages for clean CLI experience
-os.environ["MSWEA_SILENT_STARTUP"] = "1"  # mini-swe-agent
+os.environ["MSWEA_SILENT_STARTUP"] = "1"  # suppress mini-swe-agent startup noise if installed
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 import yaml
@@ -78,7 +78,7 @@ _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
+# Point mini-swe-agent at ~/.hermes/ if installed (RL training use)
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
 
 # =============================================================================

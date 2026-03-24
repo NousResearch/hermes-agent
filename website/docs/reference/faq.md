@@ -53,7 +53,16 @@ hermes model
 # Context length: 32768   ← set this to match your server's actual context window
 ```
 
-Hermes persists the endpoint in `config.yaml` and prompts for the context window size so compression triggers at the right time. If you leave context length blank, Hermes auto-detects it from the server's `/models` endpoint or [models.dev](https://models.dev).
+Or configure it directly in `config.yaml`:
+
+```yaml
+model:
+  default: qwen3.5:27b
+  provider: custom
+  base_url: http://localhost:11434/v1
+```
+
+Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 

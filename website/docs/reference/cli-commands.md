@@ -98,7 +98,24 @@ Use this when you want to:
 - switch default providers
 - log into OAuth-backed providers during model selection
 - pick from provider-specific model lists
+- configure a custom/self-hosted endpoint
 - save the new default into config
+
+### `/model` slash command (mid-session)
+
+Switch models without leaving a session:
+
+```
+/model                              # Show current model and available options
+/model claude-sonnet-4              # Switch model (auto-detects provider)
+/model zai:glm-5                    # Switch provider and model
+/model custom:qwen-2.5              # Use model on your custom endpoint
+/model custom                       # Auto-detect model from custom endpoint
+/model custom:local:qwen-2.5        # Use a named custom provider
+/model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
+```
+
+Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
 ## `hermes gateway`
 

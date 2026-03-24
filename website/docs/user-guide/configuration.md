@@ -214,24 +214,57 @@ Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server impl
 
 ### General Setup
 
-Two ways to configure a custom endpoint:
+Three ways to configure a custom endpoint:
 
-**Interactive (recommended):**
+**Interactive setup (recommended):**
 ```bash
 hermes model
 # Select "Custom endpoint (self-hosted / VLLM / etc.)"
 # Enter: API base URL, API key, Model name
 ```
 
-**Manual (`.env` file):**
+**Manual config (`config.yaml`):**
+```yaml
+# In ~/.hermes/config.yaml
+model:
+  default: your-model-name
+  provider: custom
+  base_url: http://localhost:8000/v1
+  api_key: your-key-or-leave-empty-for-local
+```
+
+**Environment variables (`.env` file):**
 ```bash
 # Add to ~/.hermes/.env
 OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=***
+OPENAI_API_KEY=your-key     # Any non-empty string for local servers
 LLM_MODEL=your-model-name
 ```
 
-`hermes model` and the manual `.env` approach end up in the same runtime path. If you save a custom endpoint through `hermes model`, Hermes persists the provider + base URL in `config.yaml` so later sessions keep using that endpoint even if `OPENAI_BASE_URL` is not exported in your current shell.
+All three approaches end up in the same runtime path. `hermes model` persists provider, model, and base URL to `config.yaml` so later sessions keep using that endpoint even if env vars are not set.
+
+### Switching Models with `/model`
+
+Once a custom endpoint is configured, you can switch models mid-session:
+
+```
+/model custom:qwen-2.5          # Switch to a model on your custom endpoint
+/model custom                    # Auto-detect the model from the endpoint
+/model openrouter:claude-sonnet-4 # Switch back to a cloud provider
+```
+
+If you have **named custom providers** configured (see below), use the triple syntax:
+
+```
+/model custom:local:qwen-2.5    # Use the "local" custom provider with model qwen-2.5
+/model custom:work:llama3       # Use the "work" custom provider with llama3
+```
+
+When switching providers, Hermes persists the base URL and provider to config so the change survives restarts. When switching away from a custom endpoint to a built-in provider, the stale base URL is automatically cleared.
+
+:::tip
+`/model custom` (bare, no model name) queries your endpoint's `/models` API and auto-selects the model if exactly one is loaded. Useful for local servers running a single model.
+:::
 
 Everything below follows this same pattern — just change the URL, key, and model name.
 
@@ -459,6 +492,37 @@ custom_providers:
 - You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
 - You're running behind a proxy that doesn't expose `/v1/models`
 :::
+
+---
+
+### Named Custom Providers
+
+If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`:
+
+```yaml
+custom_providers:
+  - name: local
+    base_url: http://localhost:8080/v1
+    # api_key omitted — Hermes uses "no-key-required" for keyless local servers
+  - name: work
+    base_url: https://gpu-server.internal.corp/v1
+    api_key: corp-api-key
+    api_mode: chat_completions   # optional, auto-detected from URL
+  - name: anthropic-proxy
+    base_url: https://proxy.example.com/anthropic
+    api_key: proxy-key
+    api_mode: anthropic_messages  # for Anthropic-compatible proxies
+```
+
+Switch between them mid-session with the triple syntax:
+
+```
+/model custom:local:qwen-2.5       # Use the "local" endpoint with qwen-2.5
+/model custom:work:llama3-70b      # Use the "work" endpoint with llama3-70b
+/model custom:anthropic-proxy:claude-sonnet-4  # Use the proxy
+```
+
+You can also select named custom providers from the interactive `hermes model` menu.
 
 ---
 

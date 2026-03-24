@@ -194,8 +194,8 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     query = name.lstrip("#").lower()
 
     def _strip_emoji(s: str) -> str:
-        """Strip leading non-word characters (emojis, decorators) from a channel name."""
-        return re.sub(r'^[^\w\-]+', '', s).lower()
+        """Strip leading/trailing non-word characters (emojis, decorators) from a channel name."""
+        return re.sub(r'^[^\w\-]+|[^\w\-]+$', '', s).lower()
 
     # 1. Exact name match (also try stripping emoji prefix from stored name)
     for ch in channels:

@@ -6,10 +6,15 @@ with GSD skills to execute tasks autonomously.
 
 import json
 import os
+import re
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
+
+# Store running processes for status tracking
+RUNNING_PROCESSES: Dict[str, dict] = {}
 
 
 # ----------------------------------------------------------------------
@@ -331,6 +336,301 @@ def save_report(run_id: str, report: str) -> Path:
 
 
 # ----------------------------------------------------------------------
+# Swarm Execution (Full Implementation)
+# ----------------------------------------------------------------------
+
+def spawn_swarm(
+    repo_path: str,
+    task: str,
+    gsd_skill: str = "gsd-executor",
+    run_id: str = None,
+) -> Dict[str, Any]:
+    """Spawn a Codex agent in background to execute the task.
+    
+    Returns dict with run_id, command, and initial status.
+    """
+    global RUNNING_PROCESSES
+    
+    if run_id is None:
+        run_id, _ = generate_run_id(task[:30])
+    
+    # Build the full prompt with GSD context
+    full_prompt = build_full_autonomous_prompt(task, repo_path)
+    
+    # Build the Codex command
+    cmd = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-C", repo_path,
+        "--skill", gsd_skill,
+        full_prompt
+    ]
+    
+    # Start the process in background
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=repo_path,
+        )
+        
+        # Track the process
+        RUNNING_PROCESSES[run_id] = {
+            "process": proc,
+            "task": task,
+            "repo": repo_path,
+            "started_at": datetime.now().isoformat(),
+            "status": "running",
+        }
+        
+        # Update manifest
+        update_manifest(run_id, status="running", process_id=proc.pid)
+        
+        return {
+            "run_id": run_id,
+            "status": "started",
+            "process_id": proc.pid,
+            "command": " ".join(cmd),
+        }
+    except Exception as e:
+        return {
+            "run_id": run_id,
+            "status": "failed",
+            "error": str(e),
+        }
+
+
+def build_full_autonomous_prompt(task: str, repo_path: str) -> str:
+    """Build the full prompt for autonomous execution.
+    
+    This includes context about what the agent should do.
+    """
+    return f"""You are running in AUTONOMOUS MODE for Hermes.
+
+Your mission: Execute the following task autonomously using GSD methodology.
+
+## TASK
+{task}
+
+## REPO
+{repo_path}
+
+## INSTRUCTIONS
+1. First, understand the task fully
+2. Map the relevant codebase (use GSD skills if needed)
+3. Plan your approach
+4. Execute the solution
+5. Test thoroughly
+6. If tests fail, debug and retry (up to 3 times)
+7. When done, summarize what you changed
+
+## OUTPUT
+When complete, provide:
+- Files changed (list)
+- Tests run and results
+- Any issues and resolutions
+- Ready for PR or needs manual review
+
+Go!"""
+
+
+def check_run_status(run_id: str) -> Dict[str, Any]:
+    """Check the status of a running autonomous task."""
+    global RUNNING_PROCESSES
+    
+    if run_id not in RUNNING_PROCESSES:
+        # Check if it's a completed run
+        runs_dir = get_runs_dir()
+        manifest_path = runs_dir / run_id / "manifest.json"
+        if manifest_path.exists():
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            return manifest
+        return {"status": "not_found", "run_id": run_id}
+    
+    proc_info = RUNNING_PROCESSES[run_id]
+    proc = proc_info["process"]
+    
+    if proc.poll() is None:
+        return {
+            "run_id": run_id,
+            "status": "running",
+            "started_at": proc_info["started_at"],
+            "task": proc_info["task"],
+        }
+    else:
+        # Process completed
+        stdout, stderr = proc.communicate()
+        RUNNING_PROCESSES[run_id]["status"] = "completed"
+        RUNNING_PROCESSES[run_id]["returncode"] = proc.returncode
+        RUNNING_PROCESSES[run_id]["stdout"] = stdout[:5000]  # Limit size
+        RUNNING_PROCESSES[run_id]["stderr"] = stderr[:2000]
+        
+        # Update manifest
+        update_manifest(run_id, status="completed", returncode=proc.returncode)
+        
+        return {
+            "run_id": run_id,
+            "status": "completed",
+            "returncode": proc.returncode,
+            "output": stdout[:2000],
+            "error": stderr[:1000] if stderr else None,
+        }
+
+
+def run_iteration(
+    repo_path: str,
+    task: str,
+    iteration: int = 1,
+    max_iterations: int = 3,
+    failure_context: str = None,
+) -> Dict[str, Any]:
+    """Run one iteration of the autonomous task.
+    
+    If iteration > 1, includes failure_context from previous attempt.
+    """
+    if iteration > max_iterations:
+        return {
+            "status": "failed",
+            "reason": f"Max iterations ({max_iterations}) reached",
+        }
+    
+    # Build prompt with iteration context
+    if failure_context:
+        prompt = f"""{task}
+
+## PREVIOUS ITERATION FAILED
+{failure_context}
+
+## THIS ITERATION
+Fix the above issues and try again. You have {max_iterations - iteration} retries left after this."""
+    else:
+        prompt = task
+    
+    # Run the swarm
+    result = spawn_swarm(repo_path, prompt, run_id=f"{repo_path.split('/')[-1]}-{iteration}")
+    
+    return result
+
+
+def complete_vault_sync(run_id: str, headline: str) -> None:
+    """Complete vault sync - copy all run data to vault."""
+    runs_dir = get_runs_dir()
+    vault_dir = get_vault_dir()
+    
+    local_dir = runs_dir / run_id
+    vault_subdir = vault_dir / f"{run_id}_{headline}"
+    
+    if not local_dir.exists():
+        return
+    
+    # Create vault dirs
+    (vault_subdir / "input").mkdir(parents=True, exist_ok=True)
+    (vault_subdir / "output").mkdir(parents=True, exist_ok=True)
+    
+    # Copy all input files
+    input_dir = local_dir / "input"
+    if input_dir.exists():
+        for f in input_dir.glob("*"):
+            if f.is_file():
+                import shutil
+                shutil.copy(f, vault_subdir / "input" / f.name)
+    
+    # Copy all output files
+    output_dir = local_dir / "output"
+    if output_dir.exists():
+        for f in output_dir.glob("*"):
+            if f.is_file():
+                import shutil
+                if f.is_dir():
+                    shutil.copytree(f, vault_subdir / "output" / f.name, dirs_exist_ok=True)
+                else:
+                    shutil.copy(f, vault_subdir / "output" / f.name)
+
+
+def execute_autonomous_task(
+    task: str,
+    problem: str = None,
+    scope: str = None,
+    tests: str = None,
+    constraints: str = None,
+    done_criteria: str = None,
+    repo_path: str = None,
+    max_iterations: int = 3,
+) -> Dict[str, Any]:
+    """Main entry point for executing an autonomous task.
+    
+    This orchestrates the full workflow:
+    1. Create run directories
+    2. Save input spec
+    3. Spawn swarm
+    4. Handle iterations
+    5. Sync to vault
+    """
+    # Generate run ID
+    run_id, headline = generate_run_id(task[:30])
+    
+    # Default repo path
+    if repo_path is None:
+        repo_path = os.getcwd()
+    
+    # Create directories
+    local_dir, vault_dir = create_run_dirs(run_id, headline)
+    
+    # Save input
+    if problem:
+        with open(local_dir / "input" / "problem.md", "w") as f:
+            f.write(problem)
+    
+    # Save plan if provided
+    plan_content = f"""# Plan for: {task}
+
+## Problem
+{problem or 'Not specified'}
+
+## Scope
+{scope or 'Not specified'}
+
+## Tests
+{tests or 'Not specified'}
+
+## Constraints
+{constraints or 'Not specified'}
+
+## Done Criteria
+{done_criteria or 'Not specified'}
+"""
+    with open(local_dir / "input" / "plan.md", "w") as f:
+        f.write(plan_content)
+    
+    # Save manifest
+    save_manifest(run_id, task, repo_path, "running")
+    
+    # Build the task prompt
+    full_task = f"""{task}
+
+## Context:
+- Problem: {problem or 'Not specified'}
+- Scope: {scope or 'Not specified'}
+- Tests: {tests or 'Not specified'}
+- Constraints: {constraints or 'Not specified'}
+- Done: {done_criteria or 'Not specified'}
+"""
+    
+    # Execute first iteration
+    result = spawn_swarm(repo_path, full_task, run_id=run_id)
+    
+    return {
+        "run_id": run_id,
+        "headline": headline,
+        "status": "started",
+        "message": f"Autonomous task started. Run ID: {run_id}",
+    }
+
+
+# ----------------------------------------------------------------------
 # Main Entry Point (for imports)
 # ----------------------------------------------------------------------
 
@@ -349,4 +649,11 @@ __all__ = [
     "create_pr_branch",
     "generate_report",
     "save_report",
+    # New swarm functions
+    "spawn_swarm",
+    "check_run_status",
+    "run_iteration",
+    "complete_vault_sync",
+    "execute_autonomous_task",
+    "RUNNING_PROCESSES",
 ]

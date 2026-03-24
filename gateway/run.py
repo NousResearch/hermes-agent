@@ -3709,17 +3709,41 @@ class GatewayRunner:
 
         # Start new autonomous run
         task = args
-        return (
-            f"🎯 Starting autonomous mode: {task[:60]}{'...' if len(task) > 60 else ''}\n\n"
-            "This will: 1) Clarify the problem 2) Execute via swarm 3) Deliver PR\n\n"
-            "📝 Please provide more detail:\n"
-            "1. Problem: What's broken or what do you want?\n"
-            "2. Scope: Which files/modules?\n"
-            "3. Tests: How will you verify it works?\n"
-            "4. Constraints: Any style/pattern requirements?\n"
-            "5. Done: What's the final deliverable?\n\n"
-            "Or provide your detailed spec now and I'll start the swarm."
-        )
+        
+        # Parse flags
+        has_full_spec = "--problem" in task or "--scope" in task or "--tests" in task
+        
+        if not has_full_spec:
+            return (
+                f"🎯 Starting autonomous mode: {task[:60]}{'...' if len(task) > 60 else ''}\n\n"
+                "This will: 1) Clarify the problem 2) Execute via swarm 3) Deliver PR\n\n"
+                "📝 Please provide full spec:\n"
+                "/autonomous <task> --problem <desc> --scope <files> --tests <how>\n\n"
+                "Or provide detailed spec now and I'll start the swarm."
+            )
+        
+        # Execute autonomous task
+        try:
+            from hermes_cli.autonomous import execute_autonomous_task
+            
+            result = execute_autonomous_task(
+                task=task,
+                problem=None,
+                scope=None,
+                tests=None,
+                constraints=None,
+                done_criteria=None,
+            )
+            
+            return (
+                f"✅ Autonomous task started!\n\n"
+                f"Run ID: {result['run_id']}\n"
+                f"\n"
+                f"Use /autonomous status {result['run_id']} to check progress\n"
+                f"Use /autonomous logs {result['run_id']} to see results"
+            )
+        except Exception as e:
+            return f"❌ Failed to start autonomous task: {e}"
 
     async def _handle_autonomous_subcommand(self, subcmd: str, arg: str) -> str:
         """Handle /autonomous status/logs/list/cancel."""

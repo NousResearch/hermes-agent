@@ -99,6 +99,65 @@ def test_review_with_target_strategy_and_fixed_host_passes_env_values():
     assert result["waited_for_completion"] is False
 
 
+def test_inline_review_prepares_sends_and_waits():
+    prepare_result = {
+        "success": True,
+        "action": "prepare",
+        "host": "plannotator-fixed.a.cloud77.it",
+        "url": "https://plannotator-fixed.a.cloud77.it/",
+        "suggested_message": "Temporary review URL:\nhttps://plannotator-fixed.a.cloud77.it/",
+        "waited_for_completion": False,
+    }
+    review_result = {
+        "success": True,
+        "action": "review",
+        "host": "plannotator-fixed.a.cloud77.it",
+        "url": "https://plannotator-fixed.a.cloud77.it/",
+        "completed": True,
+        "waited_for_completion": True,
+        "final_log": "Code review completed — no changes requested.\n",
+    }
+
+    with (
+        patch("tools.plannotator_tool._launch_plannotator", side_effect=[prepare_result, review_result]) as launch_mock,
+        patch("tools.plannotator_tool._send_inline_url_message", return_value={"success": True, "message_id": 123}) as send_mock,
+    ):
+        result = json.loads(plannotator_session_tool({"action": "inline_review"}))
+
+    assert result["success"] is True
+    assert result["inline_message_sent"] is True
+    assert result["prepared_host"] == "plannotator-fixed.a.cloud77.it"
+    assert result["send_message_result"]["success"] is True
+    assert launch_mock.call_count == 2
+    assert launch_mock.call_args_list[1].kwargs == {}
+    second_args = launch_mock.call_args_list[1].args[0]
+    assert second_args["action"] == "review"
+    assert second_args["fixed_host"] == "plannotator-fixed.a.cloud77.it"
+    assert second_args["wait_for_completion"] is True
+    send_mock.assert_called_once()
+
+
+def test_inline_review_returns_error_if_send_fails():
+    prepare_result = {
+        "success": True,
+        "action": "prepare",
+        "host": "plannotator-fixed.a.cloud77.it",
+        "url": "https://plannotator-fixed.a.cloud77.it/",
+        "suggested_message": "Temporary review URL:\nhttps://plannotator-fixed.a.cloud77.it/",
+        "waited_for_completion": False,
+    }
+
+    with (
+        patch("tools.plannotator_tool._launch_plannotator", return_value=prepare_result) as launch_mock,
+        patch("tools.plannotator_tool._send_inline_url_message", return_value={"error": "No active messaging session context found."}),
+    ):
+        result = json.loads(plannotator_session_tool({"action": "inline_review"}))
+
+    assert "Failed to send prepared Plannotator URL message" in result["error"]
+    assert result["prepared_host"] == "plannotator-fixed.a.cloud77.it"
+    assert launch_mock.call_count == 1
+
+
 def test_last_action_reports_launcher_failure():
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],

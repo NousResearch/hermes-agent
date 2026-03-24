@@ -198,7 +198,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     return {
-        "provider": "openrouter",
+        "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -279,8 +279,16 @@ def _resolve_openrouter_runtime(
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
+    # When "custom" was explicitly requested, preserve that as the provider
+    # name instead of silently relabeling to "openrouter" (#2562).
+    # Also provide a placeholder API key for local servers that don't require
+    # authentication — the OpenAI SDK requires a non-empty api_key string.
+    effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    if effective_provider == "custom" and not api_key and not _is_openrouter_url:
+        api_key = "no-key-required"
+
     return {
-        "provider": "openrouter",
+        "provider": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

@@ -565,14 +565,19 @@ def _load_cursorrules(cwd_path: Path) -> str:
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
-      1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (recursive directory walk)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+    Context files are composed rather than first-match-wins:
+
+      .hermes.md / HERMES.md  — per-project user instructions (walk to git root)
+      AGENTS.md / agents.md   — recursive dev guide
+      CLAUDE.md / claude.md   — Claude-specific instructions (cwd only)
+      .cursorrules            — fallback, only if none of the above are present
+
+    Multiple types can coexist. A shared 20,000-char budget is distributed
+    proportionally when the combined content would exceed it.
+    .cursorrules is treated as a pure fallback and skipped when any of the
+    primary sources are present.
 
     SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -583,15 +588,30 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
+    # Compose all present primary context sources
+    hermes = _load_hermes_md(cwd_path)
+    agents = _load_agents_md(cwd_path)
+    claude = _load_claude_md(cwd_path)
+
+    primary_parts = [p for p in (hermes, agents, claude) if p]
+
+    if primary_parts:
+        # Distribute the shared budget proportionally across all present sources
+        total_chars = sum(len(p) for p in primary_parts)
+        if total_chars > CONTEXT_FILE_MAX_CHARS:
+            budget_parts = []
+            for part in primary_parts:
+                share = int(CONTEXT_FILE_MAX_CHARS * len(part) / total_chars)
+                budget_parts.append(part[:share])
+            project_context = "\n\n".join(budget_parts)
+        else:
+            project_context = "\n\n".join(primary_parts)
         sections.append(project_context)
+    else:
+        # No primary sources — fall back to .cursorrules
+        cursorrules = _load_cursorrules(cwd_path)
+        if cursorrules:
+            sections.append(cursorrules)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

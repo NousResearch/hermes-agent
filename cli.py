@@ -1989,6 +1989,12 @@ class HermesCLI:
             if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
                 ctx_len = self.agent.context_compressor.context_length
             
+            # Detect full-access (yolo) mode from env var or config
+            _yolo = bool(
+                os.environ.get("HERMES_YOLO_MODE")
+                or self.config.get("approvals", {}).get("mode") == "off"
+            )
+
             # Build and display the banner
             build_welcome_banner(
                 console=self.console,
@@ -1998,6 +2004,7 @@ class HermesCLI:
                 enabled_toolsets=self.enabled_toolsets,
                 session_id=self.session_id,
                 context_length=ctx_len,
+                yolo_mode=_yolo,
             )
         
         # Show tool availability warnings if any tools are disabled

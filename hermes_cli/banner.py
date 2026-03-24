@@ -244,7 +244,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                          enabled_toolsets: List[str] = None,
                          session_id: str = None,
                          get_toolset_for_tool=None,
-                         context_length: int = None):
+                         context_length: int = None,
+                         yolo_mode: bool = False):
     """Build and print a welcome banner with caduceus on left and info on right.
 
     Args:
@@ -256,6 +257,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
+        yolo_mode: If True, show FULL ACCESS warning (all approvals bypassed).
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
@@ -298,6 +300,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     left_lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
         left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
+    if yolo_mode:
+        left_lines.append(f"[bold red]⚠  FULL ACCESS[/] [dim {dim}]— tool approvals bypassed[/]")
+    else:
+        left_lines.append(f"[bold green]✓  RESTRICTED ACCESS[/] [dim {dim}]— tool approvals enabled[/]")
     left_content = "\n".join(left_lines)
 
     right_lines = [f"[bold {accent}]Available Tools[/]"]

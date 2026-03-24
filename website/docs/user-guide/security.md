@@ -256,6 +256,54 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 
+## Environment Variable Passthrough {#environment-variable-passthrough}
+
+Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. However, skills that declare `required_environment_variables` legitimately need access to those vars.
+
+### How It Works
+
+Two mechanisms allow specific variables through the sandbox filters:
+
+**1. Skill-scoped passthrough (automatic)**
+
+When a skill is loaded (via `skill_view` or the `/skill` command) and declares `required_environment_variables`, any of those vars that are actually set in the environment are automatically registered as passthrough. Missing vars (still in setup-needed state) are **not** registered.
+
+```yaml
+# In a skill's SKILL.md frontmatter
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+```
+
+After loading this skill, `TENOR_API_KEY` passes through to both `execute_code` and `terminal` subprocesses — no manual configuration needed.
+
+**2. Config-based passthrough (manual)**
+
+For env vars not declared by any skill, add them to `terminal.env_passthrough` in `config.yaml`:
+
+```yaml
+terminal:
+  env_passthrough:
+    - MY_CUSTOM_KEY
+    - ANOTHER_TOKEN
+```
+
+### What Each Sandbox Filters
+
+| Sandbox | Default Filter | Passthrough Override |
+|---------|---------------|---------------------|
+| **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
+| **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
+
+### Security Considerations
+
+- The passthrough only affects vars you or your skills explicitly declare — the default security posture is unchanged for arbitrary LLM-generated code
+- Skills Guard scans skill content for suspicious env access patterns before installation
+- Missing/unset vars are never registered (you can't leak what doesn't exist)
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
+
 ## MCP Credential Handling
 
 MCP (Model Context Protocol) server subprocesses receive a **filtered environment** to prevent accidental credential leakage.

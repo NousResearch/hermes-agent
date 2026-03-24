@@ -1146,6 +1146,26 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         )
         setup_needed = bool(remaining_missing_required_envs)
 
+        # Register available skill env vars so they pass through to sandboxed
+        # execution environments (execute_code, terminal).  Only vars that are
+        # actually set get registered — missing ones are reported as setup_needed.
+        available_env_names = [
+            e["name"]
+            for e in required_env_vars
+            if e["name"] not in remaining_missing_required_envs
+        ]
+        if available_env_names:
+            try:
+                from tools.env_passthrough import register_env_passthrough
+
+                register_env_passthrough(available_env_names)
+            except Exception:
+                logger.debug(
+                    "Could not register env passthrough for skill %s",
+                    skill_name,
+                    exc_info=True,
+                )
+
         result = {
             "success": True,
             "name": skill_name,

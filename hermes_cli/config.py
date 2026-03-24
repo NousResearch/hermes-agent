@@ -119,6 +119,10 @@ DEFAULT_CONFIG = {
         "backend": "local",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Environment variables to pass through to sandboxed execution
+        # (terminal and execute_code).  Skill-declared required_environment_variables
+        # are passed through automatically; this list is for non-skill use cases.
+        "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",

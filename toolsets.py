@@ -66,6 +66,16 @@ _HERMES_CORE_TOOLS = [
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
 
+# Reduced-privilege SMS toolset. SMS is a higher-risk transport than paired apps like
+# Signal/Telegram, so keep it informational and conversational by default.
+_HERMES_SMS_TOOLS = [
+    "web_search", "web_extract",
+    "vision_analyze",
+    "todo",
+    "session_search",
+    "clarify",
+]
+
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
@@ -298,8 +308,8 @@ TOOLSETS = {
     },
 
     "hermes-sms": {
-        "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "SMS bot toolset - reduced-privilege conversational/research access for Twilio SMS",
+        "tools": _HERMES_SMS_TOOLS,
         "includes": []
     },
 

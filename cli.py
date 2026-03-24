@@ -1136,6 +1136,8 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        last_session_summary: str = None,
+        last_session_time: float = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -1151,6 +1153,8 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            last_session_summary: Brief summary of previous session for continuity injection
+            last_session_time: Unix timestamp of when the previous session started
         """
         # Initialize Rich console
         self.console = Console()
@@ -1269,6 +1273,8 @@ class HermesCLI:
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
+        self._last_session_summary = last_session_summary
+        self._last_session_time = last_session_time
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -2258,6 +2264,12 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                last_session_summary=(
+                    self._last_session_summary if not self._resumed else None
+                ),
+                last_session_time=(
+                    self._last_session_time if not self._resumed else None
+                ),
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
@@ -3194,7 +3206,16 @@ class HermesCLI:
             except (Exception, KeyboardInterrupt):
                 pass
 
+        # Generate exit summary before ending the old session
         old_session_id = self.session_id
+        if self.conversation_history and len(self.conversation_history) > 4:
+            try:
+                exit_summary = self._generate_exit_summary()
+                if exit_summary and self._session_db and old_session_id:
+                    self._session_db.update_exit_summary(old_session_id, exit_summary)
+            except Exception:
+                pass
+
         if self._session_db and old_session_id:
             try:
                 self._session_db.end_session(old_session_id, "new_session")
@@ -6444,6 +6465,47 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _generate_exit_summary(self) -> Optional[str]:
+        """Generate a brief exit summary for session continuity.
+
+        Uses the auxiliary LLM to summarize the conversation in 2-4 sentences.
+        Returns None if the conversation is too short or the LLM call fails.
+        """
+        if len(self.conversation_history) < 5:
+            return None
+        try:
+            from agent.auxiliary_client import call_llm
+            from agent.context_compressor import serialize_turns_for_summary
+
+            serialized = serialize_turns_for_summary(
+                self.conversation_history, max_turns=30, max_content_chars=1500,
+            )
+            if not serialized.strip():
+                return None
+
+            response = call_llm(
+                task="exit_summary",
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Summarize this conversation in 2-4 sentences for continuity "
+                        "into the next session. Include: what the user was working on, "
+                        "key outcomes, and any unfinished work. Be specific (file names, "
+                        "error messages, decisions) but extremely concise.\n\n"
+                        f"CONVERSATION:\n{serialized}"
+                    ),
+                }],
+                max_tokens=300,
+                timeout=5.0,
+            )
+            if response and hasattr(response, "choices") and response.choices:
+                content = response.choices[0].message.content
+                if content and content.strip():
+                    return content.strip()
+        except Exception:
+            logger.debug("Exit summary generation failed", exc_info=True)
+        return None
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
         print()
@@ -8035,6 +8097,14 @@ class HermesCLI:
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            # Generate exit summary for session continuity
+            if self.agent and self.conversation_history and len(self.conversation_history) > 4:
+                try:
+                    exit_summary = self._generate_exit_summary()
+                    if exit_summary and hasattr(self, '_session_db') and self._session_db:
+                        self._session_db.update_exit_summary(self.session_id, exit_summary)
+                except Exception:
+                    pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
@@ -8087,10 +8157,12 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    last_session_summary: str = None,
+    last_session_time: float = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
-    
+
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
@@ -8194,6 +8266,8 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        last_session_summary=last_session_summary,
+        last_session_time=last_session_time,
     )
 
     if parsed_skills:

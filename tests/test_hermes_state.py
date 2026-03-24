@@ -1297,3 +1297,77 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+class TestExitSummary:
+    """Tests for session continuity exit summary storage and retrieval."""
+
+    def test_exit_summary_column_exists(self, db):
+        cursor = db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "exit_summary" in columns
+
+    def test_update_exit_summary(self, db):
+        db.create_session("s1", "cli")
+        db.update_exit_summary("s1", "We worked on the auth module.")
+        session = db.get_session("s1")
+        assert session["exit_summary"] == "We worked on the auth module."
+
+    def test_update_exit_summary_overwrites(self, db):
+        db.create_session("s1", "cli")
+        db.update_exit_summary("s1", "First summary")
+        db.update_exit_summary("s1", "Updated summary")
+        session = db.get_session("s1")
+        assert session["exit_summary"] == "Updated summary"
+
+    def test_get_last_summarized_session_basic(self, db):
+        db.create_session("s1", "cli")
+        # Add enough messages to pass min_messages filter
+        for i in range(6):
+            db.append_message("s1", "user", f"msg {i}")
+        db.update_exit_summary("s1", "Worked on feature X.")
+        result = db.get_last_summarized_session(source="cli", max_age_seconds=9999)
+        assert result is not None
+        assert result["id"] == "s1"
+        assert result["exit_summary"] == "Worked on feature X."
+
+    def test_get_last_summarized_session_filters_source(self, db):
+        db.create_session("s1", "telegram")
+        for i in range(6):
+            db.append_message("s1", "user", f"msg {i}")
+        db.update_exit_summary("s1", "Telegram session summary")
+        # Should not find it when filtering by 'cli'
+        result = db.get_last_summarized_session(source="cli", max_age_seconds=9999)
+        assert result is None
+
+    def test_get_last_summarized_session_filters_min_messages(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "short convo")
+        db.update_exit_summary("s1", "Too short.")
+        result = db.get_last_summarized_session(source="cli", max_age_seconds=9999, min_messages=5)
+        assert result is None
+
+    def test_get_last_summarized_session_no_summary(self, db):
+        db.create_session("s1", "cli")
+        for i in range(6):
+            db.append_message("s1", "user", f"msg {i}")
+        # No exit_summary set
+        result = db.get_last_summarized_session(source="cli", max_age_seconds=9999)
+        assert result is None
+
+    def test_get_last_summarized_session_returns_most_recent(self, db):
+        import time
+        db.create_session("s1", "cli")
+        for i in range(6):
+            db.append_message("s1", "user", f"msg {i}")
+        db.update_exit_summary("s1", "Older session")
+
+        time.sleep(0.05)  # ensure different started_at
+        db.create_session("s2", "cli")
+        for i in range(6):
+            db.append_message("s2", "user", f"msg {i}")
+        db.update_exit_summary("s2", "Newer session")
+
+        result = db.get_last_summarized_session(source="cli", max_age_seconds=9999)
+        assert result["id"] == "s2"
+        assert result["exit_summary"] == "Newer session"

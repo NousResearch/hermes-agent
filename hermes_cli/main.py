@@ -578,6 +578,49 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
+    # Session continuity: offer to resume last session or silently inject summary
+    if not getattr(args, "resume", None):
+        try:
+            from hermes_state import SessionDB
+            from hermes_cli.config import load_config as _load_cont_cfg
+            _cont_cfg = _load_cont_cfg().get("continuity", {})
+            if _cont_cfg.get("enabled", True):
+                _cont_db = SessionDB()
+                _last = _cont_db.get_last_summarized_session(
+                    source="cli",
+                    max_age_seconds=_cont_cfg.get("recency_hours", 4) * 3600,
+                    min_messages=_cont_cfg.get("min_messages", 5),
+                )
+                _cont_db.close()
+                if _last:
+                    _elapsed = _time.time() - _last["started_at"]
+                    if _elapsed < 3600:
+                        _age_str = f"{int(_elapsed / 60)}m ago"
+                    else:
+                        _age_str = f"{_elapsed / 3600:.1f}h ago"
+                    _title = _last.get("title") or _last["id"][:18]
+                    _msg_count = _last.get("message_count", 0)
+
+                    if _cont_cfg.get("show_prompt", True) and sys.stdin.isatty():
+                        print(f'\n  Last session: "{_title}" ({_age_str}, {_msg_count} messages)')
+                        try:
+                            _reply = input("  Resume? [y] to resume, [Enter] to start fresh: ").strip().lower()
+                        except (EOFError, KeyboardInterrupt):
+                            _reply = ""
+                        if _reply in ("y", "yes"):
+                            args.resume = _last["id"]
+                        else:
+                            # Inject summary silently for continuity
+                            args._last_session_summary = _last.get("exit_summary")
+                            args._last_session_time = _last.get("started_at")
+                        print()
+                    else:
+                        # Non-interactive: just inject summary silently
+                        args._last_session_summary = _last.get("exit_summary")
+                        args._last_session_time = _last.get("started_at")
+        except Exception:
+            pass
+
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
@@ -644,6 +687,8 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "last_session_summary": getattr(args, "_last_session_summary", None),
+        "last_session_time": getattr(args, "_last_session_time", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}

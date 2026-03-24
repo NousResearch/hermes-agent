@@ -719,6 +719,37 @@ class GatewayRunner:
                 conversation_history=msgs,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
+
+            # Generate exit summary for session continuity
+            if len(msgs) >= 5:
+                try:
+                    from agent.auxiliary_client import call_llm as _aux_call
+                    from agent.context_compressor import serialize_turns_for_summary
+                    _serialized = serialize_turns_for_summary(history, max_turns=30, max_content_chars=1500)
+                    if _serialized.strip():
+                        _resp = _aux_call(
+                            task="exit_summary",
+                            messages=[{
+                                "role": "user",
+                                "content": (
+                                    "Summarize this conversation in 2-4 sentences for continuity "
+                                    "into the next session. Include: what the user was working on, "
+                                    "key outcomes, and any unfinished work. Be specific (file names, "
+                                    "error messages, decisions) but extremely concise.\n\n"
+                                    f"CONVERSATION:\n{_serialized}"
+                                ),
+                            }],
+                            max_tokens=300,
+                            timeout=5.0,
+                        )
+                        if _resp and hasattr(_resp, "choices") and _resp.choices:
+                            _summary = _resp.choices[0].message.content
+                            if _summary and _summary.strip():
+                                self.session_store._db.update_exit_summary(
+                                    old_session_id, _summary.strip(),
+                                )
+                except Exception:
+                    logger.debug("Exit summary generation failed for session %s", old_session_id, exc_info=True)
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 

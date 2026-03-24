@@ -48,6 +48,75 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 _CHARS_PER_TOKEN = 4
 
 
+def serialize_turns_for_summary(
+    turns: List[Dict[str, Any]],
+    max_turns: int = 0,
+    max_content_chars: int = 3000,
+) -> str:
+    """Serialize conversation turns into labeled text for summarization.
+
+    Standalone utility used by both ContextCompressor and exit-summary
+    generation.  Includes tool call arguments and result content so the
+    summarizer can preserve specific details like file paths and commands.
+
+    Args:
+        turns: List of message dicts (role, content, tool_calls, ...).
+        max_turns: If > 0, only serialize the last *max_turns* messages.
+        max_content_chars: Per-message content truncation limit.
+    """
+    if max_turns > 0:
+        turns = turns[-max_turns:]
+
+    parts: List[str] = []
+    for msg in turns:
+        role = msg.get("role", "unknown")
+        content = msg.get("content") or ""
+
+        # Tool results
+        if role == "tool":
+            tool_id = msg.get("tool_call_id", "")
+            if len(content) > max_content_chars:
+                keep = max_content_chars * 2 // 3
+                tail = max_content_chars - keep
+                content = content[:keep] + "\n...[truncated]...\n" + content[-tail:]
+            parts.append(f"[TOOL RESULT {tool_id}]: {content}")
+            continue
+
+        # Assistant messages: include tool call names AND arguments
+        if role == "assistant":
+            if len(content) > max_content_chars:
+                keep = max_content_chars * 2 // 3
+                tail = max_content_chars - keep
+                content = content[:keep] + "\n...[truncated]...\n" + content[-tail:]
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls:
+                tc_parts = []
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = fn.get("arguments", "")
+                        if len(args) > 500:
+                            args = args[:400] + "..."
+                        tc_parts.append(f"  {name}({args})")
+                    else:
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", "?") if fn else "?"
+                        tc_parts.append(f"  {name}(...)")
+                content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
+            parts.append(f"[ASSISTANT]: {content}")
+            continue
+
+        # User and other roles
+        if len(content) > max_content_chars:
+            keep = max_content_chars * 2 // 3
+            tail = max_content_chars - keep
+            content = content[:keep] + "\n...[truncated]...\n" + content[-tail:]
+        parts.append(f"[{role.upper()}]: {content}")
+
+    return "\n\n".join(parts)
+
+
 class ContextCompressor:
     """Compresses conversation context when approaching the model's context limit.
 
@@ -199,53 +268,9 @@ class ContextCompressor:
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
-        Includes tool call arguments and result content (up to 3000 chars
-        per message) so the summarizer can preserve specific details like
-        file paths, commands, and outputs.
+        Delegates to the module-level ``serialize_turns_for_summary`` utility.
         """
-        parts = []
-        for msg in turns:
-            role = msg.get("role", "unknown")
-            content = msg.get("content") or ""
-
-            # Tool results: keep more content than before (3000 chars)
-            if role == "tool":
-                tool_id = msg.get("tool_call_id", "")
-                if len(content) > 3000:
-                    content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
-                parts.append(f"[TOOL RESULT {tool_id}]: {content}")
-                continue
-
-            # Assistant messages: include tool call names AND arguments
-            if role == "assistant":
-                if len(content) > 3000:
-                    content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
-                tool_calls = msg.get("tool_calls", [])
-                if tool_calls:
-                    tc_parts = []
-                    for tc in tool_calls:
-                        if isinstance(tc, dict):
-                            fn = tc.get("function", {})
-                            name = fn.get("name", "?")
-                            args = fn.get("arguments", "")
-                            # Truncate long arguments but keep enough for context
-                            if len(args) > 500:
-                                args = args[:400] + "..."
-                            tc_parts.append(f"  {name}({args})")
-                        else:
-                            fn = getattr(tc, "function", None)
-                            name = getattr(fn, "name", "?") if fn else "?"
-                            tc_parts.append(f"  {name}(...)")
-                    content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
-                parts.append(f"[ASSISTANT]: {content}")
-                continue
-
-            # User and other roles
-            if len(content) > 3000:
-                content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
-            parts.append(f"[{role.upper()}]: {content}")
-
-        return "\n\n".join(parts)
+        return serialize_turns_for_summary(turns)
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
         """Generate a structured summary of conversation turns.

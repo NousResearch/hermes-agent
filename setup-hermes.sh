@@ -116,9 +116,20 @@ export VIRTUAL_ENV="$SCRIPT_DIR/venv"
 
 echo -e "${CYAN}→${NC} Installing dependencies..."
 
-$UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
-
-echo -e "${GREEN}✓${NC} Dependencies installed"
+# Prefer uv sync with lockfile (hash-verified installs) when available,
+# fall back to pip install for compatibility or when lockfile is stale.
+if [ -f "uv.lock" ]; then
+    echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
+    UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
+        echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
+        echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
+        $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+        echo -e "${GREEN}✓${NC} Dependencies installed"
+    }
+else
+    $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+    echo -e "${GREEN}✓${NC} Dependencies installed"
+fi
 
 # ============================================================================
 # Submodules (terminal backend + RL training)

@@ -323,7 +323,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         Prefers metadata thread_id (the thread parent's ts, set by the
         gateway) over reply_to (which may be a child message's ts).
+
+        When ``reply_in_thread`` is ``false`` in the platform extra config,
+        top-level channel messages receive direct channel replies instead of
+        thread replies.  Messages that originate inside an existing thread are
+        always replied to in-thread to preserve conversation context.
         """
+        # When reply_in_thread is disabled (default: True for backward compat),
+        # only thread messages that are already part of an existing thread.
+        if not self.config.extra.get("reply_in_thread", True):
+            existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
+            return existing_thread or None
+
         if metadata:
             if metadata.get("thread_id"):
                 return metadata["thread_id"]

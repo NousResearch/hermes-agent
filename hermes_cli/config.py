@@ -145,6 +145,7 @@ DEFAULT_CONFIG = {
     
     "browser": {
         "inactivity_timeout": 120,
+        "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
 

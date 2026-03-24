@@ -4641,11 +4641,13 @@ class HermesCLI:
     def _on_tool_gen_start(self, tool_name: str) -> None:
         """Called when the model begins generating tool-call arguments.
 
-        Closes any open streaming boxes (reasoning / response) and prints a
-        short status line so the user sees activity instead of a frozen
-        screen while a large payload (e.g. a 45 KB write_file) streams in.
+        Closes any open streaming boxes (reasoning / response) exactly once,
+        then prints a short status line so the user sees activity instead of
+        a frozen screen while a large payload (e.g. 45 KB write_file) streams.
         """
-        self._flush_stream()
+        if getattr(self, "_stream_box_opened", False):
+            self._flush_stream()
+            self._stream_box_opened = False
         self._close_reasoning_box()
 
         from agent.display import get_tool_emoji

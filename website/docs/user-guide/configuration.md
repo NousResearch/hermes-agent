@@ -336,7 +336,7 @@ vLLM supports tool calling, structured output, and multi-modal models. Use `--en
 
 ```bash
 # Start SGLang server
-pip install sglang[all]
+pip install "sglang[all]"
 python -m sglang.launch_server \
   --model meta-llama/Llama-3.1-70B-Instruct \
   --port 8000 \
@@ -379,7 +379,7 @@ Download GGUF models from [Hugging Face](https://huggingface.co/models?library=g
 
 ```bash
 # Install and start
-pip install litellm[proxy]
+pip install "litellm[proxy]"
 litellm --model anthropic/claude-sonnet-4 --port 4000
 
 # Or with a config file for multiple models:

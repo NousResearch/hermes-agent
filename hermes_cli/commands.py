@@ -75,6 +75,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    CommandDef("autonomous", "Start autonomous coding mode (swarm of agents)", "Session",
+               args_hint="<task-description>",
+               subcommands=("status", "logs", "list", "cancel")),
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",

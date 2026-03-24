@@ -3714,6 +3714,8 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "autonomous":
+            self._handle_autonomous_command(cmd_original)
         elif canonical == "queue":
             if not self._agent_running:
                 _cprint("  /queue only works while Hermes is busy. Just type your message normally.")
@@ -3974,6 +3976,118 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _handle_autonomous_command(self, cmd: str):
+        """Handle /autonomous <task-description> — start autonomous coding mode.
+
+        Spawns a swarm of GSD-powered Codex agents to execute the task autonomously.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /autonomous <task-description>")
+            _cprint("  Example: /autonomous fix the login bug in auth service")
+            _cprint("  This starts an autonomous swarm to solve the problem.")
+            _cprint("")
+            _cprint("  Subcommands:")
+            _cprint("    /autonomous status <run-id>  — Check run status")
+            _cprint("    /autonomous logs <run-id>   — View run logs")
+            _cprint("    /autonomous list            — List recent runs")
+            return
+
+        task = parts[1].strip()
+
+        # Check for subcommands
+        if task.split()[0] in ("status", "logs", "list", "cancel"):
+            subcmd = task.split()[0]
+            arg = " ".join(task.split()[1:]) if len(task.split()) > 1 else ""
+            self._handle_autonomous_subcommand(subcmd, arg)
+            return
+
+        # Start new autonomous run
+        _cprint(f"  🎯 Starting autonomous mode: {task[:60]}{'...' if len(task) > 60 else ''}")
+        _cprint("  This will: 1) Clarify the problem 2) Execute via swarm 3) Deliver PR")
+        _cprint("")
+
+        # For now, we'll handle this via the agent - the user needs to provide
+        # detailed specification first. This is Phase 1 (Intake).
+        _cprint("  📝 I need more detail. Please provide:")
+        _cprint("    1. Problem: What's broken or what do you want?")
+        _cprint("    2. Scope: Which files/modules?")
+        _cprint("    3. Tests: How will you verify it works?")
+        _cprint("    4. Constraints: Any style/pattern requirements?")
+        _cprint("    5. Done: What's the final deliverable?")
+        _cprint("")
+        _cprint("  Or provide your detailed spec now and I'll start the swarm.")
+
+    def _handle_autonomous_subcommand(self, subcmd: str, arg: str):
+        """Handle /autonomous status/logs/list/cancel."""
+        import os
+        import json
+        from pathlib import Path
+
+        runs_dir = Path.home() / ".hermes" / "autonomous" / "runs"
+
+        if subcmd == "list":
+            if not runs_dir.exists():
+                _cprint("  No autonomous runs found.")
+                return
+            runs = sorted(runs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)
+            if not runs:
+                _cprint("  No autonomous runs found.")
+                return
+            _cprint("  Recent autonomous runs:")
+            for r in runs[:10]:
+                manifest_path = r / "manifest.json"
+                if manifest_path.exists():
+                    with open(manifest_path) as f:
+                        m = json.load(f)
+                    status = m.get("status", "unknown")
+                    task = m.get("task", "unknown")[:40]
+                    _cprint(f"    {r.name} — {task}... [{status}]")
+                else:
+                    _cprint(f"    {r.name}")
+        elif subcmd == "status":
+            if not arg:
+                _cprint("  Usage: /autonomous status <run-id>")
+                return
+            run_path = runs_dir / arg
+            if not run_path.exists():
+                _cprint(f"  Run not found: {arg}")
+                return
+            manifest_path = run_path / "manifest.json"
+            if manifest_path.exists():
+                with open(manifest_path) as f:
+                    m = json.load(f)
+                _cprint(f"  Run: {arg}")
+                _cprint(f"  Task: {m.get('task', 'N/A')}")
+                _cprint(f"  Status: {m.get('status', 'unknown')}")
+                _cprint(f"  Started: {m.get('started_at', 'N/A')}")
+                _cprint(f"  Repo: {m.get('repo', 'N/A')}")
+            else:
+                _cprint(f"  No manifest found for {arg}")
+        elif subcmd == "logs":
+            if not arg:
+                _cprint("  Usage: /autonomous logs <run-id>")
+                return
+            run_path = runs_dir / arg
+            if not run_path.exists():
+                _cprint(f"  Run not found: {arg}")
+                return
+            output_dir = run_path / "output"
+            if not output_dir.exists():
+                _cprint(f"  No output for {arg}")
+                return
+            # Try to show report.md first
+            report_path = output_dir / "report.md"
+            if report_path.exists():
+                with open(report_path) as f:
+                    content = f.read()
+                _cprint(f"  Report for {arg}:")
+                print(content[:2000])
+            else:
+                _cprint(f"  No report.md found. Check logs in {output_dir}")
+        elif subcmd == "cancel":
+            _cprint("  Cancel not yet implemented.")
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:

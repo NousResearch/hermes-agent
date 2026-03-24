@@ -1750,6 +1750,9 @@ class GatewayRunner:
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "autonomous":
+            return await self._handle_autonomous_command(event)
+
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
@@ -3674,6 +3677,113 @@ class GatewayRunner:
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
+
+    async def _handle_autonomous_command(self, event: MessageEvent) -> str:
+        """Handle /autonomous <task-description> — start autonomous coding mode.
+
+        Spawns a swarm of GSD-powered Codex agents to execute the task autonomously.
+        """
+        args = event.get_command_args().strip()
+        if not args:
+            return (
+                "🎯 Autonomous Mode\n\n"
+                "Usage: /autonomous <task-description>\n"
+                "Example: /autonomous fix the login bug in auth service\n\n"
+                "This starts an autonomous swarm to solve your problem.\n\n"
+                "Steps:\n"
+                "1. I'll ask for detailed requirements\n"
+                "2. Execute via GSD-powered Codex swarm\n"
+                "3. Deliver PR when complete\n\n"
+                "Subcommands:\n"
+                "  /autonomous status <run-id> — Check run status\n"
+                "  /autonomous logs <run-id> — View run logs\n"
+                "  /autonomous list — List recent runs"
+            )
+
+        # Check for subcommands
+        parts = args.split()
+        if parts[0] in ("status", "logs", "list", "cancel"):
+            subcmd = parts[0]
+            arg = " ".join(parts[1:]) if len(parts) > 1 else ""
+            return await self._handle_autonomous_subcommand(subcmd, arg)
+
+        # Start new autonomous run
+        task = args
+        return (
+            f"🎯 Starting autonomous mode: {task[:60]}{'...' if len(task) > 60 else ''}\n\n"
+            "This will: 1) Clarify the problem 2) Execute via swarm 3) Deliver PR\n\n"
+            "📝 Please provide more detail:\n"
+            "1. Problem: What's broken or what do you want?\n"
+            "2. Scope: Which files/modules?\n"
+            "3. Tests: How will you verify it works?\n"
+            "4. Constraints: Any style/pattern requirements?\n"
+            "5. Done: What's the final deliverable?\n\n"
+            "Or provide your detailed spec now and I'll start the swarm."
+        )
+
+    async def _handle_autonomous_subcommand(self, subcmd: str, arg: str) -> str:
+        """Handle /autonomous status/logs/list/cancel."""
+        import json
+        from pathlib import Path
+
+        runs_dir = Path.home() / ".hermes" / "autonomous" / "runs"
+
+        if subcmd == "list":
+            if not runs_dir.exists():
+                return "No autonomous runs found."
+            runs = sorted(runs_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)
+            if not runs:
+                return "No autonomous runs found."
+            lines = ["Recent autonomous runs:"]
+            for r in runs[:10]:
+                manifest_path = r / "manifest.json"
+                if manifest_path.exists():
+                    with open(manifest_path) as f:
+                        m = json.load(f)
+                    status = m.get("status", "unknown")
+                    task = m.get("task", "unknown")[:40]
+                    lines.append(f"  {r.name} — {task}... [{status}]")
+                else:
+                    lines.append(f"  {r.name}")
+            return "\n".join(lines)
+        elif subcmd == "status":
+            if not arg:
+                return "Usage: /autonomous status <run-id>"
+            run_path = runs_dir / arg
+            if not run_path.exists():
+                return f"Run not found: {arg}"
+            manifest_path = run_path / "manifest.json"
+            if manifest_path.exists():
+                with open(manifest_path) as f:
+                    m = json.load(f)
+                return (
+                    f"Run: {arg}\n"
+                    f"Task: {m.get('task', 'N/A')}\n"
+                    f"Status: {m.get('status', 'unknown')}\n"
+                    f"Started: {m.get('started_at', 'N/A')}\n"
+                    f"Repo: {m.get('repo', 'N/A')}"
+                )
+            else:
+                return f"No manifest found for {arg}"
+        elif subcmd == "logs":
+            if not arg:
+                return "Usage: /autonomous logs <run-id>"
+            run_path = runs_dir / arg
+            if not run_path.exists():
+                return f"Run not found: {arg}"
+            output_dir = run_path / "output"
+            if not output_dir.exists():
+                return f"No output for {arg}"
+            report_path = output_dir / "report.md"
+            if report_path.exists():
+                with open(report_path) as f:
+                    content = f.read()
+                return f"Report for {arg}:\n\n{content[:2000]}"
+            else:
+                return f"No report.md found. Check logs in {output_dir}"
+        elif subcmd == "cancel":
+            return "Cancel not yet implemented."
+        return "Unknown subcommand."
 
     async def _run_background_task(
         self, prompt: str, source: "SessionSource", task_id: str

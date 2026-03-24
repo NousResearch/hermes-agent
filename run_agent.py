@@ -5035,10 +5035,11 @@ class AIAgent:
                         _mem_result = json.loads(function_result) if isinstance(function_result, str) else function_result
                         if isinstance(_mem_result, dict) and _mem_result.get("success") is False:
                             _mem_err = _mem_result.get("error", "")
-                            if "exceed the limit" in _mem_err:
-                                # Retry with truncated content
+                            if "exceed the limit" in _mem_err or "full" in _mem_err.lower():
+                                # Retry with truncated content (60% of original)
                                 _orig_content = function_args.get("content", "")
                                 _truncated = _orig_content[:int(len(_orig_content) * 0.6)]
+                                _retry_ok = False
                                 if _truncated and len(_truncated) < len(_orig_content):
                                     from tools.memory_tool import memory_tool as _memory_tool2
                                     _retry_result = _memory_tool2(
@@ -5050,39 +5051,46 @@ class AIAgent:
                                     _retry_parsed = json.loads(_retry_result) if isinstance(_retry_result, str) else _retry_result
                                     if isinstance(_retry_parsed, dict) and _retry_parsed.get("success"):
                                         function_result = _retry_result
+                                        _retry_ok = True
                                         self._vprint(f"{self.log_prefix}📝 Memory entry truncated to fit limit", force=False)
                                         # Check capacity after truncated write
                                         if self._memory_store and self.status_callback:
                                             try:
-                                                _t = function_args.get("target", "memory")
-                                                _cur = self._memory_store._char_count(_t)
-                                                _lim = self._memory_store._char_limit(_t)
-                                                if _lim > 0 and _cur / _lim >= 0.80:
+                                                _t2 = function_args.get("target", "memory")
+                                                _cur2 = self._memory_store._char_count(_t2)
+                                                _lim2 = self._memory_store._char_limit(_t2)
+                                                if _lim2 > 0 and _cur2 / _lim2 >= 0.80:
                                                     self.status_callback("memory_capacity_warning",
-                                                        f"⚠️ Memory store at {int(_cur/_lim*100)}% capacity ({_cur:,}/{_lim:,} chars). Consider pruning old entries.")
+                                                        f"⚠️ Memory store at {int(_cur2/_lim2*100)}% capacity ({_cur2:,}/{_lim2:,} chars). Consider pruning.")
                                             except Exception:
                                                 pass
-                                    else:
-                                        # Truncation also failed — notify user
-                                        if self.status_callback:
-                                            try:
-                                                self.status_callback("memory_write_failed",
-                                                    "⚠️ Memory store is full — could not save memory entry. Consider /compress or pruning old entries.")
-                                            except Exception:
-                                                pass
-                                else:
+                                if not _retry_ok:
+                                    # Inject [AGENT INSTRUCTION] so LLM is forced to tell user
+                                    _instr = (
+                                        " [AGENT INSTRUCTION: Memory write failed — store is full. "
+                                        "You MUST tell the user: ⚠️ Memory is full. "
+                                        "Suggest they run /compress or remove old entries before retrying.]"
+                                    )
+                                    function_result = function_result.rstrip() + _instr if isinstance(function_result, str) else str(function_result) + _instr
                                     if self.status_callback:
                                         try:
                                             self.status_callback("memory_write_failed",
                                                 "⚠️ Memory store is full — could not save memory entry. Consider /compress or pruning old entries.")
                                         except Exception:
                                             pass
-                            elif _mem_result.get("success") is False and self.status_callback:
-                                try:
-                                    self.status_callback("memory_write_failed",
-                                        f"⚠️ Memory write failed: {_mem_err[:120]}")
-                                except Exception:
-                                    pass
+                            elif _mem_result.get("success") is False:
+                                # Generic failure — inject instruction and notify gateway
+                                _instr = (
+                                    f" [AGENT INSTRUCTION: Memory write failed with error: {_mem_err[:100]}. "
+                                    f"You MUST inform the user of this failure.]"
+                                )
+                                function_result = function_result.rstrip() + _instr if isinstance(function_result, str) else str(function_result) + _instr
+                                if self.status_callback:
+                                    try:
+                                        self.status_callback("memory_write_failed",
+                                            f"⚠️ Memory write failed: {_mem_err[:120]}")
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass
             elif function_name == "clarify":

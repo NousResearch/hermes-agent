@@ -227,6 +227,18 @@ async function startSocket() {
       } else if (msg.message.audioMessage || msg.message.pttMessage) {
         hasMedia = true;
         mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = (msg.message.pttMessage || msg.message.audioMessage)?.mimetype || 'audio/ogg';
+          const extMap = { 'audio/ogg': '.ogg', 'audio/ogg; codecs=opus': '.ogg', 'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/wav': '.wav' };
+          const ext = extMap[mime] || '.ogg';
+          mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
+          const filePath = path.join(IMAGE_CACHE_DIR, `audio_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download audio:', err.message);
+        }
       } else if (msg.message.documentMessage) {
         body = msg.message.documentMessage.caption || msg.message.documentMessage.fileName || '';
         hasMedia = true;

@@ -1057,6 +1057,7 @@ class HermesCLI:
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._reasoning_stream_started = False  # True once live reasoning starts streaming
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         
         # Configuration - priority: CLI args > env vars > config file
@@ -1489,6 +1490,14 @@ class HermesCLI:
 
     # ── Streaming display ────────────────────────────────────────────────
 
+    def _current_reasoning_callback(self):
+        """Return the active reasoning display callback for the current mode."""
+        if self.show_reasoning and self.streaming_enabled:
+            return self._stream_reasoning_delta
+        if self.verbose and not self.show_reasoning:
+            return self._on_reasoning
+        return None
+
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
         preview_text = reasoning_text.strip()
@@ -1555,6 +1564,7 @@ class HermesCLI:
         """
         if not text:
             return
+        self._reasoning_stream_started = True
         if getattr(self, "_stream_box_opened", False):
             return
 
@@ -1746,6 +1756,7 @@ class HermesCLI:
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
+        self._reasoning_stream_started = False
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
@@ -1982,11 +1993,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
-                reasoning_callback=(
-                    self._stream_reasoning_delta if (self.streaming_enabled and self.show_reasoning)
-                    else self._on_reasoning if (self.show_reasoning or self.verbose)
-                    else None
-                ),
+                reasoning_callback=self._current_reasoning_callback(),
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -4309,11 +4316,7 @@ class HermesCLI:
         if self.agent:
             self.agent.verbose_logging = self.verbose
             self.agent.quiet_mode = not self.verbose
-            # Auto-enable reasoning display in verbose mode
-            if self.verbose:
-                self.agent.reasoning_callback = self._on_reasoning
-            elif not self.show_reasoning:
-                self.agent.reasoning_callback = None
+            self.agent.reasoning_callback = self._current_reasoning_callback()
 
         # Use raw ANSI codes via _cprint so the output is routed through
         # prompt_toolkit's renderer.  self.console.print() with Rich markup
@@ -4360,7 +4363,7 @@ class HermesCLI:
         if arg in ("show", "on"):
             self.show_reasoning = True
             if self.agent:
-                self.agent.reasoning_callback = self._on_reasoning
+                self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", True)
             _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
             _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
@@ -4368,7 +4371,7 @@ class HermesCLI:
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
-                self.agent.reasoning_callback = None
+                self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
@@ -5693,7 +5696,7 @@ class HermesCLI:
 
             # Display reasoning (thinking) box if enabled and available.
             # Skip when streaming already showed reasoning live.
-            if self.show_reasoning and result and not self._stream_started:
+            if self.show_reasoning and result and not self._reasoning_stream_started:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
                     w = shutil.get_terminal_size().columns

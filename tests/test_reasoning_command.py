@@ -341,6 +341,38 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         self.assertIn("[thinking] see how this plays out", rendered)
 
 
+class TestReasoningDisplayModeSelection(unittest.TestCase):
+    def _make_cli(self, *, show_reasoning=False, streaming_enabled=False, verbose=False):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.show_reasoning = show_reasoning
+        cli.streaming_enabled = streaming_enabled
+        cli.verbose = verbose
+        cli._stream_reasoning_delta = lambda text: ("stream", text)
+        cli._on_reasoning = lambda text: ("preview", text)
+        return cli
+
+    def test_show_reasoning_non_streaming_uses_final_box_only(self):
+        cli = self._make_cli(show_reasoning=True, streaming_enabled=False, verbose=False)
+
+        self.assertIsNone(cli._current_reasoning_callback())
+
+    def test_show_reasoning_streaming_uses_live_reasoning_box(self):
+        cli = self._make_cli(show_reasoning=True, streaming_enabled=True, verbose=False)
+
+        callback = cli._current_reasoning_callback()
+        self.assertIsNotNone(callback)
+        self.assertEqual(callback("x"), ("stream", "x"))
+
+    def test_verbose_without_show_reasoning_uses_preview_callback(self):
+        cli = self._make_cli(show_reasoning=False, streaming_enabled=False, verbose=True)
+
+        callback = cli._current_reasoning_callback()
+        self.assertIsNotNone(callback)
+        self.assertEqual(callback("x"), ("preview", "x"))
+
+
 # ---------------------------------------------------------------------------
 # Real provider format extraction
 # ---------------------------------------------------------------------------

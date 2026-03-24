@@ -1938,6 +1938,7 @@ class HermesCLI:
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
+                tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
             )
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
@@ -4632,6 +4633,24 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    # ====================================================================
+    # Tool-call generation indicator (shown during streaming)
+    # ====================================================================
+
+    def _on_tool_gen_start(self, tool_name: str) -> None:
+        """Called when the model begins generating tool-call arguments.
+
+        Closes any open streaming boxes (reasoning / response) and prints a
+        short status line so the user sees activity instead of a frozen
+        screen while a large payload (e.g. a 45 KB write_file) streams in.
+        """
+        self._flush_stream()
+        self._close_reasoning_box()
+
+        from agent.display import get_tool_emoji
+        emoji = get_tool_emoji(tool_name, default="⚡")
+        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)

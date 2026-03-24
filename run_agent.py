@@ -405,6 +405,7 @@ class AIAgent:
         clarify_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
+        tool_gen_callback: callable = None,
         status_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
@@ -534,6 +535,7 @@ class AIAgent:
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
         self.status_callback = status_callback
+        self.tool_gen_callback = tool_gen_callback
         self._last_reported_tool = None  # Track for "new tool" mode
         
         # Tool execution state — allows _vprint during tool execution
@@ -3513,6 +3515,21 @@ class AIAgent:
             except Exception:
                 pass
 
+    def _fire_tool_gen_started(self, tool_name: str) -> None:
+        """Notify display layer that the model is generating tool call arguments.
+
+        Fires once per tool name when the streaming response begins producing
+        tool_call / tool_use tokens.  Gives the TUI a chance to show a spinner
+        or status line so the user isn't staring at a frozen screen while a
+        large tool payload (e.g. a 45 KB write_file) is being generated.
+        """
+        cb = self.tool_gen_callback
+        if cb is not None:
+            try:
+                cb(tool_name)
+            except Exception:
+                pass
+
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
         return (
@@ -3572,6 +3589,7 @@ class AIAgent:
 
             content_parts: list = []
             tool_calls_acc: dict = {}
+            tool_gen_notified: set = set()
             finish_reason = None
             model_name = None
             role = "assistant"
@@ -3608,7 +3626,7 @@ class AIAgent:
                         self._fire_stream_delta(delta.content)
                         deltas_were_sent["yes"] = True
 
-                # Accumulate tool call deltas (silently, no callback)
+                # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
                         idx = tc_delta.index if tc_delta.index is not None else 0
@@ -3626,6 +3644,11 @@ class AIAgent:
                                 entry["function"]["name"] += tc_delta.function.name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
+                        # Fire once per tool when the full name is available
+                        name = entry["function"]["name"]
+                        if name and idx not in tool_gen_notified:
+                            tool_gen_notified.add(idx)
+                            self._fire_tool_gen_started(name)
 
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
@@ -3691,6 +3714,9 @@ class AIAgent:
                         block = getattr(event, "content_block", None)
                         if block and getattr(block, "type", None) == "tool_use":
                             has_tool_use = True
+                            tool_name = getattr(block, "name", None)
+                            if tool_name:
+                                self._fire_tool_gen_started(tool_name)
 
                     elif event_type == "content_block_delta":
                         delta = getattr(event, "delta", None)

@@ -5630,6 +5630,7 @@ class AIAgent:
                 conversation_history=messages,
                 is_first_turn=(not bool(conversation_history)),
                 model=self.model,
+                platform=getattr(self, "platform", None) or "",
             )
             _ctx_parts = []
             for r in _pre_results:
@@ -7166,7 +7167,9 @@ class AIAgent:
                     session_id=self.session_id,
                     user_message=original_user_message,
                     assistant_response=final_response,
+                    conversation_history=messages,
                     model=self.model,
+                    platform=getattr(self, "platform", None) or "",
                 )
             except Exception as exc:
                 logger.warning("post_llm_call hook failed: %s", exc)

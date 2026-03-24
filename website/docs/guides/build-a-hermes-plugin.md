@@ -369,8 +369,8 @@ Available hooks:
 |------|------|-----------|--------|
 | `pre_tool_call` | Before any tool runs | `tool_name`, `args`, `task_id` | — |
 | `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` | — |
-| `pre_llm_call` | Once per turn, before the LLM loop | `session_id`, `user_message`, `conversation_history`, `is_first_turn`, `model` | `{"context": "..."}` |
-| `post_llm_call` | Once per turn, after the LLM loop | `session_id`, `user_message`, `assistant_response`, `model` | — |
+| `pre_llm_call` | Once per turn, before the LLM loop | `session_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform` | `{"context": "..."}` |
+| `post_llm_call` | Once per turn, after the LLM loop | `session_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | — |
 | `on_session_start` | New session created (first turn only) | `session_id`, `model`, `platform` | — |
 | `on_session_end` | End of every `run_conversation` call | `session_id`, `completed`, `interrupted` | — |
 

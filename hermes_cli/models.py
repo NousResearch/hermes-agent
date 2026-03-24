@@ -199,6 +199,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3.5-flash",
         "qwen-vl-max",
     ],
+    "xiaomi-mimo": [
+        "mimo-v2-pro",
+        "mimo-v2-omni",
+        "mimo-v2-flash",
+        "mimo-v2-tts",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -218,6 +224,7 @@ _PROVIDER_LABELS = {
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
+    "xiaomi-mimo": "Xiaomi MiMo",
     "custom": "Custom endpoint",
 }
 
@@ -253,6 +260,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "mimo": "xiaomi-mimo",
+    "xiaomi": "xiaomi-mimo",
+    "xiaomi-mimo": "xiaomi-mimo",
 }
 
 
@@ -287,6 +297,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "xiaomi-mimo",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

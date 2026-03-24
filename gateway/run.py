@@ -2023,6 +2023,10 @@ class GatewayRunner:
                         _hyg_api_key = _hyg_runtime.get("api_key")
                     except Exception:
                         pass
+                # Final fallback: OPENAI_BASE_URL covers local/Ollama setups
+                # where base_url is set in the environment rather than config.
+                if not _hyg_base_url:
+                    _hyg_base_url = os.environ.get("OPENAI_BASE_URL") or None
             except Exception:
                 pass
 

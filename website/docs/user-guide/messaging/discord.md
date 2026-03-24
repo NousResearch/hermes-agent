@@ -239,6 +239,12 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 # Multiple allowed users (comma-separated)
 # DISCORD_ALLOWED_USERS=284102345871466496,198765432109876543
+
+# Optional: respond without @mention (default: true = require mention)
+# DISCORD_REQUIRE_MENTION=false
+
+# Optional: channels where bot responds without @mention (comma-separated channel IDs)
+# DISCORD_FREE_RESPONSE_CHANNELS=1234567890,9876543210
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:

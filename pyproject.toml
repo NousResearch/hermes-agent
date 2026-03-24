@@ -11,58 +11,58 @@ requires-python = ">=3.11"
 authors = [{ name = "Nous Research" }]
 license = { text = "MIT" }
 dependencies = [
-  # Core
-  "openai",
-  "anthropic>=0.39.0",
-  "python-dotenv",
-  "fire",
-  "httpx",
-  "rich",
-  "tenacity",
-  "pyyaml",
-  "requests",
-  "jinja2",
-  "pydantic>=2.0",
+  # Core — pinned to known-good ranges to limit supply chain attack surface
+  "openai>=2.21.0,<3",
+  "anthropic>=0.39.0,<1",
+  "python-dotenv>=1.2.1,<2",
+  "fire>=0.7.1,<1",
+  "httpx>=0.28.1,<1",
+  "rich>=14.3.3,<15",
+  "tenacity>=9.1.4,<10",
+  "pyyaml>=6.0.2,<7",
+  "requests>=2.32.3,<3",
+  "jinja2>=3.1.5,<4",
+  "pydantic>=2.12.5,<3",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
-  "prompt_toolkit",
+  "prompt_toolkit>=3.0.52,<4",
   # Tools
-  "firecrawl-py",
-  "parallel-web>=0.4.2",
-  "fal-client",
+  "firecrawl-py>=4.16.0,<5",
+  "parallel-web>=0.4.2,<1",
+  "fal-client>=0.13.1,<1",
   # Text-to-speech (Edge TTS is free, no API key needed)
-  "edge-tts",
-  "faster-whisper>=1.0.0",
+  "edge-tts>=7.2.7,<8",
+  "faster-whisper>=1.0.0,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]",
+  "PyJWT[crypto]>=2.10.1,<3",
 ]
 
 [project.optional-dependencies]
-modal = ["swe-rex[modal]>=1.4.0"]
-daytona = ["daytona>=0.148.0"]
-dev = ["pytest", "pytest-asyncio", "pytest-xdist", "mcp>=1.2.0"]
-messaging = ["python-telegram-bot>=20.0", "discord.py[voice]>=2.0", "aiohttp>=3.9.0", "slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
-cron = ["croniter"]
-slack = ["slack-bolt>=1.18.0", "slack-sdk>=3.27.0"]
-matrix = ["matrix-nio[e2e]>=0.24.0"]
-cli = ["simple-term-menu"]
-tts-premium = ["elevenlabs"]
-voice = ["sounddevice>=0.4.6", "numpy>=1.24.0"]
+modal = ["swe-rex[modal]>=1.4.0,<2"]
+daytona = ["daytona>=0.148.0,<1"]
+dev = ["pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2"]
+messaging = ["python-telegram-bot>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
+cron = ["croniter>=6.0.0,<7"]
+slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
+matrix = ["matrix-nio[e2e]>=0.24.0,<1"]
+cli = ["simple-term-menu>=1.0,<2"]
+tts-premium = ["elevenlabs>=1.0,<2"]
+voice = ["sounddevice>=0.4.6,<1", "numpy>=1.24.0,<3"]
 pty = [
-  "ptyprocess>=0.7.0; sys_platform != 'win32'",
-  "pywinpty>=2.0.0; sys_platform == 'win32'",
+  "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
+  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
 ]
-honcho = ["honcho-ai>=2.0.1"]
-mcp = ["mcp>=1.2.0"]
-homeassistant = ["aiohttp>=3.9.0"]
-sms = ["aiohttp>=3.9.0"]
+honcho = ["honcho-ai>=2.0.1,<3"]
+mcp = ["mcp>=1.2.0,<2"]
+homeassistant = ["aiohttp>=3.9.0,<4"]
+sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.8.1,<1.0"]
-dingtalk = ["dingtalk-stream>=0.1.0"]
+dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
-  "fastapi>=0.104.0",
-  "uvicorn[standard]>=0.24.0",
-  "wandb>=0.15.0",
+  "fastapi>=0.104.0,<1",
+  "uvicorn[standard]>=0.24.0,<1",
+  "wandb>=0.15.0,<1",
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git"]
 all = [

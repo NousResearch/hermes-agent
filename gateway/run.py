@@ -256,6 +256,22 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _default_platform_toolset_map() -> dict:
+    """Default platform -> toolset mapping for gateway conversations."""
+    return {
+        Platform.LOCAL: "hermes-cli",
+        Platform.TELEGRAM: "hermes-telegram",
+        Platform.DISCORD: "hermes-discord",
+        Platform.WHATSAPP: "hermes-whatsapp",
+        Platform.SLACK: "hermes-slack",
+        Platform.SIGNAL: "hermes-signal",
+        Platform.HOMEASSISTANT: "hermes-homeassistant",
+        Platform.EMAIL: "hermes-email",
+        Platform.SMS: "hermes-sms",
+        Platform.DINGTALK: "hermes-dingtalk",
+    }
+
+
 def _resolve_gateway_model() -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
@@ -3702,17 +3718,7 @@ class GatewayRunner:
             model = _resolve_gateway_model()
 
             # Determine toolset (same logic as _run_agent)
-            default_toolset_map = {
-                Platform.LOCAL: "hermes-cli",
-                Platform.TELEGRAM: "hermes-telegram",
-                Platform.DISCORD: "hermes-discord",
-                Platform.WHATSAPP: "hermes-whatsapp",
-                Platform.SLACK: "hermes-slack",
-                Platform.SIGNAL: "hermes-signal",
-                Platform.HOMEASSISTANT: "hermes-homeassistant",
-                Platform.EMAIL: "hermes-email",
-                Platform.DINGTALK: "hermes-dingtalk",
-            }
+            default_toolset_map = _default_platform_toolset_map()
             platform_toolsets_config = {}
             try:
                 config_path = _hermes_home / 'config.yaml'
@@ -4862,17 +4868,7 @@ class GatewayRunner:
         
         # Determine toolset based on platform.
         # Check config.yaml for per-platform overrides, fallback to hardcoded defaults.
-        default_toolset_map = {
-            Platform.LOCAL: "hermes-cli",
-            Platform.TELEGRAM: "hermes-telegram",
-            Platform.DISCORD: "hermes-discord",
-            Platform.WHATSAPP: "hermes-whatsapp",
-            Platform.SLACK: "hermes-slack",
-            Platform.SIGNAL: "hermes-signal",
-            Platform.HOMEASSISTANT: "hermes-homeassistant",
-            Platform.EMAIL: "hermes-email",
-            Platform.DINGTALK: "hermes-dingtalk",
-        }
+        default_toolset_map = _default_platform_toolset_map()
 
         # Try to load platform_toolsets from config
         platform_toolsets_config = {}
@@ -4919,8 +4915,12 @@ class GatewayRunner:
                 _progress_cfg = _tp_data.get("display", {})
         except Exception:
             pass
+        _raw_tp = _progress_cfg.get("tool_progress")
+        # YAML parses bare `off` as boolean False — normalise to string.
+        if _raw_tp is False:
+            _raw_tp = "off"
         progress_mode = (
-            _progress_cfg.get("tool_progress")
+            _raw_tp
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )

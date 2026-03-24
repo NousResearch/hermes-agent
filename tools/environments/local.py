@@ -254,7 +254,12 @@ def _clean_shell_noise(output: str) -> str:
     return result
 
 
-_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
+# Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
+_SANE_PATH = (
+    "/opt/homebrew/bin:/opt/homebrew/sbin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 
 
 def _make_run_env(env: dict) -> dict:

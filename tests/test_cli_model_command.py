@@ -111,8 +111,13 @@ class TestModelCommand:
         assert cli_obj.model == "glm-5"
         assert cli_obj.provider == "zai"
         assert cli_obj.base_url == "https://api.z.ai/api/paas/v4"
-        # Both model and provider should be saved
-        assert save_mock.call_count == 2
+        # Model, provider, and base_url should be saved
+        assert save_mock.call_count == 3
+        save_calls = [c.args for c in save_mock.call_args_list]
+        assert ("model.default", "glm-5") in save_calls
+        assert ("model.provider", "zai") in save_calls
+        # base_url is also persisted on provider change (Phase 2 fix)
+        assert any(c[0] == "model.base_url" for c in save_calls)
 
     def test_provider_switch_fails_on_bad_credentials(self, capsys):
         cli_obj = self._make_cli()

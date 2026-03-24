@@ -2005,6 +2005,16 @@ class GatewayRunner:
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
 
+                    # Also check top-level model_context_length — some configs
+                    # place this outside the model: dict (hermes accepts both).
+                    if _hyg_config_context_length is None:
+                        _raw_top = _hyg_data.get("model_context_length")
+                        if _raw_top is not None:
+                            try:
+                                _hyg_config_context_length = int(_raw_top)
+                            except (TypeError, ValueError):
+                                pass
+
                     # Read compression settings — only use enabled flag.
                     # The threshold is intentionally separate from the agent's
                     # compression.threshold (hygiene runs higher).
@@ -2014,15 +2024,16 @@ class GatewayRunner:
                             _comp_cfg.get("enabled", True)
                         ).lower() in ("true", "1", "yes")
 
-                # Resolve provider/base_url from runtime if not in config
-                if not _hyg_provider or not _hyg_base_url:
-                    try:
-                        _hyg_runtime = _resolve_runtime_agent_kwargs()
-                        _hyg_provider = _hyg_provider or _hyg_runtime.get("provider")
-                        _hyg_base_url = _hyg_base_url or _hyg_runtime.get("base_url")
-                        _hyg_api_key = _hyg_runtime.get("api_key")
-                    except Exception:
-                        pass
+                # Resolve provider/base_url/api_key from runtime.
+                # Always run — even if provider/base_url come from config,
+                # we still need api_key for endpoint probing.
+                try:
+                    _hyg_runtime = _resolve_runtime_agent_kwargs()
+                    _hyg_provider = _hyg_provider or _hyg_runtime.get("provider")
+                    _hyg_base_url = _hyg_base_url or _hyg_runtime.get("base_url")
+                    _hyg_api_key = _hyg_api_key or _hyg_runtime.get("api_key")
+                except Exception as _hyg_exc:
+                    logger.debug("Hygiene: runtime resolution failed: %s", _hyg_exc)
             except Exception:
                 pass
 

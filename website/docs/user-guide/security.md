@@ -296,13 +296,14 @@ You can restrict which websites the agent can access through its web and browser
 
 ```yaml
 # In ~/.hermes/config.yaml
-website_blocklist:
-  enabled: true
-  domains:
-    - "*.internal.company.com"
-    - "admin.example.com"
-  shared_files:
-    - "/etc/hermes/blocked-sites.txt"
+security:
+  website_blocklist:
+    enabled: true
+    domains:
+      - "*.internal.company.com"
+      - "admin.example.com"
+    shared_files:
+      - "/etc/hermes/blocked-sites.txt"
 ```
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.

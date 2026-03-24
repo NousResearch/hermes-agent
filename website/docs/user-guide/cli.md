@@ -179,12 +179,11 @@ Built-in personalities include: `helpful`, `concise`, `technical`, `creative`, `
 You can also define custom personalities in `~/.hermes/config.yaml`:
 
 ```yaml
-agent:
-  personalities:
-    helpful: "You are a helpful, friendly AI assistant."
-    kawaii: "You are a kawaii assistant! Use cute expressions..."
-    pirate: "Arrr! Ye be talkin' to Captain Hermes..."
-    # Add your own!
+personalities:
+  helpful: "You are a helpful, friendly AI assistant."
+  kawaii: "You are a kawaii assistant! Use cute expressions..."
+  pirate: "Arrr! Ye be talkin' to Captain Hermes..."
+  # Add your own!
 ```
 
 ## Multi-line Input

@@ -131,15 +131,13 @@ Single-task delegation runs directly without thread pool overhead.
 
 ## Model Override
 
-You can use a different model for subagents — useful for delegating simple tasks to cheaper/faster models:
+You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
 
-```python
-delegate_task(
-    goal="Summarize this README file",
-    context="File at /project/README.md",
-    toolsets=["file"],
-    model="google/gemini-flash-2.0"  # Cheaper model for simple tasks
-)
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  model: "google/gemini-flash-2.0"    # Cheaper model for subagents
+  provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
 If omitted, subagents use the same model as the parent.

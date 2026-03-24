@@ -24,7 +24,7 @@ Convert text to speech with four providers:
 | Platform | Delivery | Format |
 |----------|----------|--------|
 | Telegram | Voice bubble (plays inline) | Opus `.ogg` |
-| Discord | Audio file attachment | MP3 |
+| Discord | Voice bubble (Opus/OGG), falls back to file attachment | Opus/MP3 |
 | WhatsApp | Audio file attachment | MP3 |
 | CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 

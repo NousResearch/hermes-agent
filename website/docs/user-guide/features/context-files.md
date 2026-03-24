@@ -1,7 +1,7 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — AGENTS.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
 ---
 
 # Context Files
@@ -11,11 +11,17 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 ## Supported Context Files
 
 | File | Purpose | Discovery |
-|------|---------|-----------|
+|------|---------|-----------| 
+| **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | Recursive (walks subdirectories) |
+| **CLAUDE.md** | Claude Code context files (also detected) | CWD only |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
+
+:::info Priority system
+Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+:::
 
 ## AGENTS.md
 
@@ -86,7 +92,7 @@ Important details:
 
 ## .cursorrules
 
-Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root, they're loaded alongside AGENTS.md.
+Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.hermes.md`, `AGENTS.md`, or `CLAUDE.md`) is found, they're loaded as the project context.
 
 This means your existing Cursor conventions automatically apply when using Hermes.
 

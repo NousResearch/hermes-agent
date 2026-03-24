@@ -58,11 +58,12 @@ Local memory and user profile data are injected as frozen snapshots at session s
 
 ## Context files
 
-`agent/prompt_builder.py` scans and sanitizes:
+`agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
 
-- `AGENTS.md`
-- `.cursorrules`
-- `.cursor/rules/*.mdc`
+1. `.hermes.md` / `HERMES.md` (walks to git root)
+2. `AGENTS.md` (recursive directory walk)
+3. `CLAUDE.md` (CWD only)
+4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
 `SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
 

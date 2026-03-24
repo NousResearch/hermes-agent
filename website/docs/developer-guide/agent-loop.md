@@ -75,7 +75,9 @@ Concurrent tool execution preserves message/result ordering when reinserting too
 - `reasoning_callback`
 - `clarify_callback`
 - `step_callback`
-- `message_callback`
+- `stream_delta_callback`
+- `tool_gen_callback`
+- `status_callback`
 
 These are how the CLI, gateway, and ACP integrations stream intermediate progress and interactive approval/clarification flows.
 

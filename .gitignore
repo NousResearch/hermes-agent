@@ -32,6 +32,7 @@ data/*
 node_modules/
 browser-use/
 agent-browser/
+!optional-skills/**/agent-browser/
 # Private keys
 *.ppk
 *.pem

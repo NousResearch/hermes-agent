@@ -346,6 +346,7 @@ class GatewayRunner:
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
+        self._session_cost_summaries: Dict[str, str] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
         # Track active fallback model/provider when primary is rate-limited.
@@ -3673,19 +3674,17 @@ class GatewayRunner:
 
     def _get_session_cwd(self, event) -> str:
         """Get the working directory for the current session."""
-        # Try to get cwd from session config, fall back to hermes home
         try:
             source = event.source
-            session_key = self._session_key(source)
-            agent = self._agents.get(session_key)
-            if agent and hasattr(agent, "cwd"):
+            session_key = self._session_key_for_source(source)
+            agent = self._running_agents.get(session_key)
+            if agent and agent is not _AGENT_PENDING_SENTINEL and hasattr(agent, "cwd"):
                 return agent.cwd
         except Exception:
             pass
-        # Fallback: use configured cwd or home
         if hasattr(self, "cwd") and self.cwd:
             return self.cwd
-        return os.getcwd()
+        return os.environ.get("TERMINAL_CWD", os.getcwd())
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -4406,8 +4405,11 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
         agent = self._running_agents.get(session_key)
-        if agent and hasattr(agent, "cost_tracker"):
+        if agent and agent is not _AGENT_PENDING_SENTINEL and hasattr(agent, "cost_tracker"):
             return agent.cost_tracker.format_summary()
+        cached = self._session_cost_summaries.get(session_key)
+        if cached:
+            return cached
         return "No cost data available for this session."
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
@@ -5491,7 +5493,7 @@ class GatewayRunner:
             _agent_message = message
             try:
                 from agent.context_mentions import expand_mentions as _gw_expand
-                _gw_cleaned, _gw_context = _gw_expand(message, os.getcwd())
+                _gw_cleaned, _gw_context = _gw_expand(message, self._get_session_cwd(event) if event else os.getcwd())
                 if _gw_context:
                     _agent_message = _gw_context + "\n\n" + _gw_cleaned
             except Exception:
@@ -5754,6 +5756,15 @@ class GatewayRunner:
                     except asyncio.CancelledError:
                         pass
             
+            # Persist cost summary before removing the agent reference
+            if session_key and session_key in self._running_agents:
+                _done_agent = self._running_agents[session_key]
+                if _done_agent and _done_agent is not _AGENT_PENDING_SENTINEL and hasattr(_done_agent, "cost_tracker"):
+                    try:
+                        self._session_cost_summaries[session_key] = _done_agent.cost_tracker.format_summary()
+                    except Exception:
+                        pass
+
             # Clean up tracking
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:

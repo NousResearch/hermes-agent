@@ -352,6 +352,7 @@ def _iter_source_files(root: Path) -> List[Path]:
 # ---------------------------------------------------------------------------
 
 _file_cache: Dict[str, Tuple[float, List[str]]] = {}  # path -> (mtime, symbols)
+_FILE_CACHE_MAX = 2000  # Evict oldest entries when cache exceeds this size
 
 
 def _parse_file(fpath: Path, lang: str) -> List[str]:
@@ -383,6 +384,12 @@ def _parse_file(fpath: Path, lang: str) -> List[str]:
     if not symbols:
         parser = _REGEX_PARSERS.get(lang, _regex_parse_generic)
         symbols = parser(source)
+
+    # Evict oldest quarter of entries when cache is full
+    if len(_file_cache) >= _FILE_CACHE_MAX:
+        to_drop = list(_file_cache.keys())[: _FILE_CACHE_MAX // 4]
+        for k in to_drop:
+            del _file_cache[k]
 
     _file_cache[key] = (mtime, symbols)
     return symbols

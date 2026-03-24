@@ -28,14 +28,20 @@ def _strip_ansi(text: str) -> str:
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 
-def _try_auto_commit(path: str) -> None:
-    """Attempt an auto-commit if the feature is enabled. Never raises."""
+def _try_auto_commit(path: str, files: Optional[list] = None) -> None:
+    """Attempt an auto-commit if the feature is enabled. Never raises.
+
+    When *files* is provided those specific paths are staged; otherwise
+    only *path* itself is staged (avoiding ``git add -A`` on the whole repo).
+    """
     try:
         from agent.auto_git import maybe_auto_commit
-        cwd = os.path.dirname(os.path.abspath(path)) if path else os.getcwd()
+        abs_path = os.path.abspath(path) if path else None
+        cwd = os.path.dirname(abs_path) if abs_path else os.getcwd()
+        commit_files = files if files else ([abs_path] if abs_path else None)
         # Build config from environment / yaml
         config = {"auto_commit": os.getenv("HERMES_AUTO_COMMIT", "").lower() in ("1", "true", "yes")}
-        maybe_auto_commit(cwd, config)
+        maybe_auto_commit(cwd, config, files=commit_files)
     except Exception:
         pass  # Auto-commit is best-effort; never block file operations
 
@@ -366,7 +372,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         else:
-            _try_auto_commit(path)
+            _files_modified = result_dict.get("files_modified") or (result_dict.get("files_created") or [])
+            _try_auto_commit(path, files=_files_modified if _files_modified else None)
         # Prominent syntax error warning — make lint failures unmissable
         lint_info = result_dict.get("lint")
         if lint_info:

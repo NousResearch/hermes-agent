@@ -79,23 +79,23 @@ def generate_commit_message(diff: str, changed_files: Optional[List[str]] = None
     added = set()
     modified = set()
     deleted = set()
+    last_file: Optional[str] = None
 
     for line in diff.splitlines():
         m = re.match(r"^diff --git a/(.+?) b/(.+?)$", line)
         if m:
-            modified.add(m.group(2))
+            last_file = m.group(2)
+            modified.add(last_file)
             continue
         if line.startswith("new file mode"):
             # The last file added to modified is actually new
-            if modified:
-                last = list(modified)[-1]
-                modified.discard(last)
-                added.add(last)
+            if last_file and last_file in modified:
+                modified.discard(last_file)
+                added.add(last_file)
         elif line.startswith("deleted file mode"):
-            if modified:
-                last = list(modified)[-1]
-                modified.discard(last)
-                deleted.add(last)
+            if last_file and last_file in modified:
+                modified.discard(last_file)
+                deleted.add(last_file)
 
     # Also use changed_files list if provided
     if changed_files and not (added or modified or deleted):
@@ -128,8 +128,11 @@ def generate_commit_message(diff: str, changed_files: Optional[List[str]] = None
     return msg
 
 
-def auto_commit(cwd: str, message: Optional[str] = None) -> bool:
+def auto_commit(cwd: str, message: Optional[str] = None, files: Optional[List[str]] = None) -> bool:
     """Stage all changes and commit with the given (or generated) message.
+
+    When *files* is provided, only those paths are staged (``git add -- <files>``)
+    instead of staging the entire working tree (``git add -A``).
 
     Returns True if a commit was made, False otherwise.
     """
@@ -149,8 +152,11 @@ def auto_commit(cwd: str, message: Optional[str] = None) -> bool:
             diff = get_git_diff(cwd)
             message = generate_commit_message(diff, changed_files)
 
-        # Stage all changes
-        result = _run_git(["add", "-A"], cwd)
+        # Stage changes — only specified files, or everything
+        if files:
+            result = _run_git(["add", "--"] + list(files), cwd)
+        else:
+            result = _run_git(["add", "-A"], cwd)
         if result.returncode != 0:
             logger.warning("git add failed: %s", result.stderr)
             return False
@@ -188,7 +194,7 @@ def undo_last_commit(cwd: str) -> bool:
         return False
 
 
-def maybe_auto_commit(cwd: str, config: Optional[dict] = None) -> bool:
+def maybe_auto_commit(cwd: str, config: Optional[dict] = None, files: Optional[List[str]] = None) -> bool:
     """Auto-commit if the ``auto_commit`` config option is enabled.
 
     Safe to call unconditionally -- returns False if auto-commit is disabled
@@ -206,4 +212,4 @@ def maybe_auto_commit(cwd: str, config: Optional[dict] = None) -> bool:
     if not enabled:
         return False
 
-    return auto_commit(cwd)
+    return auto_commit(cwd, files=files)

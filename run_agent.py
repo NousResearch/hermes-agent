@@ -252,7 +252,23 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 )
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
-
+# Static alias map for common model hallucinations of tool names.
+_TOOL_ALIASES = {
+    "bash": "terminal", "shell": "terminal", "exec": "terminal",
+    "execute": "terminal", "mkdir": "terminal", "cd": "terminal",
+    "pip": "terminal", "npm": "terminal", "git": "terminal",
+    "run": "terminal", "execute_command": "terminal",
+    "grep": "search_files", "find": "search_files", "rg": "search_files",
+    "ls": "search_files",
+    "cat": "read_file", "file_read": "read_file", "view": "read_file",
+    "show": "read_file",
+    "edit": "patch", "edit_file": "patch", "replace": "patch",
+    "sed": "patch",
+    "file_write": "write_file", "create_file": "write_file",
+    "ask": "clarify", "question": "clarify",
+    "browse": "browser_navigate", "open_url": "browser_navigate",
+    "screenshot": "browser_vision", "webpage": "browser_vision",
+}
 
 def _is_destructive_command(cmd: str) -> bool:
     """Heuristic: does this terminal command look like it modifies/deletes files?"""
@@ -2386,7 +2402,7 @@ class AIAgent:
             except Exception:
                 _repo_map_enabled = True
             if _repo_map_enabled:
-                _repo_map = build_repo_map_prompt()
+                _repo_map = build_repo_map_prompt(cwd=os.getenv("TERMINAL_CWD") or None)
                 if _repo_map:
                     prompt_parts.append(_repo_map)
 
@@ -2557,22 +2573,6 @@ class AIAgent:
             return normalized
 
         # 2b. Static alias map for common model hallucinations
-        _TOOL_ALIASES = {
-            "bash": "terminal", "shell": "terminal", "exec": "terminal",
-            "execute": "terminal", "mkdir": "terminal", "cd": "terminal",
-            "pip": "terminal", "npm": "terminal", "git": "terminal",
-            "run": "terminal", "execute_command": "terminal",
-            "grep": "search_files", "find": "search_files", "rg": "search_files",
-            "ls": "search_files",
-            "cat": "read_file", "file_read": "read_file", "view": "read_file",
-            "show": "read_file",
-            "edit": "patch", "edit_file": "patch", "replace": "patch",
-            "sed": "patch",
-            "file_write": "write_file", "create_file": "write_file",
-            "ask": "clarify", "question": "clarify",
-            "browse": "browser_navigate", "open_url": "browser_navigate",
-            "screenshot": "browser_vision", "webpage": "browser_vision",
-        }
         alias_target = _TOOL_ALIASES.get(normalized)
         if alias_target and alias_target in self.valid_tool_names:
             return alias_target
@@ -5524,7 +5524,7 @@ class AIAgent:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
         # Expand @-mentions in user message before adding to conversation
-        _mention_cleaned, _mention_context = expand_mentions(user_message, os.getcwd())
+        _mention_cleaned, _mention_context = expand_mentions(user_message, os.getenv("TERMINAL_CWD", os.getcwd()))
         if _mention_context:
             user_message = _mention_context + "\n\n" + _mention_cleaned
 

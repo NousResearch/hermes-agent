@@ -395,7 +395,8 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
             # Use fuzzy matching
             from tools.fuzzy_match import fuzzy_find_and_replace
             new_content, count, error = fuzzy_find_and_replace(
-                new_content, search_pattern, replacement, replace_all=False
+                new_content, search_pattern, replacement, replace_all=False,
+                file_path=op.file_path
             )
             
             if error and count == 0:
@@ -410,7 +411,8 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
                         window = new_content[window_start:window_end]
                         
                         window_new, count, error = fuzzy_find_and_replace(
-                            window, search_pattern, replacement, replace_all=False
+                            window, search_pattern, replacement, replace_all=False,
+                            file_path=op.file_path
                         )
                         
                         if count > 0:

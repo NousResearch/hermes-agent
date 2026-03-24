@@ -80,6 +80,13 @@ def _expand_problems(cwd: str) -> str:
 
 def _expand_file(path: str, cwd: str) -> str:
     target = Path(cwd) / path
+    # Prevent path traversal outside the working directory
+    try:
+        cwd_resolved = Path(cwd).resolve()
+        target_resolved = target.resolve()
+        target_resolved.relative_to(cwd_resolved)
+    except ValueError:
+        return f"(access denied — path is outside working directory: {path})"
     if not target.exists():
         return f"(file not found: {path})"
     try:

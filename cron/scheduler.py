@@ -49,6 +49,9 @@ _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 _LOCK_DIR = _hermes_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
+# Ensure stale-job recovery runs at most once per process lifetime
+_recovery_done = False
+
 
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata."""
@@ -485,10 +488,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 def _recover_stale_running_jobs() -> None:
     """Detect and recover jobs stuck in 'running' state from a previous crash.
 
-    If the scheduler starts and finds jobs in 'running' state, they must be
-    from a previous process that crashed. Mark them as 'failed' so they can
-    be manually retried or will be picked up on next schedule.
+    Only runs once per process lifetime.  Subsequent calls are no-ops.
     """
+    global _recovery_done
+    if _recovery_done:
+        return
+    _recovery_done = True
+
     from cron.jobs import load_jobs, save_jobs
     jobs = load_jobs()
     recovered = 0
@@ -561,6 +567,7 @@ def tick(verbose: bool = True) -> int:
                         "Job '%s': invalid state transition %s -> running, skipping",
                         job["id"], cur_state,
                     )
+                    continue
 
                 success, output, final_response, error = run_job(job)
 

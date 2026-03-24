@@ -385,16 +385,23 @@ def _strip_comments(text: str, file_path: str) -> str:
     for line in lines:
         s = line
         trimmed = s.lstrip()
-        # Skip full-line comments
+        # Blank out full-line comments (preserve line count for index alignment)
         if use_hash and trimmed.startswith('#'):
+            stripped.append('')
             continue
         if use_slash and trimmed.startswith('//'):
+            stripped.append('')
             continue
-        # Strip inline comments (simple heuristic — not quote-aware)
+        # Strip inline comments (quote-aware: skip if marker is inside a string)
         if use_hash and '#' in s:
-            s = s[:s.index('#')]
+            idx = s.index('#')
+            # Only strip if an even number of quotes precede the marker
+            if s[:idx].count('"') % 2 == 0 and s[:idx].count("'") % 2 == 0:
+                s = s[:idx]
         if use_slash and '//' in s:
-            s = s[:s.index('//')]
+            idx = s.index('//')
+            if s[:idx].count('"') % 2 == 0 and s[:idx].count("'") % 2 == 0:
+                s = s[:idx]
         stripped.append(s.rstrip())
     return '\n'.join(stripped)
 
@@ -427,7 +434,6 @@ def _strategy_comment_stripped(content: str, pattern: str, file_path: str) -> Li
     # Slide a window over content lines, comparing non-blank stripped lines
     matches = []
     num_content = len(content_lines)
-    num_pattern = len(content_lines)  # window sizing needs pattern line count
     pat_line_count = len(pattern.split('\n'))
 
     for i in range(num_content - pat_line_count + 1):

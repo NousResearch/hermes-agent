@@ -18,7 +18,7 @@ _COST_RATES: Dict[str, Dict[str, float]] = {
     "gpt-4o":         {"input": 2.50,  "output": 10.0},
     "gpt-4o-mini":    {"input": 0.15,  "output": 0.60},
 }
-_DEFAULT_RATE = {"input": 1.0, "output": 5.0}
+_DEFAULT_RATE = {"input": 0.0, "output": 0.0}  # Don't fabricate costs for unknown models
 
 
 def _match_rate(model_name: str) -> Dict[str, float]:

@@ -662,6 +662,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
 }
 
 
+def _is_truthy_env(var_name: str) -> bool:
+    """Return True only for explicit truthy env values."""
+    value = os.getenv(var_name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def check_cronjob_requirements() -> bool:
     """
     Check if cronjob tools can be used.
@@ -671,9 +679,9 @@ def check_cronjob_requirements() -> bool:
     so no external crontab executable is required.
     """
     return bool(
-        os.getenv("HERMES_INTERACTIVE")
-        or os.getenv("HERMES_GATEWAY_SESSION")
-        or os.getenv("HERMES_EXEC_ASK")
+        _is_truthy_env("HERMES_INTERACTIVE")
+        or _is_truthy_env("HERMES_GATEWAY_SESSION")
+        or _is_truthy_env("HERMES_EXEC_ASK")
     )
 
 

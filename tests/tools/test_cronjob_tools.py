@@ -122,6 +122,13 @@ class TestCronjobRequirements:
 
         assert check_cronjob_requirements() is False
 
+    @pytest.mark.parametrize("false_like_value", ["0", "false", "no", "off"])
+    def test_rejects_false_like_interactive_env(self, monkeypatch, false_like_value):
+        monkeypatch.setenv("HERMES_INTERACTIVE", false_like_value)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        assert check_cronjob_requirements() is False
+
 
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)

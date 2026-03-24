@@ -42,11 +42,13 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Add mini-swe-agent to path if not installed. In git worktrees the populated
-# submodule may live in the main checkout rather than the worktree itself.
-from minisweagent_path import ensure_minisweagent_on_path
-
-ensure_minisweagent_on_path(Path(__file__).resolve().parent)
+# mini-swe-agent is an optional dependency for this runner.
+# Install separately: git submodule update --init mini-swe-agent && pip install -e ./mini-swe-agent
+try:
+    import minisweagent  # noqa: F401
+    _HAS_MINISWEAGENT = True
+except ImportError:
+    _HAS_MINISWEAGENT = False
 
 
 # ============================================================================
@@ -110,7 +112,10 @@ def create_environment(
     **kwargs
 ):
     """
-    Create an execution environment from mini-swe-agent.
+    Create an execution environment.
+
+    Uses mini-swe-agent environments when available, which requires the
+    mini-swe-agent submodule to be installed separately.
     
     Args:
         env_type: One of "local", "docker", "modal"
@@ -122,6 +127,12 @@ def create_environment(
     Returns:
         Environment instance with execute() method
     """
+    if not _HAS_MINISWEAGENT:
+        raise ImportError(
+            "mini-swe-agent is required for mini_swe_runner.py. "
+            "Install it: git submodule update --init mini-swe-agent && pip install -e ./mini-swe-agent"
+        )
+
     if env_type == "local":
         from minisweagent.environments.local import LocalEnvironment
         return LocalEnvironment(cwd=cwd, timeout=timeout)

@@ -44,6 +44,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes honcho` | Manage Honcho cross-session memory integration. |
+| `hermes retaindb` | Manage RetainDB cross-session memory integration. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
@@ -302,6 +303,23 @@ Subcommands:
 | `tokens` | Show or set token budgets for context and dialectic. |
 | `identity` | Seed or show the AI peer identity representation. |
 | `migrate` | Migration guide from openclaw-honcho to Hermes Honcho. |
+
+## `hermes retaindb`
+
+```bash
+hermes retaindb <subcommand>
+```
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `setup` | Interactive RetainDB setup wizard. |
+| `status` | Show current RetainDB config and connection status. |
+| `test` | Run RetainDB read/write smoke tests. |
+| `mode` | Show or set memory mode: `hybrid` or `retaindb`. |
+| `tokens` | Show or set the RetainDB context token budget. |
+| `identity` | Show the resolved RetainDB identity mapping. |
 
 ## `hermes acp`
 

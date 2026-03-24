@@ -66,18 +66,35 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+def _retaindb_is_configured_for_doctor() -> bool:
+    """Return True when RetainDB is configured, even if this process has no active session."""
+    try:
+        from retaindb_integration.client import RetainDBClientConfig
+
+        cfg = RetainDBClientConfig.from_global_config()
+        return bool(cfg.enabled and cfg.api_key and cfg.project)
+    except Exception:
+        return False
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    if not _honcho_is_configured_for_doctor():
+    has_honcho = _honcho_is_configured_for_doctor()
+    has_retaindb = _retaindb_is_configured_for_doctor()
+    if not has_honcho and not has_retaindb:
         return available, unavailable
 
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
         if item.get("name") == "honcho":
-            if "honcho" not in updated_available:
+            if has_honcho and "honcho" not in updated_available:
                 updated_available.append("honcho")
-            continue
+                continue
+        if item.get("name") == "retaindb":
+            if has_retaindb and "retaindb" not in updated_available:
+                updated_available.append("retaindb")
+                continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
 
@@ -744,6 +761,39 @@ def run_doctor(args):
         check_warn("honcho-ai not installed", "pip install honcho-ai")
     except Exception as _e:
         check_warn("Honcho check failed", str(_e))
+
+    # =========================================================================
+    # RetainDB memory
+    # =========================================================================
+    print()
+    print(color("â—† RetainDB Memory", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from retaindb_integration.client import RetainDBClientConfig
+        from retaindb_integration.session import RetainDBSessionManager
+
+        rcfg = RetainDBClientConfig.from_global_config()
+
+        if not rcfg.enabled:
+            check_info("RetainDB disabled (set retaindb.enabled: true in ~/.hermes/config.yaml to activate)")
+        elif not rcfg.project:
+            check_warn("RetainDB project not set", "run: hermes retaindb setup")
+            issues.append("No RetainDB project - run 'hermes retaindb setup'")
+        elif not rcfg.api_key:
+            check_fail("RetainDB API key not set", "run: hermes retaindb setup")
+            issues.append("No RetainDB API key - run 'hermes retaindb setup'")
+        else:
+            status = RetainDBSessionManager(config=rcfg).connection_status()
+            if status.get("ok"):
+                check_ok(
+                    "RetainDB connected",
+                    f"project={rcfg.project} mode={rcfg.memory_mode} freq={rcfg.write_frequency}",
+                )
+            else:
+                check_fail("RetainDB connection failed", str(status.get("error") or "unknown error"))
+                issues.append(f"RetainDB unreachable: {status.get('error')}")
+    except Exception as _e:
+        check_warn("RetainDB check failed", str(_e))
 
     # =========================================================================
     # Summary

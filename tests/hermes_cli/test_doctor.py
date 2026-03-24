@@ -75,6 +75,28 @@ class TestHonchoDoctorConfigDetection:
         assert not doctor._honcho_is_configured_for_doctor()
 
 
+class TestRetainDBDoctorConfigDetection:
+    def test_reports_configured_when_enabled_with_api_key_and_project(self, monkeypatch):
+        fake_config = SimpleNamespace(enabled=True, api_key="***", project="demo")
+
+        monkeypatch.setattr(
+            "retaindb_integration.client.RetainDBClientConfig.from_global_config",
+            lambda: fake_config,
+        )
+
+        assert doctor._retaindb_is_configured_for_doctor()
+
+    def test_reports_not_configured_without_project(self, monkeypatch):
+        fake_config = SimpleNamespace(enabled=True, api_key="***", project="")
+
+        monkeypatch.setattr(
+            "retaindb_integration.client.RetainDBClientConfig.from_global_config",
+            lambda: fake_config,
+        )
+
+        assert not doctor._retaindb_is_configured_for_doctor()
+
+
 def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
     """Doctor should present CLI-gated tools as available in CLI context."""
     project_root = tmp_path / "project"

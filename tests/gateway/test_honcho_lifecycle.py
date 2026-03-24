@@ -101,7 +101,8 @@ class TestGatewayHonchoLifecycle:
         result = await runner._handle_reset_command(event)
 
         runner._shutdown_gateway_honcho.assert_called_once_with("gateway-key")
-        runner._async_flush_memories.assert_called_once_with("old-session", "gateway-key")
+        runner._async_flush_memories.assert_called_once()
+        assert runner._async_flush_memories.call_args.args == ("old-session", "gateway-key", None)
         assert "Session reset" in result
 
     def test_flush_memories_reuses_gateway_session_key_and_skips_honcho_sync(self):

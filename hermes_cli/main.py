@@ -3699,6 +3699,62 @@ For more help on a command:
     honcho_parser.set_defaults(func=cmd_honcho)
 
     # =========================================================================
+    # retaindb command
+    # =========================================================================
+    retaindb_parser = subparsers.add_parser(
+        "retaindb",
+        help="Manage native RetainDB memory integration",
+        description=(
+            "RetainDB adds optional cross-session memory to Hermes.\n\n"
+            "Hermes keeps local MEMORY.md / USER.md and state.db, while RetainDB adds "
+            "background session ingestion and deeper recall across sessions.\n\n"
+            "Modes: hybrid (RetainDB + local memory) and retaindb (RetainDB only)."
+        ),
+        formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
+    )
+    retaindb_subparsers = retaindb_parser.add_subparsers(dest="retaindb_command")
+
+    retaindb_setup = retaindb_subparsers.add_parser("setup", help="Interactive setup wizard for RetainDB")
+    retaindb_setup.add_argument("--yes", action="store_true", help="Non-interactive setup using env vars / flags")
+    retaindb_setup.add_argument("--api-key", help="RetainDB API key")
+    retaindb_setup.add_argument("--project", help="RetainDB project slug/name (creates it if missing)")
+    retaindb_setup.add_argument("--base-url", help="RetainDB base URL")
+
+    retaindb_subparsers.add_parser("status", help="Show current RetainDB config and connection status")
+    retaindb_subparsers.add_parser("test", help="Run RetainDB read/write smoke tests")
+
+    retaindb_mode = retaindb_subparsers.add_parser(
+        "mode", help="Show or set memory mode (hybrid/retaindb)"
+    )
+    retaindb_mode.add_argument(
+        "mode", nargs="?", metavar="MODE",
+        choices=("hybrid", "retaindb"),
+        help="Memory mode to set (hybrid/retaindb). Omit to show current.",
+    )
+
+    retaindb_tokens = retaindb_subparsers.add_parser(
+        "tokens", help="Show or set RetainDB context token budget"
+    )
+    retaindb_tokens.add_argument(
+        "--context", type=int, metavar="N",
+        help="Max tokens for RetainDB query context injection",
+    )
+
+    retaindb_identity = retaindb_subparsers.add_parser(
+        "identity", help="Show the resolved RetainDB identity mapping"
+    )
+    retaindb_identity.add_argument(
+        "--session-id", metavar="SESSION",
+        help="Optional Hermes session id to inspect",
+    )
+
+    def cmd_retaindb(args):
+        from retaindb_integration.cli import retaindb_command
+        retaindb_command(args)
+
+    retaindb_parser.set_defaults(func=cmd_retaindb)
+
+    # =========================================================================
     # tools command
     # =========================================================================
     tools_parser = subparsers.add_parser(

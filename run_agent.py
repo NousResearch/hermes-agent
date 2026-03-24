@@ -106,6 +106,14 @@ HONCHO_TOOL_NAMES = {
     "honcho_conclude",
 }
 
+RETAINDB_TOOL_NAMES = {
+    "retaindb_profile",
+    "retaindb_search",
+    "retaindb_context",
+    "retaindb_remember",
+    "retaindb_forget",
+}
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -354,6 +362,27 @@ def _inject_honcho_turn_context(content, turn_context: str):
     return f"{text}\n\n{note}"
 
 
+def _inject_retaindb_turn_context(content, turn_context: str):
+    """Append RetainDB recall to the current-turn user message without mutating history."""
+    if not turn_context:
+        return content
+
+    note = (
+        "[System note: The following RetainDB memory was retrieved from prior "
+        "sessions. It is continuity context for this turn only, not new user "
+        "input.]\n\n"
+        f"{turn_context}"
+    )
+
+    if isinstance(content, list):
+        return list(content) + [{"type": "text", "text": note}]
+
+    text = "" if content is None else str(content)
+    if not text.strip():
+        return note
+    return f"{text}\n\n{note}"
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -416,6 +445,10 @@ class AIAgent:
         honcho_session_key: str = None,
         honcho_manager=None,
         honcho_config=None,
+        retaindb_session_key: str = None,
+        retaindb_manager=None,
+        retaindb_config=None,
+        retaindb_identity: Dict[str, Any] = None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         checkpoints_enabled: bool = False,
@@ -464,6 +497,10 @@ class AIAgent:
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
             honcho_manager: Optional shared HonchoSessionManager owned by the caller.
             honcho_config: Optional HonchoClientConfig corresponding to honcho_manager.
+            retaindb_session_key (str): Session id for RetainDB recall + write-behind.
+            retaindb_manager: Optional shared RetainDBSessionManager owned by the caller.
+            retaindb_config: Optional RetainDBClientConfig corresponding to retaindb_manager.
+            retaindb_identity (Dict): Optional runtime identity hints for user_id resolution.
         """
         _install_safe_stdio()
 
@@ -982,6 +1019,58 @@ class AIAgent:
         if not self._honcho:
             self._strip_honcho_tools_from_surface()
 
+        # Native RetainDB deep memory (cross-session semantic recall)
+        self._retaindb = None
+        self._retaindb_session_key = retaindb_session_key
+        self._retaindb_config = None
+        self._retaindb_exit_hook_registered = False
+        self._retaindb_runtime_identity = dict(retaindb_identity or {})
+        if not skip_memory:
+            try:
+                if retaindb_manager is not None:
+                    rcfg = retaindb_config or getattr(retaindb_manager, "_config", None) or getattr(retaindb_manager, "config", None)
+                    self._retaindb_config = rcfg
+                    if rcfg and self._retaindb_should_activate(rcfg):
+                        self._retaindb = retaindb_manager
+                        self._activate_retaindb(
+                            rcfg,
+                            enabled_toolsets=enabled_toolsets,
+                            disabled_toolsets=disabled_toolsets,
+                        )
+                else:
+                    from retaindb_integration.client import RetainDBClientConfig
+                    from retaindb_integration.session import RetainDBSessionManager
+
+                    rcfg = RetainDBClientConfig.from_global_config()
+                    self._retaindb_config = rcfg
+                    if self._retaindb_should_activate(rcfg):
+                        self._retaindb = RetainDBSessionManager(
+                            config=rcfg,
+                            runtime_identity=self._retaindb_runtime_identity,
+                        )
+                        self._activate_retaindb(
+                            rcfg,
+                            enabled_toolsets=enabled_toolsets,
+                            disabled_toolsets=disabled_toolsets,
+                        )
+                    else:
+                        if not rcfg.enabled:
+                            logger.debug("RetainDB disabled in config")
+                        elif not rcfg.project:
+                            logger.debug("RetainDB enabled but no project configured")
+                        elif not rcfg.api_key:
+                            logger.debug("RetainDB enabled but no API key configured")
+                        else:
+                            logger.debug("RetainDB enabled but inactive due to incomplete config")
+            except Exception as e:
+                logger.warning("RetainDB init failed - memory disabled: %s", e)
+                print(f"  RetainDB init failed: {e}")
+                print("  Run 'hermes retaindb setup' to reconfigure.")
+                self._retaindb = None
+
+        if not self._retaindb:
+            self._strip_retaindb_tools_from_surface()
+
         # Gate local memory writes based on per-peer memory modes.
         # AI peer governs MEMORY.md; user peer governs USER.md.
         # "honcho" = Honcho only, disable local writes.
@@ -996,6 +1085,12 @@ class AIAgent:
             if _user_mode == "honcho":
                 self._user_profile_enabled = False
                 logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
+        if self._retaindb_config and self._retaindb:
+            if self._retaindb_config.memory_mode == "retaindb":
+                self._memory_flush_min_turns = 0
+                self._memory_enabled = False
+                self._user_profile_enabled = False
+                logger.debug("RetainDB memory_mode=retaindb: local MEMORY.md and USER.md writes disabled")
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -2226,6 +2321,183 @@ class AIAgent:
             logger.warning("Honcho sync failed: %s", e)
             if not self.quiet_mode:
                 print(f"  Honcho write failed: {e}")
+
+    def _retaindb_should_activate(self, rcfg) -> bool:
+        """Return True when native RetainDB should be active."""
+        return bool(rcfg and getattr(rcfg, "should_activate", lambda: False)())
+
+    def _strip_retaindb_tools_from_surface(self) -> None:
+        """Remove RetainDB tools from the active tool surface."""
+        if not self.tools:
+            self.valid_tool_names = set()
+            return
+
+        self.tools = [
+            tool for tool in self.tools
+            if tool.get("function", {}).get("name") not in RETAINDB_TOOL_NAMES
+        ]
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
+    def _activate_retaindb(
+        self,
+        rcfg,
+        *,
+        enabled_toolsets: Optional[List[str]],
+        disabled_toolsets: Optional[List[str]],
+    ) -> None:
+        """Finish RetainDB setup once a session manager is available."""
+        if not self._retaindb:
+            return
+
+        if not self._retaindb_session_key:
+            self._retaindb_session_key = self.session_id or "hermes-default"
+
+        self._retaindb_runtime_identity.setdefault("session_id", self._retaindb_session_key)
+        self._retaindb_runtime_identity.setdefault("platform", self.platform or "cli")
+        self._retaindb_runtime_identity.setdefault("agent_id", getattr(rcfg, "agent_id", "hermes"))
+        if hasattr(self._retaindb, "set_runtime_identity"):
+            self._retaindb.set_runtime_identity(self._retaindb_runtime_identity)
+
+        from tools.retaindb_tools import set_session_context
+
+        set_session_context(self._retaindb, self._retaindb_session_key)
+
+        self.tools = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in self.tools
+        } if self.tools else set()
+
+        if rcfg.recall_mode == "context" or rcfg.disable_tool_exposure:
+            self._strip_retaindb_tools_from_surface()
+            if not self.quiet_mode:
+                print("  RetainDB active - recall_mode: context (RetainDB tools hidden)")
+        else:
+            if not self.quiet_mode:
+                print(f"  RetainDB active - recall_mode: {rcfg.recall_mode}")
+
+        logger.info(
+            "RetainDB active (session: %s, project: %s, write_frequency: %s, memory_mode: %s)",
+            self._retaindb_session_key,
+            rcfg.project,
+            rcfg.write_frequency,
+            rcfg.memory_mode,
+        )
+
+        self._register_retaindb_exit_hook()
+
+    def _register_retaindb_exit_hook(self) -> None:
+        """Register a process-exit flush hook for RetainDB without clobbering signals."""
+        if self._retaindb_exit_hook_registered or not self._retaindb:
+            return
+
+        retaindb_ref = weakref.ref(self._retaindb)
+
+        def _flush_retaindb_on_exit():
+            manager = retaindb_ref()
+            if manager is None:
+                return
+            try:
+                manager.flush_all()
+            except Exception as exc:
+                logger.debug("RetainDB flush on exit failed (non-fatal): %s", exc)
+
+        atexit.register(_flush_retaindb_on_exit)
+        self._retaindb_exit_hook_registered = True
+
+    def _collect_retaindb_dedupe_inputs(self, messages: list[dict]) -> tuple[list[str], list[str]]:
+        """Collect local memory and recent transcript text for RetainDB dedupe."""
+        local_entries: list[str] = []
+        if self._memory_store:
+            local_entries.extend(getattr(self._memory_store, "memory_entries", []) or [])
+            local_entries.extend(getattr(self._memory_store, "user_entries", []) or [])
+
+        recent_texts: list[str] = []
+        for msg in messages[-12:]:
+            if msg.get("role") not in ("user", "assistant"):
+                continue
+            content = msg.get("content")
+            if not content:
+                continue
+            recent_texts.append(str(content))
+        return local_entries, recent_texts
+
+    def _queue_retaindb_prefetch(self, user_message: str, messages: list[dict]) -> None:
+        """Queue same-turn RetainDB prefetch so local prompt assembly can proceed in parallel."""
+        if not self._retaindb or not self._retaindb_session_key:
+            return
+
+        recall_mode = (self._retaindb_config.recall_mode if self._retaindb_config else "hybrid")
+        if recall_mode == "tools":
+            return
+
+        try:
+            local_entries, recent_texts = self._collect_retaindb_dedupe_inputs(messages)
+            self._retaindb.prefetch_context(
+                self._retaindb_session_key,
+                user_message,
+                local_entries=local_entries,
+                recent_texts=recent_texts,
+            )
+        except Exception as exc:
+            logger.debug("RetainDB background prefetch failed (non-fatal): %s", exc)
+
+    def _retaindb_prefetch(self) -> str:
+        """Consume the same-turn RetainDB overlay if it completed within budget."""
+        if not self._retaindb or not self._retaindb_session_key:
+            return ""
+        try:
+            wait_ms = getattr(self._retaindb_config, "prefetch_timeout_ms", 1500)
+            return self._retaindb.pop_context_result(
+                self._retaindb_session_key,
+                wait_ms=wait_ms,
+            )
+        except Exception as exc:
+            logger.debug("RetainDB prefetch failed (non-fatal): %s", exc)
+            return ""
+
+    def _retaindb_save_user_observation(self, content: str) -> str:
+        """Route a memory tool target=user add into RetainDB explicit memory."""
+        if not content or not content.strip():
+            return json.dumps({"success": False, "error": "Content cannot be empty."})
+        try:
+            result = self._retaindb.save_user_observation(
+                self._retaindb_session_key,
+                content.strip(),
+            )
+            return json.dumps({
+                "success": True,
+                "target": "user",
+                "message": "Saved to RetainDB user memory.",
+                "result": result,
+            })
+        except Exception as exc:
+            logger.debug("RetainDB user observation failed: %s", exc)
+            return json.dumps({"success": False, "error": f"RetainDB save failed: {exc}"})
+
+    def _retaindb_sync(self, user_content: str, assistant_content: str) -> None:
+        """Queue the current turn for durable RetainDB write-behind ingestion."""
+        if not self._retaindb or not self._retaindb_session_key:
+            return
+        try:
+            turn_id = f"{self._retaindb_session_key}:{self._user_turn_count}:{int(time.time() * 1000)}"
+            self._retaindb.enqueue_turn(
+                self._retaindb_session_key,
+                user_content,
+                assistant_content,
+                message_index=self._user_turn_count,
+                turn_id=turn_id,
+            )
+            logger.info("RetainDB sync queued for session %s", self._retaindb_session_key)
+        except Exception as exc:
+            logger.warning("RetainDB sync failed: %s", exc)
+            if not self.quiet_mode:
+                print(f"  RetainDB write failed: {exc}")
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -4523,6 +4795,8 @@ class AIAgent:
                         )
                         if self._honcho and flush_target == "user" and args.get("action") == "add":
                             self._honcho_save_user_observation(args.get("content", ""))
+                        if self._retaindb and flush_target == "user" and args.get("action") == "add":
+                            self._retaindb_save_user_observation(args.get("content", ""))
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
@@ -4651,6 +4925,8 @@ class AIAgent:
             # Also send user observations to Honcho when active
             if self._honcho and target == "user" and function_args.get("action") == "add":
                 self._honcho_save_user_observation(function_args.get("content", ""))
+            if self._retaindb and target == "user" and function_args.get("action") == "add":
+                self._retaindb_save_user_observation(function_args.get("content", ""))
             return result
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -4675,6 +4951,8 @@ class AIAgent:
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 honcho_manager=self._honcho,
                 honcho_session_key=self._honcho_session_key,
+                retaindb_manager=self._retaindb,
+                retaindb_session_key=self._retaindb_session_key,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -4982,6 +5260,8 @@ class AIAgent:
                 # Also send user observations to Honcho when active
                 if self._honcho and target == "user" and function_args.get("action") == "add":
                     self._honcho_save_user_observation(function_args.get("content", ""))
+                if self._retaindb and target == "user" and function_args.get("action") == "add":
+                    self._retaindb_save_user_observation(function_args.get("content", ""))
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
@@ -5043,6 +5323,8 @@ class AIAgent:
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         honcho_manager=self._honcho,
                         honcho_session_key=self._honcho_session_key,
+                        retaindb_manager=self._retaindb,
+                        retaindb_session_key=self._retaindb_session_key,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -5059,6 +5341,8 @@ class AIAgent:
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         honcho_manager=self._honcho,
                         honcho_session_key=self._honcho_session_key,
+                        retaindb_manager=self._retaindb,
+                        retaindb_session_key=self._retaindb_session_key,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -5455,6 +5739,7 @@ class AIAgent:
         # to consume background prefetch results from turn N-1.
         self._honcho_context = ""
         self._honcho_turn_context = ""
+        self._retaindb_turn_context = ""
         _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
         if self._honcho and self._honcho_session_key and _recall_mode != "tools":
             try:
@@ -5466,6 +5751,13 @@ class AIAgent:
                         self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+
+        _retaindb_recall_mode = (self._retaindb_config.recall_mode if self._retaindb_config else "hybrid")
+        if self._retaindb and self._retaindb_session_key and _retaindb_recall_mode != "tools":
+            try:
+                self._queue_retaindb_prefetch(original_user_message, messages)
+            except Exception as e:
+                logger.debug("RetainDB prefetch scheduling failed (non-fatal): %s", e)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -5565,6 +5857,12 @@ class AIAgent:
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
+        if self._retaindb and self._retaindb_session_key and _retaindb_recall_mode != "tools":
+            try:
+                self._retaindb_turn_context = self._retaindb_prefetch()
+            except Exception as e:
+                logger.debug("RetainDB prefetch failed (non-fatal): %s", e)
+
         # Main conversation loop
         api_call_count = 0
         final_response = None
@@ -5625,10 +5923,17 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    current_content = api_msg.get("content", "")
+                    if self._honcho_turn_context:
+                        current_content = _inject_honcho_turn_context(
+                            current_content, self._honcho_turn_context
+                        )
+                    if self._retaindb_turn_context:
+                        current_content = _inject_retaindb_turn_context(
+                            current_content, self._retaindb_turn_context
+                        )
+                    api_msg["content"] = current_content
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -7073,6 +7378,7 @@ class AIAgent:
         if final_response and not interrupted and sync_honcho:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
+            self._retaindb_sync(original_user_message, final_response)
 
         # Extract reasoning from the last assistant message (if any)
         last_reasoning = None

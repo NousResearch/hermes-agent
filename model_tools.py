@@ -157,6 +157,7 @@ def _discover_tools():
         "tools.process_registry",
         "tools.send_message_tool",
         "tools.honcho_tools",
+        "tools.retaindb_tools",
         "tools.homeassistant_tool",
     ]
     import importlib
@@ -373,6 +374,8 @@ def handle_function_call(
     enabled_tools: Optional[List[str]] = None,
     honcho_manager: Optional[Any] = None,
     honcho_session_key: Optional[str] = None,
+    retaindb_manager: Optional[Any] = None,
+    retaindb_session_key: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -419,6 +422,8 @@ def handle_function_call(
                 enabled_tools=sandbox_enabled,
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
+                retaindb_manager=retaindb_manager,
+                retaindb_session_key=retaindb_session_key,
             )
         else:
             result = registry.dispatch(
@@ -427,6 +432,8 @@ def handle_function_call(
                 user_task=user_task,
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
+                retaindb_manager=retaindb_manager,
+                retaindb_session_key=retaindb_session_key,
             )
 
         try:

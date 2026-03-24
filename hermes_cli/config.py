@@ -322,6 +322,23 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # Native RetainDB memory integration.
+    # RetainDB adds optional cross-session recall on top of Hermes local memory.
+    "retaindb": {
+        "enabled": True,
+        "base_url": "https://api.retaindb.com",
+        "project": "",
+        "memory_mode": "hybrid",
+        "recall_mode": "hybrid",
+        "write_frequency": "async",
+        "context_tokens": 1200,
+        "prefetch_timeout_ms": 1500,
+        "flush_batch_size": 50,
+        "disable_tool_exposure": False,
+        "debug_recall_trace": False,
+        "agent_id": "hermes",
+    },
+
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
     # Empty string means use server-local time.
     "timezone": "",
@@ -674,6 +691,19 @@ OPTIONAL_ENV_VARS = {
     "HONCHO_BASE_URL": {
         "description": "Base URL for self-hosted Honcho instances (no API key needed)",
         "prompt": "Honcho base URL (e.g. http://localhost:8000)",
+        "category": "tool",
+    },
+    "RETAINDB_API_KEY": {
+        "description": "RetainDB API key for native Hermes deep memory",
+        "prompt": "RetainDB API key",
+        "url": "https://retaindb.com/dashboard",
+        "tools": ["retaindb_context"],
+        "password": True,
+        "category": "tool",
+    },
+    "RETAINDB_BASE_URL": {
+        "description": "Base URL for self-hosted RetainDB instances",
+        "prompt": "RetainDB base URL (leave empty for cloud)",
         "category": "tool",
     },
 

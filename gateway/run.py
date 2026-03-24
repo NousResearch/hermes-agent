@@ -368,6 +368,8 @@ class GatewayRunner:
         # per-message AIAgent instances.
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
+        self._retaindb_managers: Dict[str, Any] = {}
+        self._retaindb_configs: Dict[str, Any] = {}
 
         # Ensure tirith security scanner is available (downloads if needed)
         try:
@@ -426,6 +428,49 @@ class GatewayRunner:
             logger.debug("Gateway Honcho init failed for %s: %s", session_key, e)
             return None, None
 
+    def _build_retaindb_identity(self, source, session_id: str) -> dict:
+        """Build RetainDB runtime identity hints from the gateway session source."""
+        return {
+            "platform": source.platform.value if getattr(source, "platform", None) else "",
+            "platform_user_id": getattr(source, "user_id", None),
+            "user_name": getattr(source, "user_name", None),
+            "chat_id": getattr(source, "chat_id", None),
+            "peer_name": getattr(source, "user_name", None),
+            "session_id": session_id,
+        }
+
+    def _get_or_create_gateway_retaindb(self, session_key: str, identity: Optional[dict] = None):
+        """Return a persistent RetainDB manager/config pair for this gateway session."""
+        if not hasattr(self, "_retaindb_managers"):
+            self._retaindb_managers = {}
+        if not hasattr(self, "_retaindb_configs"):
+            self._retaindb_configs = {}
+
+        if session_key in self._retaindb_managers:
+            manager = self._retaindb_managers[session_key]
+            if identity and hasattr(manager, "set_runtime_identity"):
+                manager.set_runtime_identity(identity)
+            return manager, self._retaindb_configs.get(session_key)
+
+        try:
+            from retaindb_integration.client import RetainDBClientConfig
+            from retaindb_integration.session import RetainDBSessionManager
+
+            rcfg = RetainDBClientConfig.from_global_config()
+            if not rcfg.should_activate():
+                return None, rcfg
+
+            manager = RetainDBSessionManager(
+                config=rcfg,
+                runtime_identity=identity or {},
+            )
+            self._retaindb_managers[session_key] = manager
+            self._retaindb_configs[session_key] = rcfg
+            return manager, rcfg
+        except Exception as e:
+            logger.debug("Gateway RetainDB init failed for %s: %s", session_key, e)
+            return None, None
+
     def _shutdown_gateway_honcho(self, session_key: str) -> None:
         """Flush and close the persistent Honcho manager for a gateway session."""
         managers = getattr(self, "_honcho_managers", None)
@@ -442,6 +487,22 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Gateway Honcho shutdown failed for %s: %s", session_key, e)
 
+    def _shutdown_gateway_retaindb(self, session_key: str) -> None:
+        """Flush and close the persistent RetainDB manager for a gateway session."""
+        managers = getattr(self, "_retaindb_managers", None)
+        configs = getattr(self, "_retaindb_configs", None)
+        if managers is None or configs is None:
+            return
+
+        manager = managers.pop(session_key, None)
+        configs.pop(session_key, None)
+        if not manager:
+            return
+        try:
+            manager.shutdown()
+        except Exception as e:
+            logger.debug("Gateway RetainDB shutdown failed for %s: %s", session_key, e)
+
     def _shutdown_all_gateway_honcho(self) -> None:
         """Flush and close all persistent Honcho managers."""
         managers = getattr(self, "_honcho_managers", None)
@@ -449,6 +510,14 @@ class GatewayRunner:
             return
         for session_key in list(managers.keys()):
             self._shutdown_gateway_honcho(session_key)
+
+    def _shutdown_all_gateway_retaindb(self) -> None:
+        """Flush and close all persistent RetainDB managers."""
+        managers = getattr(self, "_retaindb_managers", None)
+        if not managers:
+            return
+        for session_key in list(managers.keys()):
+            self._shutdown_gateway_retaindb(session_key)
     
     # -- Setup skill availability ----------------------------------------
 
@@ -515,6 +584,7 @@ class GatewayRunner:
         self,
         old_session_id: str,
         honcho_session_key: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -536,6 +606,17 @@ class GatewayRunner:
             # active provider is openai-codex.
             model = _resolve_gateway_model()
 
+            retaindb_identity = (
+                self._build_retaindb_identity(source, old_session_id) if source else None
+            )
+            retaindb_manager = None
+            retaindb_config = None
+            if honcho_session_key:
+                retaindb_manager, retaindb_config = self._get_or_create_gateway_retaindb(
+                    honcho_session_key,
+                    retaindb_identity,
+                )
+
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -544,6 +625,10 @@ class GatewayRunner:
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
                 honcho_session_key=honcho_session_key,
+                retaindb_session_key=old_session_id,
+                retaindb_manager=retaindb_manager,
+                retaindb_config=retaindb_config,
+                retaindb_identity=retaindb_identity,
             )
 
             # Build conversation history from transcript
@@ -587,6 +672,7 @@ class GatewayRunner:
         self,
         old_session_id: str,
         honcho_session_key: Optional[str] = None,
+        source: Optional[SessionSource] = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
@@ -595,6 +681,7 @@ class GatewayRunner:
             self._flush_memories_for_session,
             old_session_id,
             honcho_session_key,
+            source,
         )
 
     @property
@@ -1055,8 +1142,9 @@ class GatewayRunner:
                         entry.session_id, key,
                     )
                     try:
-                        await self._async_flush_memories(entry.session_id, key)
+                        await self._async_flush_memories(entry.session_id, key, getattr(entry, "origin", None))
                         self._shutdown_gateway_honcho(key)
+                        self._shutdown_gateway_retaindb(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
@@ -1098,6 +1186,7 @@ class GatewayRunner:
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_all_gateway_honcho()
+        self._shutdown_all_gateway_retaindb()
         self._shutdown_event.set()
         
         from gateway.status import remove_pid_file, write_runtime_status
@@ -2479,12 +2568,13 @@ class GatewayRunner:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
                 asyncio.create_task(
-                    self._async_flush_memories(old_entry.session_id, session_key)
+                    self._async_flush_memories(old_entry.session_id, session_key, getattr(old_entry, "origin", None))
                 )
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
 
         self._shutdown_gateway_honcho(session_key)
+        self._shutdown_gateway_retaindb(session_key)
         self._evict_cached_agent(session_key)
         
         # Reset the session
@@ -3891,12 +3981,13 @@ class GatewayRunner:
         # Flush memories for current session before switching
         try:
             asyncio.create_task(
-                self._async_flush_memories(current_entry.session_id, session_key)
+                self._async_flush_memories(current_entry.session_id, session_key, getattr(current_entry, "origin", None))
             )
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 
         self._shutdown_gateway_honcho(session_key)
+        self._shutdown_gateway_retaindb(session_key)
 
         # Clear any running agent for this session key
         if session_key in self._running_agents:
@@ -4957,6 +5048,11 @@ class GatewayRunner:
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
+            retaindb_identity = self._build_retaindb_identity(source, session_id)
+            retaindb_manager, retaindb_config = self._get_or_create_gateway_retaindb(
+                session_key,
+                retaindb_identity,
+            )
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             # Set up streaming consumer if enabled
@@ -5032,6 +5128,10 @@ class GatewayRunner:
                     honcho_session_key=session_key,
                     honcho_manager=honcho_manager,
                     honcho_config=honcho_config,
+                    retaindb_session_key=session_id,
+                    retaindb_manager=retaindb_manager,
+                    retaindb_config=retaindb_config,
+                    retaindb_identity=retaindb_identity,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )

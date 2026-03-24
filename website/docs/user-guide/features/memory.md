@@ -209,10 +209,20 @@ memory:
 
 ## Honcho Integration (Cross-Session User Modeling)
 
-For deeper, AI-generated user understanding that works across sessions and platforms, you can enable [Honcho Memory](./honcho.md). Honcho runs alongside built-in memory in `hybrid` mode (the default) — `MEMORY.md` and `USER.md` stay as-is, and Honcho adds a persistent user modeling layer on top.
+For deeper, AI-generated user understanding that works across sessions and platforms, you can enable [Honcho Memory](./honcho.md). Honcho runs alongside built-in memory in `hybrid` mode (the default) - `MEMORY.md` and `USER.md` stay as-is, and Honcho adds a persistent user modeling layer on top.
 
 ```bash
 hermes honcho setup
 ```
 
 See the [Honcho Memory](./honcho.md) docs for full configuration, tools, and CLI reference.
+
+## RetainDB Integration (Cross-Session Session Memory)
+
+RetainDB adds a native cross-session memory layer for Hermes. It can ingest session turns in the background, retrieve a compact memory overlay for the current turn, and expose explicit RetainDB memory tools when enabled.
+
+```bash
+hermes retaindb setup
+```
+
+See the [RetainDB Memory](./retaindb.md) docs for setup, modes, and CLI commands.

@@ -40,7 +40,7 @@ class PersistentShellMixin:
     def _cleanup_temp_files(self): ...
 
     _session_id: str = ""
-    _poll_interval: float = 0.01        # initial poll interval (10ms)
+    _poll_interval_start: float = 0.01  # initial poll interval (10ms)
     _poll_interval_max: float = 0.25    # max poll interval (250ms) — reduces I/O for long commands
 
     @property
@@ -225,7 +225,7 @@ class PersistentShellMixin:
         )
         self._send_to_shell(ipc_script)
         deadline = time.monotonic() + timeout
-        poll_interval = self._poll_interval  # starts at 10ms, backs off to 250ms
+        poll_interval = self._poll_interval_start  # starts at 10ms, backs off to 250ms
 
         while True:
             if is_interrupted():

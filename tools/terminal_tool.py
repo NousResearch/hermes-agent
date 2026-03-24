@@ -483,10 +483,12 @@ def _get_env_config() -> Dict[str, Any]:
             host_cwd = candidate
             cwd = "/workspace"
     elif env_type in ("modal", "docker", "singularity", "daytona") and cwd:
-        # Host paths that won't exist inside containers
-        if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
+        # Host paths and relative paths that won't work inside containers
+        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
+        is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
+        if (is_host_path or is_relative) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
-                        "(host path won't exist in sandbox). Using %r instead.",
+                        "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
 

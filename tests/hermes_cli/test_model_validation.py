@@ -71,10 +71,10 @@ class TestParseModelInput:
         assert provider == "nous"
         assert model == "hermes-3"
 
-    def test_empty_model_after_colon_keeps_current(self):
+    def test_empty_model_after_colon_preserves_provider_and_empty_model(self):
         provider, model = parse_model_input("openrouter:", "nous")
-        assert provider == "nous"
-        assert model == "openrouter:"
+        assert provider == "openrouter"
+        assert model == ""
 
     def test_colon_at_start_keeps_current(self):
         provider, model = parse_model_input(":something", "openrouter")

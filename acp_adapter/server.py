@@ -387,9 +387,14 @@ class HermesACPAgent(acp.Agent):
 
         # Auto-detect provider for the requested model
         try:
-            from hermes_cli.models import parse_model_input, detect_provider_for_model
+            from hermes_cli.models import _KNOWN_PROVIDER_NAMES, parse_model_input, detect_provider_for_model
+            colon = new_model.find(":")
+            explicit_provider_syntax = (
+                colon > 0
+                and new_model[:colon].strip().lower() in _KNOWN_PROVIDER_NAMES
+            )
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            if not explicit_provider_syntax and target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected

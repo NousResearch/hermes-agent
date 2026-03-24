@@ -335,6 +335,9 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     The colon is only treated as a provider delimiter if the left side is a
     recognized provider name or alias.  This avoids misinterpreting model names
     that happen to contain colons (e.g. ``anthropic/claude-3.5-sonnet:beta``).
+    If the provider prefix is recognized but the model part is empty, the empty
+    model string is returned so the caller can surface a clean validation error
+    instead of treating the whole input as a literal model id.
 
     Returns ``(provider, model)`` where *provider* is either the explicit
     provider from the input or *current_provider* if none was specified.
@@ -344,7 +347,7 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+        if provider_part and provider_part in _KNOWN_PROVIDER_NAMES:
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

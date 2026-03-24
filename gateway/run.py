@@ -2851,6 +2851,15 @@ class GatewayRunner:
             lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
             return "\n".join(lines)
 
+        from hermes_cli.models import _KNOWN_PROVIDER_NAMES
+
+        raw_args = (args or "").strip()
+        colon = raw_args.find(":")
+        explicit_provider_syntax = (
+            colon > 0
+            and raw_args[:colon].strip().lower() in _KNOWN_PROVIDER_NAMES
+        )
+
         # Parse provider:model syntax
         target_provider, new_model = parse_model_input(args, current_provider)
 
@@ -2868,7 +2877,7 @@ class GatewayRunner:
         )
 
         # Auto-detect provider when no explicit provider:model syntax was used
-        if target_provider == current_provider and not is_custom:
+        if not explicit_provider_syntax and target_provider == current_provider and not is_custom:
             from hermes_cli.models import detect_provider_for_model
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:

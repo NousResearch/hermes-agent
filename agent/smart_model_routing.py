@@ -43,6 +43,25 @@ _COMPLEX_KEYWORDS = {
     "kubernetes",
 }
 
+_RUNTIME_QUERY_TERMS = {
+    "model",
+    "provider",
+    "context",
+    "window",
+    "token",
+    "tokens",
+    "pricing",
+    "price",
+    "cost",
+}
+
+_SELF_REFERENTIAL_TERMS = {
+    "you",
+    "your",
+    "using",
+    "use",
+}
+
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 
 
@@ -101,6 +120,8 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
 
     lowered = text.lower()
     words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
+    if (words & _RUNTIME_QUERY_TERMS) and ((words & _SELF_REFERENTIAL_TERMS) or "are you" in lowered):
+        return None
     if words & _COMPLEX_KEYWORDS:
         return None
 

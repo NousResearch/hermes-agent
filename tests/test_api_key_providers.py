@@ -23,8 +23,10 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
+    DASHSCOPE_CODING_PLAN_BASE_URL,
     _try_gh_cli_token,
     _resolve_kimi_base_url,
+    _resolve_alibaba_base_url,
 )
 
 
@@ -630,6 +632,36 @@ class TestResolveKimiBaseUrl:
     def test_env_override_wins_over_legacy(self):
         custom = "https://custom.example.com/v1"
         url = _resolve_kimi_base_url("sk-abc123", MOONSHOT_DEFAULT_URL, custom)
+        assert url == custom
+
+
+DASHSCOPE_DEFAULT_URL = "https://dashscope-intl.aliyuncs.com/apps/anthropic"
+
+
+class TestResolveAlibabaBaseUrl:
+    """Test _resolve_alibaba_base_url() helper for key-prefix auto-detection."""
+
+    def test_sk_sp_prefix_routes_to_coding_plan(self):
+        url = _resolve_alibaba_base_url("sk-sp-abc123", DASHSCOPE_DEFAULT_URL, "")
+        assert url == DASHSCOPE_CODING_PLAN_BASE_URL
+
+    def test_regular_key_uses_default(self):
+        url = _resolve_alibaba_base_url("sk-abc123", DASHSCOPE_DEFAULT_URL, "")
+        assert url == DASHSCOPE_DEFAULT_URL
+
+    def test_empty_key_uses_default(self):
+        url = _resolve_alibaba_base_url("", DASHSCOPE_DEFAULT_URL, "")
+        assert url == DASHSCOPE_DEFAULT_URL
+
+    def test_env_override_wins_over_sk_sp(self):
+        """DASHSCOPE_BASE_URL env var should always take priority."""
+        custom = "https://custom.example.com/v1"
+        url = _resolve_alibaba_base_url("sk-sp-abc123", DASHSCOPE_DEFAULT_URL, custom)
+        assert url == custom
+
+    def test_env_override_wins_over_regular_key(self):
+        custom = "https://custom.example.com/v1"
+        url = _resolve_alibaba_base_url("sk-abc123", DASHSCOPE_DEFAULT_URL, custom)
         assert url == custom
 
 

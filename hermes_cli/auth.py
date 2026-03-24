@@ -239,6 +239,25 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
     return default_url
 
 
+# Alibaba DashScope Coding Plan endpoint (subscription, sk-sp- keys)
+DASHSCOPE_CODING_PLAN_BASE_URL = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+
+
+def _resolve_alibaba_base_url(api_key: str, default_url: str, env_override: str) -> str:
+    """Return the correct Alibaba/DashScope base URL based on API key prefix.
+
+    If the user has explicitly set DASHSCOPE_BASE_URL, that always wins.
+    Otherwise, sk-sp- prefixed keys (Coding Plan subscription) route to
+    coding-intl.dashscope.aliyuncs.com/apps/anthropic.
+    Regular sk- keys route to the default pay-as-you-go endpoint.
+    """
+    if env_override:
+        return env_override
+    if api_key.startswith("sk-sp-"):
+        return DASHSCOPE_CODING_PLAN_BASE_URL
+    return default_url
+
+
 def _gh_cli_candidates() -> list[str]:
     """Return candidate ``gh`` binary paths, including common Homebrew installs."""
     candidates: list[str] = []
@@ -1689,6 +1708,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "kimi-coding":
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "alibaba":
+        base_url = _resolve_alibaba_base_url(api_key, pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:

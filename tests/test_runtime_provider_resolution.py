@@ -562,6 +562,32 @@ def test_alibaba_openai_compatible_v1_endpoint_stays_chat_completions(monkeypatc
     assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
 
 
+def test_alibaba_coding_plan_sk_sp_key_auto_routes_to_coding_endpoint(monkeypatch):
+    """Alibaba Coding Plan keys (sk-sp-*) should auto-route to coding-intl endpoint."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-sp-test-coding-plan-key")
+    monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba")
+
+    assert resolved["provider"] == "alibaba"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert "coding-intl.dashscope.aliyuncs.com" in resolved["base_url"]
+
+
+def test_alibaba_coding_plan_env_override_wins_over_key_detection(monkeypatch):
+    """Explicit DASHSCOPE_BASE_URL should override sk-sp- key auto-routing."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-sp-test-coding-plan-key")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://custom.example.com/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba")
+
+    assert resolved["base_url"] == "https://custom.example.com/v1"
+
+
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     """Custom providers should accept api_mode: anthropic_messages."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-anthropic-proxy")

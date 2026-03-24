@@ -509,13 +509,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
-                return web.json_response(_openai_error("An internal error occurred.", err_type="server_error"), status=500)
+                return web.json_response(
+                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    status=500,
+                )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
-                return web.json_response(_openai_error("An internal error occurred.", err_type="server_error"), status=500)
+                return web.json_response(
+                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    status=500,
+                )
 
         final_response = result.get("final_response", "")
         if not final_response:
@@ -728,13 +734,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
-                return web.json_response(_openai_error("An internal error occurred.", err_type="server_error"), status=500)
+                return web.json_response(
+                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    status=500,
+                )
         else:
             try:
                 result, usage = await _compute_response()
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
-                return web.json_response(_openai_error("An internal error occurred.", err_type="server_error"), status=500)
+                return web.json_response(
+                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    status=500,
+                )
 
         final_response = result.get("final_response", "")
         if not final_response:

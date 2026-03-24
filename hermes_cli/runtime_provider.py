@@ -102,8 +102,10 @@ def _auto_detect_local_model(base_url: str) -> str:
                 model_id = models[0].get("id", "")
                 if model_id:
                     return model_id
-    except Exception:
-        pass
+    except Exception as exc:
+        # Log instead of silently swallowing — aids debugging when
+        # local model auto-detection fails unexpectedly.
+        logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
     return ""
 
 

@@ -55,6 +55,22 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+## Environment Variable Substitution
+
+You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:
+
+```yaml
+auxiliary:
+  vision:
+    api_key: ${GOOGLE_API_KEY}
+    base_url: ${CUSTOM_VISION_URL}
+
+delegation:
+  api_key: ${DELEGATION_KEY}
+```
+
+Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
+
 ## Inference Providers
 
 You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
@@ -1329,6 +1345,23 @@ Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging
 - **Type** — only `exec` is supported (runs a shell command); other types show an error
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
+## Gateway Streaming
+
+Enable progressive token delivery on messaging platforms. When streaming is enabled, responses appear character-by-character in Telegram, Discord, and Slack via message editing, rather than waiting for the full response.
+
+```yaml
+streaming:
+  enabled: false              # Enable streaming token delivery (default: off)
+  transport: edit             # "edit" (progressive message editing) or "off"
+  edit_interval: 0.3          # Min seconds between message edits
+  buffer_threshold: 40        # Characters accumulated before forcing an edit
+  cursor: " ▉"               # Cursor character shown during streaming
+```
+
+**Platform support:** Telegram, Discord, and Slack support edit-based streaming. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
+
+**Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
+
 ## Human Delay
 
 Simulate human-like response pacing in messaging platforms:
@@ -1349,6 +1382,27 @@ code_execution:
   timeout: 300                 # Max execution time in seconds
   max_tool_calls: 50           # Max tool calls within code execution
 ```
+
+## Web Search Backends
+
+The `web_search`, `web_extract`, and `web_crawl` tools support three backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+
+```yaml
+web:
+  backend: firecrawl    # firecrawl | parallel | tavily
+```
+
+| Backend | Env Var | Search | Extract | Crawl |
+|---------|---------|--------|---------|-------|
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
+| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
+
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+
+**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
+
+**Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
 ## Browser
 

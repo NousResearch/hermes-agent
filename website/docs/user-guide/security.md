@@ -358,6 +358,42 @@ When a blocked URL is requested, the tool returns an error explaining the domain
 
 See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
 
+### SSRF Protection
+
+All URL-capable tools (web search, web extract, vision, browser) validate URLs before fetching them to prevent Server-Side Request Forgery (SSRF) attacks. Blocked addresses include:
+
+- **Private networks** (RFC 1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+- **Loopback**: `127.0.0.0/8`, `::1`
+- **Link-local**: `169.254.0.0/16` (includes cloud metadata at `169.254.169.254`)
+- **CGNAT / shared address space** (RFC 6598): `100.64.0.0/10` (Tailscale, WireGuard VPNs)
+- **Cloud metadata hostnames**: `metadata.google.internal`, `metadata.goog`
+- **Reserved, multicast, and unspecified addresses**
+
+SSRF protection is always active and cannot be disabled. DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+
+### Tirith Pre-Exec Security Scanning
+
+Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:
+
+- Homograph URL spoofing (internationalized domain attacks)
+- Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
+- Terminal injection attacks
+
+Tirith auto-installs from GitHub releases on first use with SHA-256 checksum verification (and cosign provenance verification if cosign is available).
+
+```yaml
+# In ~/.hermes/config.yaml
+security:
+  tirith_enabled: true       # Enable/disable tirith scanning (default: true)
+  tirith_path: "tirith"      # Path to tirith binary (default: PATH lookup)
+  tirith_timeout: 5          # Subprocess timeout in seconds
+  tirith_fail_open: true     # Allow execution when tirith is unavailable (default: true)
+```
+
+When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
+
+Tirith's verdict integrates with the approval flow: safe commands pass through, suspicious commands trigger user approval, and dangerous commands are blocked.
+
 ### Context File Injection Protection
 
 Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injection before being included in the system prompt. The scanner checks for:

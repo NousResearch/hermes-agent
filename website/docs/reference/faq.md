@@ -93,7 +93,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 from hermes.agent import AIAgent
 
 agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
-response = await agent.chat("Explain quantum computing briefly")
+response = agent.chat("Explain quantum computing briefly")
 ```
 
 See the [Python Library guide](../user-guide/features/code-execution.md) for full API usage.
@@ -175,8 +175,8 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 **Solution:**
 ```bash
-# Check which keys are set
-hermes config get OPENROUTER_API_KEY
+# Check your configuration
+hermes config show
 
 # Re-configure your provider
 hermes model
@@ -196,7 +196,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 **Solution:**
 ```bash
 # List available models for your provider
-hermes models
+hermes model
 
 # Set a valid model
 hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
@@ -232,10 +232,7 @@ hermes chat --model openrouter/google/gemini-2.0-flash-001
 
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
 
-```bash
-# Look at the status bar — it shows the detected context length
-/context
-```
+Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
 To fix context detection, set it explicitly:
 
@@ -318,7 +315,7 @@ hermes gateway status
 hermes gateway start
 
 # Check logs for errors
-hermes gateway logs
+cat ~/.hermes/logs/gateway.log | tail -50
 ```
 
 #### Messages not delivering
@@ -327,7 +324,7 @@ hermes gateway logs
 
 **Solution:**
 - Verify your bot token is valid with `hermes gateway setup`
-- Check gateway logs: `hermes gateway logs`
+- Check gateway logs: `cat ~/.hermes/logs/gateway.log | tail -50`
 - For webhook-based platforms (Slack, WhatsApp), ensure your server is publicly accessible
 
 #### Allowlist confusion — who can talk to the bot?
@@ -383,8 +380,8 @@ hermes config show
 # Compress the conversation to reduce tokens
 /compress
 
-# Check session token count
-/stats
+# Check session token usage
+/usage
 ```
 
 :::tip

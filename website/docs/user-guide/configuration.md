@@ -1336,8 +1336,8 @@ Simulate human-like response pacing in messaging platforms:
 ```yaml
 human_delay:
   mode: "off"                  # off | natural | custom
-  min_ms: 500                  # Minimum delay (custom mode)
-  max_ms: 2000                 # Maximum delay (custom mode)
+  min_ms: 800                  # Minimum delay (custom mode)
+  max_ms: 2500                 # Maximum delay (custom mode)
 ```
 
 ## Code Execution
@@ -1367,14 +1367,15 @@ The browser toolset supports multiple providers. See the [Browser feature page](
 Block specific domains from being accessed by the agent's web and browser tools:
 
 ```yaml
-website_blocklist:
-  enabled: false               # Enable URL blocking (default: false)
-  domains:                     # List of blocked domain patterns
-    - "*.internal.company.com"
-    - "admin.example.com"
-    - "*.local"
-  shared_files:                # Load additional rules from external files
-    - "/etc/hermes/blocked-sites.txt"
+security:
+  website_blocklist:
+    enabled: false               # Enable URL blocking (default: false)
+    domains:                     # List of blocked domain patterns
+      - "*.internal.company.com"
+      - "admin.example.com"
+      - "*.local"
+    shared_files:                # Load additional rules from external files
+      - "/etc/hermes/blocked-sites.txt"
 ```
 
 When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, `browser_navigate`, and any tool that accesses URLs.
@@ -1393,19 +1394,20 @@ The policy is cached for 30 seconds, so config changes take effect quickly witho
 Control how Hermes handles potentially dangerous commands:
 
 ```yaml
-approval_mode: ask   # ask | smart | off
+approvals:
+  mode: manual   # manual | smart | off
 ```
 
 | Mode | Behavior |
 |------|----------|
-| `ask` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
+| `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
 | `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
 :::warning
-Setting `approval_mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
+Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
 ## Checkpoints
@@ -1414,7 +1416,7 @@ Automatic filesystem snapshots before destructive file operations. See the [Chec
 
 ```yaml
 checkpoints:
-  enabled: false                 # Enable automatic checkpoints (also: hermes --checkpoints)
+  enabled: true                  # Enable automatic checkpoints (also: hermes --checkpoints)
   max_snapshots: 50              # Max checkpoints to keep per directory
 ```
 
@@ -1425,11 +1427,6 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
-  max_iterations: 50           # Max iterations per subagent
-  default_toolsets:             # Toolsets available to subagents
-    - terminal
-    - file
-    - web
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -1460,12 +1457,15 @@ Hermes uses two different context scopes:
 | File | Purpose | Scope |
 |------|---------|-------|
 | `SOUL.md` | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
-| `AGENTS.md` | Project-specific instructions, coding conventions | Working directory / project tree |
-| `.cursorrules` | Cursor IDE rules (also detected) | Working directory |
-| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory |
+| `.hermes.md` / `HERMES.md` | Project-specific instructions (highest priority) | Walks to git root |
+| `AGENTS.md` | Project-specific instructions, coding conventions | Recursive directory walk |
+| `CLAUDE.md` | Claude Code context files (also detected) | Working directory only |
+| `.cursorrules` | Cursor IDE rules (also detected) | Working directory only |
+| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory only |
 
 - **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
 - If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
+- **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
 - All loaded context files are capped at 20,000 characters with smart truncation.

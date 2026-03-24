@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Set
 from model_tools import handle_function_call
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
-# (e.g., mini-swe-agent's modal/docker/daytona backends). Running them in a separate
+# (e.g., the Modal/Docker/Daytona terminal backends). Running them in a separate
 # thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
 # Size must be large enough for concurrent eval tasks (e.g., 89 TB2 tasks all
 # making tool calls). Too small = thread pool starvation, tasks queue for minutes.

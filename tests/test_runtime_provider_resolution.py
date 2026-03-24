@@ -267,7 +267,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="local")
 
-    assert resolved["provider"] == "custom"
+    assert resolved["provider"] == "Local"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"
@@ -657,3 +657,17 @@ def test_openrouter_provider_not_affected_by_custom_fix(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="openrouter")
     assert resolved["provider"] == "openrouter"
+
+
+def test_named_custom_provider_label(monkeypatch):
+    """Named custom provider runtime should use the provider name, not 'openrouter'."""
+    monkeypatch.setattr(rp, "_get_named_custom_provider", lambda *a, **k: {
+        "name": "my-ollama",
+        "base_url": "http://172.22.128.1:11434/v1",
+        "api_key": "ollama",
+    })
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    resolved = rp.resolve_runtime_provider(requested="my-ollama")
+    assert resolved["provider"] == "my-ollama"
+    assert resolved["base_url"] == "http://172.22.128.1:11434/v1"
+    assert resolved["requested_provider"] == "my-ollama"

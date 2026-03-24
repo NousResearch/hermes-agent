@@ -8,7 +8,7 @@ terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
 
 class TestTerminalRequirements:
-    def test_local_backend_does_not_require_minisweagent_package(self, monkeypatch):
+    def test_local_backend_requirements(self, monkeypatch):
         monkeypatch.setattr(
             terminal_tool_module,
             "_get_env_config",

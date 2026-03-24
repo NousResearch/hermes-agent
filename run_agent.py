@@ -58,7 +58,7 @@ if _loaded_env_paths:
 else:
     logger.info("No .env file found. Using system environment variables.")
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
+# Point mini-swe-agent at ~/.hermes/ if installed (RL training use)
 os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(_hermes_home))
 os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 

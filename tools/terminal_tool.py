@@ -51,13 +51,6 @@ logger = logging.getLogger(__name__)
 from tools.interrupt import is_interrupted, _interrupt_event
 
 
-# Add mini-swe-agent to path if not installed. In git worktrees the populated
-# submodule may live in the main checkout rather than the worktree itself.
-from minisweagent_path import ensure_minisweagent_on_path
-
-ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-
-
 # =============================================================================
 # Custom Singularity Environment with more space
 # =============================================================================
@@ -1188,27 +1181,15 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met.
-
-    Important: local and singularity backends now use Hermes' own environment
-    wrappers directly and do not require the ``minisweagent`` Python package to
-    be installed. Docker and Modal still rely on mini-swe-agent internals.
-    """
+    """Check if all requirements for the terminal tool are met."""
     config = _get_env_config()
     env_type = config["env_type"]
 
     try:
         if env_type == "local":
-            # Local execution uses Hermes' own LocalEnvironment wrapper and does
-            # not depend on minisweagent being importable.
             return True
 
         elif env_type == "docker":
-            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-            if importlib.util.find_spec("minisweagent") is None:
-                logger.error("mini-swe-agent is required for docker terminal backend but is not importable")
-                return False
-            # Check if docker is available (use find_docker for macOS PATH issues)
             from tools.environments.docker import find_docker
             docker = find_docker()
             if not docker:
@@ -1225,7 +1206,6 @@ def check_terminal_requirements() -> bool:
             return False
 
         elif env_type == "ssh":
-            # Check that host and user are configured
             if not config.get("ssh_host") or not config.get("ssh_user"):
                 logger.error(
                     "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
@@ -1235,11 +1215,9 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "modal":
-            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-            if importlib.util.find_spec("minisweagent") is None:
-                logger.error("mini-swe-agent is required for modal terminal backend but is not importable")
+            if importlib.util.find_spec("swerex") is None:
+                logger.error("swe-rex is required for modal terminal backend: pip install 'swe-rex[modal]'")
                 return False
-            # Check for modal token
             has_token = os.getenv("MODAL_TOKEN_ID") is not None
             has_config = Path.home().joinpath(".modal.toml").exists()
             if not (has_token or has_config):
@@ -1269,7 +1247,7 @@ def check_terminal_requirements() -> bool:
 
 if __name__ == "__main__":
     # Simple test when run directly
-    print("Terminal Tool Module (mini-swe-agent backend)")
+    print("Terminal Tool Module")
     print("=" * 50)
     
     config = _get_env_config()

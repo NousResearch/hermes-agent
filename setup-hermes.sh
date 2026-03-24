@@ -124,16 +124,7 @@ echo -e "${GREEN}✓${NC} Dependencies installed"
 # Submodules (terminal backend + RL training)
 # ============================================================================
 
-echo -e "${CYAN}→${NC} Installing submodules..."
-
-# mini-swe-agent (terminal tool backend)
-if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
-    $UV_CMD pip install -e "./mini-swe-agent" && \
-        echo -e "${GREEN}✓${NC} mini-swe-agent installed" || \
-        echo -e "${YELLOW}⚠${NC} mini-swe-agent install failed (Docker/Modal terminal backends may not work, local terminal is unaffected)"
-else
-    echo -e "${YELLOW}⚠${NC} mini-swe-agent not found (run: git submodule update --init --recursive)"
-fi
+echo -e "${CYAN}→${NC} Installing optional submodules..."
 
 # tinker-atropos (RL training backend)
 if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then

@@ -3562,151 +3562,83 @@ class HermesCLI:
             # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
-                from hermes_cli.auth import resolve_provider
-                from hermes_cli.models import (
-                    parse_model_input,
-                    validate_requested_model,
-                    _PROVIDER_LABELS,
-                )
+                from hermes_cli.model_switch import switch_model, switch_to_custom_provider
 
                 raw_input = parts[1].strip()
 
                 # Handle bare "/model custom" — switch to custom provider
                 # and auto-detect the model from the endpoint.
                 if raw_input.strip().lower() == "custom":
-                    from hermes_cli.runtime_provider import (
-                        resolve_runtime_provider,
-                        _auto_detect_local_model,
-                    )
-                    try:
-                        runtime = resolve_runtime_provider(requested="custom")
-                        cust_base = runtime.get("base_url", "")
-                        cust_key = runtime.get("api_key", "")
-                        if not cust_base or "openrouter.ai" in cust_base:
-                            print("(>_<) No custom endpoint configured.")
-                            print("      Set model.base_url in config.yaml, or set OPENAI_BASE_URL in .env,")
-                            print("      or run: hermes setup → Custom OpenAI-compatible endpoint")
-                            return True
-                        detected_model = _auto_detect_local_model(cust_base)
-                        if detected_model:
-                            self.model = detected_model
-                            self.requested_provider = "custom"
-                            self.provider = "custom"
-                            self.api_key = cust_key
-                            self.base_url = cust_base
-                            self.agent = None
-                            save_config_value("model.default", detected_model)
-                            save_config_value("model.provider", "custom")
-                            save_config_value("model.base_url", cust_base)
-                            print(f"(^_^)b Model changed to: {detected_model} [provider: Custom]")
-                            print(f"  Endpoint: {cust_base}")
-                            print(f"  Status: connected (model auto-detected)")
-                        else:
-                            print(f"(>_<) Custom endpoint at {cust_base} is reachable but no single model was auto-detected.")
-                            print(f"      Specify the model explicitly: /model custom:<model-name>")
-                    except Exception as e:
-                        print(f"(>_<) Could not resolve custom endpoint: {e}")
+                    result = switch_to_custom_provider()
+                    if result.success:
+                        self.model = result.model
+                        self.requested_provider = "custom"
+                        self.provider = "custom"
+                        self.api_key = result.api_key
+                        self.base_url = result.base_url
+                        self.agent = None
+                        save_config_value("model.default", result.model)
+                        save_config_value("model.provider", "custom")
+                        save_config_value("model.base_url", result.base_url)
+                        print(f"(^_^)b Model changed to: {result.model} [provider: Custom]")
+                        print(f"  Endpoint: {result.base_url}")
+                        print(f"  Status: connected (model auto-detected)")
+                    else:
+                        print(f"(>_<) {result.error_message}")
                     return True
 
-                # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
+                # Core model-switching pipeline (shared with gateway)
                 current_provider = self.provider or self.requested_provider or "openrouter"
-                target_provider, new_model = parse_model_input(raw_input, current_provider)
-                # Auto-detect provider when no explicit provider:model syntax was used.
-                # Skip auto-detection for custom providers — the model name might
-                # coincidentally match a known provider's catalog, but the user
-                # intends to use it on their custom endpoint.  Require explicit
-                # provider:model syntax (e.g. /model openai-codex:gpt-5.2-codex)
-                # to switch away from a custom endpoint.
-                _base = self.base_url or ""
-                is_custom = current_provider == "custom" or (
-                    "localhost" in _base or "127.0.0.1" in _base
+                result = switch_model(
+                    raw_input,
+                    current_provider,
+                    current_base_url=self.base_url or "",
+                    current_api_key=self.api_key or "",
                 )
-                if target_provider == current_provider and not is_custom:
-                    from hermes_cli.models import detect_provider_for_model
-                    detected = detect_provider_for_model(new_model, current_provider)
-                    if detected:
-                        target_provider, new_model = detected
-                provider_changed = target_provider != current_provider
 
-                # If provider is changing, re-resolve credentials for the new provider
-                api_key_for_probe = self.api_key
-                base_url_for_probe = self.base_url
-                if provider_changed:
-                    try:
-                        from hermes_cli.runtime_provider import resolve_runtime_provider
-                        runtime = resolve_runtime_provider(requested=target_provider)
-                        api_key_for_probe = runtime.get("api_key", "")
-                        base_url_for_probe = runtime.get("base_url", "")
-                    except Exception as e:
-                        provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                        if target_provider == "custom":
-                            print(f"(>_<) Custom endpoint not configured. Set OPENAI_BASE_URL and OPENAI_API_KEY,")
-                            print(f"      or run: hermes setup → Custom OpenAI-compatible endpoint")
-                        else:
-                            print(f"(>_<) Could not resolve credentials for provider '{provider_label}': {e}")
-                        print(f"(^_^) Current model unchanged: {self.model}")
-                        return True
-
-                try:
-                    validation = validate_requested_model(
-                        new_model,
-                        target_provider,
-                        api_key=api_key_for_probe,
-                        base_url=base_url_for_probe,
-                    )
-                except Exception:
-                    validation = {"accepted": True, "persist": True, "recognized": False, "message": None}
-
-                if not validation.get("accepted"):
-                    print(f"(>_<) {validation.get('message')}")
-                    print(f"  Model unchanged: {self.model}")
-                    if "Did you mean" not in (validation.get("message") or ""):
-                        print("  Tip: Use /model to see available models, /provider to see providers")
+                if not result.success:
+                    print(f"(>_<) {result.error_message}")
+                    if "Did you mean" not in result.error_message:
+                        print(f"  Model unchanged: {self.model}")
+                        if "credentials" not in result.error_message.lower():
+                            print("  Tip: Use /model to see available models, /provider to see providers")
                 else:
-                    self.model = new_model
+                    self.model = result.new_model
                     self.agent = None  # Force re-init
 
-                    if provider_changed:
-                        self.requested_provider = target_provider
-                        self.provider = target_provider
-                        self.api_key = api_key_for_probe
-                        self.base_url = base_url_for_probe
+                    if result.provider_changed:
+                        self.requested_provider = result.target_provider
+                        self.provider = result.target_provider
+                        self.api_key = result.api_key
+                        self.base_url = result.base_url
 
-                    provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
-                    provider_note = f" [provider: {provider_label}]" if provider_changed else ""
+                    provider_note = f" [provider: {result.provider_label}]" if result.provider_changed else ""
 
-                    if validation.get("persist"):
-                        saved_model = save_config_value("model.default", new_model)
-                        if provider_changed:
-                            save_config_value("model.provider", target_provider)
-                            # Persist base_url for custom endpoints so it
-                            # survives restart; clear it when switching away
-                            # from custom to prevent stale URLs leaking into
-                            # the new provider's resolution (#2562 Phase 2).
-                            if base_url_for_probe and "openrouter.ai" not in (base_url_for_probe or ""):
-                                save_config_value("model.base_url", base_url_for_probe)
+                    if result.persist:
+                        saved_model = save_config_value("model.default", result.new_model)
+                        if result.provider_changed:
+                            save_config_value("model.provider", result.target_provider)
+                            # Persist base_url for custom endpoints; clear
+                            # when switching away from custom (#2562 Phase 2).
+                            if result.base_url and "openrouter.ai" not in (result.base_url or ""):
+                                save_config_value("model.base_url", result.base_url)
                             else:
                                 save_config_value("model.base_url", None)
                         if saved_model:
-                            print(f"(^_^)b Model changed to: {new_model}{provider_note} (saved to config)")
+                            print(f"(^_^)b Model changed to: {result.new_model}{provider_note} (saved to config)")
                         else:
-                            print(f"(^_^) Model changed to: {new_model}{provider_note} (this session only)")
+                            print(f"(^_^) Model changed to: {result.new_model}{provider_note} (this session only)")
                     else:
-                        message = validation.get("message") or ""
-                        print(f"(^_^) Model changed to: {new_model}{provider_note} (this session only)")
-                        if message:
-                            print(f"  Reason: {message}")
+                        print(f"(^_^) Model changed to: {result.new_model}{provider_note} (this session only)")
+                        if result.warning_message:
+                            print(f"  Reason: {result.warning_message}")
                         print("  Note: Model will revert on restart. Use a verified model to save to config.")
 
                     # Show endpoint info for custom providers
-                    _target_is_custom = target_provider == "custom" or (
-                        base_url_for_probe and "openrouter.ai" not in (base_url_for_probe or "")
-                        and ("localhost" in (base_url_for_probe or "") or "127.0.0.1" in (base_url_for_probe or ""))
-                    )
-                    if _target_is_custom or (is_custom and not provider_changed):
-                        endpoint = base_url_for_probe or self.base_url or "custom endpoint"
+                    if result.is_custom_target:
+                        endpoint = result.base_url or self.base_url or "custom endpoint"
                         print(f"  Endpoint: {endpoint}")
-                        if not provider_changed:
+                        if not result.provider_changed:
                             print(f"  Tip: To switch providers, use /model provider:model")
                             print(f"       e.g. /model openai-codex:gpt-5.2-codex")
             else:

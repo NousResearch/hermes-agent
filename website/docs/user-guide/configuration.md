@@ -421,7 +421,7 @@ Hermes uses a multi-source resolution chain to detect the correct context window
 1. **Config override** — `model.context_length` in config.yaml (highest priority)
 2. **Custom provider per-model** — `custom_providers[].models.<id>.context_length`
 3. **Persistent cache** — previously discovered values (survives restarts)
-4. **Endpoint `/models`** — queries your server's API (local/custom endpoints)
+4. **Endpoint `/models`** — queries your server's API (local/custom endpoints, plus OpenAI Codex provider metadata)
 5. **Anthropic `/v1/models`** — queries Anthropic's API for `max_input_tokens` (API-key users only)
 6. **OpenRouter API** — live model metadata from OpenRouter
 7. **Nous Portal** — suffix-matches Nous model IDs against OpenRouter metadata
@@ -429,6 +429,8 @@ Hermes uses a multi-source resolution chain to detect the correct context window
 9. **Fallback defaults** — broad model family patterns (128K default)
 
 For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
+
+OpenAI Codex is a notable provider-specific case: Hermes reads the provider-reported `context_window` from `https://chatgpt.com/backend-api/codex/models` when available, so compaction follows the Codex working window for that provider instead of borrowing a generic max context from another catalog.
 
 To set the context length explicitly, add `context_length` to your model config:
 

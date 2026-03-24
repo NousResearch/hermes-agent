@@ -118,6 +118,33 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_status_bar_uses_active_agent_model_when_smart_routed(self):
+        cli_obj = _make_cli(model="gpt-5.4")
+        cli_obj.agent = SimpleNamespace(
+            model="gpt-5.4-mini",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            session_input_tokens=38_600,
+            session_output_tokens=0,
+            session_cache_read_tokens=0,
+            session_cache_write_tokens=0,
+            session_prompt_tokens=38_600,
+            session_completion_tokens=0,
+            session_total_tokens=38_600,
+            session_api_calls=1,
+            context_compressor=SimpleNamespace(
+                last_prompt_tokens=38_600,
+                context_length=128_000,
+                compression_count=0,
+            ),
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gpt-5.4-mini" in text
+        assert "gpt-5.4 │" not in text
+        assert "38.6K/128K" in text
+
 
 class TestCLIUsageReport:
     def test_show_usage_includes_estimated_cost(self, capsys):

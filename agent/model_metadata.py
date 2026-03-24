@@ -146,6 +146,10 @@ def _is_openrouter_base_url(base_url: str) -> bool:
     return "openrouter.ai" in _normalize_base_url(base_url).lower()
 
 
+def _is_codex_base_url(base_url: str) -> bool:
+    return "chatgpt.com/backend-api/codex" in _normalize_base_url(base_url).lower()
+
+
 def _is_custom_endpoint(base_url: str) -> bool:
     normalized = _normalize_base_url(base_url)
     return bool(normalized) and not _is_openrouter_base_url(normalized)
@@ -429,15 +433,29 @@ def fetch_endpoint_model_metadata(
 
     for candidate in candidates:
         url = candidate.rstrip("/") + "/models"
+        urls_to_try = [url]
+        if _is_codex_base_url(candidate):
+            urls_to_try.insert(0, url + "?client_version=1.0.0")
+        for url_to_fetch in urls_to_try:
+            try:
+                response = requests.get(url_to_fetch, headers=headers, timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except Exception as exc:
+                last_error = exc
+                payload = None
+        if payload is None:
+            continue
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
+            model_entries = payload.get("data")
+            if not isinstance(model_entries, list):
+                model_entries = payload.get("models", [])
+            for model in model_entries:
                 if not isinstance(model, dict):
                     continue
-                model_id = model.get("id")
+                model_id = model.get("id") or model.get("slug")
                 if not model_id:
                     continue
                 entry: Dict[str, Any] = {"name": model.get("name", model_id)}
@@ -791,11 +809,16 @@ def get_model_context_length(
             return cached
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
-    # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their
-    # /models endpoint may report a provider-imposed limit (e.g. Copilot
-    # returns 128k) instead of the model's full context (400k).  models.dev
-    # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    # Most known providers skip this because their /models endpoint may report
+    # a provider-imposed limit rather than the raw model max. OpenAI Codex is
+    # the exception: its official /models payload exposes the effective working
+    # context_window we want Hermes to compact against.
+    use_endpoint_metadata = _is_custom_endpoint(base_url) and (
+        not _is_known_provider_base_url(base_url)
+        or provider == "openai-codex"
+        or _is_codex_base_url(base_url)
+    )
+    if use_endpoint_metadata:
         endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
         matched = endpoint_metadata.get(model)
         if not matched:

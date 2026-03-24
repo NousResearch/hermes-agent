@@ -260,6 +260,48 @@ class TestGetModelContextLength:
         assert result == 131072
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_openai_codex_prefers_provider_models_metadata(self, mock_endpoint_fetch, mock_fetch):
+        """Codex should trust its own /models context_window over OpenRouter."""
+        mock_fetch.return_value = {
+            "gpt-5.4": {"context_length": 1050000}
+        }
+        mock_endpoint_fetch.return_value = {
+            "gpt-5.4": {"context_length": 272000}
+        }
+
+        result = get_model_context_length(
+            "gpt-5.4",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            provider="openai-codex",
+        )
+
+        assert result == 272000
+        mock_endpoint_fetch.assert_called_once_with(
+            "https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+        )
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_openai_codex_falls_back_when_provider_models_missing(self, mock_endpoint_fetch, mock_fetch):
+        """If Codex /models misses, keep the existing downstream fallbacks."""
+        mock_fetch.return_value = {
+            "gpt-5.4": {"context_length": 1050000}
+        }
+        mock_endpoint_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "gpt-5.4",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            provider="openai-codex",
+        )
+
+        assert result == 1050000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_config_context_length_overrides_all(self, mock_fetch):
         """Explicit config_context_length takes priority over everything."""
         mock_fetch.return_value = {
@@ -368,6 +410,33 @@ class TestFetchModelMetadata:
         result2 = fetch_model_metadata()
         assert "test/model" in result2
         assert mock_get.call_count == 1  # cached
+
+    @patch("agent.model_metadata.requests.get")
+    def test_endpoint_metadata_supports_codex_models_shape(self, mock_get):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "models": [
+                {
+                    "slug": "gpt-5.4",
+                    "context_window": 272000,
+                    "name": "gpt-5.4",
+                }
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        result = fetch_endpoint_model_metadata(
+            "https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            force_refresh=True,
+        )
+
+        assert result["gpt-5.4"]["context_length"] == 272000
+        called_url = mock_get.call_args.args[0]
+        assert called_url.endswith("/models?client_version=1.0.0")
 
     @patch("agent.model_metadata.requests.get")
     def test_api_failure_returns_empty_on_cold_cache(self, mock_get):

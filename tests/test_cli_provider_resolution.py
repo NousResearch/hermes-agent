@@ -213,6 +213,30 @@ def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
     assert result["label"] is not None
 
 
+def test_model_command_keeps_explicit_provider_prefix(monkeypatch):
+    cli = _import_cli()
+
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not auto-detect explicit provider:model input")),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *args, **kwargs: {"accepted": True, "persist": False, "recognized": True, "message": None},
+    )
+
+    shell = cli.HermesCLI(model="gpt-5.4", compact=True, max_turns=1)
+    shell.provider = "openai-codex"
+    shell.requested_provider = "openai-codex"
+    shell.base_url = "https://chatgpt.com/backend-api/codex"
+    shell.api_key = "codex-key"
+
+    assert shell.process_command("/model openai-codex:gpt-5.4") is True
+    assert shell.model == "gpt-5.4"
+    assert shell.provider == "openai-codex"
+    assert shell.requested_provider == "openai-codex"
+
+
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     cli = _import_cli()
 

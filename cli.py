@@ -1278,7 +1278,8 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        model_name = self.model or "unknown"
+        agent = getattr(self, "agent", None)
+        model_name = getattr(agent, "model", None) or self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
@@ -1304,7 +1305,6 @@ class HermesCLI:
             "compressions": 0,
         }
 
-        agent = getattr(self, "agent", None)
         if not agent:
             return snapshot
 
@@ -1938,7 +1938,6 @@ class HermesCLI:
                 pass_session_id=self.pass_session_id,
                 tool_progress_callback=self._on_tool_progress,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
-                tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
             )
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
@@ -3564,12 +3563,18 @@ class HermesCLI:
             if len(parts) > 1:
                 from hermes_cli.auth import resolve_provider
                 from hermes_cli.models import (
+                    _KNOWN_PROVIDER_NAMES,
                     parse_model_input,
                     validate_requested_model,
                     _PROVIDER_LABELS,
                 )
 
                 raw_input = parts[1].strip()
+                colon = raw_input.find(":")
+                explicit_provider_syntax = (
+                    colon > 0
+                    and raw_input[:colon].strip().lower() in _KNOWN_PROVIDER_NAMES
+                )
 
                 # Parse provider:model syntax (e.g. "openrouter:anthropic/claude-sonnet-4.5")
                 current_provider = self.provider or self.requested_provider or "openrouter"
@@ -3584,7 +3589,7 @@ class HermesCLI:
                 is_custom = current_provider == "custom" or (
                     "localhost" in _base or "127.0.0.1" in _base
                 )
-                if target_provider == current_provider and not is_custom:
+                if not explicit_provider_syntax and target_provider == current_provider and not is_custom:
                     from hermes_cli.models import detect_provider_for_model
                     detected = detect_provider_for_model(new_model, current_provider)
                     if detected:
@@ -4633,24 +4638,6 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
-
-    # ====================================================================
-    # Tool-call generation indicator (shown during streaming)
-    # ====================================================================
-
-    def _on_tool_gen_start(self, tool_name: str) -> None:
-        """Called when the model begins generating tool-call arguments.
-
-        Closes any open streaming boxes (reasoning / response) and prints a
-        short status line so the user sees activity instead of a frozen
-        screen while a large payload (e.g. a 45 KB write_file) streams in.
-        """
-        self._flush_stream()
-        self._close_reasoning_box()
-
-        from agent.display import get_tool_emoji
-        emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
 
     # ====================================================================
     # Tool progress callback (audio cues for voice mode)

@@ -262,10 +262,10 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "You can read channel/thread history using the slack_history tool "
+            "(pass the channel ID from this conversation's context). "
+            "You cannot pin/unpin messages, manage channels, or list users. "
+            "Do not promise to perform those actions."
         )
     elif context.source.platform == Platform.DISCORD:
         lines.append("")

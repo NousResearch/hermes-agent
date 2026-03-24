@@ -216,7 +216,7 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
+        assert "slack_history" in prompt.lower()
         assert "pin" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):

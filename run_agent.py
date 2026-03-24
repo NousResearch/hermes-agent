@@ -398,6 +398,7 @@ class AIAgent:
         provider_sort: str = None,
         provider_require_parameters: bool = False,
         provider_data_collection: str = None,
+        provider_zdr: bool = False,
         session_id: str = None,
         tool_progress_callback: callable = None,
         thinking_callback: callable = None,
@@ -557,6 +558,7 @@ class AIAgent:
         self.provider_sort = provider_sort
         self.provider_require_parameters = provider_require_parameters
         self.provider_data_collection = provider_data_collection
+        self.provider_zdr = provider_zdr
 
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
@@ -4124,6 +4126,8 @@ class AIAgent:
             provider_preferences["require_parameters"] = True
         if self.provider_data_collection:
             provider_preferences["data_collection"] = self.provider_data_collection
+        if self.provider_zdr:
+            provider_preferences["zdr"] = True
 
         api_kwargs = {
             "model": self.model,

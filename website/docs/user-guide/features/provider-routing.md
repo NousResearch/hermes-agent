@@ -23,6 +23,7 @@ provider_routing:
   order: []               # Explicit provider priority order
   require_parameters: false  # Only use providers that support all parameters
   data_collection: null   # Control data collection ("allow" or "deny")
+  zdr: false              # Zero Data Retention — only route to ZDR endpoints
 ```
 
 :::info
@@ -96,6 +97,15 @@ Controls whether providers can use your prompts for training. Options are `"allo
 ```yaml
 provider_routing:
   data_collection: "deny"
+```
+
+### `zdr`
+
+Enforce Zero Data Retention — only route to endpoints that do not retain your prompts. When enabled, requests are restricted to ZDR-compliant providers on OpenRouter.
+
+```yaml
+provider_routing:
+  zdr: true
 ```
 
 ## Practical Examples
@@ -177,6 +187,7 @@ providers_order    ← from provider_routing.order
 provider_sort      ← from provider_routing.sort
 provider_require_parameters ← from provider_routing.require_parameters
 provider_data_collection    ← from provider_routing.data_collection
+provider_zdr                ← from provider_routing.zdr
 ```
 
 :::tip

@@ -522,7 +522,18 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        raw_model = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        # Cloud-only model names (e.g. "whisper-1") are invalid for faster-whisper.
+        # Normalise them to the default local model size ("base") so a config
+        # written by the setup wizard (which inserts stt.model: "whisper-1")
+        # doesn't crash on the first voice message.
+        model_name = _normalize_local_command_model(raw_model)
+        if model_name != raw_model:
+            logger.warning(
+                "stt.model '%s' is a cloud-only name and cannot be used with the "
+                "local faster-whisper provider; falling back to '%s'.",
+                raw_model, model_name,
+            )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":

@@ -11,16 +11,18 @@ import asyncio
 import logging
 import os
 import re
+import uuid
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
         CommandHandler,
         MessageHandler as TelegramMessageHandler,
+        CallbackQueryHandler,
         ContextTypes,
         filters,
     )
@@ -34,6 +36,9 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     TelegramMessageHandler = Any
+    CallbackQueryHandler = Any
+    InlineKeyboardButton = Any
+    InlineKeyboardMarkup = Any
     filters = None
     ParseMode = None
     ChatType = None
@@ -110,6 +115,11 @@ class TelegramAdapter(BasePlatformAdapter):
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Expand/collapse: truncate responses longer than this many lines
+    EXPAND_LINE_THRESHOLD = 25
+    # Callback data prefixes for inline keyboard buttons
+    _EXPAND_PREFIX = "hexpand:"
+    _COLLAPSE_PREFIX = "hcollapse:"
     
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
@@ -129,6 +139,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
         self._polling_error_task: Optional[asyncio.Task] = None
+        # In-memory store for expand/collapse: key -> (full_formatted, full_plain)
+        # Entries are kept until the bot restarts (no disk persistence needed).
+        self._expand_store: Dict[str, tuple] = {}
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
@@ -326,6 +339,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            self._app.add_handler(CallbackQueryHandler(
+                self._handle_expand_callback,
+                pattern=f"^({self._EXPAND_PREFIX}|{self._COLLAPSE_PREFIX})",
+            ))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -442,6 +459,106 @@ class TelegramAdapter(BasePlatformAdapter):
         self._token_lock_identity = None
         logger.info("[%s] Disconnected from Telegram", self.name)
 
+    def _maybe_truncate_with_expand(
+        self, formatted: str, plain: str
+    ) -> tuple:
+        """If the message exceeds EXPAND_LINE_THRESHOLD lines, truncate it and
+        return (truncated_text, inline_keyboard, store_key).
+        Otherwise return (formatted, None, None).
+
+        The store_key is a short UUID stored in self._expand_store so the full
+        content can be retrieved when the user presses Expand.
+        """
+        lines = formatted.split("\n")
+        if len(lines) <= self.EXPAND_LINE_THRESHOLD:
+            return formatted, None, None
+
+        threshold = int(
+            os.getenv("HERMES_TELEGRAM_EXPAND_LINES", str(self.EXPAND_LINE_THRESHOLD))
+        )
+        preview_lines = lines[:threshold]
+        preview = "\n".join(preview_lines)
+
+        # Store full content under a short key
+        key = uuid.uuid4().hex[:12]
+        self._expand_store[key] = (formatted, plain)
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "Expand 📄",
+                callback_data=f"{self._EXPAND_PREFIX}{key}",
+            )
+        ]])
+        return preview, keyboard, key
+
+    async def _handle_expand_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle Expand/Collapse inline keyboard button presses."""
+        query = update.callback_query
+        if not query:
+            return
+        await query.answer()
+
+        data = query.data or ""
+        if data.startswith(self._EXPAND_PREFIX):
+            key = data[len(self._EXPAND_PREFIX):]
+            entry = self._expand_store.get(key)
+            if not entry:
+                await query.answer("Content expired, please ask again.", show_alert=True)
+                return
+            full_formatted, full_plain = entry
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "Collapse 🔼",
+                    callback_data=f"{self._COLLAPSE_PREFIX}{key}",
+                )
+            ]])
+            try:
+                await query.edit_message_text(
+                    text=full_formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                await query.edit_message_text(
+                    text=full_plain,
+                    parse_mode=None,
+                    reply_markup=keyboard,
+                )
+
+        elif data.startswith(self._COLLAPSE_PREFIX):
+            key = data[len(self._COLLAPSE_PREFIX):]
+            entry = self._expand_store.get(key)
+            if not entry:
+                await query.answer("Content expired.", show_alert=True)
+                return
+            full_formatted, full_plain = entry
+            lines = full_formatted.split("\n")
+            threshold = int(
+                os.getenv("HERMES_TELEGRAM_EXPAND_LINES", str(self.EXPAND_LINE_THRESHOLD))
+            )
+            preview = "\n".join(lines[:threshold])
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "Expand 📄",
+                    callback_data=f"{self._EXPAND_PREFIX}{key}",
+                )
+            ]])
+            try:
+                await query.edit_message_text(
+                    text=preview,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                plain_lines = full_plain.split("\n")
+                await query.edit_message_text(
+                    text="\n".join(plain_lines[:threshold]),
+                    parse_mode=None,
+                    reply_markup=keyboard,
+                )
+
     async def send(
         self,
         chat_id: str,
@@ -456,6 +573,13 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
+
+            # Expand/collapse: truncate long responses and attach inline button
+            plain_fallback = _strip_mdv2(formatted)
+            formatted, expand_keyboard, _expand_key = self._maybe_truncate_with_expand(
+                formatted, plain_fallback
+            )
+
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix. Escape the
@@ -479,6 +603,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
+                        # Attach expand keyboard only to the last chunk
+                        chunk_keyboard = expand_keyboard if i == len(chunks) - 1 else None
                         try:
                             msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
@@ -486,6 +612,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                                 message_thread_id=int(thread_id) if thread_id else None,
+                                reply_markup=chunk_keyboard,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -498,6 +625,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
                                     message_thread_id=int(thread_id) if thread_id else None,
+                                    reply_markup=chunk_keyboard,
                                 )
                             else:
                                 raise

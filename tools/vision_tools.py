@@ -375,6 +375,13 @@ async def vision_analyze_tool(
         # so it can inform the user instead of a cryptic API error.
         err_str = str(e).lower()
         if any(hint in err_str for hint in (
+            "402", "insufficient", "payment required", "credits", "billing",
+        )):
+            analysis = (
+                "Insufficient credits or payment required. Please top up your "
+                f"API provider account and try again. Error: {e}"
+            )
+        elif any(hint in err_str for hint in (
             "does not support", "not support image", "invalid_request",
             "content_policy", "image_url", "multimodal",
             "unrecognized request argument", "image input",

@@ -280,6 +280,42 @@ def _resolve_gateway_model() -> str:
     return model
 
 
+
+def _resolve_chat_model() -> dict:
+    """Resolve an optional chat-specific model from config.yaml.
+
+    When ``model.chat`` is set in config.yaml, incoming interactive messages
+    (Discord, Telegram, etc.) use that model + endpoint instead of the
+    default heavyweight model.  This lets agents respond quickly to
+    conversational messages while reserving the larger model for cron jobs
+    and autonomous tasks.
+
+    Returns a dict with keys:
+        model    (str):       model identifier
+        base_url (str|None):  override base_url for the chat endpoint
+        api_key  (str|None):  override api_key for the chat endpoint
+        active   (bool):      True if a chat model was found
+    """
+    result = {"model": None, "base_url": None, "api_key": None, "active": False}
+    try:
+        import yaml as _y
+        _cfg_path = _hermes_home / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                _cfg = _y.safe_load(_f) or {}
+            _model_cfg = _cfg.get("model", {})
+            if isinstance(_model_cfg, dict):
+                chat_model = (_model_cfg.get("chat") or "").strip()
+                if chat_model:
+                    result["model"] = chat_model
+                    result["base_url"] = (_model_cfg.get("chat_base_url") or "").strip() or None
+                    result["api_key"] = (_model_cfg.get("chat_api_key") or "").strip() or None
+                    result["active"] = True
+    except Exception:
+        pass
+    return result
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -5140,6 +5176,12 @@ class GatewayRunner:
 
             model = _resolve_gateway_model()
 
+            # Use fast chat model for interactive messages if configured
+            _chat = _resolve_chat_model()
+            if _chat["active"]:
+                model = _chat["model"]
+                logger.info("Chat model active: %s @ %s", model, _chat.get("base_url", "default"))
+
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
@@ -5149,6 +5191,14 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # Apply chat model endpoint overrides after runtime resolution
+            if _chat["active"] and _chat["base_url"]:
+                runtime_kwargs["base_url"] = _chat["base_url"]
+                runtime_kwargs["api_key"] = _chat["api_key"] or "no-key-required"
+                runtime_kwargs["provider"] = "custom"
+                runtime_kwargs["api_mode"] = None
+                logger.info("Chat model endpoint override: %s", _chat["base_url"])
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)

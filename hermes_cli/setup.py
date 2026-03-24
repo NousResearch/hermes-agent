@@ -873,9 +873,9 @@ def setup_model_provider(config: dict):
         keep_label = None  # No provider configured — don't show "Keep current"
 
     provider_choices = [
+        "OpenRouter API key (100+ models, pay-per-use)",
         "Login with Nous Portal (Nous Research subscription — OAuth)",
         "Login with OpenAI Codex",
-        "OpenRouter API key (100+ models, pay-per-use)",
         "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
         "Z.AI / GLM (Zhipu AI models)",
         "Kimi / Moonshot (Kimi coding models)",
@@ -894,7 +894,7 @@ def setup_model_provider(config: dict):
         provider_choices.append(keep_label)
 
     # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
-    default_provider = len(provider_choices) - 1 if has_any_provider else 2
+    default_provider = len(provider_choices) - 1 if has_any_provider else 0
 
     if not has_any_provider:
         print_warning("An inference provider is required for Hermes to work.")
@@ -911,81 +911,7 @@ def setup_model_provider(config: dict):
     selected_base_url = None  # deferred until after model selection
     nous_models = []  # populated if Nous login succeeds
 
-    if provider_idx == 0:  # Nous Portal (OAuth)
-        selected_provider = "nous"
-        print()
-        print_header("Nous Portal Login")
-        print_info("This will open your browser to authenticate with Nous Portal.")
-        print_info("You'll need a Nous Research account with an active subscription.")
-        print()
-
-        try:
-            from hermes_cli.auth import _login_nous, ProviderConfig
-            import argparse
-
-            mock_args = argparse.Namespace(
-                portal_url=None,
-                inference_url=None,
-                client_id=None,
-                scope=None,
-                no_browser=False,
-                timeout=15.0,
-                ca_bundle=None,
-                insecure=False,
-            )
-            pconfig = PROVIDER_REGISTRY["nous"]
-            _login_nous(mock_args, pconfig)
-            _sync_model_from_disk(config)
-
-            # Fetch models for the selection step
-            try:
-                creds = resolve_nous_runtime_credentials(
-                    min_key_ttl_seconds=5 * 60,
-                    timeout_seconds=15.0,
-                )
-                nous_models = fetch_nous_models(
-                    inference_base_url=creds.get("base_url", ""),
-                    api_key=creds.get("api_key", ""),
-                )
-            except Exception as e:
-                logger.debug("Could not fetch Nous models after login: %s", e)
-
-        except SystemExit:
-            print_warning("Nous Portal login was cancelled or failed.")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-        except Exception as e:
-            print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-
-    elif provider_idx == 1:  # OpenAI Codex
-        selected_provider = "openai-codex"
-        print()
-        print_header("OpenAI Codex Login")
-        print()
-
-        try:
-            import argparse
-
-            mock_args = argparse.Namespace()
-            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
-            # Clear custom endpoint vars that would override provider routing.
-            if existing_custom:
-                save_env_value("OPENAI_BASE_URL", "")
-                save_env_value("OPENAI_API_KEY", "")
-            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-            _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        except SystemExit:
-            print_warning("OpenAI Codex login was cancelled or failed.")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-        except Exception as e:
-            print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-
-    elif provider_idx == 2:  # OpenRouter
+    if provider_idx == 0:  # OpenRouter
         selected_provider = "openrouter"
         print()
         print_header("OpenRouter API Key")
@@ -1039,6 +965,80 @@ def setup_model_provider(config: dict):
             _set_model_provider(config, "openrouter")
         except Exception as e:
             logger.debug("Could not save provider to config.yaml: %s", e)
+
+    elif provider_idx == 1:  # Nous Portal (OAuth)
+        selected_provider = "nous"
+        print()
+        print_header("Nous Portal Login")
+        print_info("This will open your browser to authenticate with Nous Portal.")
+        print_info("You'll need a Nous Research account with an active subscription.")
+        print()
+
+        try:
+            from hermes_cli.auth import _login_nous, ProviderConfig
+            import argparse
+
+            mock_args = argparse.Namespace(
+                portal_url=None,
+                inference_url=None,
+                client_id=None,
+                scope=None,
+                no_browser=False,
+                timeout=15.0,
+                ca_bundle=None,
+                insecure=False,
+            )
+            pconfig = PROVIDER_REGISTRY["nous"]
+            _login_nous(mock_args, pconfig)
+            _sync_model_from_disk(config)
+
+            # Fetch models for the selection step
+            try:
+                creds = resolve_nous_runtime_credentials(
+                    min_key_ttl_seconds=5 * 60,
+                    timeout_seconds=15.0,
+                )
+                nous_models = fetch_nous_models(
+                    inference_base_url=creds.get("base_url", ""),
+                    api_key=creds.get("api_key", ""),
+                )
+            except Exception as e:
+                logger.debug("Could not fetch Nous models after login: %s", e)
+
+        except SystemExit:
+            print_warning("Nous Portal login was cancelled or failed.")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+        except Exception as e:
+            print_error(f"Login failed: {e}")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+
+    elif provider_idx == 2:  # OpenAI Codex
+        selected_provider = "openai-codex"
+        print()
+        print_header("OpenAI Codex Login")
+        print()
+
+        try:
+            import argparse
+
+            mock_args = argparse.Namespace()
+            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
+            # Clear custom endpoint vars that would override provider routing.
+            if existing_custom:
+                save_env_value("OPENAI_BASE_URL", "")
+                save_env_value("OPENAI_API_KEY", "")
+            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+            _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
+        except SystemExit:
+            print_warning("OpenAI Codex login was cancelled or failed.")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
+        except Exception as e:
+            print_error(f"Login failed: {e}")
+            print_info("You can try again later with: hermes model")
+            selected_provider = None
 
     elif provider_idx == 3:  # Custom endpoint
         selected_provider = "custom"

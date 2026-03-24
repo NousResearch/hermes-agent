@@ -29,40 +29,36 @@ class TestFormatContextPressure:
     raw context window.  60% = 60% of the way to compaction.
     """
 
-    def test_60_percent_uses_info_icon(self):
-        line = format_context_pressure(0.60, 100_000, 0.50)
-        assert "◐" in line
-        assert "60% to compaction" in line
-
-    def test_85_percent_uses_warning_icon(self):
-        line = format_context_pressure(0.85, 100_000, 0.50)
+    def test_80_percent_uses_warning_icon(self):
+        line = format_context_pressure(0.80, 100_000, 0.50)
         assert "⚠" in line
-        assert "85% to compaction" in line
+        assert "80% to compaction" in line
+
+    def test_90_percent_uses_warning_icon(self):
+        line = format_context_pressure(0.90, 100_000, 0.50)
+        assert "⚠" in line
+        assert "90% to compaction" in line
 
     def test_bar_length_scales_with_progress(self):
-        line_60 = format_context_pressure(0.60, 100_000, 0.50)
-        line_85 = format_context_pressure(0.85, 100_000, 0.50)
-        assert line_85.count("▰") > line_60.count("▰")
+        line_80 = format_context_pressure(0.80, 100_000, 0.50)
+        line_95 = format_context_pressure(0.95, 100_000, 0.50)
+        assert line_95.count("▰") > line_80.count("▰")
 
     def test_shows_threshold_tokens(self):
-        line = format_context_pressure(0.60, 100_000, 0.50)
+        line = format_context_pressure(0.80, 100_000, 0.50)
         assert "100k" in line
 
     def test_small_threshold(self):
-        line = format_context_pressure(0.60, 500, 0.50)
+        line = format_context_pressure(0.80, 500, 0.50)
         assert "500" in line
 
     def test_shows_threshold_percent(self):
-        line = format_context_pressure(0.85, 100_000, 0.50)
-        assert "50%" in line  # threshold percent shown
+        line = format_context_pressure(0.80, 100_000, 0.50)
+        assert "50%" in line
 
-    def test_imminent_hint_at_85(self):
-        line = format_context_pressure(0.85, 100_000, 0.50)
-        assert "compaction imminent" in line
-
-    def test_approaching_hint_below_85(self):
-        line = format_context_pressure(0.60, 100_000, 0.80)
-        assert "approaching compaction" in line
+    def test_approaching_hint(self):
+        line = format_context_pressure(0.80, 100_000, 0.50)
+        assert "compaction approaching" in line
 
     def test_no_compaction_when_disabled(self):
         line = format_context_pressure(0.85, 100_000, 0.50, compression_enabled=False)
@@ -82,26 +78,26 @@ class TestFormatContextPressure:
 class TestFormatContextPressureGateway:
     """Gateway (plain text) context pressure display."""
 
-    def test_60_percent_informational(self):
-        msg = format_context_pressure_gateway(0.60, 0.50)
-        assert "60% to compaction" in msg
-        assert "50%" in msg  # threshold shown
+    def test_80_percent_warning(self):
+        msg = format_context_pressure_gateway(0.80, 0.50)
+        assert "80% to compaction" in msg
+        assert "50%" in msg
 
-    def test_85_percent_warning(self):
-        msg = format_context_pressure_gateway(0.85, 0.50)
-        assert "85% to compaction" in msg
-        assert "imminent" in msg
+    def test_90_percent_warning(self):
+        msg = format_context_pressure_gateway(0.90, 0.50)
+        assert "90% to compaction" in msg
+        assert "approaching" in msg
 
     def test_no_compaction_warning(self):
         msg = format_context_pressure_gateway(0.85, 0.50, compression_enabled=False)
         assert "disabled" in msg
 
     def test_no_ansi_codes(self):
-        msg = format_context_pressure_gateway(0.85, 0.50)
+        msg = format_context_pressure_gateway(0.80, 0.50)
         assert "\033[" not in msg
 
     def test_has_progress_bar(self):
-        msg = format_context_pressure_gateway(0.85, 0.50)
+        msg = format_context_pressure_gateway(0.80, 0.50)
         assert "▰" in msg
 
 
@@ -145,9 +141,8 @@ def agent():
 class TestContextPressureFlags:
     """Context pressure warning flag tracking on AIAgent."""
 
-    def test_flags_initialized_false(self, agent):
-        assert agent._context_50_warned is False
-        assert agent._context_70_warned is False
+    def test_flag_initialized_false(self, agent):
+        assert agent._context_pressure_warned is False
 
     def test_emit_calls_status_callback(self, agent):
         """status_callback should be invoked with event type and message."""
@@ -204,13 +199,11 @@ class TestContextPressureFlags:
         captured = capsys.readouterr()
         assert "▰" not in captured.out
 
-    def test_flags_reset_on_compression(self, agent):
-        """After _compress_context, context pressure flags should reset."""
-        agent._context_50_warned = True
-        agent._context_70_warned = True
+    def test_flag_reset_on_compression(self, agent):
+        """After _compress_context, context pressure flag should reset."""
+        agent._context_pressure_warned = True
         agent.compression_enabled = True
 
-        # Mock the compressor's compress method to return minimal valid output
         agent.context_compressor = MagicMock()
         agent.context_compressor.compress.return_value = [
             {"role": "user", "content": "Summary of conversation so far."}
@@ -218,11 +211,9 @@ class TestContextPressureFlags:
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
 
-        # Mock _todo_store
         agent._todo_store = MagicMock()
         agent._todo_store.format_for_injection.return_value = None
 
-        # Mock _build_system_prompt
         agent._build_system_prompt = MagicMock(return_value="system prompt")
         agent._cached_system_prompt = "old system prompt"
         agent._session_db = None
@@ -233,8 +224,7 @@ class TestContextPressureFlags:
         ]
         agent._compress_context(messages, "system prompt")
 
-        assert agent._context_50_warned is False
-        assert agent._context_70_warned is False
+        assert agent._context_pressure_warned is False
 
     def test_emit_callback_error_handled(self, agent):
         """If status_callback raises, it should be caught gracefully."""

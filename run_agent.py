@@ -585,8 +585,7 @@ class AIAgent:
         # Context pressure warnings: notify the USER (not the LLM) as context
         # fills up.  Purely informational — displayed in CLI output and sent via
         # status_callback for gateway platforms.  Does NOT inject into messages.
-        self._context_50_warned = False
-        self._context_70_warned = False
+        self._context_pressure_warned = False
 
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
@@ -4609,12 +4608,11 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Session DB compression split failed: %s", e)
 
-        # Reset context pressure warnings and token estimate — usage drops
+        # Reset context pressure warning and token estimate — usage drops
         # after compaction.  Without this, the stale last_prompt_tokens from
         # the previous API call causes the pressure calculation to stay at
         # >1000% and spam warnings / re-trigger compression in a loop.
-        self._context_50_warned = False
-        self._context_70_warned = False
+        self._context_pressure_warned = False
         _compressed_est = (
             estimate_tokens_rough(new_system_prompt)
             + estimate_messages_tokens_rough(compressed)
@@ -6853,12 +6851,8 @@ class AIAgent:
                     # and fires status_callback for gateway platforms.
                     if _compressor.threshold_tokens > 0:
                         _compaction_progress = _estimated_next_prompt / _compressor.threshold_tokens
-                        if _compaction_progress >= 0.85 and not self._context_70_warned:
-                            self._context_70_warned = True
-                            self._context_50_warned = True  # skip first tier if we jumped past it
-                            self._emit_context_pressure(_compaction_progress, _compressor)
-                        elif _compaction_progress >= 0.60 and not self._context_50_warned:
-                            self._context_50_warned = True
+                        if _compaction_progress >= 0.85 and not self._context_pressure_warned:
+                            self._context_pressure_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
                     if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):

@@ -5338,39 +5338,45 @@ class GatewayRunner:
                     "model": _resolved_model,
                 }
             
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
-            #
-            # Uses path-based deduplication against _history_media_paths (collected
-            # before run_conversation) instead of index slicing. This is safe even
-            # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
+            # Scan tool results for MEDIA:<path> tags — always collect from tool
+            # results even if the model generated a placeholder like
+            # MEDIA:<screenshot_path>.  Deduplicate against valid paths already
+            # in the final response.
+            media_tags = []
+            has_voice_directive = False
+            for msg in result.get("messages", []):
+                if msg.get("role") in ("tool", "function"):
+                    content = msg.get("content", "")
+                    if "MEDIA:" in content:
+                        for match in re.finditer(r'MEDIA:(\S+)', content):
+                            path = match.group(1).strip().rstrip('",}')
+                            if path and path not in _history_media_paths:
+                                media_tags.append(f"MEDIA:{path}")
+                        if "[[audio_as_voice]]" in content:
+                            has_voice_directive = True
+
+            # Collect valid MEDIA: paths already in final_response to avoid dupes.
+            existing_valid = set()
+            for _m in re.finditer(r'MEDIA:(\S+)', final_response):
+                _p = _m.group(1).strip().rstrip('",}')
+                if _p and os.path.isfile(_p):
+                    existing_valid.add(_p)
+
+            if media_tags:
+                seen = set()
+                unique_tags = []
+                for tag in media_tags:
+                    path = tag.split("MEDIA:", 1)[1]
+                    if path not in seen and path not in existing_valid:
+                        seen.add(path)
+                        unique_tags.append(tag)
+                if has_voice_directive:
+                    unique_tags.insert(0, "[[audio_as_voice]]")
+                if unique_tags:
+                    # Strip placeholder MEDIA:<...> references from model text
+                    final_response = re.sub(
+                        r'MEDIA:\s*<[^>]+>', '', final_response
+                    ).strip()
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Sync session_id: the agent may have created a new session during

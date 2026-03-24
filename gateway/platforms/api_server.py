@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 
 try:
     from aiohttp import web
+
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
@@ -52,6 +53,76 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _resolve_media_to_data_urls(text):
+    "Replace MEDIA:<path> and inline screenshot paths with base64 images."
+    import base64, re, os
+    from pathlib import Path
+
+    try:
+        from hermes_cli.config import get_hermes_home
+
+        _screenshots_dir = get_hermes_home() / "browser_screenshots"
+    except Exception:
+        _screenshots_dir = Path.home() / ".hermes" / "browser_screenshots"
+
+    _IMG_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+    _MIME = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".svg": "image/svg+xml",
+    }
+    _strip_chars = chr(96) + chr(39) + chr(34)
+
+    def _to_b64(path_str):
+        p = Path(path_str.strip().strip(_strip_chars))
+        if not p.is_absolute():
+            p = _screenshots_dir / path_str.strip().strip(_strip_chars)
+        if p.suffix.lower() not in _IMG_EXT or not p.is_file():
+            return None
+        try:
+            b64 = base64.b64encode(p.read_bytes()).decode()
+            mime = _MIME.get(p.suffix.lower(), "image/png")
+            return "![screenshot](data:" + mime + ";base64," + b64 + ")"
+        except Exception:
+            return None
+
+    # Step 1: Replace MEDIA:<path> tags
+    _bt = chr(96)
+    _dq = chr(34)
+    _sq = chr(39)
+    _bs = chr(92)
+    _q_any = "[" + _bt + _dq + _sq + "]?"
+    _backtick_p = _bt + "[^" + _bt + _bs + "n]+" + _bt
+    _dquote_p = _dq + "[^" + _dq + _bs + "n]+" + _dq
+    _squote_p = _sq + "[^" + _sq + _bs + "n]+" + _sq
+    _plain_p = _bs + "S+"
+    _path_grp = (
+        "(" + _backtick_p + "|" + _dquote_p + "|" + _squote_p + "|" + _plain_p + ")"
+    )
+    _media_pat = re.compile(_q_any + "MEDIA:" + _bs + "s*" + _path_grp + _q_any)
+
+    def _media_repl(m):
+        result = _to_b64(m.group(1))
+        return result if result else m.group(0)
+
+    text = _media_pat.sub(_media_repl, text)
+
+    # Step 2: Replace inline backtick-wrapped absolute paths to screenshot files
+    _inline_pat = re.compile(_bt + "(/[^" + _bt + _bs + "n]+)" + _bt)
+
+    def _inline_repl(m):
+        result = _to_b64(m.group(1))
+        return result if result else m.group(0)
+
+    text = _inline_pat.sub(_inline_repl, text)
+
+    return text
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -69,6 +140,7 @@ class ResponseStore:
         if db_path is None:
             try:
                 from hermes_cli.config import get_hermes_home
+
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
@@ -100,6 +172,7 @@ class ResponseStore:
         if row is None:
             return None
         import time
+
         self._conn.execute(
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
             (time.time(), response_id),
@@ -110,6 +183,7 @@ class ResponseStore:
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
         import time
+
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
@@ -170,6 +244,7 @@ _CORS_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
@@ -206,7 +281,9 @@ class APIServerAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
-        self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
+        self._port: int = int(
+            extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT)))
+        )
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
@@ -280,7 +357,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 return None  # Auth OK
 
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {
+                "error": {
+                    "message": "Invalid API key",
+                    "type": "invalid_request_error",
+                    "code": "invalid_api_key",
+                }
+            },
             status=401,
         )
 
@@ -293,6 +376,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        tool_progress_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -318,6 +402,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            tool_progress_callback=tool_progress_callback,
         )
         return agent
 
@@ -335,20 +420,22 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
-            "object": "list",
-            "data": [
-                {
-                    "id": "hermes-agent",
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": "hermes-agent",
-                    "parent": None,
-                }
-            ],
-        })
+        return web.json_response(
+            {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "hermes-agent",
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "hermes",
+                        "permission": [],
+                        "root": "hermes-agent",
+                        "parent": None,
+                    }
+                ],
+            }
+        )
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -361,18 +448,31 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(
-                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Invalid JSON in request body",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return web.json_response(
-                {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Missing or invalid 'messages' field",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
-        stream = body.get("stream", False)
+# Force non-streaming for all requests — Open WebUI drops SSE
+        # connections during long tool executions.  Non-streaming returns
+        # the full response (including base64 images) reliably.
+        stream = False  # was: body.get("stream", False)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -399,7 +499,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if not user_message:
             return web.json_response(
-                {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "No user message found in messages",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -410,19 +515,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if stream:
             import queue as _q
+
             _stream_q: _q.Queue = _q.Queue()
 
             def _on_delta(delta):
                 _stream_q.put(delta)
 
+            def _on_tool_progress(tool_name, preview, args=None):
+                display = preview if preview else tool_name
+                if tool_name == "_thinking":
+                    _stream_q.put(f"\n\n*{display}*")
+                else:
+                    _stream_q.put(f"\n\n\U0001f527 **{tool_name}**: {display}")
+
             # Start agent in background
-            agent_task = asyncio.ensure_future(self._run_agent(
-                user_message=user_message,
-                conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
-                session_id=session_id,
-                stream_delta_callback=_on_delta,
-            ))
+            agent_task = asyncio.ensure_future(
+                self._run_agent(
+                    user_message=user_message,
+                    conversation_history=history,
+                    ephemeral_system_prompt=system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_on_delta,
+                    tool_progress_callback=_on_tool_progress,
+                )
+            )
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q, agent_task
@@ -437,15 +553,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
             )
         except Exception as e:
-            logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+            logger.error(
+                "Error running agent for chat completions: %s", e, exc_info=True
+            )
             return web.json_response(
-                {"error": {"message": f"Internal server error: {e}", "type": "server_error"}},
+                {
+                    "error": {
+                        "message": f"Internal server error: {e}",
+                        "type": "server_error",
+                    }
+                },
                 status=500,
             )
 
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
+        final_response = _resolve_media_to_data_urls(final_response)
 
         response_data = {
             "id": completion_id,
@@ -472,8 +596,13 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(response_data)
 
     async def _write_sse_chat_completion(
-        self, request: "web.Request", completion_id: str, model: str,
-        created: int, stream_q, agent_task,
+        self,
+        request: "web.Request",
+        completion_id: str,
+        model: str,
+        created: int,
+        stream_q,
+        agent_task,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue."""
         import queue as _q
@@ -486,58 +615,151 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Role chunk
         role_chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+            ],
         }
         await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
 
-        # Stream content chunks as they arrive from the agent
+        # Send empty delta immediately so the client knows the stream is alive
+        # (Open WebUI drops idle SSE connections after a few seconds).
+        await response.write(
+            f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {'content': ''}, 'finish_reason': None}]})}\n\n".encode()
+        )
+
+        # Stream content chunks.  None sentinels mark segment boundaries
+        # (text <-> tool calls) — skip them so tool progress and post-tool
+        # content still reach the client.
+        # Stream content chunks.  Buffer text so MEDIA:<path> tags that
+        # are split across tokens can be reassembled and converted to
+        # base64 before sending to the client.
+        _buf = ""
+        _last_send = time.time()
+
+        async def _flush_buf():
+            nonlocal _buf, _last_send
+            if _buf:
+                converted = _resolve_media_to_data_urls(_buf)
+                _buf = ""
+                if converted:
+                    content_chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": converted},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    await response.write(
+                        f"data: {json.dumps(content_chunk)}\n\n".encode()
+                    )
+                    _last_send = time.time()
+
         loop = asyncio.get_event_loop()
+        while not agent_task.done():
+            try:
+                delta = await loop.run_in_executor(
+                    None, lambda: stream_q.get(timeout=1.0)
+                )
+            except _q.Empty:
+                await _flush_buf()
+                # Send a space heartbeat every 10s to keep SSE connections alive
+                # (OpenWebUI drops connections that are idle too long).
+                if time.time() - _last_send > 10:
+                    _heartbeat = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": ""},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    await response.write(f"data: {json.dumps(_heartbeat)}\n\n".encode())
+                    _last_send = time.time()
+                continue
+            if delta is None:
+                await _flush_buf()
+                continue
+            _buf += delta
+            if (
+                _buf.endswith("\n")
+                or _buf.endswith(". ")
+                or _buf.endswith(".*")
+                or len(_buf) > 2000
+            ):
+                await _flush_buf()
+
+        # Drain remaining items after agent finishes
         while True:
             try:
-                delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                delta = stream_q.get_nowait()
             except _q.Empty:
-                if agent_task.done():
-                    # Drain any remaining items
-                    while True:
-                        try:
-                            delta = stream_q.get_nowait()
-                            if delta is None:
-                                break
-                            content_chunk = {
-                                "id": completion_id, "object": "chat.completion.chunk",
-                                "created": created, "model": model,
-                                "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-                            }
-                            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
-                        except _q.Empty:
-                            break
-                    break
-                continue
-
-            if delta is None:  # End of stream sentinel
                 break
-
-            content_chunk = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-            }
-            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+            if delta is None:
+                await _flush_buf()
+                continue
+            _buf += delta
+        await _flush_buf()
 
         # Get usage from completed agent
         usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         try:
             result, agent_usage = await agent_task
             usage = agent_usage or usage
-        except Exception:
-            pass
+            logger.info(
+                "SSE: agent_task done, final_response length: %d",
+                len(result.get("final_response", "")),
+            )
+            # The gateway appends MEDIA: tags to final_response AFTER
+            # run_conversation() returns.  These weren't streamed via the
+            # callback, so send them now (converted to base64).
+            _final = result.get("final_response", "")
+            if _final:
+                _converted = _resolve_media_to_data_urls(_final)
+                logger.info(
+                    "SSE: sending final_response (%d chars, converted %d chars)",
+                    len(_final),
+                    len(_converted),
+                )
+                if _converted:
+                    _chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": _converted},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                    await response.write(f"data: {json.dumps(_chunk)}\n\n".encode())
+                    logger.info("SSE: final_response chunk sent")
+        except Exception as e:
+            logger.error("SSE: error getting final_response: %s", e, exc_info=True)
 
         # Finish chunk
         finish_chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             "usage": {
                 "prompt_tokens": usage.get("input_tokens", 0),
@@ -561,14 +783,24 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(
-                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Invalid JSON in request body",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(
-                {"error": {"message": "Missing 'input' field", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Missing 'input' field",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -580,7 +812,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
             return web.json_response(
-                {"error": {"message": "Cannot use both 'conversation' and 'previous_response_id'", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "Cannot use both 'conversation' and 'previous_response_id'",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -604,9 +841,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     if isinstance(content, list):
                         text_parts = []
                         for part in content:
-                            if isinstance(part, dict) and part.get("type") == "input_text":
+                            if (
+                                isinstance(part, dict)
+                                and part.get("type") == "input_text"
+                            ):
                                 text_parts.append(part.get("text", ""))
-                            elif isinstance(part, dict) and part.get("type") == "output_text":
+                            elif (
+                                isinstance(part, dict)
+                                and part.get("type") == "output_text"
+                            ):
                                 text_parts.append(part.get("text", ""))
                             elif isinstance(part, str):
                                 text_parts.append(part)
@@ -614,7 +857,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(
-                {"error": {"message": "'input' must be a string or array", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "'input' must be a string or array",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -624,7 +872,12 @@ class APIServerAdapter(BasePlatformAdapter):
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(
-                    {"error": {"message": f"Previous response not found: {previous_response_id}", "type": "invalid_request_error"}},
+                    {
+                        "error": {
+                            "message": f"Previous response not found: {previous_response_id}",
+                            "type": "invalid_request_error",
+                        }
+                    },
                     status=404,
                 )
             conversation_history = list(stored.get("conversation_history", []))
@@ -640,7 +893,12 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message = input_messages[-1].get("content", "") if input_messages else ""
         if not user_message:
             return web.json_response(
-                {"error": {"message": "No user message found in input", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": "No user message found in input",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=400,
             )
 
@@ -660,7 +918,12 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("Error running agent for responses: %s", e, exc_info=True)
             return web.json_response(
-                {"error": {"message": f"Internal server error: {e}", "type": "server_error"}},
+                {
+                    "error": {
+                        "message": f"Internal server error: {e}",
+                        "type": "server_error",
+                    }
+                },
                 status=500,
             )
 
@@ -701,11 +964,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
-            self._response_store.put(response_id, {
-                "response": response_data,
-                "conversation_history": full_history,
-                "instructions": instructions,
-            })
+            self._response_store.put(
+                response_id,
+                {
+                    "response": response_data,
+                    "conversation_history": full_history,
+                    "instructions": instructions,
+                },
+            )
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
@@ -727,7 +993,12 @@ class APIServerAdapter(BasePlatformAdapter):
         stored = self._response_store.get(response_id)
         if stored is None:
             return web.json_response(
-                {"error": {"message": f"Response not found: {response_id}", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": f"Response not found: {response_id}",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=404,
             )
 
@@ -743,15 +1014,22 @@ class APIServerAdapter(BasePlatformAdapter):
         deleted = self._response_store.delete(response_id)
         if not deleted:
             return web.json_response(
-                {"error": {"message": f"Response not found: {response_id}", "type": "invalid_request_error"}},
+                {
+                    "error": {
+                        "message": f"Response not found: {response_id}",
+                        "type": "invalid_request_error",
+                    }
+                },
                 status=404,
             )
 
-        return web.json_response({
-            "id": response_id,
-            "object": "response",
-            "deleted": True,
-        })
+        return web.json_response(
+            {
+                "id": response_id,
+                "object": "response",
+                "deleted": True,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Cron jobs API
@@ -770,13 +1048,23 @@ class APIServerAdapter(BasePlatformAdapter):
             resume_job as _cron_resume,
             trigger_job as _cron_trigger,
         )
+
         _CRON_AVAILABLE = True
     except ImportError:
         pass
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name",
+        "schedule",
+        "prompt",
+        "deliver",
+        "skills",
+        "skill",
+        "repeat",
+        "enabled",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -784,7 +1072,8 @@ class APIServerAdapter(BasePlatformAdapter):
         """Return error response if cron module isn't available."""
         if not self._CRON_AVAILABLE:
             return web.json_response(
-                {"error": "Cron module not available"}, status=501,
+                {"error": "Cron module not available"},
+                status=501,
             )
         return None
 
@@ -793,7 +1082,8 @@ class APIServerAdapter(BasePlatformAdapter):
         job_id = request.match_info["job_id"]
         if not self._JOB_ID_RE.fullmatch(job_id):
             return job_id, web.json_response(
-                {"error": "Invalid job ID format"}, status=400,
+                {"error": "Invalid job ID format"},
+                status=400,
             )
         return job_id, None
 
@@ -806,7 +1096,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if cron_err:
             return cron_err
         try:
-            include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
+            include_disabled = request.query.get("include_disabled", "").lower() in (
+                "true",
+                "1",
+            )
             jobs = self._cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
@@ -833,16 +1126,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Name is required"}, status=400)
             if len(name) > self._MAX_NAME_LENGTH:
                 return web.json_response(
-                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
+                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"},
+                    status=400,
                 )
             if not schedule:
                 return web.json_response({"error": "Schedule is required"}, status=400)
             if len(prompt) > self._MAX_PROMPT_LENGTH:
                 return web.json_response(
-                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"},
+                    status=400,
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
-                return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+                return web.json_response(
+                    {"error": "Repeat must be a positive integer"}, status=400
+                )
 
             kwargs = {
                 "prompt": prompt,
@@ -893,17 +1190,26 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
             # Whitelist allowed fields to prevent arbitrary key injection
-            sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
+            sanitized = {
+                k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS
+            }
             if not sanitized:
-                return web.json_response({"error": "No valid fields to update"}, status=400)
+                return web.json_response(
+                    {"error": "No valid fields to update"}, status=400
+                )
             # Validate lengths if present
             if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
                 return web.json_response(
-                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
+                    {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"},
+                    status=400,
                 )
-            if "prompt" in sanitized and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH:
+            if (
+                "prompt" in sanitized
+                and len(sanitized["prompt"]) > self._MAX_PROMPT_LENGTH
+            ):
                 return web.json_response(
-                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
+                    {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"},
+                    status=400,
                 )
             job = self._cron_update(job_id, sanitized)
             if not job:
@@ -1010,34 +1316,40 @@ class APIServerAdapter(BasePlatformAdapter):
             if role == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})
-                    items.append({
-                        "type": "function_call",
-                        "name": func.get("name", ""),
-                        "arguments": func.get("arguments", ""),
-                        "call_id": tc.get("id", ""),
-                    })
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "name": func.get("name", ""),
+                            "arguments": func.get("arguments", ""),
+                            "call_id": tc.get("id", ""),
+                        }
+                    )
             elif role == "tool":
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": msg.get("tool_call_id", ""),
-                    "output": msg.get("content", ""),
-                })
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": msg.get("tool_call_id", ""),
+                        "output": msg.get("content", ""),
+                    }
+                )
 
         # Final assistant message
         final = result.get("final_response", "")
         if not final:
             final = result.get("error", "(No response generated)")
 
-        items.append({
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": final,
-                }
-            ],
-        })
+        items.append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": final,
+                    }
+                ],
+            }
+        )
         return items
 
     # ------------------------------------------------------------------
@@ -1051,6 +1363,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        tool_progress_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1065,6 +1378,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                tool_progress_callback=tool_progress_callback,
             )
             result = agent.run_conversation(
                 user_message=user_message,
@@ -1094,18 +1408,28 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
-            self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            self._app.router.add_post(
+                "/v1/chat/completions", self._handle_chat_completions
+            )
             self._app.router.add_post("/v1/responses", self._handle_responses)
-            self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
-            self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_get(
+                "/v1/responses/{response_id}", self._handle_get_response
+            )
+            self._app.router.add_delete(
+                "/v1/responses/{response_id}", self._handle_delete_response
+            )
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
             self._app.router.add_get("/api/jobs/{job_id}", self._handle_get_job)
             self._app.router.add_patch("/api/jobs/{job_id}", self._handle_update_job)
             self._app.router.add_delete("/api/jobs/{job_id}", self._handle_delete_job)
-            self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
-            self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
+            self._app.router.add_post(
+                "/api/jobs/{job_id}/pause", self._handle_pause_job
+            )
+            self._app.router.add_post(
+                "/api/jobs/{job_id}/resume", self._handle_resume_job
+            )
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
 
             self._runner = web.AppRunner(self._app)
@@ -1116,7 +1440,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._mark_connected()
             logger.info(
                 "[%s] API server listening on http://%s:%d",
-                self.name, self._host, self._port,
+                self.name,
+                self._host,
+                self._port,
             )
             return True
 
@@ -1146,7 +1472,9 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         Not used — HTTP request/response cycle handles delivery directly.
         """
-        return SendResult(success=False, error="API server uses HTTP request/response, not send()")
+        return SendResult(
+            success=False, error="API server uses HTTP request/response, not send()"
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""

@@ -1594,7 +1594,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Include annotation data if annotated screenshot was taken
         if annotate and result.get("data", {}).get("annotations"):
             response_data["annotations"] = result["data"]["annotations"]
-        return json.dumps(response_data, ensure_ascii=False)
+        return f"{json.dumps(response_data, ensure_ascii=False)}\nMEDIA:{screenshot_path}"
     
     except Exception as e:
         # Keep the screenshot if it was captured successfully — the failure is
@@ -1606,7 +1606,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         if screenshot_path.exists():
             error_info["screenshot_path"] = str(screenshot_path)
             error_info["note"] = "Screenshot was captured but vision analysis failed. You can still share it via MEDIA:<path>."
-        return json.dumps(error_info, ensure_ascii=False)
+        error_result = json.dumps(error_info, ensure_ascii=False)
+        if screenshot_path.exists():
+            return f"{error_result}\nMEDIA:{screenshot_path}"
+        return error_result
 
 
 def _cleanup_old_screenshots(screenshots_dir, max_age_hours=24):

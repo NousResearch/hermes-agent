@@ -657,10 +657,6 @@ def format_context_pressure(
     The bar and percentage show progress toward the compaction threshold,
     NOT the raw context window.  100% = compaction fires.
 
-    Uses ANSI colors:
-      - cyan at ~60% to compaction = informational
-      - bold yellow at ~85% to compaction = warning
-
     Args:
         compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
         threshold_tokens: Compaction threshold in tokens.
@@ -674,18 +670,12 @@ def format_context_pressure(
     threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
     threshold_pct_int = int(threshold_percent * 100)
 
-    # Tier styling
-    if compaction_progress >= 0.85:
-        color = f"{_BOLD}{_YELLOW}"
-        icon = "⚠"
-        if compression_enabled:
-            hint = "compaction imminent"
-        else:
-            hint = "no auto-compaction"
+    color = f"{_BOLD}{_YELLOW}"
+    icon = "⚠"
+    if compression_enabled:
+        hint = "compaction approaching"
     else:
-        color = _CYAN
-        icon = "◐"
-        hint = "approaching compaction"
+        hint = "no auto-compaction"
 
     return (
         f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
@@ -709,14 +699,10 @@ def format_context_pressure_gateway(
 
     threshold_pct_int = int(threshold_percent * 100)
 
-    if compaction_progress >= 0.85:
-        icon = "⚠️"
-        if compression_enabled:
-            hint = f"Context compaction is imminent (threshold: {threshold_pct_int}% of window)."
-        else:
-            hint = "Auto-compaction is disabled — context may be truncated."
+    icon = "⚠️"
+    if compression_enabled:
+        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
     else:
-        icon = "ℹ️"
-        hint = f"Compaction threshold is at {threshold_pct_int}% of context window."
+        hint = "Auto-compaction is disabled — context may be truncated."
 
     return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

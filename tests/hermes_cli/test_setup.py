@@ -34,7 +34,7 @@ def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            return 0
+            return 1  # Nous Portal
         if question == "Configure vision:":
             return len(choices) - 1
         if question == "Select default model:":
@@ -135,7 +135,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            return 1
+            return 2  # OpenAI Codex
         if question == "Select default model:":
             return 0
         tts_idx = _maybe_keep_current_tts(question, choices)

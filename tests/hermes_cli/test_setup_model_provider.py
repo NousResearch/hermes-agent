@@ -401,7 +401,7 @@ def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            return 1
+            return 2  # OpenAI Codex
         if question == "Select default model:":
             return 0
         tts_idx = _maybe_keep_current_tts(question, choices)

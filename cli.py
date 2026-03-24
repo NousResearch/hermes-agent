@@ -1500,7 +1500,27 @@ class HermesCLI:
 
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
+        import re
+        import textwrap
+
         preview_text = reasoning_text.strip()
+        if not preview_text:
+            return
+
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+        prefix = "  [thinking] "
+        wrap_width = max(30, term_width - len(prefix) - 2)
+
+        paragraphs = []
+        raw_paragraphs = re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n"))
+        for paragraph in raw_paragraphs:
+            compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
+            if compact:
+                paragraphs.append(textwrap.fill(compact, width=wrap_width))
+        preview_text = "\n".join(paragraphs)
         if not preview_text:
             return
 
@@ -1527,6 +1547,12 @@ class HermesCLI:
         if not buf:
             return
 
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+        target_width = max(40, term_width - len("  [thinking] ") - 4)
+
         flush_text = ""
 
         if force:
@@ -1534,12 +1560,20 @@ class HermesCLI:
             buf = ""
         else:
             line_break = buf.rfind("\n")
-            if line_break != -1:
+            min_newline_flush = max(16, target_width // 3)
+            if line_break != -1 and (
+                line_break >= min_newline_flush
+                or buf.endswith("\n\n")
+                or buf.endswith(".\n")
+                or buf.endswith("!\n")
+                or buf.endswith("?\n")
+                or buf.endswith(":\n")
+            ):
                 flush_text = buf[: line_break + 1]
                 buf = buf[line_break + 1 :]
-            elif len(buf) >= 80:
-                search_start = 40
-                search_end = min(len(buf), 120)
+            elif len(buf) >= target_width:
+                search_start = max(20, target_width // 2)
+                search_end = min(len(buf), max(target_width + (target_width // 3), target_width + 8))
                 cut = -1
                 for boundary in (" ", "\t", ".", "!", "?", ",", ";", ":"):
                     cut = max(cut, buf.rfind(boundary, search_start, search_end))

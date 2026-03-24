@@ -11,6 +11,7 @@ Combines functionality from:
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import re
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +340,30 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         self.assertEqual(mock_cprint.call_count, 1)
         rendered = mock_cprint.call_args[0][0]
         self.assertIn("[thinking] see how this plays out", rendered)
+
+    @patch("cli._cprint")
+    @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=50))
+    def test_reasoning_preview_compacts_newlines_and_wraps_to_terminal(self, _mock_term, mock_cprint):
+        cli = self._make_cli()
+
+        cli._emit_reasoning_preview(
+            "First line\nstill same thought\n\n\nSecond paragraph with more detail here."
+        )
+
+        rendered = mock_cprint.call_args[0][0]
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+        normalized = " ".join(plain.split())
+        self.assertIn("[thinking] First line still same thought", plain)
+        self.assertIn("Second paragraph with more detail here.", normalized)
+        self.assertNotIn("\n\n\n", plain)
+
+    @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=60))
+    def test_reasoning_flush_threshold_tracks_terminal_width(self, _mock_term):
+        cli = self._make_cli()
+
+        cli._reasoning_preview_buf = "a" * 30
+        cli._flush_reasoning_preview(force=False)
+        self.assertEqual(cli._reasoning_preview_buf, "a" * 30)
 
 
 class TestReasoningDisplayModeSelection(unittest.TestCase):

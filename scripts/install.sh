@@ -721,8 +721,11 @@ install_deps() {
     # Install submodules
     log_info "Installing mini-swe-agent (terminal tool backend)..."
     if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
-        $UV_CMD pip install -e "./mini-swe-agent" || log_warn "mini-swe-agent install failed (terminal tools may not work)"
-        log_success "mini-swe-agent installed"
+        if $UV_CMD pip install -e "./mini-swe-agent"; then
+            log_success "mini-swe-agent installed"
+        else
+            log_warn "mini-swe-agent install failed (Docker/Modal terminal backends may not work, local terminal is unaffected)"
+        fi
     else
         log_warn "mini-swe-agent not found (run: git submodule update --init)"
     fi

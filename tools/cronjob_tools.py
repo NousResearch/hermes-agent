@@ -138,7 +138,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _check_cron_ticker_warning() -> str:
+def _check_cron_ticker_warning() -> "str | None":
     """Return a warning if the cron ticker is not running (gateway not active).
 
     Cron jobs only fire automatically when the gateway is running.

@@ -963,6 +963,7 @@ def terminal_tool(
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
                                 "docker_volumes": config.get("docker_volumes", []),
+                                "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                             }
 

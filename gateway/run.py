@@ -2851,6 +2851,56 @@ class GatewayRunner:
             lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
             return "\n".join(lines)
 
+        # Handle bare "/model custom" — switch to custom provider
+        # and auto-detect the model from the endpoint.
+        if args.strip().lower() == "custom":
+            from hermes_cli.runtime_provider import (
+                resolve_runtime_provider as _rtp_custom,
+                _auto_detect_local_model,
+            )
+            try:
+                runtime = _rtp_custom(requested="custom")
+                cust_base = runtime.get("base_url", "")
+                if not cust_base or "openrouter.ai" in cust_base:
+                    return (
+                        "⚠️ No custom endpoint configured.\n"
+                        "Set `model.base_url` in config.yaml, or `OPENAI_BASE_URL` in .env,\n"
+                        "or run: `hermes setup` → Custom OpenAI-compatible endpoint"
+                    )
+                detected_model = _auto_detect_local_model(cust_base)
+                if detected_model:
+                    try:
+                        user_config = {}
+                        if config_path.exists():
+                            with open(config_path, encoding="utf-8") as f:
+                                user_config = yaml.safe_load(f) or {}
+                        if "model" not in user_config or not isinstance(user_config["model"], dict):
+                            user_config["model"] = {}
+                        user_config["model"]["default"] = detected_model
+                        user_config["model"]["provider"] = "custom"
+                        user_config["model"]["base_url"] = cust_base
+                        with open(config_path, 'w', encoding="utf-8") as f:
+                            yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                    except Exception as e:
+                        return f"⚠️ Failed to save model change: {e}"
+                    os.environ["HERMES_MODEL"] = detected_model
+                    os.environ["HERMES_INFERENCE_PROVIDER"] = "custom"
+                    self._effective_model = None
+                    self._effective_provider = None
+                    return (
+                        f"🤖 Model changed to `{detected_model}` (saved to config)\n"
+                        f"**Provider:** Custom\n"
+                        f"**Endpoint:** `{cust_base}`\n"
+                        f"_Model auto-detected from endpoint. Takes effect on next message._"
+                    )
+                else:
+                    return (
+                        f"⚠️ Custom endpoint at `{cust_base}` is reachable but no single model was auto-detected.\n"
+                        f"Specify the model explicitly: `/model custom:<model-name>`"
+                    )
+            except Exception as e:
+                return f"⚠️ Could not resolve custom endpoint: {e}"
+
         # Parse provider:model syntax
         target_provider, new_model = parse_model_input(args, current_provider)
 
@@ -2925,6 +2975,13 @@ class GatewayRunner:
                 user_config["model"]["default"] = new_model
                 if provider_changed:
                     user_config["model"]["provider"] = target_provider
+                    # Persist base_url for custom endpoints so it survives
+                    # restart; clear it when switching away from custom to
+                    # prevent stale URLs leaking (#2562 Phase 2).
+                    if base_url and "openrouter.ai" not in (base_url or ""):
+                        user_config["model"]["base_url"] = base_url
+                    else:
+                        user_config["model"].pop("base_url", None)
                 with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
@@ -2950,15 +3007,20 @@ class GatewayRunner:
         self._effective_model = None
         self._effective_provider = None
 
-        # Helpful hint when staying on a custom/local endpoint
+        # Show endpoint info for custom providers
+        _target_is_custom = target_provider == "custom" or (
+            base_url and "openrouter.ai" not in (base_url or "")
+            and ("localhost" in (base_url or "") or "127.0.0.1" in (base_url or ""))
+        )
         custom_hint = ""
-        if is_custom and not provider_changed:
-            endpoint = _resolved_base or "custom endpoint"
-            custom_hint = (
-                f"\n**Endpoint:** `{endpoint}`"
-                "\n_To switch providers, use_ `/model provider:model`"
-                "\n_e.g._ `/model openrouter:anthropic/claude-sonnet-4`"
-            )
+        if _target_is_custom or (is_custom and not provider_changed):
+            endpoint = base_url or _resolved_base or "custom endpoint"
+            custom_hint = f"\n**Endpoint:** `{endpoint}`"
+            if not provider_changed:
+                custom_hint += (
+                    "\n_To switch providers, use_ `/model provider:model`"
+                    "\n_e.g._ `/model openrouter:anthropic/claude-sonnet-4`"
+                )
 
         return f"🤖 Model changed to `{new_model}` ({persist_note}){provider_note}{warning}{custom_hint}\n_(takes effect on next message)_"
 

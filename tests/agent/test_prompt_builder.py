@@ -878,3 +878,32 @@ class TestBuildSkillsSystemPromptConditional:
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
+
+    def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata key present but null should not AttributeError."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "safe-skill"
+        skill_dir.mkdir(parents=True)
+        # YAML `metadata:` with no value parses as {"metadata": None}
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "safe-skill" in result
+
+    def test_null_hermes_under_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata.hermes present but null should not crash."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "nested-null"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: nested-null\ndescription: Null hermes key\nmetadata:\n  hermes:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "nested-null" in result

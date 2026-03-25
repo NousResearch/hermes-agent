@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Agent on Windows — The Full Story</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #f0883e;
+    --accent2: #d2a8ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --blue: #58a6ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Noto Sans, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+  }
+  .container { max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 4rem 0 3rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 3rem;
+  }
+  .hero h1 {
+    font-size: 2.8rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.5rem;
+  }
+  .hero .subtitle {
+    font-size: 1.2rem;
+    color: var(--muted);
+    max-width: 600px;
+    margin: 0 auto;
+  }
+  .hero .version {
+    display: inline-block;
+    margin-top: 1rem;
+    padding: 0.3rem 1rem;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    color: var(--accent);
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+
+  /* Sections */
+  h2 {
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin: 2.5rem 0 1rem;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 1.5rem 0 0.5rem;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 1rem; color: var(--text); }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Cards */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+  }
+  .card .label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+  .card .value {
+    font-size: 1.8rem;
+    font-weight: 800;
+    color: var(--green);
+  }
+  .card .detail {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+  }
+
+  /* Before/After */
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .comparison .before, .comparison .after {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+  }
+  .comparison .before { border-left: 3px solid var(--red); }
+  .comparison .after { border-left: 3px solid var(--green); }
+  .comparison .tag {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+  }
+  .comparison .before .tag { color: var(--red); }
+  .comparison .after .tag { color: var(--green); }
+
+  /* Code blocks */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin: 1rem 0;
+  }
+  code {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.85em;
+    background: var(--surface);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+  }
+
+  /* Fix list */
+  .fix-list { list-style: none; margin: 1rem 0; }
+  .fix-list li {
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .fix-list .icon { font-size: 1.2rem; flex-shrink: 0; margin-top: 0.1rem; }
+  .fix-list .desc strong { color: var(--text); }
+  .fix-list .desc { color: var(--muted); font-size: 0.9rem; }
+
+  /* Timeline */
+  .timeline { margin: 1.5rem 0; }
+  .timeline-item {
+    position: relative;
+    padding-left: 2rem;
+    padding-bottom: 1.5rem;
+    border-left: 2px solid var(--border);
+  }
+  .timeline-item:last-child { border-left-color: transparent; }
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 4px;
+    width: 8px;
+    height: 8px;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+  .timeline-item .phase {
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 0.9rem;
+  }
+  .timeline-item .desc {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+  }
+
+  /* Architecture diagram */
+  .arch-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 1rem 0;
+    color: var(--muted);
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 3rem 0 2rem;
+    border-top: 1px solid var(--border);
+    margin-top: 3rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 640px) {
+    .hero h1 { font-size: 2rem; }
+    .comparison { grid-template-columns: 1fr; }
+    .card-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="hero">
+  <h1>Hermes on Windows</h1>
+  <p class="subtitle">
+    Making an AI agent that was built for Unix actually work on Windows.
+    No compromises, no WSL required.
+  </p>
+  <span class="version">v0.4.0 &middot; March 2026</span>
+</div>
+
+<h2>The Numbers</h2>
+<div class="card-grid">
+  <div class="card">
+    <div class="label">Files Modified</div>
+    <div class="value">44</div>
+    <div class="detail">Across CLI, tools, gateway, agent core</div>
+  </div>
+  <div class="card">
+    <div class="label">Clipboard Speed</div>
+    <div class="value">50,000&times;</div>
+    <div class="detail">0.03ms via ctypes vs 2-15s via PowerShell</div>
+  </div>
+  <div class="card">
+    <div class="label">Tests Passing</div>
+    <div class="value">82 + 28</div>
+    <div class="detail">Clipboard + sandbox, all green</div>
+  </div>
+  <div class="card">
+    <div class="label">CPython Patch</div>
+    <div class="value">10 lines</div>
+    <div class="detail">AF_UNIX on Windows, 3 C files</div>
+  </div>
+</div>
+
+<h2>What Was Broken</h2>
+<p>
+  Hermes Agent was a Linux-first tool. Running it on native Windows meant
+  hitting crash after crash: missing <code>fcntl</code> imports, hardcoded
+  <code>/tmp</code> paths, <code>signal.SIGKILL</code> that doesn't exist,
+  <code>/dev/tty</code> writes that fail, a clipboard that spawned PowerShell
+  for every keystroke, and a code execution sandbox that flat-out refused to
+  work because Python on Windows doesn't have Unix domain sockets.
+</p>
+
+<h2>Clipboard: 50,000x Faster</h2>
+<div class="comparison">
+  <div class="before">
+    <div class="tag">&times; Before</div>
+    <p>Every Ctrl+V spawned a PowerShell process to check the clipboard.
+       Cold start: 2-15 seconds. Image paste felt completely broken.</p>
+    <pre>subprocess.run(["powershell", "-Command",
+  "[Clipboard]::ContainsImage()"])
+# 2,000 - 15,000ms per check</pre>
+  </div>
+  <div class="after">
+    <div class="tag">&check; After</div>
+    <p>Native win32 API via ctypes. Instant clipboard format checks.
+       PowerShell only invoked for actual PNG extraction.</p>
+    <pre>ctypes.windll.user32
+  .IsClipboardFormatAvailable(CF_BITMAP)
+# 0.03ms per check</pre>
+  </div>
+</div>
+
+<h3>What Changed</h3>
+<ul class="fix-list">
+  <li>
+    <span class="icon">&oplus;</span>
+    <div class="desc"><strong>has_clipboard_image()</strong> &mdash; <code>IsClipboardFormatAvailable</code> checks CF_BITMAP, CF_DIB, CF_DIBV5. No subprocess.</div>
+  </li>
+  <li>
+    <span class="icon">&oplus;</span>
+    <div class="desc"><strong>has_clipboard_text()</strong> &mdash; <code>IsClipboardFormatAvailable</code> checks CF_UNICODETEXT, CF_TEXT. No subprocess.</div>
+  </li>
+  <li>
+    <span class="icon">&oplus;</span>
+    <div class="desc"><strong>get_clipboard_text()</strong> &mdash; <code>OpenClipboard / GetClipboardData / GlobalLock / wstring_at</code>. Full native read, zero overhead.</div>
+  </li>
+  <li>
+    <span class="icon">&oplus;</span>
+    <div class="desc"><strong>save_clipboard_image()</strong> &mdash; Gates on instant ctypes check, then PowerShell only for DIB&rarr;PNG conversion.</div>
+  </li>
+</ul>
+
+<h2>Code Execution Sandbox: TCP Fallback</h2>
+<p>
+  The <code>execute_code</code> tool lets the AI write Python scripts that call
+  Hermes tools via RPC. The parent process listens on a socket, the child
+  connects and sends JSON-RPC requests. On Linux, this uses Unix domain sockets.
+  On Windows, <code>socket.AF_UNIX</code> doesn't exist in stock CPython.
+</p>
+
+<div class="comparison">
+  <div class="before">
+    <div class="tag">&times; Before</div>
+    <p>Tool showed red in banner. Hard error: "execute_code is not available
+       on Windows." The entire sandbox was dead.</p>
+  </div>
+  <div class="after">
+    <div class="tag">&check; After</div>
+    <p>Dual-transport RPC: UDS on POSIX, TCP <code>127.0.0.1:0</code> on
+       Windows. Same protocol, different socket type. Works everywhere.</p>
+  </div>
+</div>
+
+<h3>Architecture</h3>
+<div class="arch-box">
+<span style="color: var(--accent)">Parent (Hermes Agent)</span>
+  |
+  |-- _detect_transport()
+  |     Linux/macOS &rarr; AF_UNIX socket at /tmp/hermes_rpc_xxx.sock
+  |     Windows     &rarr; AF_INET socket at 127.0.0.1:{random_port}
+  |
+  |-- HERMES_RPC_SOCKET env var
+  |     UDS: "/tmp/hermes_rpc_abc123.sock"
+  |     TCP: "tcp:127.0.0.1:54321"
+  |
+<span style="color: var(--accent2)">Child (sandbox subprocess)</span>
+  |
+  |-- hermes_tools.py _connect()
+        if addr.startswith("tcp:") &rarr; AF_INET connect
+        else                       &rarr; AF_UNIX connect
+</div>
+
+<h2>The CPython Story</h2>
+<p>
+  We didn't stop at the TCP fallback. We found the upstream CPython PR that
+  adds <code>AF_UNIX</code> to Windows
+  (<a href="https://github.com/python/cpython/pull/137420">#137420</a>) &mdash;
+  open since August 2025, still awaiting review. So we applied the patch
+  ourselves, built CPython 3.13.12 from source on Windows, and verified it
+  works.
+</p>
+<p><strong>Total patch: 10 lines across 3 files.</strong></p>
+<ul class="fix-list">
+  <li>
+    <span class="icon">&sect;</span>
+    <div class="desc"><strong>PC/pyconfig.h.in</strong> &mdash; Detect <code>&lt;afunix.h&gt;</code> header via <code>__has_include</code></div>
+  </li>
+  <li>
+    <span class="icon">&sect;</span>
+    <div class="desc"><strong>Modules/socketmodule.h</strong> &mdash; Include <code>&lt;afunix.h&gt;</code> when <code>HAVE_AFUNIX_H</code> is defined</div>
+  </li>
+  <li>
+    <span class="icon">&sect;</span>
+    <div class="desc"><strong>Modules/socketmodule.c</strong> &mdash; Register <code>AF_UNIX</code> in <code>win_runtime_flags</code> for build 17134+, fix <code>int</code> cast</div>
+  </li>
+</ul>
+<pre>
+# Stock Python 3.13 on Windows:
+>>> hasattr(socket, "AF_UNIX")
+False
+
+# Our build:
+>>> socket.AF_UNIX
+1
+>>> s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+>>> s.close()  # works
+</pre>
+
+<h2>All Windows Fixes</h2>
+<p>Four phases of work, from crash fixes to polish:</p>
+
+<div class="timeline">
+  <div class="timeline-item">
+    <div class="phase">Phase 1 &mdash; Crash Fixes</div>
+    <div class="desc">
+      <code>fcntl</code> &rarr; <code>msvcrt</code> file locking &middot;
+      <code>SIGKILL</code> &rarr; <code>SIGTERM</code> guard &middot;
+      <code>/tmp</code> &rarr; <code>tempfile.gettempdir()</code> &middot;
+      <code>/dev/tty</code> &rarr; <code>CON</code> device
+    </div>
+  </div>
+  <div class="timeline-item">
+    <div class="phase">Phase 2 &mdash; Security</div>
+    <div class="desc">
+      <code>icacls</code> ACL enforcement (chmod is no-op on Windows) &middot;
+      Keyring credential manager &middot;
+      Cross-platform <code>shell_quote()</code> &middot;
+      SMS webhook bound to localhost
+    </div>
+  </div>
+  <div class="timeline-item">
+    <div class="phase">Phase 3 &mdash; Feature Parity</div>
+    <div class="desc">
+      <code>taskkill /F /T</code> for process trees &middot;
+      Windows Task Scheduler gateway &middot;
+      <code>wmic</code> process status queries &middot;
+      Dual-transport sandbox (TCP + UDS)
+    </div>
+  </div>
+  <div class="timeline-item">
+    <div class="phase">Phase 4 &mdash; Polish</div>
+    <div class="desc">
+      Native win32 clipboard via ctypes &middot;
+      WINDOWS.md documentation &middot;
+      Windows CI workflow &middot;
+      37 compat tests + 82 clipboard tests &middot;
+      CPython AF_UNIX build
+    </div>
+  </div>
+</div>
+
+<h2>Install on Windows</h2>
+<pre>
+# PowerShell (one-liner)
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+
+# Or manual
+pip install hermes-agent
+hermes setup
+</pre>
+<p>
+  Requires Windows 10 version 1803+ and Python 3.10+. Native Windows
+  PowerShell, CMD, or Windows Terminal all work. WSL not required.
+</p>
+
+<div class="footer">
+  <p>
+    <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>
+    &middot; Built by <a href="https://carlosian.org">Carlosian</a>
+    &middot; <a href="https://github.com/NousResearch/hermes-agent/pulls">Pull Request</a>
+  </p>
+  <p style="margin-top: 0.5rem;">
+    We also patched CPython itself. The upstream PR has been sitting in review for 8 months.
+    Sometimes you just have to build it yourself.
+  </p>
+</div>
+
+</div>
+</body>
+</html>

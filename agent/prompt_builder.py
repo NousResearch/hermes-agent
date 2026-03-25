@@ -457,6 +457,28 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
+def load_rules() -> Optional[str]:
+    """Load governance rules from HERMES_HOME/rules/ directory.
+
+    Each .md file in the rules directory is loaded and concatenated.
+    Rules supplement SOUL.md with extended traps, quality gates, etc.
+    Returns None if no rules directory or no files found.
+    """
+    rules_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "rules"
+    if not rules_dir.is_dir():
+        return None
+    parts = []
+    for md_file in sorted(rules_dir.glob("*.md")):
+        try:
+            content = md_file.read_text(encoding="utf-8").strip()
+            if content:
+                content = _truncate_content(content, md_file.name)
+                parts.append(content)
+        except Exception as e:
+            logger.debug("Could not read rule %s: %s", md_file, e)
+    return "\n\n".join(parts) if parts else None
+
+
 def _load_hermes_md(cwd_path: Path) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)

@@ -82,7 +82,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, load_rules
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -2266,6 +2266,12 @@ class AIAgent:
             else:
                 _identity = DEFAULT_AGENT_IDENTITY
             prompt_parts = [_identity]
+
+        # Governance rules from ~/.hermes/rules/*.md (extended traps, quality gate)
+        if not self.skip_context_files:
+            _rules_content = load_rules()
+            if _rules_content:
+                prompt_parts.append(_rules_content)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []

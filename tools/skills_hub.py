@@ -404,11 +404,75 @@ class GitHubSource(SkillSource):
         return skills
 
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
-        """Recursively download all text files from a GitHub directory."""
+        """Recursively download all text files from a GitHub directory.
+
+        Uses the Git Trees API first (single call for the entire tree) to
+        avoid per-directory rate limiting that causes silent subdirectory
+        loss.  Falls back to the recursive Contents API when the tree
+        endpoint is unavailable or the response is truncated.
+        """
+        files = self._download_directory_via_tree(repo, path)
+        if files is not None:
+            return files
+        logger.debug("Tree API unavailable for %s/%s, falling back to Contents API", repo, path)
+        return self._download_directory_recursive(repo, path)
+
+    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
+        """Download an entire directory using the Git Trees API (single request)."""
+        path = path.rstrip("/")
+        headers = self.auth.get_headers()
+
+        # Resolve the default branch via the repo endpoint
+        try:
+            repo_url = f"https://api.github.com/repos/{repo}"
+            resp = httpx.get(repo_url, headers=headers, timeout=15, follow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Fetch the full recursive tree (branch name works as tree-ish)
+        try:
+            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
+            resp = httpx.get(
+                tree_url, params={"recursive": "1"},
+                headers=headers, timeout=30, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                return None
+            tree_data = resp.json()
+            if tree_data.get("truncated"):
+                logger.debug("Git tree truncated for %s, falling back to Contents API", repo)
+                return None
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Filter to blobs under our target path and fetch content
+        prefix = f"{path}/"
+        files: Dict[str, str] = {}
+        for item in tree_data.get("tree", []):
+            if item.get("type") != "blob":
+                continue
+            item_path = item.get("path", "")
+            if not item_path.startswith(prefix):
+                continue
+            rel_path = item_path[len(prefix):]
+            content = self._fetch_file_content(repo, item_path)
+            if content is not None:
+                files[rel_path] = content
+            else:
+                logger.debug("Skipped file (fetch failed): %s/%s", repo, item_path)
+
+        return files if files else None
+
+    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
+        """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
             resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
             if resp.status_code != 200:
+                logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
                 return {}
         except httpx.HTTPError:
             return {}
@@ -428,7 +492,9 @@ class GitHubSource(SkillSource):
                     rel_path = name
                     files[rel_path] = content
             elif entry_type == "dir":
-                sub_files = self._download_directory(repo, entry.get("path", ""))
+                sub_files = self._download_directory_recursive(repo, entry.get("path", ""))
+                if not sub_files:
+                    logger.debug("Empty or failed subdirectory: %s/%s", repo, entry.get("path", ""))
                 for sub_name, sub_content in sub_files.items():
                     files[f"{name}/{sub_name}"] = sub_content
 

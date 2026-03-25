@@ -35,7 +35,6 @@ _STRATEGY_SPECS = {
         "works_without_extra_setup": False,
         "public": True,
         "env_template": "HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE",
-        "legacy_env_templates": ["HERMES_SERVICE_EXPOSE_CLOUD77_TEMPLATE"],
     },
     _TAILSCALE_SERVE: {
         "description": "Runs an operator-supplied command template for tailnet-only publishing, e.g. tailscale serve.",
@@ -131,7 +130,6 @@ def _describe_strategies() -> dict[str, Any]:
                 "description": spec["description"],
                 "works_without_extra_setup": spec["works_without_extra_setup"],
                 **({"env_template": spec["env_template"]} if spec.get("env_template") else {}),
-                **({"legacy_env_templates": spec["legacy_env_templates"]} if spec.get("legacy_env_templates") else {}),
             }
             for name, spec in _STRATEGY_SPECS.items()
         ],
@@ -219,10 +217,7 @@ def _resolve_strategy_template(args: dict[str, Any]) -> tuple[str | None, str | 
         return args["command_template"], None
 
     spec = _STRATEGY_SPECS[args["strategy"]]
-    template_names = []
-    if spec.get("env_template"):
-        template_names.append(spec["env_template"])
-    template_names.extend(spec.get("legacy_env_templates", []))
+    template_names = [spec["env_template"]] if spec.get("env_template") else []
 
     for env_name in template_names:
         template = os.getenv(env_name, "").strip()

@@ -99,8 +99,6 @@ Environment variable hooks:
 - `HERMES_SERVICE_EXPOSE_TAILSCALE_SERVE_TEMPLATE`
 - `HERMES_SERVICE_EXPOSE_TAILSCALE_FUNNEL_TEMPLATE`
 
-A legacy alias can still be recognized for compatibility during migration.
-
 ## Inline UX requirement
 
 A single blocking Plannotator tool call is not enough for the best chat UX if Hermes must send the review URL before waiting for completion.

@@ -184,7 +184,7 @@ class TestMcpAdd:
         assert "Must specify" in out
 
     def test_add_http_server_all_tools(self, tmp_path, capsys, monkeypatch):
-        """Add an HTTP server, accept all tools."""
+        """Add an HTTP server, quarantine it, then approve it."""
         fake_tools = [
             FakeTool("create_service", "Deploy from repo"),
             FakeTool("list_services", "List all services"),
@@ -204,18 +204,25 @@ class TestMcpAdd:
 
         cmd_mcp_add(_make_args(name="ink", url="https://mcp.ml.ink/mcp"))
         out = capsys.readouterr().out
-        assert "Saved" in out
-        assert "2/2 tools" in out
+        assert "Quarantined" in out
+        assert "approve ink" in out
 
-        # Verify config written
+        # Verify config is not active until approval
         from hermes_cli.config import load_config
 
         config = load_config()
+        assert "ink" not in config.get("mcp_servers", {})
+
+        from hermes_cli.mcp_config import cmd_mcp_approve
+
+        cmd_mcp_approve(_make_args(name="ink"))
+        config = load_config()
         assert "ink" in config.get("mcp_servers", {})
         assert config["mcp_servers"]["ink"]["url"] == "https://mcp.ml.ink/mcp"
+        assert config["mcp_servers"]["ink"]["enabled"] is False
 
     def test_add_stdio_server(self, tmp_path, capsys, monkeypatch):
-        """Add a stdio server."""
+        """Add a stdio server to quarantine."""
         fake_tools = [FakeTool("search", "Search repos")]
 
         def mock_probe(name, config, **kw):
@@ -235,14 +242,71 @@ class TestMcpAdd:
             args=["@mcp/github"],
         ))
         out = capsys.readouterr().out
-        assert "Saved" in out
+        assert "Quarantined" in out
 
         from hermes_cli.config import load_config
 
         config = load_config()
-        srv = config["mcp_servers"]["github"]
-        assert srv["command"] == "npx"
-        assert srv["args"] == ["@mcp/github"]
+        assert "github" not in config.get("mcp_servers", {})
+
+    def test_approve_missing_quarantine(self, tmp_path, capsys):
+        from hermes_cli.mcp_config import cmd_mcp_approve
+
+        cmd_mcp_approve(_make_args(name="ghost"))
+        out = capsys.readouterr().out
+        assert "No quarantined MCP server" in out
+
+    def test_inspect_and_reject_quarantined_server(self, tmp_path, capsys, monkeypatch):
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add, cmd_mcp_inspect, cmd_mcp_quarantine_list, cmd_mcp_reject
+
+        cmd_mcp_add(_make_args(name="github", command="npx", args=["@mcp/github"]))
+        cmd_mcp_inspect(_make_args(name="github"))
+        out = capsys.readouterr().out
+        assert "Admission Report: github" in out
+
+        cmd_mcp_quarantine_list()
+        out = capsys.readouterr().out
+        assert "github" in out
+        assert "quarantined" in out
+
+        cmd_mcp_reject(_make_args(name="github"))
+        out = capsys.readouterr().out
+        assert "Rejected quarantined MCP server" in out
+
+    def test_audit_revokes_drifted_mcp_config(self, tmp_path, capsys, monkeypatch):
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        inputs = iter([""])  # accept all tools
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import audit_mcp_integrity, cmd_mcp_add, cmd_mcp_approve, _save_mcp_server
+
+        cmd_mcp_add(_make_args(name="github", command="npx", args=["@mcp/github"]))
+        cmd_mcp_approve(_make_args(name="github"))
+
+        _save_mcp_server("github", {"command": "python", "args": ["evil.py"], "enabled": True})
+        messages = audit_mcp_integrity()
+        config = load_config()
+
+        assert any("configuration drift detected" in message for message in messages)
+        assert "github" not in config.get("mcp_servers", {})
 
     def test_add_connection_failure_save_disabled(
         self, tmp_path, capsys, monkeypatch

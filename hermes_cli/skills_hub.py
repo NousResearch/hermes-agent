@@ -311,6 +311,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         quarantine_bundle, install_from_quarantine, HubLockFile,
     )
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from agent.security.admission import quarantine_skill_install
 
     c = console or _console
     ensure_hub_dirs()
@@ -410,18 +411,107 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             shutil.rmtree(q_path, ignore_errors=True)
             return
 
-    # Install
+    if bundle.source != "official":
+        record = quarantine_skill_install(
+            bundle_name=bundle.name,
+            identifier=bundle.identifier,
+            source=bundle.source,
+            trust_level=bundle.trust_level,
+            category=category,
+            bundle_files=bundle.files,
+            metadata=bundle.metadata,
+            scan_result=result,
+            quarantine_path=q_path,
+        )
+        c.print(f"[bold yellow]Quarantined:[/] {bundle.name}")
+        c.print(f"[dim]Inspection report: {record.report_path}[/]")
+        c.print(f"[dim]Approve with: hermes skills approve {bundle.name}[/]\n")
+        return
+
+    # Install official skills directly
     install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
 
+def do_approve(name: str, console: Optional[Console] = None) -> None:
+    """Approve a quarantined third-party skill and install it."""
+    from tools.skills_guard import Finding, ScanResult
+    from tools.skills_hub import SkillBundle, SKILLS_DIR, install_from_quarantine
+    from agent.security.admission import (
+        load_quarantined_skill_install,
+        mark_record_approved,
+        requarantine_skill_directory,
+        revoke_record,
+        verify_approved_record_integrity,
+        verify_record_integrity,
+    )
+
+    c = console or _console
+    try:
+        record, payload = load_quarantined_skill_install(name)
+    except FileNotFoundError:
+        c.print(f"[bold red]Error:[/] No quarantined skill named '{name}'.\n")
+        return
+    except Exception as exc:
+        c.print(f"[bold red]Error:[/] Failed to load quarantine record: {exc}\n")
+        return
+
+    if not verify_record_integrity(record):
+        c.print(f"[bold red]Error:[/] Quarantine integrity check failed for '{name}'.\n")
+        return
+
+    bundle = SkillBundle(
+        name=payload["name"],
+        files=payload["files"],
+        source=payload["source"],
+        identifier=payload["identifier"],
+        trust_level=payload["trust_level"],
+        metadata=payload.get("metadata", {}),
+    )
+    scan_payload = payload["scan_result"]
+    scan_result = ScanResult(
+        skill_name=scan_payload["skill_name"],
+        source=scan_payload["source"],
+        trust_level=scan_payload["trust_level"],
+        verdict=scan_payload["verdict"],
+        findings=[Finding(**finding) for finding in scan_payload.get("findings", [])],
+        scanned_at=scan_payload.get("scanned_at", ""),
+        summary=scan_payload.get("summary", ""),
+    )
+
+    install_dir = install_from_quarantine(
+        Path(record.quarantine_path),
+        bundle.name,
+        payload.get("category", ""),
+        bundle,
+        scan_result,
+    )
+    mark_record_approved(record, approved_path=str(install_dir), integrity_path=install_dir)
+    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    c.print()
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
+    from agent.security.admission import CandidateKind, load_latest_record, read_report
 
     c = console or _console
+
+    if "/" not in identifier:
+        try:
+            record = load_latest_record(CandidateKind.SKILL, identifier)
+            c.print()
+            c.print(Panel(read_report(record), title=f"Admission Report: {record.source.display_name}"))
+            if record.notes:
+                c.print(Panel("\n".join(record.notes), title="Notes", border_style="yellow"))
+            c.print()
+            return
+        except FileNotFoundError:
+            pass
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
@@ -436,7 +526,6 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         c.print(f"[bold red]Error:[/] Could not find '{identifier}' in any source.\n")
         return
 
-    c.print()
     trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(meta.trust_level, "dim")
     trust_label = "official" if meta.source == "official" else meta.trust_level
 
@@ -457,13 +546,60 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         content = bundle.files["SKILL.md"]
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
-        # Show first 50 lines as preview
         lines = content.split("\n")
         preview = "\n".join(lines[:50])
         if len(lines) > 50:
             preview += f"\n\n... ({len(lines) - 50} more lines)"
         c.print(Panel(preview, title="SKILL.md Preview", subtitle="hermes skills install <id> to install"))
 
+    c.print()
+
+
+def do_reject(name: str, console: Optional[Console] = None) -> None:
+    """Reject the latest quarantined skill record."""
+    from agent.security.admission import (
+        AdmissionStatus,
+        CandidateKind,
+        load_latest_record,
+        reject_record,
+    )
+
+    c = console or _console
+    try:
+        record = load_latest_record(
+            CandidateKind.SKILL,
+            name,
+            statuses=(AdmissionStatus.QUARANTINED,),
+        )
+    except FileNotFoundError:
+        c.print(f"[bold red]Error:[/] No quarantined skill named '{name}'.\n")
+        return
+    reject_record(record, note="user rejected candidate")
+    c.print(f"[bold yellow]Rejected:[/] {name}\n")
+
+
+def do_quarantine_list(console: Optional[Console] = None) -> None:
+    """List all skill admission records."""
+    from agent.security.admission import CandidateKind, find_records
+
+    c = console or _console
+    records = find_records(CandidateKind.SKILL)
+    if not records:
+        c.print("[dim]No skill admission records.[/]\n")
+        return
+    table = Table(title="Skill Admission Records")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Status", style="dim")
+    table.add_column("Updated", style="dim")
+    table.add_column("Record ID", style="dim")
+    for record in records:
+        table.add_row(
+            record.source.display_name,
+            str(record.status),
+            record.updated_at.isoformat(timespec="seconds"),
+            record.record_id,
+        )
+    c.print(table)
     c.print()
 
 
@@ -572,6 +708,14 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
     """Re-run security scan on installed hub skills."""
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
+    from agent.security.admission import (
+        admission_record_id,
+        admission_store,
+        CandidateKind,
+        requarantine_skill_directory,
+        revoke_record,
+        verify_approved_record_integrity,
+    )
 
     c = console or _console
     lock = HubLockFile()
@@ -594,6 +738,29 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
         skill_path = SKILLS_DIR / entry["install_path"]
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
+            continue
+
+        record = None
+        try:
+            record = admission_store().load_record(admission_record_id(CandidateKind.SKILL, entry["name"]))
+        except Exception:
+            record = None
+        if record and record.status == "approved" and not verify_approved_record_integrity(record):
+            result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
+            requarantine_skill_directory(
+                name=entry["name"],
+                installed_path=skill_path,
+                identifier=entry.get("identifier", entry["source"]),
+                source=entry["source"],
+                trust_level=entry["trust_level"],
+                category=_derive_category_from_install_path(entry.get("install_path", "")),
+                metadata=entry.get("metadata", {}),
+                scan_result=result,
+                previous_record=record,
+            )
+            revoke_record(record, note="installed skill drifted from approved content")
+            lock.record_uninstall(entry["name"])
+            c.print(f"[yellow]Revoked:[/] {entry['name']} re-quarantined after integrity drift")
             continue
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
@@ -932,6 +1099,12 @@ def skills_command(args) -> None:
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False))
+    elif action == "approve":
+        do_approve(args.name)
+    elif action == "reject":
+        do_reject(args.name)
+    elif action == "quarantine-list":
+        do_quarantine_list()
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -966,7 +1139,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|approve|reject|inspect|quarantine-list|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

@@ -3422,6 +3422,24 @@ For more help on a command:
         help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # admission command
+    # =========================================================================
+    admission_parser = subparsers.add_parser(
+        "admission",
+        help="Audit and list admission-control records",
+        description="Unified admission-control helpers for quarantine, approval, and integrity audit state."
+    )
+    admission_subparsers = admission_parser.add_subparsers(dest="admission_action")
+    admission_subparsers.add_parser("audit", help="Run unified admission integrity audit")
+    admission_subparsers.add_parser("list", help="List all admission records")
+
+    def cmd_admission(args):
+        from hermes_cli.admission import admission_command
+        admission_command(args)
+
+    admission_parser.set_defaults(func=cmd_admission)
     
     # =========================================================================
     # config command
@@ -3513,6 +3531,14 @@ For more help on a command:
     skills_install.add_argument("--category", default="", help="Category folder to install into")
     skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
     skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
+
+    skills_approve = skills_subparsers.add_parser("approve", help="Approve a quarantined third-party skill")
+    skills_approve.add_argument("name", help="Skill name to approve")
+
+    skills_reject = skills_subparsers.add_parser("reject", help="Reject a quarantined third-party skill")
+    skills_reject.add_argument("name", help="Skill name to reject")
+
+    skills_subparsers.add_parser("quarantine-list", help="List skill admission records")
 
     skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")
@@ -3784,6 +3810,17 @@ For more help on a command:
     mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
     mcp_add_p.add_argument("--args", nargs="*", default=[], help="Arguments for stdio command")
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+
+    mcp_approve_p = mcp_sub.add_parser("approve", help="Approve a quarantined MCP server")
+    mcp_approve_p.add_argument("name", help="Server name to approve")
+
+    mcp_inspect_p = mcp_sub.add_parser("inspect", help="Show the admission report for an MCP server")
+    mcp_inspect_p.add_argument("name", help="Server name to inspect")
+
+    mcp_reject_p = mcp_sub.add_parser("reject", help="Reject a quarantined MCP server")
+    mcp_reject_p.add_argument("name", help="Server name to reject")
+
+    mcp_sub.add_parser("quarantine-list", help="List MCP admission records")
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")

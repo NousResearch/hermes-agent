@@ -695,6 +695,32 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", "(60 req/hr rate limit — set in ~/.hermes/.env for better rates)")
 
     # =========================================================================
+    # Check: Admission Control
+    # =========================================================================
+    print()
+    print(color("◆ Admission Control", Colors.CYAN, Colors.BOLD))
+    try:
+        from agent.security.admission import admission_store
+        from hermes_cli.mcp_config import audit_mcp_integrity
+
+        drift_messages = audit_mcp_integrity()
+        records = admission_store().list_records()
+        approved = sum(1 for record in records if record.status == "approved")
+        quarantined = sum(1 for record in records if record.status == "quarantined")
+        revoked = sum(1 for record in records if record.status == "revoked")
+        check_ok(f"Admission records loaded ({len(records)} total)")
+        if approved:
+            check_ok(f"{approved} approved artifact(s)")
+        if quarantined:
+            check_warn(f"{quarantined} quarantined artifact(s)", "(pending approval)")
+        if revoked:
+            check_warn(f"{revoked} revoked artifact(s)", "(integrity or policy issue)")
+        for message in drift_messages:
+            check_warn(message)
+    except Exception as e:
+        check_warn("Admission control checks unavailable", f"({e})")
+
+    # =========================================================================
     # Honcho memory
     # =========================================================================
     print()

@@ -166,6 +166,7 @@ jobs:
 
       - name: Post warning comment
         if: steps.scan.outputs.found == 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

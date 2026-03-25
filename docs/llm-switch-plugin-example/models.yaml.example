@@ -1,0 +1,73 @@
+# Local LLM server configuration for the llm-switch plugin.
+# Copy to models.yaml and edit to match your setup.
+#
+# Supports any OpenAI-compatible server (llama.cpp, vLLM, etc.)
+# The plugin auto-starts/stops the server when you switch models via /model.
+#
+# Usage:
+#   /model custom:write     — starts llama-server with the "write" model
+#   /model custom:code      — swaps to the "code" model
+#   /model anthropic:claude-opus-4.6  — switches to cloud (server stays running)
+#   /model custom:write     — switches back to local
+
+server:
+  binary: llama-server             # Server binary name or absolute path
+  models_dir: ~/llama-models       # Base directory for model files (GGUF, etc.)
+  host: 0.0.0.0                    # Listen address
+  port: 8080                       # Listen port
+  gpu_layers: 99                   # -ngl flag (-1 for all layers)
+  flash_attention: true            # -fa flag (recommended for Ampere+)
+  parallel: 1                      # -np flag (concurrent request slots)
+  jinja: true                      # --jinja flag (enable chat templates)
+
+models:
+  # Each key becomes the model name for /model custom:<key>
+  #
+  # Required fields:
+  #   gguf          — path to model file, relative to server.models_dir
+  #
+  # Optional fields:
+  #   description   — human-readable purpose (shown in status messages)
+  #   context       — context window size in tokens (default: 8192)
+  #   kv_cache      — KV cache quantization: {key: q8_0, value: q4_0}
+  #   sampling      — default sampling params (client can override per-request)
+  #     temp, top_p, top_k, min_p, presence_penalty, repeat_penalty
+  #   alias         — model name reported by /v1/models (default: key name)
+
+  write:
+    description: "SEO articles and content briefs"
+    gguf: qwen3.5-9b/Qwen3.5-9B-UD-Q6_K_XL.gguf
+    context: 49152
+    kv_cache:
+      key: q8_0
+      value: q4_0
+    sampling:
+      temp: 0.7
+      top_p: 0.8
+      top_k: 20
+      presence_penalty: 1.5
+
+  research:
+    description: "Long research with max context"
+    gguf: qwen3.5-9b/Qwen3.5-9B-UD-Q4_K_XL.gguf
+    context: 65536
+    kv_cache:
+      key: q4_0
+      value: q4_0
+    sampling:
+      temp: 0.7
+      top_p: 0.8
+      top_k: 20
+      presence_penalty: 1.5
+
+  code:
+    description: "Agentic coding and tool calling"
+    gguf: omnicoder-9b/omnicoder-9b-q4_k_m.gguf
+    context: 65536
+    kv_cache:
+      key: q4_0
+      value: q4_0
+    sampling:
+      temp: 0.6
+      top_p: 0.95
+      top_k: 20

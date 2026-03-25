@@ -5931,6 +5931,12 @@ class HermesCLI:
         except Exception:
             pass
 
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook("on_session_start", session_id=self.session_id, platform="cli")
+        except Exception:
+            pass
+
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -7146,6 +7152,11 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except Exception as e:
                     logger.debug("Could not close session in DB: %s", e)
+            try:
+                from hermes_cli.plugins import invoke_hook
+                invoke_hook("on_session_end", session_id=self.session_id, platform="cli")
+            except Exception:
+                pass
             _run_cleanup()
             self._print_exit_summary()
 

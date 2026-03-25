@@ -1,0 +1,7 @@
+name: llm-switch
+version: 1.0.0
+description: Auto-manage local LLM servers (llama.cpp, vLLM) when switching models via /model
+author: community
+provides:
+  tools: true
+  hooks: true

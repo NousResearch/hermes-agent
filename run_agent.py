@@ -5779,6 +5779,12 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
+                    try:
+                        from hermes_cli.plugins import invoke_hook
+                        invoke_hook("pre_llm_call", messages=api_messages, model=self.model)
+                    except Exception:
+                        pass
+
                     if self._has_stream_consumers():
                         # Streaming path: fire delta callbacks for real-time
                         # token delivery to CLI display, gateway, or TTS.
@@ -5806,9 +5812,15 @@ class AIAgent:
                     if self.thinking_callback:
                         self.thinking_callback("")
                     
+                    try:
+                        from hermes_cli.plugins import invoke_hook
+                        invoke_hook("post_llm_call", messages=api_messages, response=response, model=self.model)
+                    except Exception:
+                        pass
+
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
-                    
+
                     if self.verbose_logging:
                         # Log response with provider info if available
                         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'

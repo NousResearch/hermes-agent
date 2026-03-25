@@ -11,6 +11,7 @@ Combines functionality from:
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import re
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +294,108 @@ class TestReasoningCallback(unittest.TestCase):
         if reasoning_text and callback:
             callback(reasoning_text)
         # No exception = pass
+
+
+class TestReasoningPreviewBuffering(unittest.TestCase):
+    def _make_cli(self):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.verbose = True
+        cli._spinner_text = ""
+        cli._reasoning_preview_buf = ""
+        cli._invalidate = lambda *args, **kwargs: None
+        return cli
+
+    @patch("cli._cprint")
+    def test_streamed_reasoning_chunks_wait_for_boundary(self, mock_cprint):
+        cli = self._make_cli()
+
+        cli._on_reasoning("Let")
+        cli._on_reasoning(" me")
+        cli._on_reasoning(" think")
+
+        self.assertEqual(mock_cprint.call_count, 0)
+
+        cli._on_reasoning(" about this.\n")
+
+        self.assertEqual(mock_cprint.call_count, 1)
+        rendered = mock_cprint.call_args[0][0]
+        self.assertIn("[thinking] Let me think about this.", rendered)
+
+    @patch("cli._cprint")
+    def test_pending_reasoning_flushes_when_thinking_stops(self, mock_cprint):
+        cli = self._make_cli()
+
+        cli._on_reasoning("see")
+        cli._on_reasoning(" how")
+        cli._on_reasoning(" this")
+        cli._on_reasoning(" plays")
+        cli._on_reasoning(" out")
+
+        self.assertEqual(mock_cprint.call_count, 0)
+
+        cli._on_thinking("")
+
+        self.assertEqual(mock_cprint.call_count, 1)
+        rendered = mock_cprint.call_args[0][0]
+        self.assertIn("[thinking] see how this plays out", rendered)
+
+    @patch("cli._cprint")
+    @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=50))
+    def test_reasoning_preview_compacts_newlines_and_wraps_to_terminal(self, _mock_term, mock_cprint):
+        cli = self._make_cli()
+
+        cli._emit_reasoning_preview(
+            "First line\nstill same thought\n\n\nSecond paragraph with more detail here."
+        )
+
+        rendered = mock_cprint.call_args[0][0]
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+        normalized = " ".join(plain.split())
+        self.assertIn("[thinking] First line still same thought", plain)
+        self.assertIn("Second paragraph with more detail here.", normalized)
+        self.assertNotIn("\n\n\n", plain)
+
+    @patch("cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=60))
+    def test_reasoning_flush_threshold_tracks_terminal_width(self, _mock_term):
+        cli = self._make_cli()
+
+        cli._reasoning_preview_buf = "a" * 30
+        cli._flush_reasoning_preview(force=False)
+        self.assertEqual(cli._reasoning_preview_buf, "a" * 30)
+
+
+class TestReasoningDisplayModeSelection(unittest.TestCase):
+    def _make_cli(self, *, show_reasoning=False, streaming_enabled=False, verbose=False):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.show_reasoning = show_reasoning
+        cli.streaming_enabled = streaming_enabled
+        cli.verbose = verbose
+        cli._stream_reasoning_delta = lambda text: ("stream", text)
+        cli._on_reasoning = lambda text: ("preview", text)
+        return cli
+
+    def test_show_reasoning_non_streaming_uses_final_box_only(self):
+        cli = self._make_cli(show_reasoning=True, streaming_enabled=False, verbose=False)
+
+        self.assertIsNone(cli._current_reasoning_callback())
+
+    def test_show_reasoning_streaming_uses_live_reasoning_box(self):
+        cli = self._make_cli(show_reasoning=True, streaming_enabled=True, verbose=False)
+
+        callback = cli._current_reasoning_callback()
+        self.assertIsNotNone(callback)
+        self.assertEqual(callback("x"), ("stream", "x"))
+
+    def test_verbose_without_show_reasoning_uses_preview_callback(self):
+        cli = self._make_cli(show_reasoning=False, streaming_enabled=False, verbose=True)
+
+        callback = cli._current_reasoning_callback()
+        self.assertIsNotNone(callback)
+        self.assertEqual(callback("x"), ("preview", "x"))
 
 
 # ---------------------------------------------------------------------------

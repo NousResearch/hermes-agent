@@ -1054,6 +1054,8 @@ class HermesCLI:
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        self._reasoning_stream_started = False  # True once live reasoning starts streaming
+        self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -1478,10 +1480,107 @@ class HermesCLI:
 
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        if not text:
+            self._flush_reasoning_preview(force=True)
         self._spinner_text = text or ""
         self._invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
+
+    def _current_reasoning_callback(self):
+        """Return the active reasoning display callback for the current mode."""
+        if self.show_reasoning and self.streaming_enabled:
+            return self._stream_reasoning_delta
+        if self.verbose and not self.show_reasoning:
+            return self._on_reasoning
+        return None
+
+    def _emit_reasoning_preview(self, reasoning_text: str) -> None:
+        """Render a buffered reasoning preview as a single [thinking] block."""
+        import re
+        import textwrap
+
+        preview_text = reasoning_text.strip()
+        if not preview_text:
+            return
+
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+        prefix = "  [thinking] "
+        wrap_width = max(30, term_width - len(prefix) - 2)
+
+        paragraphs = []
+        raw_paragraphs = re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n"))
+        for paragraph in raw_paragraphs:
+            compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
+            if compact:
+                paragraphs.append(textwrap.fill(compact, width=wrap_width))
+        preview_text = "\n".join(paragraphs)
+        if not preview_text:
+            return
+
+        if self.verbose:
+            _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
+            return
+
+        lines = preview_text.splitlines()
+        if len(lines) > 5:
+            preview = "\n".join(lines[:5])
+            preview += f"\n  ... ({len(lines) - 5} more lines)"
+        else:
+            preview = preview_text
+        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+
+    def _flush_reasoning_preview(self, *, force: bool = False) -> None:
+        """Flush buffered reasoning text at natural boundaries.
+
+        Some providers stream reasoning in tiny word or punctuation chunks.
+        Buffer them here so the preview path does not print one `[thinking]`
+        line per token.
+        """
+        buf = getattr(self, "_reasoning_preview_buf", "")
+        if not buf:
+            return
+
+        try:
+            term_width = shutil.get_terminal_size().columns
+        except Exception:
+            term_width = 80
+        target_width = max(40, term_width - len("  [thinking] ") - 4)
+
+        flush_text = ""
+
+        if force:
+            flush_text = buf
+            buf = ""
+        else:
+            line_break = buf.rfind("\n")
+            min_newline_flush = max(16, target_width // 3)
+            if line_break != -1 and (
+                line_break >= min_newline_flush
+                or buf.endswith("\n\n")
+                or buf.endswith(".\n")
+                or buf.endswith("!\n")
+                or buf.endswith("?\n")
+                or buf.endswith(":\n")
+            ):
+                flush_text = buf[: line_break + 1]
+                buf = buf[line_break + 1 :]
+            elif len(buf) >= target_width:
+                search_start = max(20, target_width // 2)
+                search_end = min(len(buf), max(target_width + (target_width // 3), target_width + 8))
+                cut = -1
+                for boundary in (" ", "\t", ".", "!", "?", ",", ";", ":"):
+                    cut = max(cut, buf.rfind(boundary, search_start, search_end))
+                if cut != -1:
+                    flush_text = buf[: cut + 1]
+                    buf = buf[cut + 1 :]
+
+        self._reasoning_preview_buf = buf.lstrip() if flush_text else buf
+        if flush_text:
+            self._emit_reasoning_preview(flush_text)
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -1496,6 +1595,7 @@ class HermesCLI:
         """
         if not text:
             return
+        self._reasoning_stream_started = True
         if getattr(self, "_stream_box_opened", False):
             return
 
@@ -1691,11 +1791,13 @@ class HermesCLI:
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
+        self._reasoning_stream_started = False
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
+        self._reasoning_preview_buf = ""
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -1926,11 +2028,7 @@ class HermesCLI:
                 platform="cli",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
-                reasoning_callback=(
-                    self._stream_reasoning_delta if (self.streaming_enabled and self.show_reasoning)
-                    else self._on_reasoning if (self.show_reasoning or self.verbose)
-                    else None
-                ),
+                reasoning_callback=self._current_reasoning_callback(),
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
@@ -4235,11 +4333,7 @@ class HermesCLI:
         if self.agent:
             self.agent.verbose_logging = self.verbose
             self.agent.quiet_mode = not self.verbose
-            # Auto-enable reasoning display in verbose mode
-            if self.verbose:
-                self.agent.reasoning_callback = self._on_reasoning
-            elif not self.show_reasoning:
-                self.agent.reasoning_callback = None
+            self.agent.reasoning_callback = self._current_reasoning_callback()
 
         # Use raw ANSI codes via _cprint so the output is routed through
         # prompt_toolkit's renderer.  self.console.print() with Rich markup
@@ -4286,7 +4380,7 @@ class HermesCLI:
         if arg in ("show", "on"):
             self.show_reasoning = True
             if self.agent:
-                self.agent.reasoning_callback = self._on_reasoning
+                self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", True)
             _cprint(f"  {_GOLD}✓ Reasoning display: ON (saved){_RST}")
             _cprint(f"  {_DIM}  Model thinking will be shown during and after each response.{_RST}")
@@ -4294,7 +4388,7 @@ class HermesCLI:
         if arg in ("hide", "off"):
             self.show_reasoning = False
             if self.agent:
-                self.agent.reasoning_callback = None
+                self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
@@ -4317,17 +4411,10 @@ class HermesCLI:
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
-        if self.verbose:
-            # Verbose mode: show full reasoning text
-            _cprint(f"  {_DIM}[thinking] {reasoning_text.strip()}{_RST}")
-        else:
-            lines = reasoning_text.strip().splitlines()
-            if len(lines) > 5:
-                preview = "\n".join(lines[:5])
-                preview += f"\n  ... ({len(lines) - 5} more lines)"
-            else:
-                preview = reasoning_text.strip()
-            _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+        if not reasoning_text:
+            return
+        self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
+        self._flush_reasoning_preview(force=False)
 
     def _manual_compress(self):
         """Manually trigger context compression on the current conversation."""
@@ -5628,7 +5715,7 @@ class HermesCLI:
 
             # Display reasoning (thinking) box if enabled and available.
             # Skip when streaming already showed reasoning live.
-            if self.show_reasoning and result and not self._stream_started:
+            if self.show_reasoning and result and not self._reasoning_stream_started:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
                     w = shutil.get_terminal_size().columns

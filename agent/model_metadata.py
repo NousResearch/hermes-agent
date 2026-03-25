@@ -113,6 +113,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "glm": 202752,
     # Kimi
     "kimi": 262144,
+    # Xiaomi MiMo
+    "mimo": 1048576,
 }
 
 _CONTEXT_LENGTH_KEYS = (

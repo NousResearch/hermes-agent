@@ -267,6 +267,14 @@ DEFAULT_CONFIG = {
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
+        "mimo": {
+            "model": "mimo-v2-tts",
+            "voice": "mimo_default",
+            # Built-in voices: mimo_default, default_zh, default_en
+            # style: optional speech style (e.g. "Happy", "Whisper", "Sun Wukong")
+            #   or singing: "唱歌"
+            # base_url: override (default: https://api.xiaomimimo.com/v1)
+        },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
@@ -516,6 +524,21 @@ OPTIONAL_ENV_VARS = {
         "url": "",
         "password": False,
         "category": "provider",
+    },
+    "MIMO_API_KEY": {
+        "description": "Xiaomi MiMo API key for MiMo-V2 models",
+        "prompt": "Xiaomi MiMo API Key",
+        "url": "https://platform.xiaomimimo.com/#/console/api-keys",
+        "password": True,
+        "category": "provider",
+    },
+    "MIMO_BASE_URL": {
+        "description": "Custom Xiaomi MiMo API base URL (advanced)",
+        "prompt": "MiMo Base URL",
+        "url": "",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
     },
     "DASHSCOPE_API_KEY": {
         "description": "Alibaba Cloud DashScope API key for Qwen models",

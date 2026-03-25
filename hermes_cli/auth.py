@@ -207,10 +207,18 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "kilocode": ProviderConfig(
         id="kilocode",
         name="Kilo Code",
-        auth_type="api_key",
+        auth_type="***",
         inference_base_url="https://api.kilo.ai/api/gateway",
-        api_key_env_vars=("KILOCODE_API_KEY",),
+        api_key_env_vars=("KILO...;",),
         base_url_env_var="KILOCODE_BASE_URL",
+    ),
+    "xiaomi-mimo": ProviderConfig(
+        id="xiaomi-mimo",
+        name="Xiaomi MiMo",
+        auth_type="***",
+        inference_base_url="https://api.xiaomimimo.com/v1",
+        api_key_env_vars=("MIMO_API_KEY",),
+        base_url_env_var="MIMO_BASE_URL",
     ),
 }
 

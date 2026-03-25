@@ -358,7 +358,7 @@ def build_skills_system_prompt(
             continue
         # Extract conditions inline from already-parsed frontmatter
         # (avoids redundant file re-read that _read_skill_conditions would do)
-        hermes_meta = frontmatter.get("metadata", {}).get("hermes", {})
+        hermes_meta = (frontmatter.get("metadata") or {}).get("hermes") or {}
         conditions = {
             "fallback_for_toolsets": hermes_meta.get("fallback_for_toolsets", []),
             "requires_toolsets": hermes_meta.get("requires_toolsets", []),

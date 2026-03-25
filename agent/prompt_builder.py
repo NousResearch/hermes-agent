@@ -354,8 +354,15 @@ def build_skills_system_prompt(
         fm_name = frontmatter.get("name", skill_name)
         if fm_name in disabled or skill_name in disabled:
             continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
+        # Extract conditions inline from already-parsed frontmatter
+        # (avoids redundant file re-read that _read_skill_conditions would do)
+        hermes_meta = frontmatter.get("metadata", {}).get("hermes", {})
+        conditions = {
+            "fallback_for_toolsets": hermes_meta.get("fallback_for_toolsets", []),
+            "requires_toolsets": hermes_meta.get("requires_toolsets", []),
+            "fallback_for_tools": hermes_meta.get("fallback_for_tools", []),
+            "requires_tools": hermes_meta.get("requires_tools", []),
+        }
         if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         skills_by_category.setdefault(category, []).append((skill_name, desc))

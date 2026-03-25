@@ -70,6 +70,11 @@ try:
     from tools.website_policy import check_website_access
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
+
+try:
+    from tools.url_safety import is_safe_url as _is_safe_url
+except Exception:
+    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
@@ -1025,6 +1030,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    # SSRF protection — block private/internal addresses before navigating
+    if not _is_safe_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a private or internal address",
+        })
+
     # Website policy check — block before navigating
     blocked = check_website_access(url)
     if blocked:
@@ -1052,7 +1064,18 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
-        
+
+        # Post-redirect SSRF check — if the browser followed a redirect to a
+        # private/internal address, block the result so the model can't read
+        # internal content via subsequent browser_snapshot calls.
+        if final_url and final_url != url and not _is_safe_url(final_url):
+            # Navigate away to a blank page to prevent snapshot leaks
+            _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
+            return json.dumps({
+                "success": False,
+                "error": f"Blocked: redirect landed on a private/internal address",
+            })
+
         response = {
             "success": True,
             "url": final_url,

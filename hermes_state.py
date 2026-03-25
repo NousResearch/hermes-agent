@@ -17,7 +17,6 @@ Key design decisions:
 import json
 import logging
 import os
-import random
 import re
 import sqlite3
 import threading
@@ -231,7 +230,7 @@ class SessionDB:
             except sqlite3.OperationalError as e:
                 if "database is locked" not in str(e) or attempt == retries:
                     raise
-                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.05)
+                delay = base_delay * (2 ** attempt)
                 logger.warning("SQLite DB locked (attempt %d/%d), retrying in %.2fs", attempt + 1, retries, delay)
                 time.sleep(delay)
 

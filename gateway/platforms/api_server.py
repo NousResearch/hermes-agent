@@ -46,6 +46,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+MAX_RESPONSE_CHAIN = int(os.getenv("MAX_RESPONSE_CHAIN", "20"))
 
 
 def check_api_server_requirements() -> bool:
@@ -389,6 +390,58 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return agent
 
+    def _validate_previous_response_chain(
+        self,
+        previous_response_id: str,
+    ) -> Optional[tuple[Dict[str, Any], int]]:
+        """
+        Validate that `previous_response_id` chain is acyclic and not too deep.
+
+        Prevents cycles (infinite loops) and overly deep chains (resource exhaustion).
+        """
+        visited: set[str] = set()
+        current: Optional[str] = str(previous_response_id)
+        depth = 0
+
+        while current:
+            if current in visited:
+                return (
+                    _openai_error(
+                        "Cycle detected in previous_response_id chain.",
+                        err_type="invalid_request_error",
+                        code="response_chain_cycle",
+                    ),
+                    400,
+                )
+            visited.add(current)
+
+            stored = self._response_store.get(current)
+            if stored is None:
+                return (
+                    _openai_error(
+                        f"Previous response not found: {current}",
+                        err_type="invalid_request_error",
+                        code="previous_response_missing",
+                    ),
+                    404,
+                )
+
+            depth += 1
+            if depth > MAX_RESPONSE_CHAIN:
+                return (
+                    _openai_error(
+                        f"Response chain too deep (max {MAX_RESPONSE_CHAIN}).",
+                        err_type="invalid_request_error",
+                        code="response_chain_too_deep",
+                    ),
+                    400,
+                )
+
+            next_id = stored.get("previous_response_id")
+            current = str(next_id) if next_id else None
+
+        return None
+
     # ------------------------------------------------------------------
     # HTTP Handlers
     # ------------------------------------------------------------------
@@ -692,6 +745,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # Reconstruct conversation history from previous_response_id
         conversation_history: List[Dict[str, str]] = []
         if previous_response_id:
+            validation = self._validate_previous_response_chain(str(previous_response_id))
+            if validation is not None:
+                err_json, status = validation
+                return web.json_response(err_json, status=status)
+
+        if previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
@@ -789,6 +848,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
+                "previous_response_id": previous_response_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response

@@ -26,6 +26,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _CORS_HEADERS,
+    MAX_RESPONSE_CHAIN,
     check_api_server_requirements,
     cors_middleware,
 )
@@ -643,6 +644,80 @@ class TestResponsesEndpoint:
                 },
             )
             assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_chain_cycle_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp_a = "resp_cycle_a"
+            resp_b = "resp_cycle_b"
+
+            adapter._response_store.put(
+                resp_a,
+                {
+                    "response": {},
+                    "conversation_history": [],
+                    "instructions": None,
+                    "previous_response_id": resp_b,
+                },
+            )
+            adapter._response_store.put(
+                resp_b,
+                {
+                    "response": {},
+                    "conversation_history": [],
+                    "instructions": None,
+                    "previous_response_id": resp_a,
+                },
+            )
+
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": resp_a,
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "cycle" in data["error"]["message"].lower()
+            assert mock_run.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_chain_too_deep_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            chain = [f"resp_deep_{i}" for i in range(MAX_RESPONSE_CHAIN + 1)]
+
+            for i, rid in enumerate(chain):
+                adapter._response_store.put(
+                    rid,
+                    {
+                        "response": {},
+                        "conversation_history": [],
+                        "instructions": None,
+                        "previous_response_id": chain[i - 1] if i > 0 else None,
+                    },
+                )
+
+            last = chain[-1]
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "too deep",
+                        "previous_response_id": last,
+                    },
+                )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "too deep" in data["error"]["message"].lower()
+            assert mock_run.call_count == 0
 
     @pytest.mark.asyncio
     async def test_store_false_does_not_store(self, adapter):

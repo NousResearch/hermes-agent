@@ -59,7 +59,7 @@ def is_managed() -> bool:
     """
     if os.getenv("HERMES_MANAGED", "").lower() in ("true", "1", "yes"):
         return True
-    managed_marker = Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))) / ".managed"
+    managed_marker = get_hermes_home() / ".managed"
     return managed_marker.exists()
 
 def managed_error(action: str = "modify configuration"):
@@ -76,9 +76,8 @@ def managed_error(action: str = "modify configuration"):
 # Config paths
 # =============================================================================
 
-def get_hermes_home() -> Path:
-    """Get the Hermes home directory (~/.hermes)."""
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+# Re-export from hermes_constants — canonical definition lives there.
+from hermes_constants import get_hermes_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""

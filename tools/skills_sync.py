@@ -26,12 +26,13 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 

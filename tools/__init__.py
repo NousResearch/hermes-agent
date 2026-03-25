@@ -10,6 +10,7 @@ Each module provides specialized functionality for different capabilities:
 - vision_tools: Image analysis and understanding
 - mixture_of_agents_tool: Multi-model collaborative reasoning
 - image_generation_tool: Text-to-image generation with upscaling
+- video_generation_tool: Text-to-video generation via FAL.ai
 
 The tools are imported into model_tools.py which provides a unified interface
 for the AI agent to access all capabilities.
@@ -48,6 +49,11 @@ from .mixture_of_agents_tool import (
 from .image_generation_tool import (
     image_generate_tool,
     check_image_generation_requirements
+)
+
+from .video_generation_tool import (
+    video_generate_tool,
+    check_video_generation_requirements
 )
 
 from .skills_tool import (
@@ -184,6 +190,9 @@ __all__ = [
     # Image generation tools
     'image_generate_tool',
     'check_image_generation_requirements',
+    # Video generation tools
+    'video_generate_tool',
+    'check_video_generation_requirements',
     # Skills tools
     'skills_list',
     'skill_view',

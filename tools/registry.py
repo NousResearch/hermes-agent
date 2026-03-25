@@ -66,6 +66,13 @@ class ToolRegistry:
         emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        existing = self._tools.get(name)
+        if existing and existing.toolset != toolset:
+            logger.warning(
+                "Tool name collision: '%s' (toolset '%s') is being "
+                "overwritten by toolset '%s'",
+                name, existing.toolset, toolset,
+            )
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,

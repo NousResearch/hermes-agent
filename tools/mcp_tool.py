@@ -1532,6 +1532,16 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
 
+        # Guard against collisions with built-in (non-MCP) tools.
+        existing_toolset = registry.get_toolset_for_tool(tool_name_prefixed)
+        if existing_toolset and not existing_toolset.startswith("mcp-"):
+            logger.warning(
+                "MCP server '%s': tool '%s' (→ '%s') collides with built-in "
+                "tool in toolset '%s' — skipping to preserve built-in",
+                name, mcp_tool.name, tool_name_prefixed, existing_toolset,
+            )
+            continue
+
         registry.register(
             name=tool_name_prefixed,
             toolset=toolset_name,
@@ -1556,9 +1566,20 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         schema = entry["schema"]
         handler_key = entry["handler_key"]
         handler = _handler_factories[handler_key](name, server.tool_timeout)
+        util_name = schema["name"]
+
+        # Same collision guard for utility tools.
+        existing_toolset = registry.get_toolset_for_tool(util_name)
+        if existing_toolset and not existing_toolset.startswith("mcp-"):
+            logger.warning(
+                "MCP server '%s': utility tool '%s' collides with built-in "
+                "tool in toolset '%s' — skipping to preserve built-in",
+                name, util_name, existing_toolset,
+            )
+            continue
 
         registry.register(
-            name=schema["name"],
+            name=util_name,
             toolset=toolset_name,
             schema=schema,
             handler=handler,
@@ -1566,7 +1587,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             is_async=False,
             description=schema["description"],
         )
-        registered_names.append(schema["name"])
+        registered_names.append(util_name)
 
     server._registered_tool_names = list(registered_names)
 

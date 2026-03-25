@@ -2750,3 +2750,153 @@ class TestMCPSelectiveToolLoading:
 
         assert connect_called == []
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tool name collision protection
+# ---------------------------------------------------------------------------
+
+class TestRegistryCollisionWarning:
+    """registry.register() warns when a tool name is overwritten by a different toolset."""
+
+    def test_overwrite_different_toolset_logs_warning(self, caplog):
+        """Overwriting a tool from a different toolset emits a warning."""
+        from tools.registry import ToolRegistry
+        import logging
+
+        reg = ToolRegistry()
+        schema = {"name": "my_tool", "description": "test", "parameters": {"type": "object", "properties": {}}}
+        handler = lambda args, **kw: "{}"
+
+        reg.register(name="my_tool", toolset="builtin", schema=schema, handler=handler)
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(name="my_tool", toolset="mcp-ext", schema=schema, handler=handler)
+
+        assert any("collision" in r.message.lower() for r in caplog.records)
+        assert any("builtin" in r.message and "mcp-ext" in r.message for r in caplog.records)
+
+    def test_overwrite_same_toolset_no_warning(self, caplog):
+        """Re-registering within the same toolset is silent (e.g. reconnect)."""
+        from tools.registry import ToolRegistry
+        import logging
+
+        reg = ToolRegistry()
+        schema = {"name": "my_tool", "description": "test", "parameters": {"type": "object", "properties": {}}}
+        handler = lambda args, **kw: "{}"
+
+        reg.register(name="my_tool", toolset="mcp-server", schema=schema, handler=handler)
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.register(name="my_tool", toolset="mcp-server", schema=schema, handler=handler)
+
+        assert not any("collision" in r.message.lower() for r in caplog.records)
+
+
+class TestMCPBuiltinCollisionGuard:
+    """MCP tools that collide with built-in tool names are skipped."""
+
+    def test_mcp_tool_skipped_when_builtin_exists(self):
+        """An MCP tool whose prefixed name collides with a built-in is skipped."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+
+        # Pre-register a "built-in" tool with the name that the MCP tool would produce.
+        # Server "abc", tool "search" → mcp_abc_search
+        builtin_schema = {
+            "name": "mcp_abc_search",
+            "description": "A hypothetical built-in",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        mock_registry.register(
+            name="mcp_abc_search", toolset="web",
+            schema=builtin_schema, handler=lambda a, **k: "{}",
+        )
+
+        mock_tools = [_make_mcp_tool("search", "Search the web")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server("abc", {"command": "test", "args": []})
+            )
+
+        # The MCP tool should have been skipped — built-in preserved.
+        assert "mcp_abc_search" not in registered
+        assert mock_registry.get_toolset_for_tool("mcp_abc_search") == "web"
+
+        _servers.pop("abc", None)
+
+    def test_mcp_tool_registered_when_no_builtin_collision(self):
+        """MCP tools register normally when there's no collision."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+        mock_tools = [_make_mcp_tool("web_search", "Search the web")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server("minimax", {"command": "test", "args": []})
+            )
+
+        assert "mcp_minimax_web_search" in registered
+        assert mock_registry.get_toolset_for_tool("mcp_minimax_web_search") == "mcp-minimax"
+
+        _servers.pop("minimax", None)
+
+    def test_mcp_tool_allowed_when_collision_is_another_mcp(self):
+        """Collision between two MCP toolsets is allowed (last wins)."""
+        from tools.registry import ToolRegistry
+        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+
+        mock_registry = ToolRegistry()
+
+        # Pre-register an MCP tool from a different server.
+        mcp_schema = {
+            "name": "mcp_srv_do_thing",
+            "description": "From another MCP server",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        mock_registry.register(
+            name="mcp_srv_do_thing", toolset="mcp-old",
+            schema=mcp_schema, handler=lambda a, **k: "{}",
+        )
+
+        mock_tools = [_make_mcp_tool("do_thing", "Do a thing")]
+        mock_session = MagicMock()
+
+        async def fake_connect(name, config):
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry):
+            registered = asyncio.run(
+                _discover_and_register_server("srv", {"command": "test", "args": []})
+            )
+
+        # MCP-to-MCP collision is allowed — the new server wins.
+        assert "mcp_srv_do_thing" in registered
+        assert mock_registry.get_toolset_for_tool("mcp_srv_do_thing") == "mcp-srv"
+
+        _servers.pop("srv", None)

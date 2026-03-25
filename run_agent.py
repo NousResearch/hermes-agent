@@ -1009,9 +1009,11 @@ class AIAgent:
         _compression_cfg = _agent_cfg.get("compression", {})
         if not isinstance(_compression_cfg, dict):
             _compression_cfg = {}
-        compression_threshold = float(_compression_cfg.get("threshold", 0.50))
+        compression_threshold = float(_compression_cfg.get("threshold", 0.80))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+        compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.40))
+        compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
@@ -1050,8 +1052,8 @@ class AIAgent:
             model=self.model,
             threshold_percent=compression_threshold,
             protect_first_n=3,
-            protect_last_n=4,
-            summary_target_tokens=500,
+            protect_last_n=compression_protect_last,
+            summary_target_ratio=compression_target_ratio,
             summary_model_override=compression_summary_model,
             quiet_mode=self.quiet_mode,
             base_url=self.base_url,

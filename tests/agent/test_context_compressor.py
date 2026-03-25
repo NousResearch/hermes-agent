@@ -217,7 +217,7 @@ class TestCompressWithClient:
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(10)]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
@@ -513,3 +513,50 @@ class TestCompressWithClient:
         for msg in result:
             if msg.get("role") == "tool" and msg.get("tool_call_id"):
                 assert msg["tool_call_id"] in called_ids
+
+
+class TestSummaryTargetRatio:
+    """Verify that summary_target_ratio properly scales budgets with context window."""
+
+    def test_tail_budget_scales_with_context(self):
+        """Tail token budget should be context_length * summary_target_ratio."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+        assert c.tail_token_budget == 80_000
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
+        assert c.tail_token_budget == 400_000
+
+    def test_summary_cap_scales_with_context(self):
+        """Max summary tokens should be 5% of context, capped at 32K."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.max_summary_tokens == 10_000  # 200K * 0.05
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.max_summary_tokens == 32_000  # capped at ceiling
+
+    def test_ratio_clamped(self):
+        """Ratio should be clamped to [0.10, 0.80]."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.05)
+        assert c.summary_target_ratio == 0.10
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.95)
+        assert c.summary_target_ratio == 0.80
+
+    def test_default_threshold_is_80_percent(self):
+        """Default compression threshold should be 80%."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.threshold_percent == 0.80
+        assert c.threshold_tokens == 80_000
+
+    def test_default_protect_last_n_is_20(self):
+        """Default protect_last_n should be 20."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        assert c.protect_last_n == 20

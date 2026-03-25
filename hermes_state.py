@@ -201,6 +201,16 @@ class SessionDB:
                     pass  # Column already exists
                 cursor.execute('UPDATE schema_version SET version = 6')
 
+        # Safety net: ensure v6 columns exist even if migration was partial
+        # (e.g. version was bumped but ALTER TABLE failed silently)
+        existing_cols = {row[1] for row in cursor.execute('PRAGMA table_info(messages)').fetchall()}
+        for col in ['platform_message_id', 'response_message_ids']:
+            if col not in existing_cols:
+                try:
+                    cursor.execute(f'ALTER TABLE messages ADD COLUMN {col} TEXT')
+                except sqlite3.OperationalError:
+                    pass
+
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
         try:

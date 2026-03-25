@@ -53,6 +53,8 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
+LOCAL_STT_DEVICE_ENV = "HERMES_LOCAL_STT_DEVICE"
+LOCAL_STT_COMPUTE_TYPE_ENV = "HERMES_LOCAL_STT_COMPUTE_TYPE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
@@ -268,6 +270,52 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _get_local_whisper_preferences() -> tuple[str, str]:
+    """Return preferred faster-whisper device/compute_type, with safe defaults."""
+    device = os.getenv(LOCAL_STT_DEVICE_ENV, "auto").strip() or "auto"
+    compute_type = os.getenv(LOCAL_STT_COMPUTE_TYPE_ENV, "auto").strip() or "auto"
+    return device, compute_type
+
+
+def _should_retry_local_whisper_on_cpu(error: Exception) -> bool:
+    text = str(error).lower()
+    retry_markers = (
+        "libcublas",
+        "cublas",
+        "cudnn",
+        "cuda driver",
+        "cuda runtime",
+        "failed to load library",
+        "cannot be loaded",
+        "not found",
+    )
+    return any(marker in text for marker in retry_markers)
+
+
+def _load_local_whisper_model(model_name: str):
+    from faster_whisper import WhisperModel
+
+    device, compute_type = _get_local_whisper_preferences()
+    logger.info(
+        "Loading faster-whisper model '%s' (device=%s, compute_type=%s)...",
+        model_name,
+        device,
+        compute_type,
+    )
+
+    try:
+        return WhisperModel(model_name, device=device, compute_type=compute_type)
+    except Exception as e:
+        if device == "cpu" or not _should_retry_local_whisper_on_cpu(e):
+            raise
+
+        logger.warning(
+            "Local STT GPU/auto load failed (%s). Falling back to CPU int8 for faster-whisper.",
+            e,
+        )
+        return WhisperModel(model_name, device="cpu", compute_type="int8")
+
+
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
@@ -276,11 +324,9 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            _local_model = _load_local_whisper_model(model_name)
             _local_model_name = model_name
 
         segments, info = _local_model.transcribe(file_path, beam_size=5)

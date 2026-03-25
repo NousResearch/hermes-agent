@@ -158,6 +158,7 @@ def _discover_tools():
         "tools.send_message_tool",
         "tools.honcho_tools",
         "tools.homeassistant_tool",
+        "tools.ram_cache",
     ]
     import importlib
     for mod_name in _modules:
@@ -409,9 +410,17 @@ def handle_function_call(
         except Exception:
             pass
 
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
+        # --- RAM Cache: check before dispatch ---
+        _cached_result = None
+        try:
+            from tools.ram_cache import check_cache_before_dispatch, store_cache_after_dispatch
+            _cached_result = check_cache_before_dispatch(function_name, function_args)
+        except ImportError:
+            pass
+
+        if _cached_result is not None:
+            result = _cached_result
+        elif function_name == "execute_code":
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
             result = registry.dispatch(
                 function_name, function_args,
@@ -428,6 +437,14 @@ def handle_function_call(
                 honcho_manager=honcho_manager,
                 honcho_session_key=honcho_session_key,
             )
+
+        # --- RAM Cache: store after dispatch ---
+        if _cached_result is None:
+            try:
+                from tools.ram_cache import store_cache_after_dispatch
+                store_cache_after_dispatch(function_name, function_args, result)
+            except (ImportError, Exception):
+                pass
 
         try:
             from hermes_cli.plugins import invoke_hook

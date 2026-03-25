@@ -64,6 +64,8 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # RAM cache management
+    "cache_stats", "cache_clear",
 ]
 
 
@@ -193,6 +195,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "cache": {
+        "description": "RAM-backed tool result cache — view stats and manage /dev/shm cache",
+        "tools": ["cache_stats", "cache_clear"],
         "includes": []
     },
 

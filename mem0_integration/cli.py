@@ -30,21 +30,25 @@ def _get_client_and_config():
     return client, cfg
 
 
-def _build_cli_filters(cfg: Mem0ClientConfig) -> dict:
-    """Build filters for CLI search/get_all commands.
-
-    Per Mem0 team guidance: only use user_id, never combine with agent_id.
-    """
-    if cfg.user_id:
-        return {"user_id": cfg.user_id}
-    return {}
-
-
 def _prompt(text: str, default: str = "") -> str:
     """Prompt user for input with optional default."""
     suffix = f" [{default}]" if default else ""
     val = input(f"  {text}{suffix}: ").strip()
     return val or default
+
+
+def _build_user_filters(user_id: str) -> dict:
+    """Build v2 filters that find all memories for a user.
+
+    Records stored with a run_id won't match a bare user_id filter
+    (Mem0 treats missing fields as "must be null"), so we OR both cases.
+    """
+    return {
+        "OR": [
+            {"user_id": user_id},
+            {"AND": [{"user_id": user_id}, {"run_id": "*"}]},
+        ]
+    }
 
 
 def _write_config(data: dict, path: Path | None = None) -> Path:
@@ -174,7 +178,11 @@ def cmd_status(args: Any) -> None:
         try:
             reset_mem0_client()
             client = get_mem0_client(cfg)
-            client.search("connection-test", filters={"user_id": "health-check"})
+            client.search(
+                "connection-test",
+                version="v2",
+                filters={"OR": [{"user_id": "health-check"}]},
+            )
             print(f"\n  Connection:       {color('\u2713 OK', Colors.GREEN)}")
         except Exception as e:
             print(f"\n  Connection:       {color('\u2717 FAILED', Colors.RED)} {color(f'({e})', Colors.DIM)}")
@@ -198,11 +206,12 @@ def cmd_search(args: Any) -> None:
     try:
         results = client.search(
             query,
-            filters=_build_cli_filters(cfg),
+            version="v2",
+            filters=_build_user_filters(cfg.user_id),
             keyword_search=cfg.keyword_search,
             rerank=True,
         )
-        memories = results.get("results", [])
+        memories = results if isinstance(results, list) else results.get("results", results.get("memories", []))
         if not memories:
             print(f"  {color('No memories found.', Colors.DIM)}")
             return
@@ -230,10 +239,11 @@ def cmd_memories(args: Any) -> None:
     client, cfg = _get_client_and_config()
     try:
         result = client.get_all(
-            filters=_build_cli_filters(cfg),
+            version="v2",
+            filters=_build_user_filters(cfg.user_id),
             page_size=50,
         )
-        memories = result.get("results", [])
+        memories = result if isinstance(result, list) else result.get("results", result.get("memories", []))
         if not memories:
             print(f"  {color('No memories stored yet.', Colors.DIM)}")
             return

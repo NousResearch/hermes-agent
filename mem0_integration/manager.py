@@ -8,8 +8,13 @@ Mem0 operates on discrete memories — extracted facts scoped to
 user_id. No local message buffer or async writer thread needed:
 Mem0's client.add() handles async processing server-side.
 
-Scoping: only user_id is used for add/search. Per Mem0 team guidance,
-user_id and agent_id must NOT be combined in the same call.
+SDK method signatures (Platform MemoryClient, v2 API):
+  client.add(messages, user_id=..., run_id=..., ...)
+  client.search(query, version="v2", filters={"OR": [{"user_id": ...}]}, ...)
+  client.get_all(version="v2", filters={"OR": [{"user_id": ...}]}, ...)
+
+The v2 API requires entity IDs (user_id, agent_id) inside the
+`filters` dict wrapped in OR/AND logical operators.
 """
 
 from __future__ import annotations
@@ -23,6 +28,23 @@ if TYPE_CHECKING:
     from mem0_integration.client import Mem0ClientConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _build_v2_filters(user_id: str) -> dict[str, Any]:
+    """Build v2 API filters for a user.
+
+    Mem0 scopes records per-entity: a record stored with both user_id
+    and run_id won't match a filter that only specifies user_id (the
+    platform treats missing fields as "must be null").  Using run_id="*"
+    (wildcard) matches any non-null run_id, so we OR both cases to
+    cover records with and without a run_id.
+    """
+    return {
+        "OR": [
+            {"user_id": user_id},
+            {"AND": [{"user_id": user_id}, {"run_id": "*"}]},
+        ]
+    }
 
 
 class Mem0MemoryManager:
@@ -91,13 +113,10 @@ class Mem0MemoryManager:
         top_k: int = 10,
         rerank: bool = False,
     ) -> list[dict]:
-        """Semantic search over user's memories.
-
-        Uses flat filter format: filters={"user_id": "..."}
-        Per Mem0 team: never combine user_id and agent_id in search.
-        """
+        """Semantic search over user's memories using v2 API."""
         kwargs: dict[str, Any] = {
-            "filters": {"user_id": user_id},
+            "version": "v2",
+            "filters": _build_v2_filters(user_id),
             "keyword_search": self._config.keyword_search,
             "top_k": min(top_k, 50),
         }
@@ -106,19 +125,24 @@ class Mem0MemoryManager:
 
         try:
             result = self._client.search(query, **kwargs)
-            return result.get("results", [])
+            if isinstance(result, list):
+                return result
+            return result.get("results", result.get("memories", []))
         except Exception as e:
             logger.warning("Mem0 search failed: %s", e)
             return []
 
     def get_profile(self, user_id: str, page_size: int = 20) -> list[dict]:
-        """Get all stored memories for a user."""
+        """Get all stored memories for a user using v2 API."""
         try:
             result = self._client.get_all(
-                filters={"user_id": user_id},
+                version="v2",
+                filters=_build_v2_filters(user_id),
                 page_size=page_size,
             )
-            return result.get("results", [])
+            if isinstance(result, list):
+                return result
+            return result.get("results", result.get("memories", []))
         except Exception as e:
             logger.warning("Mem0 get_profile failed: %s", e)
             return []
@@ -140,11 +164,12 @@ class Mem0MemoryManager:
             try:
                 result = self._client.search(
                     query or "What do you know about this user?",
-                    filters={"user_id": user_id},
+                    version="v2",
+                    filters=_build_v2_filters(user_id),
                     keyword_search=self._config.keyword_search,
                     top_k=10,
                 )
-                memories = result.get("results", [])
+                memories = result if isinstance(result, list) else result.get("results", result.get("memories", []))
 
                 if not memories:
                     return

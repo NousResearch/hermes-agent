@@ -144,7 +144,7 @@ Controls how Mem0 context reaches the agent:
 
 | Strategy | Session key | Use case |
 |----------|-------------|----------|
-| `per-directory` | CWD path hash | Each project gets its own session (default) |
+| `per-directory` | CWD directory name | Each project gets its own session (default) |
 | `per-session` | Unique per run | Fresh session every time |
 | `global` | Fixed `"global"` | Single cross-project session |
 
@@ -191,15 +191,49 @@ flowchart TD
 
 Turn 1 is a cold start (no cache). All subsequent turns consume cached results with zero HTTP latency on the response path.
 
-### Entity Scoping
+### Entity Scoping and the v2 Filter API
 
-Mem0 memories are scoped to `user_id`. Per Mem0 team guidance:
+Mem0 uses the **v2 API** for search and retrieval. All entity IDs (`user_id`, `run_id`, etc.) must be passed inside a `filters` dict wrapped in logical operators (`AND`, `OR`).
 
-- **Add**: Only `user_id` is passed — memories are stored as user-scoped facts
-- **Search**: Uses flat filter `{"user_id": "..."}` — no compound filters
-- **No mixing**: `user_id` and `agent_id` are never combined in the same API call
+#### How Hermes stores memories
 
-This means all memories for a user are accessible regardless of which agent stored them, enabling cross-agent memory sharing.
+Hermes stores memories using the v1 add endpoint with `user_id` and an optional `run_id` (derived from the session strategy):
+
+```python
+client.add(messages, user_id="kartik", run_id="hermes-agent")
+```
+
+The `run_id` is the current working directory name when using `per-directory` session strategy.
+
+#### Why search filters need special handling
+
+Mem0 scopes records per-entity. This means a memory stored with **both** `user_id` and `run_id` will **not** match a filter that only specifies `user_id`. Mem0 treats any entity field missing from the filter as "must be null". So a simple `{"user_id": "kartik"}` filter only returns memories that have no `run_id` set.
+
+To retrieve all memories for a user regardless of which session created them, Hermes combines two filter conditions with `OR`:
+
+```python
+# Hermes search filter — covers all records for a user
+filters = {
+    "OR": [
+        {"user_id": "kartik"},                                # records with no run_id
+        {"AND": [{"user_id": "kartik"}, {"run_id": "*"}]},   # records with any run_id
+    ]
+}
+
+client.search("query", filters=filters)
+client.get_all(filters=filters)
+```
+
+| Filter clause | What it matches |
+|---------------|-----------------|
+| `{"user_id": "kartik"}` | Memories where `user_id` is `kartik` and `run_id` is null |
+| `{"AND": [{"user_id": "kartik"}, {"run_id": "*"}]}` | Memories where `user_id` is `kartik` and `run_id` is any non-null value |
+
+The `"*"` wildcard matches any non-null value. Without it, session-scoped memories would be invisible to search.
+
+:::caution
+If you call `client.search()` or `client.get_all()` with only `{"user_id": "..."}` in the filter, you will **not** get back memories that were stored with a `run_id`. Always include the `run_id: "*"` wildcard branch to avoid missing results.
+:::
 
 ### Automatic Fact Extraction
 
@@ -211,8 +245,8 @@ When you converse with Hermes, Mem0's server-side LLM pipeline automatically:
 
 This happens asynchronously — no blocking on the response path. You can also store facts explicitly using the `mem0_conclude` tool.
 
-:::warning
-`mem0_conclude` uses `infer=False` (stores facts verbatim without LLM extraction). This **skips Mem0's built-in deduplication**. Avoid storing the same fact multiple times via this tool.
+:::info
+`mem0_conclude` uses `infer=False` (stores facts verbatim without LLM extraction). This skips Mem0's built-in deduplication — the automatic extraction pipeline handles deduplication correctly.
 :::
 
 ### Prefetch Pipeline
@@ -281,89 +315,22 @@ hermes doctor
 
 Look for the Mem0 section in the output to verify your setup is working.
 
-## Mem0 Dashboard
-
-All memories are visible and manageable in the [Mem0 Dashboard](https://app.mem0.ai):
-
-- View all extracted memories per user
-- See memory categories, creation dates, and metadata
-- Delete individual memories or bulk-clear
-- Monitor API usage and extraction activity
-
-:::tip
-After initial setup, run `hermes mem0 search "test"` to verify the connection works. If you see results or "No memories found", the integration is healthy. If you see an error, check your API key and run `hermes mem0 status`.
-:::
-
-## Comparison: Mem0 vs Honcho
-
-Both Mem0 and Honcho provide persistent cross-session memory for Hermes, but they differ in approach:
-
-| | Mem0 | Honcho |
-|---|------|--------|
-| **Architecture** | Managed SaaS — fact extraction + semantic search | Dual-peer system — user modeling via dialectic reasoning |
-| **Memory model** | Extracted facts (key-value style memories) | Conversation-level representations (user + AI peers) |
-| **Extraction** | Automatic server-side LLM pipeline | Observation-based peer modeling |
-| **Search** | Semantic + keyword hybrid search | Dialectic Q&A synthesis |
-| **Self-hosted** | Cloud only (api.mem0.ai) | Cloud or self-hosted via Docker |
-| **Setup complexity** | API key only | API key + workspace + peer names |
-| **Best for** | Fast fact recall, preference tracking, simple memory | Deep user understanding, communication style adaptation |
-
-You can use either one, but not both simultaneously — they serve the same role in the agent loop. Choose based on your needs:
-
-- **Choose Mem0** if you want simple, fast memory with automatic fact extraction and a managed dashboard
-- **Choose Honcho** if you want deeper user modeling with dialectic reasoning and self-hosting options
-
-## Warnings and Known Limitations
-
-:::warning Important Notes
-**Entity scoping**: Memories are scoped to `user_id` only. If you change your `userId` in config, you will lose access to previously stored memories (they still exist in Mem0 but won't be retrieved).
-
-**No offline mode**: Mem0 requires an active internet connection to `api.mem0.ai`. All memory operations fail gracefully (non-fatal) when the service is unreachable, but no memories will be stored or recalled.
-
-**Deduplication with `mem0_conclude`**: The `mem0_conclude` tool stores facts verbatim (`infer=False`), which bypasses Mem0's built-in deduplication. The automatic extraction pipeline handles deduplication correctly.
-
-**API key security**: Your Mem0 API key is stored in plaintext in `~/.hermes/mem0.json`. Ensure appropriate file permissions (`chmod 600 ~/.hermes/mem0.json`).
-
-**Rate limits**: Mem0 Platform has rate limits depending on your plan. High-frequency conversations may hit limits on the free tier. Check [Mem0 pricing](https://mem0.ai/pricing) for details.
-
-**Memory visibility**: All memories are visible in the Mem0 Dashboard. Be mindful of what information is shared in conversations if privacy is a concern.
-:::
-
 ## Troubleshooting
 
-### "No memories found" after conversations
+### Search returns no results but memories exist on the dashboard
 
-Mem0 extraction is asynchronous. Memories may take a few seconds to appear after a conversation. Check the [Mem0 Dashboard](https://app.mem0.ai) to verify memories are being stored.
+This usually means the search filter doesn't account for `run_id`. Memories stored with a `run_id` (which happens automatically with `per-directory` or `per-session` strategies) won't match a filter that only specifies `user_id`. Make sure your filter includes the `run_id: "*"` wildcard branch — see [Entity Scoping](#entity-scoping-and-the-v2-filter-api) above.
 
-### Search returns empty results
+### Connection test fails with "Filters are required and cannot be empty"
 
-Ensure your `userId` in config matches the one used when memories were stored. Changing `userId` creates a new, empty memory scope.
+This means the code is using the old v1-style `user_id=` keyword argument instead of the v2 `filters=` dict. All search and get_all calls must use the v2 filter format with `OR`/`AND` logical operators.
 
-### Connection errors
+### `hermes mem0 status` shows Connection OK but search returns empty
 
-```bash
-hermes mem0 status    # Check connection health
-hermes doctor         # Full diagnostic
-```
-
-Verify:
-1. API key is correct and not expired
-2. Internet connection is active
-3. `api.mem0.ai` is reachable
-
-### "mem0ai is required" error
-
-Install the client library:
-
-```bash
-pip install 'mem0ai>=0.1.0'
-```
-
-Or install Hermes with the mem0 extra:
-
-```bash
-pip install 'hermes-agent[mem0]'
-```
+Verify that:
+1. You have memories stored (check the [Mem0 dashboard](https://app.mem0.ai))
+2. The `userId` in your config matches the `user_id` the memories were stored under
+3. The search query is semantically related to your stored memories
 
 ## Use Cases
 

@@ -752,7 +752,11 @@ def run_doctor(args):
             reset_mem0_client()
             try:
                 client = get_mem0_client(m0cfg)
-                client.search("health-check", filters={"user_id": "health-check"})
+                client.search(
+                    "health-check",
+                    version="v2",
+                    filters={"OR": [{"user_id": "health-check"}]},
+                )
                 check_ok(
                     "Mem0 connected",
                     f"mode={m0cfg.memory_mode} rerank={'on' if m0cfg.rerank else 'off'}",

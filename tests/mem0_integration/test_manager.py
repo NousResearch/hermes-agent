@@ -82,6 +82,8 @@ class TestSearch:
         results = manager.search("programming", user_id="testuser")
         mock_client.search.assert_called_once()
         _, kwargs = mock_client.search.call_args
+        assert kwargs["version"] == "v2"
+        assert kwargs["filters"] == {"OR": [{"user_id": "testuser"}, {"AND": [{"user_id": "testuser"}, {"run_id": "*"}]}]}
         assert kwargs["keyword_search"] is True
         assert "rerank" not in kwargs  # rerank off by default
         assert len(results) == 2
@@ -91,11 +93,12 @@ class TestSearch:
         _, kwargs = mock_client.search.call_args
         assert kwargs["rerank"] is True
 
-    def test_search_uses_flat_user_filter(self, manager, mock_client):
-        """Per Mem0 team: only user_id in flat filter, no agent_id."""
+    def test_search_uses_v2_filters(self, manager, mock_client):
+        """v2 API passes user_id inside filters with OR operator."""
         manager.search("query", user_id="testuser")
         _, kwargs = mock_client.search.call_args
-        assert kwargs["filters"] == {"user_id": "testuser"}
+        assert kwargs["version"] == "v2"
+        assert kwargs["filters"] == {"OR": [{"user_id": "testuser"}, {"AND": [{"user_id": "testuser"}, {"run_id": "*"}]}]}
 
     def test_search_handles_exception(self, manager, mock_client):
         mock_client.search.side_effect = Exception("fail")
@@ -107,7 +110,8 @@ class TestGetProfile:
     def test_returns_memories(self, manager, mock_client):
         result = manager.get_profile(user_id="testuser")
         mock_client.get_all.assert_called_once_with(
-            filters={"user_id": "testuser"},
+            version="v2",
+            filters={"OR": [{"user_id": "testuser"}, {"AND": [{"user_id": "testuser"}, {"run_id": "*"}]}]},
             page_size=20,
         )
         assert len(result) == 2

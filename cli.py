@@ -1186,8 +1186,8 @@ class HermesCLI:
         try:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
         
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
@@ -1852,7 +1852,7 @@ class HermesCLI:
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
             except Exception as e:
-                logger.debug("SQLite session store not available: %s", e)
+                logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         
         # If resuming, validate the session exists and load its history.
         # _preload_resumed_session() may have already loaded it (called from

@@ -196,7 +196,7 @@ Both are deep-merged at evaluation time. Nix-declared keys always win over keys 
 :::
 
 :::tip Discovering available config keys
-The full set of config keys is defined in [`nix/config-keys.json`](https://github.com/NousResearch/hermes-agent/blob/main/nix/config-keys.json) (127 leaf keys). You can paste your existing `config.yaml` into the `settings` attrset — the structure maps 1:1. The build-time `config-drift` check catches any drift between the reference and the Python source.
+Run `nix build .#configKeys && cat result` to see every leaf config key extracted from Python's `DEFAULT_CONFIG`. You can paste your existing `config.yaml` into the `settings` attrset — the structure maps 1:1.
 :::
 
 <details>
@@ -607,7 +607,6 @@ nix build .#checks.x86_64-linux.entry-points-sync  # pyproject.toml ↔ Nix pack
 nix build .#checks.x86_64-linux.cli-commands        # gateway/config subcommands
 nix build .#checks.x86_64-linux.managed-guard       # HERMES_MANAGED blocks mutation
 nix build .#checks.x86_64-linux.bundled-skills      # skills present in package
-nix build .#checks.x86_64-linux.config-drift        # config keys match Python source
 nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves user keys
 ```
 
@@ -621,7 +620,6 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `cli-commands` | `hermes --help` exposes `gateway` and `config` subcommands |
 | `managed-guard` | `HERMES_MANAGED=true hermes config set ...` prints the NixOS error |
 | `bundled-skills` | Skills directory exists, contains SKILL.md files, `HERMES_BUNDLED_SKILLS` is set in wrapper |
-| `config-drift` | Leaf keys extracted from Python's `DEFAULT_CONFIG` match the committed `nix/config-keys.json` reference |
 | `config-roundtrip` | 7 merge scenarios: fresh install, Nix override, user key preservation, mixed merge, MCP additive merge, nested deep merge, idempotency |
 
 </details>

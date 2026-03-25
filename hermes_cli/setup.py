@@ -1832,6 +1832,19 @@ def _install_neutts_deps() -> bool:
     print_info("Installing neutts Python package...")
     print_info("This will also download the TTS model (~300MB) on first use.")
     print()
+
+    # Ensure pip is available — some venvs are created without pip (e.g. Ubuntu 25.10)
+    try:
+        import importlib
+        if importlib.util.find_spec("pip") is None:
+            print_info("pip not found in venv — bootstrapping with ensurepip...")
+            subprocess.run([sys.executable, "-m", "ensurepip", "--upgrade"], check=True, timeout=30)
+            print_success("pip bootstrapped successfully")
+    except Exception as e:
+        print_warning(f"Could not bootstrap pip: {e}")
+        print_info("Try: python -m ensurepip --upgrade")
+        return False
+
     try:
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", "neutts[all]", "--quiet"],

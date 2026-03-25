@@ -162,11 +162,15 @@ def _install_safe_stdio() -> None:
 
 
 class IterationBudget:
-    """Thread-safe shared iteration counter for parent and child agents.
+    """Thread-safe iteration counter for an agent.
 
-    Tracks total LLM-call iterations consumed across a parent agent and all
-    its subagents.  A single ``IterationBudget`` is created by the parent
-    and passed to every child so they share the same cap.
+    Each agent (parent or subagent) gets its own ``IterationBudget``.
+    The parent's budget is capped at ``max_iterations`` (default 90).
+    Each subagent gets an independent budget capped at
+    ``delegation.max_iterations`` (default 50) — this means total
+    iterations across parent + subagents can exceed the parent's cap.
+    Users control the per-subagent limit via ``delegation.max_iterations``
+    in config.yaml.
 
     ``execute_code`` (programmatic tool calling) iterations are refunded via
     :meth:`refund` so they don't eat into the budget.
@@ -5719,7 +5723,7 @@ class AIAgent:
             api_call_count += 1
             if not self.iteration_budget.consume():
                 if not self.quiet_mode:
-                    self._safe_print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.max_total} total across agent + subagents)")
+                    self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
                 break
 
             # Fire step_callback for gateway hooks (agent:step event)
@@ -7178,7 +7182,7 @@ class AIAgent:
             or self.iteration_budget.remaining <= 0
         ):
             if self.iteration_budget.remaining <= 0 and not self.quiet_mode:
-                print(f"\n⚠️  Session iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} used, including subagents)")
+                print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
             final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully

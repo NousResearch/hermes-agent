@@ -191,9 +191,10 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display
     child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
 
-    # Share the parent's iteration budget so subagent tool calls
-    # count toward the session-wide limit.
-    shared_budget = getattr(parent_agent, "iteration_budget", None)
+    # Each subagent gets its own iteration budget capped at max_iterations
+    # (configurable via delegation.max_iterations, default 50).  This means
+    # total iterations across parent + subagents can exceed the parent's
+    # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
@@ -230,7 +231,7 @@ def _build_child_agent(
         providers_order=parent_agent.providers_order,
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
-        iteration_budget=shared_budget,
+        iteration_budget=None,  # fresh budget per subagent
     )
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1

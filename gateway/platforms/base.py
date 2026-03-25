@@ -856,6 +856,18 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages[session_key] = event
                 return  # Don't interrupt now - will run after current task completes
 
+            # ── Natural-language abort detection ──────────────────────
+            # Check abort triggers BEFORE queuing — abort must kill the
+            # running agent immediately, not wait for the current turn.
+            from tools.abort_triggers import is_abort_request, ABORT_REPLY
+            if is_abort_request(event.text or ""):
+                print(f"[{self.name}] 🛑 ABORT TRIGGER: {(event.text or '')[:60]!r} — killing agent for session {session_key}")
+                self._active_sessions[session_key].set()
+                # Don't queue the abort message — the agent should stop, not respond to it
+                self._pending_messages.pop(session_key, None)
+                asyncio.create_task(self._send_abort_reply(event, ABORT_REPLY))
+                return
+
             # Default behavior for non-photo follow-ups: interrupt the running agent
             print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
             self._pending_messages[session_key] = event
@@ -894,6 +906,13 @@ class BasePlatformAdapter(ABC):
         if mode == "natural":
             min_ms, max_ms = 800, 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+
+    async def _send_abort_reply(self, event: MessageEvent, reply_text: str) -> None:
+        """Send the abort confirmation reply to the user."""
+        try:
+            await self.send(event.source.chat_id, reply_text)
+        except Exception as e:
+            print(f"[{self.name}] Failed to send abort reply: {e}")
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""

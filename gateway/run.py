@@ -1623,11 +1623,14 @@ class GatewayRunner:
                         adapter._pending_messages[_quick_key] = event
                 return None
 
+            # ── Natural-language abort detection ──────────────────────
+            # See tools/abort_triggers.py for background.
+            from tools.abort_triggers import is_abort_request, ABORT_REPLY
+
             running_agent = self._running_agents.get(_quick_key)
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Nothing to interrupt — agent hasn't started yet.
+                if event.get_command() == "stop" or is_abort_request(event.text or ""):
                     return "⏳ The agent is still starting up — nothing to stop yet."
                 # Queue the message so it will be picked up after the
                 # agent starts.
@@ -1635,6 +1638,23 @@ class GatewayRunner:
                 if adapter:
                     adapter._pending_messages[_quick_key] = event
                 return None
+
+            if is_abort_request(event.text or ""):
+                logger.info("ABORT TRIGGER detected for session %s: %r", _quick_key[:20], (event.text or "")[:60])
+                running_agent.interrupt()
+                # Kill background processes too
+                try:
+                    from tools.process_registry import process_registry
+                    process_registry.kill_all()
+                except Exception:
+                    pass
+                # Clear pending messages — the user wants everything to stop
+                self._pending_messages.pop(_quick_key, None)
+                adapter = self.adapters.get(source.platform)
+                if adapter and hasattr(adapter, 'get_pending_message'):
+                    adapter.get_pending_message(_quick_key)  # consume and discard
+                return ABORT_REPLY
+
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:

@@ -5532,6 +5532,23 @@ class HermesCLI:
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
+
+                            # Natural-language abort detection.
+                            # See tools/abort_triggers.py for background.
+                            _abort_text = interrupt_msg[0] if isinstance(interrupt_msg, tuple) else interrupt_msg
+                            from tools.abort_triggers import is_abort_request, ABORT_REPLY
+                            if isinstance(_abort_text, str) and is_abort_request(_abort_text):
+                                print(f"\n{ABORT_REPLY}")
+                                if stop_event is not None:
+                                    stop_event.set()
+                                self.agent.interrupt()
+                                try:
+                                    from tools.process_registry import process_registry
+                                    process_registry.kill_all()
+                                except Exception:
+                                    pass
+                                break
+
                             print(f"\n⚡ New message detected, interrupting...")
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:

@@ -5288,7 +5288,18 @@ class GatewayRunner:
                         if msg.get("mirror"):
                             mirror_src = msg.get("mirror_source", "another session")
                             content = f"[Delivered from {mirror_src}] {content}"
-                        agent_history.append({"role": role, "content": content})
+                        entry = {"role": role, "content": content}
+                        # Preserve reasoning fields on assistant messages so
+                        # multi-turn reasoning context survives session reload.
+                        # The agent's _build_api_kwargs converts these to the
+                        # provider-specific format (reasoning_content, etc.).
+                        if role == "assistant":
+                            for _rkey in ("reasoning", "reasoning_details",
+                                          "codex_reasoning_items"):
+                                _rval = msg.get(_rkey)
+                                if _rval:
+                                    entry[_rkey] = _rval
+                        agent_history.append(entry)
             
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:

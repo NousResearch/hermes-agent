@@ -118,6 +118,22 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_status_bar_prefers_active_agent_model(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="anthropic/claude-sonnet-4-20250514"),
+            prompt_tokens=1000,
+            completion_tokens=500,
+            total_tokens=1500,
+            api_calls=1,
+            context_tokens=1000,
+            context_length=32000,
+        )
+        cli_obj.agent.model = "google/gemini-2.5-flash"
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "gemini-2.5-flash" in text
+
 
 class TestCLIUsageReport:
     def test_show_usage_includes_estimated_cost(self, capsys):

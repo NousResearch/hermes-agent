@@ -184,6 +184,33 @@ def load_cli_config() -> Dict[str, Any]:
             "max_simple_chars": 160,
             "max_simple_words": 28,
             "cheap_model": {},
+            "routes": {},
+            "tier_routes": {
+                "low": "cheap",
+                "medium": "primary",
+                "high": "primary",
+            },
+            "max_high_tier_calls_per_session": 0,
+            "tiny_router": {
+                "enabled": False,
+                "backend": "subprocess",
+                "repo_root": "${TINY_ROUTER_REPO_ROOT}",
+                "model_dir": "${TINY_ROUTER_MODEL_DIR}",
+                "pinned_commit": "9d6b2a718a205d90ebe85e9a28f9b8a1f20801e4",
+                "enforce_pinned_commit": True,
+                "source_revision_file": "REVISION",
+                "predict_timeout_seconds": 30,
+                "fallback_mode": "heuristic",
+                "behavior_mode": "shadow",
+                "apply_approval_posture": True,
+                "confidence_thresholds": {
+                    "overall": 0.45,
+                    "relation_to_previous": 0.5,
+                    "actionability": 0.5,
+                    "retention": 0.5,
+                    "urgency": 0.5,
+                },
+            },
         },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
@@ -1171,6 +1198,11 @@ class HermesCLI:
 
         # Optional cheap-vs-strong routing for simple turns
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
+        self._tiny_router_config = (
+            self._smart_model_routing.get("tiny_router", {})
+            if isinstance(self._smart_model_routing, dict)
+            else {}
+        ) or {}
         self._active_agent_route_signature = None
 
         # Agent will be initialized on first use
@@ -1274,8 +1306,23 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    def _status_model_name(self) -> str:
+        """Model currently active for this CLI turn/session UI."""
+        agent = getattr(self, "agent", None)
+        agent_model = str(getattr(agent, "model", "") or "").strip()
+        if agent_model:
+            return agent_model
+
+        signature = getattr(self, "_active_agent_route_signature", None)
+        if isinstance(signature, tuple) and signature:
+            routed_model = signature[0]
+            if isinstance(routed_model, str) and routed_model.strip():
+                return routed_model.strip()
+
+        return self.model or "unknown"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        model_name = self.model or "unknown"
+        model_name = self._status_model_name()
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
@@ -1352,7 +1399,7 @@ class HermesCLI:
             parts.append(duration_label)
             return " │ ".join(parts)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"⚕ {self._status_model_name()}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible:
@@ -1756,6 +1803,17 @@ class HermesCLI:
             self.console.print(f"[bold red]{message}[/]")
             return False
 
+        try:
+            from agent.tiny_router import validate_tiny_router_config
+
+            ok, err = validate_tiny_router_config(self._tiny_router_config)
+            if not ok:
+                self.console.print(f"[bold red]Invalid tiny-router config: {err}[/]")
+                return False
+        except Exception as exc:
+            self.console.print(f"[bold red]Failed to validate tiny-router config: {exc}[/]")
+            return False
+
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
@@ -1810,7 +1868,12 @@ class HermesCLI:
 
         return True
 
-    def _resolve_turn_agent_config(self, user_message: str) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        *,
+        router_output=None,
+    ) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
         from agent.smart_model_routing import resolve_turn_route
 
@@ -1826,7 +1889,45 @@ class HermesCLI:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
             },
+            tiny_router_config=self._tiny_router_config,
+            router_output=router_output,
+            routing_context={"session_id": self.session_id},
         )
+
+    def _classify_turn_with_indicator(
+        self,
+        message: Any,
+        history: Optional[list] = None,
+        *,
+        show_indicator: bool = True,
+    ):
+        """Classify the turn and optionally show a routing wait indicator."""
+        from agent.tiny_router import classify_turn
+
+        cfg = self._tiny_router_config if isinstance(self._tiny_router_config, dict) else {}
+        backend = str(cfg.get("backend") or "subprocess").strip().lower()
+        should_show = bool(show_indicator and cfg.get("enabled") and backend == "subprocess")
+        use_tui_spinner = bool(should_show and getattr(self, "_app", None))
+
+        started = time.monotonic()
+        previous_spinner = self._spinner_text
+        if use_tui_spinner:
+            self._spinner_text = "🧭 tiny-router: selecting model route..."
+            self._invalidate(min_interval=0.0)
+        elif should_show:
+            _cprint(f"  {_DIM}⏳ tiny-router: selecting model route...{_RST}")
+        try:
+            output = classify_turn(cfg, message, history)
+        finally:
+            if use_tui_spinner:
+                # Restore prior spinner text so we don't pollute active agent status.
+                self._spinner_text = previous_spinner
+                self._invalidate(min_interval=0.0)
+        if should_show and not use_tui_spinner:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            source = str(getattr(output, "source", "unknown") or "unknown")
+            _cprint(f"  {_DIM}✓ tiny-router: route signal ready ({source}, {elapsed_ms}ms){_RST}")
+        return output
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None) -> bool:
         """
@@ -2465,7 +2566,8 @@ class HermesCLI:
         tool_count = len(tools) if tools else 0
         
         # Format model name (shorten if needed)
-        model_short = self.model.split("/")[-1] if "/" in self.model else self.model
+        status_model = self._status_model_name()
+        model_short = status_model.split("/")[-1] if "/" in status_model else status_model
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
         
@@ -2489,7 +2591,7 @@ class HermesCLI:
             f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
-    
+
     def show_help(self):
         """Display help information with categorized commands."""
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
@@ -3889,7 +3991,8 @@ class HermesCLI:
         _cprint(f"  Task ID: {task_id}")
         _cprint(f"  You can continue chatting — results will appear when done.\n")
 
-        turn_route = self._resolve_turn_agent_config(prompt)
+        router_output = self._classify_turn_with_indicator(prompt, None, show_indicator=True)
+        turn_route = self._resolve_turn_agent_config(prompt, router_output=router_output)
 
         def run_background():
             try:
@@ -3921,6 +4024,7 @@ class HermesCLI:
                 result = bg_agent.run_conversation(
                     user_message=prompt,
                     task_id=task_id,
+                    router_output_override=router_output,
                 )
 
                 response = result.get("final_response", "") if result else ""
@@ -5377,18 +5481,6 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return None
 
-        turn_route = self._resolve_turn_agent_config(message)
-        if turn_route["signature"] != self._active_agent_route_signature:
-            self.agent = None
-
-        # Initialize agent if needed
-        if not self._init_agent(
-            model_override=turn_route["model"],
-            runtime_override=turn_route["runtime"],
-            route_label=turn_route["label"],
-        ):
-            return None
-        
         # Pre-process images through the vision tool (Gemini Flash) so the
         # main model receives text descriptions instead of raw base64 image
         # content — works with any model, not just vision-capable ones.
@@ -5418,6 +5510,23 @@ class HermesCLI:
                     message = _ctx_result.message
             except Exception as e:
                 logging.debug("@ context reference expansion failed: %s", e)
+
+        router_output = self._classify_turn_with_indicator(
+            message,
+            self.conversation_history,
+            show_indicator=True,
+        )
+        turn_route = self._resolve_turn_agent_config(message, router_output=router_output)
+        if turn_route["signature"] != self._active_agent_route_signature:
+            self.agent = None
+
+        # Initialize agent if needed
+        if not self._init_agent(
+            model_override=turn_route["model"],
+            runtime_override=turn_route["runtime"],
+            route_label=turn_route["label"],
+        ):
+            return None
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -5509,6 +5618,7 @@ class HermesCLI:
                     stream_callback=stream_callback,
                     task_id=self.session_id,
                     persist_user_message=message if _voice_prefix else None,
+                    router_output_override=router_output,
                 )
 
             # Start agent in background thread
@@ -7333,7 +7443,12 @@ def main(
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
-                turn_route = cli._resolve_turn_agent_config(query)
+                router_output = cli._classify_turn_with_indicator(
+                    query,
+                    cli.conversation_history,
+                    show_indicator=False,
+                )
+                turn_route = cli._resolve_turn_agent_config(query, router_output=router_output)
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None
                 if cli._init_agent(
@@ -7345,6 +7460,7 @@ def main(
                     result = cli.agent.run_conversation(
                         user_message=query,
                         conversation_history=cli.conversation_history,
+                        router_output_override=router_output,
                     )
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     if response:

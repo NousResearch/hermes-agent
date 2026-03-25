@@ -173,6 +173,38 @@ DEFAULT_CONFIG = {
         "max_simple_chars": 160,
         "max_simple_words": 28,
         "cheap_model": {},
+        "routes": {},
+        "tier_routes": {
+            "low": "cheap",
+            "medium": "primary",
+            "high": "primary",
+        },
+        "max_high_tier_calls_per_session": 0,
+        "tiny_router": {
+            "enabled": False,
+            "backend": "subprocess",  # subprocess | heuristic
+            "repo_root": "${TINY_ROUTER_REPO_ROOT}",
+            "model_dir": "${TINY_ROUTER_MODEL_DIR}",
+            # Pinned upstream commit used for reproducible routing behavior.
+            # tiny-router currently has no GitHub release tags, so Hermes pins
+            # to a commit SHA instead of a semver tag.
+            "pinned_commit": "9d6b2a718a205d90ebe85e9a28f9b8a1f20801e4",
+            "enforce_pinned_commit": True,
+            # Fallback for non-git deployments: if git metadata is unavailable,
+            # Hermes can read the pinned revision from this file under repo_root.
+            "source_revision_file": "REVISION",
+            "predict_timeout_seconds": 30,
+            "fallback_mode": "heuristic",  # heuristic | none
+            "behavior_mode": "shadow",  # shadow | active
+            "apply_approval_posture": True,
+            "confidence_thresholds": {
+                "overall": 0.45,
+                "relation_to_previous": 0.5,
+                "actionability": 0.5,
+                "retention": 0.5,
+                "urgency": 0.5,
+            },
+        },
     },
     
     # Auxiliary model config — provider:model for each side task.
@@ -378,7 +410,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 15,
 }
 
 # =============================================================================
@@ -393,6 +425,11 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: ["TINY_ROUTER_REPO_ROOT", "TINY_ROUTER_MODEL_DIR"],
+    12: [],
+    13: [],
+    14: [],
+    15: [],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -893,6 +930,20 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
+    "TINY_ROUTER_REPO_ROOT": {
+        "description": "Path to tiny-router repository root (contains scripts/predict.py)",
+        "prompt": "tiny-router repository path",
+        "url": "https://github.com/UdaraJay/tiny-router",
+        "password": False,
+        "category": "setting",
+    },
+    "TINY_ROUTER_MODEL_DIR": {
+        "description": "Path to tiny-router trained model/checkpoint directory",
+        "prompt": "tiny-router model directory",
+        "url": "https://github.com/UdaraJay/tiny-router",
+        "password": False,
+        "category": "setting",
+    },
 }
 
 
@@ -1287,9 +1338,28 @@ _FALLBACK_COMMENT = """
 #   enabled: true
 #   max_simple_chars: 160
 #   max_simple_words: 28
+#   tier_routes:
+#     low: cheap
+#     medium: local_strong
+#     high: strong_remote
+#   max_high_tier_calls_per_session: 2
 #   cheap_model:
 #     provider: openrouter
 #     model: google/gemini-2.5-flash
+#   routes:
+#     local_fast:
+#       provider: custom
+#       model: qwen2.5:7b-instruct
+#       base_url: http://127.0.0.1:11434/v1
+#       api_key_env: LOCAL_LLM_API_KEY
+#   tiny_router:
+#     enabled: true
+#     backend: subprocess
+#     repo_root: ${TINY_ROUTER_REPO_ROOT}
+#     model_dir: ${TINY_ROUTER_MODEL_DIR}
+#     pinned_commit: 9d6b2a718a205d90ebe85e9a28f9b8a1f20801e4
+#     enforce_pinned_commit: true
+#     behavior_mode: active
 """
 
 
@@ -1330,9 +1400,28 @@ _COMMENTED_SECTIONS = """
 #   enabled: true
 #   max_simple_chars: 160
 #   max_simple_words: 28
+#   tier_routes:
+#     low: cheap
+#     medium: local_strong
+#     high: strong_remote
+#   max_high_tier_calls_per_session: 2
 #   cheap_model:
 #     provider: openrouter
 #     model: google/gemini-2.5-flash
+#   routes:
+#     local_fast:
+#       provider: custom
+#       model: qwen2.5:7b-instruct
+#       base_url: http://127.0.0.1:11434/v1
+#       api_key_env: LOCAL_LLM_API_KEY
+#   tiny_router:
+#     enabled: true
+#     backend: subprocess
+#     repo_root: ${TINY_ROUTER_REPO_ROOT}
+#     model_dir: ${TINY_ROUTER_MODEL_DIR}
+#     pinned_commit: 9d6b2a718a205d90ebe85e9a28f9b8a1f20801e4
+#     enforce_pinned_commit: true
+#     behavior_mode: active
 """
 
 

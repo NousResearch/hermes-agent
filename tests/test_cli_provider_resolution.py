@@ -213,6 +213,148 @@ def test_cli_turn_routing_uses_cheap_model_when_simple(monkeypatch):
     assert result["label"] is not None
 
 
+def test_cli_turn_routing_uses_named_low_tier_route(monkeypatch):
+    cli = _import_cli()
+
+    monkeypatch.setenv("LOCAL_LLM_API_KEY", "local-key")
+
+    def _runtime_resolve(**kwargs):
+        assert kwargs["requested"] == "custom"
+        return {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "local-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "primary-key"
+    shell._smart_model_routing = {
+        "enabled": True,
+        "tier_routes": {"low": "local_fast", "medium": "primary", "high": "primary"},
+        "routes": {
+            "local_fast": {
+                "provider": "custom",
+                "model": "qwen2.5:7b-instruct",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "api_key_env": "LOCAL_LLM_API_KEY",
+            }
+        },
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+    }
+
+    result = shell._resolve_turn_agent_config("what time is it in tokyo?")
+
+    assert result["model"] == "qwen2.5:7b-instruct"
+    assert result["runtime"]["provider"] == "custom"
+    assert result["runtime"]["api_key"] == "local-key"
+    assert "local_fast" in (result["label"] or "")
+
+
+def test_cli_turn_routing_uses_tiny_router_active_mode(monkeypatch):
+    cli = _import_cli()
+    from agent.tiny_router import HeadPrediction, RouterOutput
+
+    def _runtime_resolve(**kwargs):
+        return {
+            "provider": "zai",
+            "api_mode": "chat_completions",
+            "base_url": "https://open.z.ai/api/v1",
+            "api_key": "cheap-key",
+            "source": "env/config",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    shell.provider = "openrouter"
+    shell.api_mode = "chat_completions"
+    shell.base_url = "https://openrouter.ai/api/v1"
+    shell.api_key = "primary-key"
+    shell._smart_model_routing = {
+        "enabled": True,
+        "cheap_model": {"provider": "zai", "model": "glm-5-air"},
+        "max_simple_chars": 160,
+        "max_simple_words": 28,
+    }
+    shell._tiny_router_config = {"enabled": True, "behavior_mode": "active"}
+
+    result = shell._resolve_turn_agent_config(
+        "please summarize this in one sentence",
+        router_output=RouterOutput(
+            relation_to_previous=HeadPrediction("follow_up", 0.7),
+            actionability=HeadPrediction("none", 0.9),
+            retention=HeadPrediction("ephemeral", 0.8),
+            urgency=HeadPrediction("low", 0.95),
+            overall_confidence=0.9,
+            source="heuristic",
+        ),
+    )
+
+    assert result["model"] == "glm-5-air"
+    assert result["runtime"]["provider"] == "zai"
+    assert "tiny-router" in (result["label"] or "")
+
+
+def test_classify_turn_with_indicator_prints_when_subprocess_backend(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    shell._tiny_router_config = {"enabled": True, "backend": "subprocess"}
+
+    fake_output = SimpleNamespace(source="subprocess")
+    monkeypatch.setattr("agent.tiny_router.classify_turn", lambda cfg, message, history: fake_output)
+
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", lambda msg: printed.append(str(msg)))
+
+    result = shell._classify_turn_with_indicator("route this", [], show_indicator=True)
+
+    assert result is fake_output
+    assert any("tiny-router: selecting model route" in line for line in printed)
+    assert any("tiny-router: route signal ready" in line for line in printed)
+
+
+def test_classify_turn_with_indicator_uses_tui_spinner_without_terminal_print(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="anthropic/claude-sonnet-4", compact=True, max_turns=1)
+    shell._tiny_router_config = {"enabled": True, "backend": "subprocess"}
+
+    calls = {"invalidate": 0, "classify": 0}
+
+    def _classify(cfg, message, history):
+        calls["classify"] += 1
+        # Spinner text should be set while classify executes.
+        assert "tiny-router: selecting model route" in shell._spinner_text
+        return SimpleNamespace(source="subprocess")
+
+    monkeypatch.setattr("agent.tiny_router.classify_turn", _classify)
+
+    printed = []
+    monkeypatch.setattr(cli, "_cprint", lambda msg: printed.append(str(msg)))
+
+    shell._app = SimpleNamespace(invalidate=lambda: None)
+    shell._spinner_text = "existing spinner"
+
+    def _invalidate(min_interval=0.25):
+        calls["invalidate"] += 1
+
+    shell._invalidate = _invalidate
+    result = shell._classify_turn_with_indicator("route this", [], show_indicator=True)
+
+    assert result.source == "subprocess"
+    assert calls["classify"] == 1
+    assert calls["invalidate"] == 2
+    assert shell._spinner_text == "existing spinner"
+    assert printed == []
+
+
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     cli = _import_cli()
 

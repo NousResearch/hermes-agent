@@ -493,6 +493,25 @@ def check_all_command_guards(command: str, env_type: str,
 
     session_key = os.getenv("HERMES_SESSION_KEY", "default")
 
+    # Tiny-router approval posture: when a turn is classified as "review",
+    # require user confirmation before executing risky shell commands.
+    try:
+        from agent.tiny_router import get_active_router_for_tools
+        from hermes_cli.config import load_config
+
+        _router_out = get_active_router_for_tools()
+        _cfg = load_config()
+        _smart = _cfg.get("smart_model_routing", {}) if isinstance(_cfg, dict) else {}
+        _tiny_cfg = _smart.get("tiny_router", {}) if isinstance(_smart, dict) else {}
+        if _router_out and _router_out.needs_terminal_review_escalation(_tiny_cfg):
+            _router_key = "tiny_router:review"
+            _router_desc = "tiny-router policy: this turn is review-required"
+            if not is_approved(session_key, _router_key):
+                # Session-only approval behavior (same as tirith warnings).
+                warnings.append((_router_key, _router_desc, True))
+    except Exception:
+        pass
+
     if tirith_result["action"] == "warn":
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"

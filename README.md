@@ -104,6 +104,11 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | All commands and flags |
 | [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference |
 
+Repository docs for the tiny-router integration:
+
+- [Tiny Router Integration](docs/tiny-router-integration.md)
+- [Local Test Plan (Tiny Router)](docs/local-test-plan-tiny-router.md)
+
 ---
 
 ## Migrating from OpenClaw

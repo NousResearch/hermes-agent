@@ -83,6 +83,15 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md
+from agent.tiny_router import (
+    RouterOutput,
+    apply_router_thread_local,
+    classify_turn,
+    reset_active_router_output,
+    router_dict_from_output,
+    set_active_router_output,
+    validate_tiny_router_config,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -900,6 +909,19 @@ class AIAgent:
         except Exception:
             _agent_cfg = {}
 
+        routing_cfg = _agent_cfg.get("smart_model_routing", {})
+        if not isinstance(routing_cfg, dict):
+            routing_cfg = {}
+        tiny_router_cfg = routing_cfg.get("tiny_router", {})
+        if not isinstance(tiny_router_cfg, dict):
+            tiny_router_cfg = {}
+        self._tiny_router_config = tiny_router_cfg
+        _tr_ok, _tr_err = validate_tiny_router_config(self._tiny_router_config)
+        if not _tr_ok:
+            raise RuntimeError(f"Invalid tiny-router config: {_tr_err}")
+        self._current_router_output: Optional[RouterOutput] = None
+        self._aggressive_memory_flush_pending = False
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -1538,6 +1560,7 @@ class AIAgent:
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
+                    metadata=msg.get("metadata"),
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -4436,6 +4459,12 @@ class AIAgent:
             "Save anything worth remembering — prioritize user preferences, "
             "corrections, and recurring patterns over task-specific details.]"
         )
+        if self._aggressive_memory_flush_pending:
+            flush_content = (
+                flush_content
+                + " [Priority: this turn is high-urgency and action-heavy; preserve details"
+                " that could affect immediate follow-up actions.]"
+            )
         _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
         flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
         messages.append(flush_msg)
@@ -4452,6 +4481,7 @@ class AIAgent:
                         api_msg["reasoning_content"] = reasoning
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
+                api_msg.pop("metadata", None)
                 api_msg.pop("_flush_sentinel", None)
                 if _is_strict_api:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
@@ -4645,6 +4675,21 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _call_registry_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
+        """Call a registry-dispatched tool with current tiny-router context attached."""
+        token = set_active_router_output(self._current_router_output)
+        apply_router_thread_local(self._current_router_output)
+        try:
+            return handle_function_call(
+                function_name, function_args, effective_task_id,
+                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                honcho_manager=self._honcho,
+                honcho_session_key=self._honcho_session_key,
+            )
+        finally:
+            reset_active_router_output(token)
+            apply_router_thread_local(None)
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
@@ -4702,12 +4747,7 @@ class AIAgent:
                 parent_agent=self,
             )
         else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                honcho_manager=self._honcho,
-                honcho_session_key=self._honcho_session_key,
-            )
+            return self._call_registry_tool(function_name, function_args, effective_task_id)
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -5070,11 +5110,8 @@ class AIAgent:
                 spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        honcho_manager=self._honcho,
-                        honcho_session_key=self._honcho_session_key,
+                    function_result = self._call_registry_tool(
+                        function_name, function_args, effective_task_id
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -5086,11 +5123,8 @@ class AIAgent:
                     spinner.stop(cute_msg)
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        honcho_manager=self._honcho,
-                        honcho_session_key=self._honcho_session_key,
+                    function_result = self._call_registry_tool(
+                        function_name, function_args, effective_task_id
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -5399,6 +5433,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         sync_honcho: bool = True,
+        router_output_override: Optional[RouterOutput] = None,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -5416,6 +5451,8 @@ class AIAgent:
                 synthetic prefixes.
             sync_honcho: When False, skip writing the final synthetic turn back
                 to Honcho or queuing follow-up prefetch work.
+            router_output_override: Optional precomputed tiny-router output for
+                this turn. When omitted, the agent classifies the turn locally.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -5466,6 +5503,22 @@ class AIAgent:
         # Honcho should receive the actual user input, not system nudges.
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
+        # Per-turn tiny-router classification. This metadata drives route/memory/
+        # approval policies and is persisted with the user turn.
+        router_output = router_output_override
+        if router_output is None:
+            router_output = classify_turn(
+                self._tiny_router_config,
+                original_user_message,
+                messages,
+            )
+        self._current_router_output = router_output
+        self._aggressive_memory_flush_pending = (
+            router_output.should_aggressive_memory_flush(self._tiny_router_config)
+            if isinstance(router_output, RouterOutput)
+            else False
+        )
+
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
         # how many tool iterations THIS turn used.
@@ -5477,6 +5530,13 @@ class AIAgent:
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
                 self._turns_since_memory = 0
+        if (
+            isinstance(router_output, RouterOutput)
+            and self._memory_store
+            and "memory" in self.valid_tool_names
+            and router_output.should_boost_memory_nudge(self._tiny_router_config)
+        ):
+            _should_review_memory = True
 
         # Honcho prefetch consumption:
         # - First turn: bake into cached system prompt (stable for the session).
@@ -5500,7 +5560,11 @@ class AIAgent:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
         # Add user message
-        user_msg = {"role": "user", "content": user_message}
+        user_msg = {
+            "role": "user",
+            "content": user_message,
+            "metadata": router_dict_from_output(router_output) if isinstance(router_output, RouterOutput) else None,
+        }
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
@@ -5677,6 +5741,10 @@ class AIAgent:
                 # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
+                # Local-only message metadata (tiny-router etc.) is persisted but
+                # never sent to model providers.
+                if "metadata" in api_msg:
+                    api_msg.pop("metadata")
                 # Strip Codex Responses API fields (call_id, response_item_id) for
                 # strict providers like Mistral that reject unknown fields with 422.
                 # Uses new dicts so the internal messages list retains the fields
@@ -7094,6 +7162,14 @@ class AIAgent:
         # Clean up VM and browser for this task after conversation completes
         self._cleanup_task_resources(effective_task_id)
 
+        # For urgent/actionable turns, force a memory flush before persistence so
+        # the resulting memory tool events are captured in transcripts.
+        if final_response and self._aggressive_memory_flush_pending:
+            try:
+                self.flush_memories(messages, min_turns=0)
+            except Exception:
+                pass
+
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
 
@@ -7134,6 +7210,11 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "router": (
+                router_dict_from_output(router_output)
+                if isinstance(router_output, RouterOutput)
+                else None
+            ),
         }
         self._response_was_previewed = False
         
@@ -7166,6 +7247,9 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        self._current_router_output = None
+        self._aggressive_memory_flush_pending = False
 
         return result
 

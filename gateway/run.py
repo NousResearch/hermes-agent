@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -328,6 +329,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._smart_model_routing = self._load_smart_model_routing()
+        self._tiny_router_config = self._load_tiny_router_config()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -668,7 +670,14 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        router_output=None,
+        routing_context: Optional[Dict[str, Any]] = None,
+    ) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
         primary = {
@@ -680,7 +689,42 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
         }
-        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        return resolve_turn_route(
+            user_message,
+            getattr(self, "_smart_model_routing", {}),
+            primary,
+            tiny_router_config=getattr(self, "_tiny_router_config", {}),
+            router_output=router_output,
+            routing_context=routing_context,
+        )
+
+    def _run_conversation_with_router(
+        self,
+        agent: Any,
+        *,
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        task_id: Optional[str] = None,
+        router_output: Any = None,
+    ) -> Dict[str, Any]:
+        """Call run_conversation with tiny-router override when supported."""
+        kwargs: Dict[str, Any] = {}
+        if conversation_history is not None:
+            kwargs["conversation_history"] = conversation_history
+        if task_id is not None:
+            kwargs["task_id"] = task_id
+
+        supports_router_override = False
+        try:
+            sig = inspect.signature(agent.run_conversation)
+            supports_router_override = "router_output_override" in sig.parameters
+        except (TypeError, ValueError):
+            supports_router_override = False
+
+        if supports_router_override:
+            kwargs["router_output_override"] = router_output
+
+        return agent.run_conversation(user_message, **kwargs)
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -925,6 +969,29 @@ class GatewayRunner:
             pass
         return {}
 
+    @staticmethod
+    def _load_tiny_router_config() -> dict:
+        """Load optional tiny-router turn classification config."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                try:
+                    from hermes_cli.config import _expand_env_vars
+                    cfg = _expand_env_vars(cfg)
+                except Exception:
+                    pass
+                smart = cfg.get("smart_model_routing", {}) or {}
+                if isinstance(smart, dict):
+                    tiny = smart.get("tiny_router", {}) or {}
+                    if isinstance(tiny, dict):
+                        return tiny
+        except Exception:
+            pass
+        return {}
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -933,6 +1000,19 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+        try:
+            from agent.tiny_router import validate_tiny_router_config
+
+            ok, err = validate_tiny_router_config(getattr(self, "_tiny_router_config", {}))
+            if not ok:
+                logger.error("Invalid tiny-router config: %s", err)
+                self._exit_reason = f"Invalid tiny-router config: {err}"
+                return False
+        except Exception as e:
+            logger.error("Failed to validate tiny-router config: %s", e)
+            self._exit_reason = f"tiny-router config validation failed: {e}"
+            return False
+
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="starting", exit_reason=None)
@@ -3749,7 +3829,16 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            from agent.tiny_router import classify_turn
+
+            router_output = classify_turn(getattr(self, "_tiny_router_config", {}), prompt, None)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                router_output=router_output,
+                routing_context={"session_id": self._session_key_for_source(source)},
+            )
 
             def run_sync():
                 agent = AIAgent(
@@ -3772,9 +3861,11 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                 )
 
-                return agent.run_conversation(
+                return self._run_conversation_with_router(
+                    agent,
                     user_message=prompt,
                     task_id=task_id,
+                    router_output=router_output,
                 )
 
             loop = asyncio.get_event_loop()
@@ -5183,7 +5274,16 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            from agent.tiny_router import classify_turn
+
+            router_output = classify_turn(getattr(self, "_tiny_router_config", {}), message, history)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                router_output=router_output,
+                routing_context={"session_id": session_key},
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -5303,7 +5403,13 @@ class GatewayRunner:
                             if _p:
                                 _history_media_paths.add(_p)
             
-            result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+            result = self._run_conversation_with_router(
+                agent,
+                user_message=message,
+                conversation_history=agent_history,
+                task_id=session_id,
+                router_output=router_output,
+            )
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

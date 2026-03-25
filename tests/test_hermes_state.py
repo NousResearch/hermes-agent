@@ -83,7 +83,6 @@ class TestSessionLifecycle:
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
 
-
 # =========================================================================
 # Message storage
 # =========================================================================
@@ -176,6 +175,22 @@ class TestMessageStorage:
 
         messages = db.get_messages("s1")
         assert messages[0]["finish_reason"] == "stop"
+
+    def test_metadata_roundtrip(self, db):
+        db.create_session(session_id="s1", source="cli")
+        metadata = {"tiny_router": {"retention": {"label": "remember", "confidence": 0.9}}}
+        db.append_message("s1", role="user", content="Remember this", metadata=metadata)
+
+        messages = db.get_messages("s1")
+        assert messages[0]["metadata"] == metadata
+
+    def test_conversation_view_includes_metadata(self, db):
+        db.create_session(session_id="s1", source="cli")
+        metadata = {"tiny_router": {"actionability": {"label": "review", "confidence": 0.8}}}
+        db.append_message("s1", role="user", content="double-check this", metadata=metadata)
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["metadata"] == metadata
 
 
 # =========================================================================
@@ -737,7 +752,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 5
+        assert version == 6
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -793,12 +808,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v5
+        # Open with SessionDB — should migrate to latest schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 5
+        assert cursor.fetchone()[0] == 6
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

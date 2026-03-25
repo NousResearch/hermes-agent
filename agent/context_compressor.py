@@ -51,6 +51,18 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 _CHARS_PER_TOKEN = 4
 
 
+def _is_retention_priority(msg: Dict[str, Any]) -> bool:
+    """True when tiny-router marks this turn as useful/remember."""
+    try:
+        metadata = msg.get("metadata") or {}
+        tiny_router = metadata.get("tiny_router") or {}
+        retention = tiny_router.get("retention") or {}
+        label = str(retention.get("label") or "").strip().lower()
+        return label in {"useful", "remember"}
+    except Exception:
+        return False
+
+
 class ContextCompressor:
     """Compresses conversation context when approaching the model's context limit.
 
@@ -517,6 +529,15 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
+
+        # Priority retention turns (tiny-router useful/remember) are favored:
+        # if one sits just outside the tail boundary, pull the cut backward to
+        # keep it in the protected tail window.
+        search_start = max(head_end + 1, cut_idx - 24)
+        for i in range(cut_idx - 1, search_start - 1, -1):
+            if _is_retention_priority(messages[i]):
+                cut_idx = i
+                break
 
         return max(cut_idx, head_end + 1)
 

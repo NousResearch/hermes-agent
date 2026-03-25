@@ -186,7 +186,7 @@ class TestVideoGenerateToolValidation:
     def test_invalid_duration_defaults_silently(self):
         """Invalid duration should fall back to 5 (no crash)."""
         fake_fal = _make_fal_mock("https://cdn.fal.ai/video.mp4")
-        fake_content = b"\x00" * 100
+        fake_content = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 11_000  # > 10 KB size guard
 
         with patch.dict(os.environ, {"FAL_KEY": "key"}):
             with patch("tools.video_generation_tool.fal_client", fake_fal):
@@ -202,7 +202,7 @@ class TestVideoGenerateToolValidation:
 
     def test_invalid_aspect_ratio_defaults_silently(self):
         fake_fal = _make_fal_mock("https://cdn.fal.ai/video.mp4")
-        fake_content = b"\x00" * 100
+        fake_content = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 11_000  # > 10 KB size guard
 
         with patch.dict(os.environ, {"FAL_KEY": "key"}):
             with patch("tools.video_generation_tool.fal_client", fake_fal):
@@ -222,7 +222,7 @@ class TestVideoGenerateToolValidation:
 
 class TestVideoGenerateToolSuccess:
     VIDEO_URL = "https://cdn.fal.ai/generated/video.mp4"
-    FAKE_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50
+    FAKE_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 11_000  # > 10 KB size guard
 
     def _run(self, prompt="a cat walking", model="kling", duration=5, aspect_ratio="landscape"):
         from tools.video_generation_tool import video_generate_tool
@@ -413,7 +413,7 @@ class TestRegistryRegistration:
 class TestHandleVideoGenerate:
     """_handle_video_generate maps args dict → video_generate_tool kwargs."""
 
-    FAKE_BYTES = b"\x00" * 50
+    FAKE_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 11_000  # > 10 KB size guard
     VIDEO_URL = "https://cdn.fal.ai/v.mp4"
 
     def _dispatch(self, args: dict):
@@ -499,7 +499,7 @@ class TestHandleVideoGenerate:
 class TestDownloadVideoExtension:
     """_download_video picks the correct temp file suffix from the URL."""
 
-    FAKE_BYTES = b"\x00" * 50
+    FAKE_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 11_000  # > 10 KB size guard
 
     def _download(self, url: str) -> str:
         from tools.video_generation_tool import _download_video
@@ -559,7 +559,7 @@ class TestDownloadVideoExtension:
 class TestRegistryDispatchIntegration:
     """Full pipeline: registry.dispatch('video_generate', args) → JSON result."""
 
-    FAKE_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50
+    FAKE_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 11_000  # > 10 KB size guard
     VIDEO_URL = "https://cdn.fal.ai/integration/video.mp4"
 
     def _dispatch(self, args: dict):

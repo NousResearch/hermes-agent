@@ -252,6 +252,14 @@ class KawaiiSpinner:
         except (ValueError, OSError):
             pass
 
+    @property
+    def _is_tty(self) -> bool:
+        """Check if output is a real terminal, safe against closed streams."""
+        try:
+            return hasattr(self._out, 'isatty') and self._out.isatty()
+        except (ValueError, OSError):
+            return False
+
     def _is_patch_stdout_proxy(self) -> bool:
         """Return True when stdout is prompt_toolkit's StdoutProxy.
 
@@ -272,7 +280,7 @@ class KawaiiSpinner:
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
         # skip the animation entirely — it creates massive log bloat.
         # Just log the start once and let stop() log the completion.
-        if not hasattr(self._out, 'isatty') or not self._out.isatty():
+        if not self._is_tty:
             self._write(f"  [tool] {self.message}", flush=True)
             while self.running:
                 time.sleep(0.5)
@@ -343,7 +351,7 @@ class KawaiiSpinner:
         if self.thread:
             self.thread.join(timeout=0.5)
 
-        is_tty = hasattr(self._out, 'isatty') and self._out.isatty()
+        is_tty = self._is_tty
         if is_tty:
             # Clear the spinner line with spaces instead of \033[K to avoid
             # garbled escape codes when prompt_toolkit's patch_stdout is active.

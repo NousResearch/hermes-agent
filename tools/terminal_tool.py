@@ -841,6 +841,11 @@ def cleanup_vm(task_id: str):
         clear_file_ops_cache(task_id)
     except ImportError:
         pass
+    try:
+        from tools.search_cache import clear_accelerator
+        clear_accelerator(task_id)
+    except ImportError:
+        pass
 
     if env is None:
         return

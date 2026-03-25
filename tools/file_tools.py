@@ -415,6 +415,91 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+def _search_candidates(file_ops, pattern: str, candidates: list,
+                       limit: int, offset: int, output_mode: str,
+                       context: int):
+    """Run ripgrep on a specific list of candidate files (from trigram index).
+
+    Instead of scanning the whole tree, we pass candidate file paths to rg
+    via a temp file (--files-from), which is much faster for large repos
+    and avoids command-line length limits.
+    """
+    import re as _re
+    from tools.file_operations import SearchResult, SearchMatch
+
+    if not candidates:
+        return SearchResult(matches=[], total_count=0)
+
+    escaped_pattern = file_ops._escape_shell_arg(pattern)
+
+    # Write candidate paths to a temp file, search with rg --files-from, clean up
+    candidates_escaped = '\\n'.join(c.replace("'", "'\\''") for c in candidates[:10000])
+    cmd = f"_cf=$(mktemp) && printf '{candidates_escaped}\\n' > \"$_cf\" && "
+    cmd += "rg --line-number --no-heading --with-filename"
+
+    if context > 0:
+        cmd += f" -C {context}"
+    if output_mode == "files_only":
+        cmd += " -l"
+    elif output_mode == "count":
+        cmd += " -c"
+
+    fetch_limit = limit + offset + (200 if context > 0 else 0)
+    cmd += f" {escaped_pattern} --files-from \"$_cf\" | head -n {fetch_limit}; rm -f \"$_cf\""
+
+    result = file_ops._exec(cmd, timeout=60)
+
+    if output_mode == "files_only":
+        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        total = len(all_files)
+        page = all_files[offset:offset + limit]
+        return SearchResult(files=page, total_count=total)
+
+    elif output_mode == "count":
+        counts = {}
+        for line in result.stdout.strip().split('\n'):
+            if ':' in line:
+                parts = line.rsplit(':', 1)
+                if len(parts) == 2:
+                    try:
+                        counts[parts[0]] = int(parts[1])
+                    except ValueError:
+                        pass
+        return SearchResult(counts=counts, total_count=sum(counts.values()))
+
+    else:
+        _match_re = _re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+        _ctx_re = _re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
+        matches = []
+        for line in result.stdout.strip().split('\n'):
+            if not line or line == "--":
+                continue
+            m = _match_re.match(line)
+            if m:
+                matches.append(SearchMatch(
+                    path=(m.group(1) or '') + m.group(2),
+                    line_number=int(m.group(3)),
+                    content=m.group(4)[:500]
+                ))
+                continue
+            if context > 0:
+                m = _ctx_re.match(line)
+                if m:
+                    matches.append(SearchMatch(
+                        path=(m.group(1) or '') + m.group(2),
+                        line_number=int(m.group(3)),
+                        content=m.group(4)[:500]
+                    ))
+
+        total = len(matches)
+        page = matches[offset:offset + limit]
+        return SearchResult(
+            matches=page,
+            total_count=total,
+            truncated=total > offset + limit
+        )
+
+
 FILE_TOOLS = [
     {"name": "read_file", "function": read_file_tool},
     {"name": "write_file", "function": write_file_tool},

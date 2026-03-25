@@ -12,7 +12,31 @@
       };
 
       configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
+
+      # Auto-generated config key reference — always in sync with Python
+      configKeys = pkgs.runCommand "hermes-config-keys" {} ''
+        set -euo pipefail
+        export HOME=$TMPDIR
+        ${hermesVenv}/bin/python3 -c '
+import json, sys
+from hermes_cli.config import DEFAULT_CONFIG
+
+def leaf_paths(d, prefix=""):
+    paths = []
+    for k, v in sorted(d.items()):
+        path = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict) and v:
+            paths.extend(leaf_paths(v, path))
+        else:
+            paths.append(path)
+    return paths
+
+json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
+' > $out
+      '';
     in {
+      packages.configKeys = configKeys;
+
       checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''
@@ -97,63 +121,6 @@
           check_blocked "config edit" ${hermes-agent}/bin/hermes config edit
 
           echo "=== All guard checks passed ==="
-          mkdir -p $out
-          echo "ok" > $out/result
-        '';
-
-        # ── Config drift detection ────────────────────────────────────────
-        # Extracts leaf key paths from Python's DEFAULT_CONFIG and compares
-        # against the committed reference in nix/config-keys.json.
-        config-drift = pkgs.runCommand "hermes-config-drift" {
-          nativeBuildInputs = [ pkgs.jq ];
-          referenceKeys = ./config-keys.json;
-        } ''
-          set -e
-          export HOME=$(mktemp -d)
-
-          echo "=== Extracting DEFAULT_CONFIG leaf keys from Python ==="
-          ${hermesVenv}/bin/python3 -c '
-import json, sys
-from hermes_cli.config import DEFAULT_CONFIG
-
-def leaf_paths(d, prefix=""):
-    paths = []
-    for k, v in sorted(d.items()):
-        path = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict) and v:
-            paths.extend(leaf_paths(v, path))
-        else:
-            paths.append(path)
-    return paths
-
-json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout)
-' > /tmp/actual-keys.json
-
-          echo "=== Comparing against reference ==="
-          jq -r '.[]' $referenceKeys | sort > /tmp/reference.txt
-          jq -r '.[]' /tmp/actual-keys.json | sort > /tmp/actual.txt
-
-          ADDED=$(comm -23 /tmp/actual.txt /tmp/reference.txt || true)
-          REMOVED=$(comm -13 /tmp/actual.txt /tmp/reference.txt || true)
-          FAILED=false
-
-          if [ -n "$ADDED" ]; then
-            echo "FAIL: New keys in DEFAULT_CONFIG not in nix/config-keys.json:"
-            echo "$ADDED" | sed 's/^/  + /'
-            FAILED=true
-          fi
-          if [ -n "$REMOVED" ]; then
-            echo "FAIL: Keys in nix/config-keys.json missing from DEFAULT_CONFIG:"
-            echo "$REMOVED" | sed 's/^/  - /'
-            FAILED=true
-          fi
-
-          if [ "$FAILED" = "true" ]; then
-            exit 1
-          fi
-
-          ACTUAL_COUNT=$(wc -l < /tmp/actual.txt)
-          echo "PASS: All $ACTUAL_COUNT config keys match reference"
           mkdir -p $out
           echo "ok" > $out/result
         '';

@@ -74,6 +74,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
 )
@@ -665,7 +666,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 user_name=data.get("senderName"),
             )
             
-            # Download image media URLs to the local cache so the vision tool
+            # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.
             raw_urls = data.get("mediaUrls", [])
             cached_urls = []
@@ -696,12 +697,59 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         print(f"[{self.name}] Failed to cache voice: {e}", flush=True)
                         cached_urls.append(url)
                         media_types.append("audio/ogg")
+                elif msg_type == MessageType.VOICE and os.path.isabs(url):
+                    # Local file path — bridge already downloaded the audio
+                    cached_urls.append(url)
+                    media_types.append("audio/ogg")
+                    print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
+                    # Local file path — bridge already downloaded the document
+                    cached_urls.append(url)
+                    ext = Path(url).suffix.lower()
+                    mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                    media_types.append(mime)
+                    print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                elif msg_type == MessageType.VIDEO and os.path.isabs(url):
+                    cached_urls.append(url)
+                    media_types.append("video/mp4")
+                    print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")
-            
+
+            # For text-readable documents, inject file content directly into
+            # the message text so the agent can read it inline.
+            # Cap at 100KB to match Telegram/Discord/Slack behaviour.
+            body = data.get("body", "")
+            MAX_TEXT_INJECT_BYTES = 100 * 1024
+            if msg_type == MessageType.DOCUMENT and cached_urls:
+                for doc_path in cached_urls:
+                    ext = Path(doc_path).suffix.lower()
+                    if ext in (".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"):
+                        try:
+                            file_size = Path(doc_path).stat().st_size
+                            if file_size > MAX_TEXT_INJECT_BYTES:
+                                print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {MAX_TEXT_INJECT_BYTES})", flush=True)
+                                continue
+                            content = Path(doc_path).read_text(errors="replace")
+                            fname = Path(doc_path).name
+                            # Remove the doc_<hex>_ prefix for display
+                            display_name = fname
+                            if "_" in fname:
+                                parts = fname.split("_", 2)
+                                if len(parts) >= 3:
+                                    display_name = parts[2]
+                            injection = f"[Content of {display_name}]:\n{content}"
+                            if body:
+                                body = f"{injection}\n\n{body}"
+                            else:
+                                body = injection
+                            print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
+                        except Exception as e:
+                            print(f"[{self.name}] Failed to read document text: {e}", flush=True)
+
             return MessageEvent(
-                text=data.get("body", ""),
+                text=body,
                 message_type=msg_type,
                 source=source,
                 raw_message=data,

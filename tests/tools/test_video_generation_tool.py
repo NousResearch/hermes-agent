@@ -272,7 +272,7 @@ class TestVideoGenerateToolSuccess:
     def test_fal_submit_called_with_kling_model_id(self):
         _, fake_fal = self._run(model="kling")
         call_args = fake_fal.submit.call_args
-        assert call_args[0][0] == "fal-ai/kling-video/v1.5/pro"
+        assert call_args[0][0] == "fal-ai/kling-video/v1/standard/text-to-video"
 
     def test_fal_submit_called_with_luma_model_id(self):
         _, fake_fal = self._run(model="luma")

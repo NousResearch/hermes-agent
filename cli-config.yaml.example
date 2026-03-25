@@ -614,7 +614,7 @@ tts:
   mode: "full"                 # "full" | "summary"
   provider: "edge"             # "edge" | "elevenlabs" | "openai" | "neutts"
   summary:
-    length: "2 sentences"      # target spoken summary length when mode="summary"
+    length: "1 sentence"       # target spoken summary length when mode="summary"
     # provider: "openrouter"   # optional override just for TTS summaries
     # model: "google/gemini-3-flash-preview"
     # base_url: ""

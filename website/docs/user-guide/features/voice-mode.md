@@ -402,7 +402,7 @@ tts:
   mode: "full"                    # "full" | "summary" for auto-spoken assistant replies
   provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts"
   summary:
-    length: "2 sentences"          # target length when mode="summary"
+    length: "1 sentence"           # target length when mode="summary"
     provider: ""                   # optional override for summary routing
     model: ""
     base_url: ""
@@ -423,7 +423,9 @@ tts:
     device: cpu
 ```
 
-`tts.mode: "summary"` makes Hermes speak a short summary for automatic voice replies instead of reading the full response verbatim. The `tts.summary.*` block is specific to TTS and only falls back to compression summary routing if you leave it blank. Streaming sentence-by-sentence playback stays enabled only in `full` mode.
+`tts.mode: "summary"` makes Hermes speak a short summary for automatic voice replies instead of reading the full response verbatim. Hermes first cleans the assistant text for speech, then optionally summarizes it, then sends that result to the configured TTS provider.
+
+Use `tts.summary.length` to control how short it should be. This is free-form guidance rather than a strict enum, so `1 sentence`, `8 words`, or `about 10 words` are all valid. The `tts.summary.*` block is specific to TTS and only falls back to compression summary routing if you leave it blank. Streaming sentence-by-sentence playback stays enabled only in `full` mode.
 
 ### Environment Variables
 

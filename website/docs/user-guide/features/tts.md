@@ -36,7 +36,7 @@ tts:
   mode: "full"                  # "full" | "summary" for auto-spoken assistant replies
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
   summary:
-    length: "2 sentences"       # target length when mode="summary"
+    length: "1 sentence"        # target length when mode="summary"
     provider: ""                # optional: override summary provider
     model: ""                   # optional: override summary model
     base_url: ""                # optional: direct OpenAI-compatible summary endpoint
@@ -57,7 +57,18 @@ tts:
     device: cpu
 ```
 
-When `tts.mode` is set to `summary`, Hermes compresses auto-spoken assistant replies into short spoken copy before synthesis. `tts.summary.*` is its own config surface for TTS; if you leave those fields blank, Hermes falls back to the compression summary routing as a convenience.
+### How Summary Mode Works
+
+Automatic spoken replies go through a small prep step before audio generation:
+
+1. Hermes finishes generating the normal text reply.
+2. It strips markdown, tags, and other text that does not sound good when read aloud.
+3. If `tts.mode` is `summary`, Hermes asks a summarizer to rewrite that reply to the target length from `tts.summary.length`.
+4. The cleaned full reply or cleaned summary is sent to the configured TTS provider.
+
+`tts.summary.*` is its own config surface for TTS. If you leave `provider`, `model`, `base_url`, and `api_key` blank, Hermes falls back to the compression summary routing as a convenience.
+
+`tts.summary.length` is natural-language guidance, so values like `1 sentence`, `8 words`, `about 12 words`, or `3 short sentences` all work.
 
 ### Telegram Voice Bubbles & ffmpeg
 

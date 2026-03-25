@@ -282,7 +282,7 @@ DEFAULT_CONFIG = {
         "mode": "full",  # "full" | "summary" for auto-spoken assistant replies
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
         "summary": {
-            "length": "2 sentences",  # Spoken summary target when mode="summary"
+            "length": "1 sentence",  # Spoken summary target when mode="summary"
             "provider": "",  # empty = fall back to compression summary routing
             "model": "",     # empty = fall back to compression summary model
             "base_url": "",  # optional direct OpenAI-compatible summary endpoint
@@ -416,7 +416,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
@@ -431,6 +431,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: [],
 }
 
 # Required environment variables with metadata for migration prompts.

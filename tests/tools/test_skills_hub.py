@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import httpx
+
 from tools.skills_hub import (
     GitHubAuth,
     GitHubSource,
@@ -1039,3 +1041,151 @@ class TestQuarantineBundleBinaryAssets:
 
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource._download_directory — tree API + fallback (#2940)
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadDirectoryViaTree:
+    """Tests for the Git Trees API path in _download_directory."""
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {}
+        return GitHubSource(auth=auth)
+
+    @patch.object(GitHubSource, "_fetch_file_content")
+    @patch("tools.skills_hub.httpx.get")
+    def test_tree_api_downloads_subdirectories(self, mock_get, mock_fetch):
+        """Tree API returns files from nested subdirectories."""
+        repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
+        tree_resp = MagicMock(status_code=200, json=lambda: {
+            "truncated": False,
+            "tree": [
+                {"type": "blob", "path": "skills/my-skill/SKILL.md"},
+                {"type": "blob", "path": "skills/my-skill/scripts/run.py"},
+                {"type": "blob", "path": "skills/my-skill/references/api.md"},
+                {"type": "tree", "path": "skills/my-skill/scripts"},
+                {"type": "blob", "path": "other/file.txt"},
+            ],
+        })
+        mock_get.side_effect = [repo_resp, tree_resp]
+        mock_fetch.side_effect = lambda repo, path: f"content-of-{path}"
+
+        src = self._source()
+        files = src._download_directory("owner/repo", "skills/my-skill")
+
+        assert "SKILL.md" in files
+        assert "scripts/run.py" in files
+        assert "references/api.md" in files
+        assert "other/file.txt" not in files  # outside target path
+        assert len(files) == 3
+
+    @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
+    @patch("tools.skills_hub.httpx.get")
+    def test_falls_back_on_truncated_tree(self, mock_get, mock_fallback):
+        """When tree is truncated, fall back to recursive Contents API."""
+        repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
+        tree_resp = MagicMock(status_code=200, json=lambda: {"truncated": True, "tree": []})
+        mock_get.side_effect = [repo_resp, tree_resp]
+
+        src = self._source()
+        files = src._download_directory("owner/repo", "skills/my-skill")
+
+        assert files == {"SKILL.md": "# ok"}
+        mock_fallback.assert_called_once_with("owner/repo", "skills/my-skill")
+
+    @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
+    @patch("tools.skills_hub.httpx.get")
+    def test_falls_back_on_repo_api_failure(self, mock_get, mock_fallback):
+        """When the repo endpoint returns non-200, fall back to Contents API."""
+        mock_get.return_value = MagicMock(status_code=404)
+
+        src = self._source()
+        files = src._download_directory("owner/repo", "skills/my-skill")
+
+        assert files == {"SKILL.md": "# ok"}
+        mock_fallback.assert_called_once()
+
+    @patch.object(GitHubSource, "_fetch_file_content")
+    @patch("tools.skills_hub.httpx.get")
+    def test_tree_api_skips_failed_file_fetches(self, mock_get, mock_fetch):
+        """Files that fail to fetch are skipped, not fatal."""
+        repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
+        tree_resp = MagicMock(status_code=200, json=lambda: {
+            "truncated": False,
+            "tree": [
+                {"type": "blob", "path": "skills/my-skill/SKILL.md"},
+                {"type": "blob", "path": "skills/my-skill/scripts/run.py"},
+            ],
+        })
+        mock_get.side_effect = [repo_resp, tree_resp]
+        mock_fetch.side_effect = lambda repo, path: (
+            "# Skill" if path.endswith("SKILL.md") else None
+        )
+
+        src = self._source()
+        files = src._download_directory("owner/repo", "skills/my-skill")
+
+        assert "SKILL.md" in files
+        assert "scripts/run.py" not in files
+
+    @patch.object(GitHubSource, "_download_directory_recursive", return_value={})
+    @patch("tools.skills_hub.httpx.get")
+    def test_falls_back_on_network_error(self, mock_get, mock_fallback):
+        """Network errors in tree API trigger fallback."""
+        mock_get.side_effect = httpx.ConnectError("connection refused")
+
+        src = self._source()
+        src._download_directory("owner/repo", "skills/my-skill")
+
+        mock_fallback.assert_called_once()
+
+
+class TestDownloadDirectoryRecursive:
+    """Tests for the Contents API fallback path."""
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {}
+        return GitHubSource(auth=auth)
+
+    @patch.object(GitHubSource, "_fetch_file_content")
+    @patch("tools.skills_hub.httpx.get")
+    def test_recursive_downloads_subdirectories(self, mock_get, mock_fetch):
+        """Contents API recursion includes subdirectories."""
+        root_resp = MagicMock(status_code=200, json=lambda: [
+            {"name": "SKILL.md", "type": "file", "path": "skill/SKILL.md"},
+            {"name": "scripts", "type": "dir", "path": "skill/scripts"},
+        ])
+        sub_resp = MagicMock(status_code=200, json=lambda: [
+            {"name": "run.py", "type": "file", "path": "skill/scripts/run.py"},
+        ])
+        mock_get.side_effect = [root_resp, sub_resp]
+        mock_fetch.side_effect = lambda repo, path: f"content-of-{path}"
+
+        src = self._source()
+        files = src._download_directory_recursive("owner/repo", "skill")
+
+        assert "SKILL.md" in files
+        assert "scripts/run.py" in files
+
+    @patch.object(GitHubSource, "_fetch_file_content")
+    @patch("tools.skills_hub.httpx.get")
+    def test_recursive_handles_subdir_failure(self, mock_get, mock_fetch):
+        """Subdirectory 403/rate-limit returns empty but doesn't crash."""
+        root_resp = MagicMock(status_code=200, json=lambda: [
+            {"name": "SKILL.md", "type": "file", "path": "skill/SKILL.md"},
+            {"name": "scripts", "type": "dir", "path": "skill/scripts"},
+        ])
+        sub_resp = MagicMock(status_code=403)
+        mock_get.side_effect = [root_resp, sub_resp]
+        mock_fetch.return_value = "content"
+
+        src = self._source()
+        files = src._download_directory_recursive("owner/repo", "skill")
+
+        assert "SKILL.md" in files
+        assert "scripts/run.py" not in files  # lost due to rate limit

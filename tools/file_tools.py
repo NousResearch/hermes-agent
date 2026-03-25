@@ -8,6 +8,7 @@ import os
 import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
+from tools.search_cache import get_accelerator, notify_file_written, clear_accelerator
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -291,6 +292,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     try:
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
+        notify_file_written(path, task_id)
         return json.dumps(result.to_dict(), ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -313,10 +315,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if old_string is None or new_string is None:
                 return json.dumps({"error": "old_string and new_string required"})
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            notify_file_written(path, task_id)
         elif mode == "patch":
             if not patch:
                 return json.dumps({"error": "patch content required"})
             result = file_ops.patch_v4a(patch)
+            for line in (patch or '').split('\n'):
+                line_stripped = line.strip()
+                if line_stripped.startswith('*** Update File:') or line_stripped.startswith('*** Add File:'):
+                    touched = line_stripped.split(':', 1)[1].strip()
+                    if touched:
+                        notify_file_written(touched, task_id)
         else:
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
@@ -371,11 +380,56 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        # ---- Search acceleration layers ----
+        accelerator = get_accelerator(task_id)
+
+        # Layer 1: Result cache — return cached result if available.
+        # Skip cache when count >= 3 so the _warning gets injected properly.
+        if count < 3:
+            cached = accelerator.result_cache.get(
+                pattern, path, file_glob, output_mode, context, target, limit, offset
+            )
+            if cached is not None:
+                logger.debug("search_files: cache hit for pattern=%r", pattern)
+                return cached
+
         file_ops = _get_file_ops(task_id)
-        result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
-        )
+
+        # Layer 2: Trigram index — narrow candidate files for content search
+        use_candidates = False
+        candidates = None
+        if target == "content" and not file_glob:
+            tri_idx = accelerator.trigram_index
+            if not tri_idx.is_ready and not tri_idx._building and not tri_idx._skipped:
+                import threading as _threading
+                def _build():
+                    try:
+                        tri_idx.build(file_ops, root=path if path != "." else ".")
+                    except Exception as e:
+                        logger.debug("Trigram index background build failed: %s", e)
+                _threading.Thread(target=_build, daemon=True, name="trigram-build").start()
+            elif tri_idx.is_ready:
+                candidates = accelerator.get_candidates_for_search(pattern)
+                if candidates is not None:
+                    use_candidates = True
+                    logger.debug(
+                        "search_files: trigram narrowed to %d/%d candidates",
+                        len(candidates), tri_idx._file_count
+                    )
+
+        if use_candidates and candidates is not None:
+            if len(candidates) == 0:
+                from tools.file_operations import SearchResult
+                result = SearchResult(matches=[], total_count=0)
+            else:
+                result = _search_candidates(file_ops, pattern, candidates,
+                                            limit, offset, output_mode, context)
+        else:
+            result = file_ops.search(
+                pattern=pattern, path=path, target=target, file_glob=file_glob,
+                limit=limit, offset=offset, output_mode=output_mode, context=context
+            )
+
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
@@ -394,9 +448,85 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if result_dict.get("truncated"):
             next_offset = offset + limit
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
+
+        # Store in result cache for next identical search
+        accelerator.result_cache.put(
+            pattern, path, file_glob, output_mode, context, target, limit, offset,
+            result_json
+        )
         return result_json
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def _search_candidates(file_ops, pattern: str, candidates: list,
+                       limit: int, offset: int, output_mode: str,
+                       context: int):
+    """Run ripgrep on candidate files from the trigram index via --files-from."""
+    import re as _re
+    from tools.file_operations import SearchResult, SearchMatch
+
+    if not candidates:
+        return SearchResult(matches=[], total_count=0)
+
+    escaped_pattern = file_ops._escape_shell_arg(pattern)
+    candidates_escaped = '\\n'.join(c.replace("'", "'\\''") for c in candidates[:10000])
+    cmd = f"_cf=$(mktemp) && printf '{candidates_escaped}\\n' > \"$_cf\" && "
+    cmd += "rg --line-number --no-heading --with-filename"
+    if context > 0:
+        cmd += f" -C {context}"
+    if output_mode == "files_only":
+        cmd += " -l"
+    elif output_mode == "count":
+        cmd += " -c"
+    fetch_limit = limit + offset + (200 if context > 0 else 0)
+    cmd += f" {escaped_pattern} --files-from \"$_cf\" | head -n {fetch_limit}; rm -f \"$_cf\""
+
+    result = file_ops._exec(cmd, timeout=60)
+
+    if output_mode == "files_only":
+        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        return SearchResult(files=all_files[offset:offset + limit], total_count=len(all_files))
+    elif output_mode == "count":
+        counts = {}
+        for line in result.stdout.strip().split('\n'):
+            if ':' in line:
+                parts = line.rsplit(':', 1)
+                if len(parts) == 2:
+                    try:
+                        counts[parts[0]] = int(parts[1])
+                    except ValueError:
+                        pass
+        return SearchResult(counts=counts, total_count=sum(counts.values()))
+    else:
+        _match_re = _re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+        _ctx_re = _re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
+        matches = []
+        for line in result.stdout.strip().split('\n'):
+            if not line or line == "--":
+                continue
+            m = _match_re.match(line)
+            if m:
+                matches.append(SearchMatch(
+                    path=(m.group(1) or '') + m.group(2),
+                    line_number=int(m.group(3)),
+                    content=m.group(4)[:500]
+                ))
+                continue
+            if context > 0:
+                m = _ctx_re.match(line)
+                if m:
+                    matches.append(SearchMatch(
+                        path=(m.group(1) or '') + m.group(2),
+                        line_number=int(m.group(3)),
+                        content=m.group(4)[:500]
+                    ))
+        total = len(matches)
+        return SearchResult(
+            matches=matches[offset:offset + limit],
+            total_count=total,
+            truncated=total > offset + limit
+        )
 
 
 FILE_TOOLS = [

@@ -669,6 +669,11 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             clear_file_ops_cache(task_id)
         except ImportError:
             pass
+        try:
+            from tools.search_cache import clear_accelerator
+            clear_accelerator(task_id)
+        except ImportError:
+            pass
 
         try:
             if hasattr(env, 'cleanup'):
@@ -801,6 +806,11 @@ def cleanup_vm(task_id: str):
     try:
         from tools.file_tools import clear_file_ops_cache
         clear_file_ops_cache(task_id)
+    except ImportError:
+        pass
+    try:
+        from tools.search_cache import clear_accelerator
+        clear_accelerator(task_id)
     except ImportError:
         pass
 

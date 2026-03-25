@@ -27,6 +27,14 @@ from tools.file_tools import (
     notify_other_tool_call,
     _read_tracker,
 )
+from tools.search_cache import clear_accelerator
+
+# Monkey-patch clear_read_tracker to also clear the search cache so every
+# existing call site in this file automatically clears both.
+_orig_clear = clear_read_tracker
+def clear_read_tracker(task_id=None):
+    _orig_clear(task_id)
+    clear_accelerator(task_id)
 
 
 class _FakeReadResult:

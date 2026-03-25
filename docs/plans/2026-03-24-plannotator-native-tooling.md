@@ -1,20 +1,14 @@
 # Plannotator Native Tooling and Generic Exposure Integration
 
-> For Hermes: this documents the design discussion with Philipp that led from the temporary skill-based Plannotator flow to native tools.
+## Context
 
-## What we discussed
+This note captures the design direction that led from a temporary skill-based
+Plannotator workflow to native Hermes tools.
 
-We had already patched `send_message` so Hermes can send inline status updates back into the active Telegram conversation using the current session context:
-- `target=current` / `target=origin`
-- automatic chat/thread/message resolution from `HERMES_SESSION_*`
-- `reply_to_current=true` for inline reply threading
-
-That solved the messaging plumbing, but the Plannotator flow was still skill-driven.
-
-Philipp asked for two next steps:
-1. document the Plannotator and router design we discussed
-2. build a native tool for Plannotator
-3. make the routing / exposure integration generic rather than hardcoded to only one wildcard-router setup
+The immediate problem was straightforward:
+- Hermes could launch a Plannotator flow
+- Hermes could send a link into chat
+- but the end-to-end inline experience was unreliable when orchestration depended on the model composing multiple tool calls correctly
 
 ## Product direction
 
@@ -32,20 +26,20 @@ The tool should return:
 - live URL
 - PID if available
 - log path if available
-- a short suggested Telegram message
+- a short suggested chat message
 
 ### Generic exposure abstraction
 
-We do not want Plannotator tied forever to only one exposure backend.
+Plannotator should not be tied to only one exposure backend.
 
 The exposure layer should support multiple strategies:
 - `localhost` — for local/manual opening
-- `cloud77` — wildcard router or other custom reverse proxy
+- `reverse-proxy` — operator-controlled routed exposure
 - `tailscale-serve` — tailnet-only exposure
 - `tailscale-funnel` — public exposure
 - one-off `command` templates for arbitrary operators or future bridges
 
-This allows Hermes to keep the user-facing concept stable (“give me a live review link”) while changing the transport/backend later.
+This lets Hermes keep the user-facing concept stable — “give me a live review link” — while changing the transport/backend later.
 
 ## Key design choice
 
@@ -53,9 +47,9 @@ Separate these concerns:
 - `plannotator_session` handles “start a Plannotator review/annotation session”
 - `service_expose` handles “turn a local service into a usable URL”
 
-Even if Philipp’s current bridge combines launch + exposure today, Hermes should still have a generic exposure tool so future flows can use:
+Even if a local bridge combines launch + exposure today, Hermes should still have a generic exposure tool so future flows can use:
 - plain localhost URLs
-- cloud77 wildcard routing
+- routed host exposure through a reverse proxy
 - Tailscale serve/funnel
 - custom operator scripts
 
@@ -67,10 +61,10 @@ A command-template-backed native tool.
 
 Why command templates:
 - keeps Hermes generic
-- works with Philipp’s existing bridge immediately
+- works with existing local bridges immediately
 - supports later migration to other launchers without changing the tool schema
 
-Default assumptions for Philipp’s current setup:
+Default assumptions for a typical local setup:
 - `python3 ~/services/plannotator-bridge/start_session.py review ...`
 - `python3 ~/services/plannotator-bridge/start_session.py annotate ...`
 - optional `last` support if the bridge exposes it
@@ -93,7 +87,7 @@ A generic, backend-agnostic exposure tool.
 
 Supported strategies:
 - `localhost`
-- `cloud77`
+- `reverse-proxy`
 - `tailscale-serve`
 - `tailscale-funnel`
 - `command`
@@ -101,11 +95,24 @@ Supported strategies:
 For non-localhost strategies, the tool runs operator-controlled command templates that should emit a `URL=...` line.
 
 Environment variable hooks:
-- `HERMES_SERVICE_EXPOSE_CLOUD77_TEMPLATE`
+- `HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE`
 - `HERMES_SERVICE_EXPOSE_TAILSCALE_SERVE_TEMPLATE`
 - `HERMES_SERVICE_EXPOSE_TAILSCALE_FUNNEL_TEMPLATE`
 
-This keeps the repo generic while still making Philipp’s setup easy to plug in.
+A legacy alias can still be recognized for compatibility during migration.
+
+## Inline UX requirement
+
+A single blocking Plannotator tool call is not enough for the best chat UX if Hermes must send the review URL before waiting for completion.
+
+The cleaner architecture is:
+1. pre-generate or reserve the host
+2. send the URL immediately into the active conversation
+3. launch Plannotator pinned to that exact host
+4. wait for completion
+5. return the final feedback
+
+That design led to integrated inline actions in the Plannotator tool rather than relying on the model to manually compose prepare + send_message + wait steps.
 
 ## Why this is better than only skills
 
@@ -114,7 +121,7 @@ But native tools provide:
 - repeatable JSON outputs
 - first-class tool selection by the model
 - easier future automation
-- simpler integration with inline Telegram status updates
+- simpler integration with inline chat updates
 - a path toward a later dedicated MCP server or richer backend
 
 ## Follow-up ideas
@@ -123,3 +130,4 @@ But native tools provide:
 2. Let `plannotator_session` call `service_expose` automatically when the local launcher returns only a port instead of a public URL.
 3. Add a small config section in `~/.hermes/config.yaml` for named exposure profiles rather than relying only on env vars.
 4. Add richer result parsing if future bridges emit JSON instead of `KEY=value` lines.
+5. Consider a future Plannotator-side plugin/API if Hermes integration becomes a first-class product surface.

@@ -1,14 +1,15 @@
 """Generic local-service exposure tool.
 
 Provides a small abstraction layer for publishing a local HTTP service via
-localhost URLs, operator-provided cloud routers, or command-template wrappers
-for tools like tailscale serve/funnel.
+localhost URLs, reverse proxies, private tunnels, or public tunnels through
+operator-configured command templates.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from tools.exposure_helpers import build_local_url, normalize_path_fragment, run_command_template
@@ -16,19 +17,51 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
+_LOCALHOST = "localhost"
+_COMMAND = "command"
+_REVERSE_PROXY = "reverse-proxy"
+_TAILSCALE_SERVE = "tailscale-serve"
+_TAILSCALE_FUNNEL = "tailscale-funnel"
 
-_ENV_TEMPLATE_BY_STRATEGY = {
-    "cloud77": "HERMES_SERVICE_EXPOSE_CLOUD77_TEMPLATE",
-    "tailscale-serve": "HERMES_SERVICE_EXPOSE_TAILSCALE_SERVE_TEMPLATE",
-    "tailscale-funnel": "HERMES_SERVICE_EXPOSE_TAILSCALE_FUNNEL_TEMPLATE",
+_STRATEGY_SPECS = {
+    _LOCALHOST: {
+        "description": "Returns a direct local URL such as http://127.0.0.1:19432/.",
+        "works_without_extra_setup": True,
+        "public": False,
+        "env_template": None,
+    },
+    _REVERSE_PROXY: {
+        "description": "Runs an operator-supplied command template that should provision a routed URL through a configured reverse proxy and print URL=...",
+        "works_without_extra_setup": False,
+        "public": True,
+        "env_template": "HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE",
+        "legacy_env_templates": ["HERMES_SERVICE_EXPOSE_CLOUD77_TEMPLATE"],
+    },
+    _TAILSCALE_SERVE: {
+        "description": "Runs an operator-supplied command template for tailnet-only publishing, e.g. tailscale serve.",
+        "works_without_extra_setup": False,
+        "public": False,
+        "env_template": "HERMES_SERVICE_EXPOSE_TAILSCALE_SERVE_TEMPLATE",
+    },
+    _TAILSCALE_FUNNEL: {
+        "description": "Runs an operator-supplied command template for public publishing, e.g. tailscale funnel.",
+        "works_without_extra_setup": False,
+        "public": True,
+        "env_template": "HERMES_SERVICE_EXPOSE_TAILSCALE_FUNNEL_TEMPLATE",
+    },
+    _COMMAND: {
+        "description": "Runs a one-off command template supplied directly in the tool call.",
+        "works_without_extra_setup": False,
+        "public": True,
+        "env_template": None,
+    },
 }
 
 _SERVICE_EXPOSE_SCHEMA = {
     "name": "service_expose",
     "description": (
         "Expose or describe access to a local HTTP service. Supports direct localhost URLs, "
-        "or configurable command-template strategies for routers/tunnels like cloud77 or "
-        "tailscale serve/funnel."
+        "or configurable command-template strategies for reverse proxies and tunnels."
     ),
     "parameters": {
         "type": "object",
@@ -40,7 +73,7 @@ _SERVICE_EXPOSE_SCHEMA = {
             },
             "strategy": {
                 "type": "string",
-                "enum": ["localhost", "cloud77", "tailscale-serve", "tailscale-funnel", "command"],
+                "enum": [_LOCALHOST, _REVERSE_PROXY, _TAILSCALE_SERVE, _TAILSCALE_FUNNEL, _COMMAND],
                 "description": "Exposure strategy to use. 'command' requires command_template."
             },
             "local_port": {
@@ -61,7 +94,7 @@ _SERVICE_EXPOSE_SCHEMA = {
             },
             "requested_host": {
                 "type": "string",
-                "description": "Optional hostname hint for router/tunnel templates, such as a desired wildcard host."
+                "description": "Optional hostname hint for reverse-proxy or tunnel templates."
             },
             "command_template": {
                 "type": "string",
@@ -94,29 +127,13 @@ def _describe_strategies() -> dict[str, Any]:
     return {
         "strategies": [
             {
-                "name": "localhost",
-                "works_without_extra_setup": True,
-                "description": "Returns a direct local URL such as http://127.0.0.1:19432/."
-            },
-            {
-                "name": "cloud77",
-                "env_template": _ENV_TEMPLATE_BY_STRATEGY["cloud77"],
-                "description": "Runs an operator-supplied command template that should provision a cloud77-style routed URL and print URL=..."
-            },
-            {
-                "name": "tailscale-serve",
-                "env_template": _ENV_TEMPLATE_BY_STRATEGY["tailscale-serve"],
-                "description": "Runs an operator-supplied command template for tailnet-only publishing, e.g. tailscale serve."
-            },
-            {
-                "name": "tailscale-funnel",
-                "env_template": _ENV_TEMPLATE_BY_STRATEGY["tailscale-funnel"],
-                "description": "Runs an operator-supplied command template for public publishing, e.g. tailscale funnel."
-            },
-            {
-                "name": "command",
-                "description": "Runs a one-off command template supplied directly in the tool call."
-            },
+                "name": name,
+                "description": spec["description"],
+                "works_without_extra_setup": spec["works_without_extra_setup"],
+                **({"env_template": spec["env_template"]} if spec.get("env_template") else {}),
+                **({"legacy_env_templates": spec["legacy_env_templates"]} if spec.get("legacy_env_templates") else {}),
+            }
+            for name, spec in _STRATEGY_SPECS.items()
         ],
         "template_placeholders": [
             "{local_host}",
@@ -132,100 +149,142 @@ def _describe_strategies() -> dict[str, Any]:
 
 
 def _handle_expose(args: dict[str, Any]) -> dict[str, Any]:
-    strategy = (args.get("strategy") or "localhost").strip().lower()
-    local_port = args.get("local_port")
-    if not local_port:
-        return {"error": "'local_port' is required when action='expose'"}
-    try:
-        port = int(local_port)
-    except (TypeError, ValueError):
-        return {"error": "'local_port' must be an integer"}
+    normalized = _normalize_expose_args(args)
+    error = _validate_expose_args(normalized)
+    if error:
+        return {"error": error}
 
+    if normalized["strategy"] == _LOCALHOST:
+        return _build_localhost_result(normalized)
+
+    template, template_error = _resolve_strategy_template(normalized)
+    if template_error:
+        return {"error": template_error}
+
+    return _run_template_strategy(normalized, template)
+
+
+def _normalize_expose_args(args: dict[str, Any]) -> dict[str, Any]:
     local_host = (args.get("local_host") or "127.0.0.1").strip() or "127.0.0.1"
     path = normalize_path_fragment(args.get("path"))
     service_name = (args.get("service_name") or "service").strip() or "service"
     requested_host = (args.get("requested_host") or "").strip()
-    local_url = build_local_url(local_host, port, path)
+    local_port = args.get("local_port")
+    port = None
+    if local_port not in (None, ""):
+        try:
+            port = int(local_port)
+        except (TypeError, ValueError):
+            port = local_port
 
-    if strategy == "localhost":
-        return {
-            "success": True,
-            "strategy": strategy,
-            "url": local_url,
-            "public": False,
-            "service_name": service_name,
-        }
+    return {
+        "strategy": (args.get("strategy") or _LOCALHOST).strip().lower(),
+        "local_port": port,
+        "local_host": local_host,
+        "path": path,
+        "service_name": service_name,
+        "requested_host": requested_host,
+        "local_url": build_local_url(local_host, int(port), path) if isinstance(port, int) else None,
+        "command_template": (args.get("command_template") or "").strip(),
+        "cwd": args.get("cwd") or None,
+        "timeout_seconds": int(args.get("timeout_seconds") or 120),
+    }
 
-    template = (args.get("command_template") or "").strip()
-    if not template and strategy != "command":
-        import os
 
-        env_name = _ENV_TEMPLATE_BY_STRATEGY.get(strategy)
-        if env_name:
-            template = os.getenv(env_name, "").strip()
+def _validate_expose_args(args: dict[str, Any]) -> str | None:
+    strategy = args["strategy"]
+    if strategy not in _STRATEGY_SPECS:
+        return f"Unsupported strategy: {strategy}"
+    if args["local_port"] in (None, ""):
+        return "'local_port' is required when action='expose'"
+    if not isinstance(args["local_port"], int):
+        return "'local_port' must be an integer"
+    if strategy == _COMMAND and not args["command_template"]:
+        return "'command_template' is required when strategy='command'"
+    return None
 
-    if not template:
-        if strategy == "command":
-            return {"error": "'command_template' is required when strategy='command'"}
-        env_name = _ENV_TEMPLATE_BY_STRATEGY.get(strategy, "<unknown>")
-        return {
-            "error": (
-                f"No command template configured for strategy '{strategy}'. "
-                f"Set {env_name} or pass command_template directly."
-            )
-        }
 
+def _build_localhost_result(args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": True,
+        "strategy": args["strategy"],
+        "url": args["local_url"],
+        "public": _STRATEGY_SPECS[args["strategy"]]["public"],
+        "service_name": args["service_name"],
+    }
+
+
+def _resolve_strategy_template(args: dict[str, Any]) -> tuple[str | None, str | None]:
+    if args["command_template"]:
+        return args["command_template"], None
+
+    spec = _STRATEGY_SPECS[args["strategy"]]
+    template_names = []
+    if spec.get("env_template"):
+        template_names.append(spec["env_template"])
+    template_names.extend(spec.get("legacy_env_templates", []))
+
+    for env_name in template_names:
+        template = os.getenv(env_name, "").strip()
+        if template:
+            return template, None
+
+    if args["strategy"] == _COMMAND:
+        return None, "'command_template' is required when strategy='command'"
+
+    hint = " or ".join(template_names) if template_names else "command_template"
+    return None, f"No command template configured for strategy '{args['strategy']}'. Set {hint} or pass command_template directly."
+
+
+def _run_template_strategy(args: dict[str, Any], template: str) -> dict[str, Any]:
     try:
         execution = run_command_template(
             template,
             variables={
-                "strategy": strategy,
-                "local_host": local_host,
-                "local_port": port,
-                "path": path,
-                "service_name": service_name,
-                "requested_host": requested_host,
-                "local_url": local_url,
+                "strategy": args["strategy"],
+                "local_host": args["local_host"],
+                "local_port": args["local_port"],
+                "path": args["path"],
+                "service_name": args["service_name"],
+                "requested_host": args["requested_host"],
+                "local_url": args["local_url"],
             },
-            cwd=(args.get("cwd") or None),
-            timeout=int(args.get("timeout_seconds") or 120),
+            cwd=args["cwd"],
+            timeout=args["timeout_seconds"],
         )
     except KeyError as exc:
         return {"error": f"Command template references unknown placeholder: {exc}"}
     except Exception as exc:
         logger.exception("service_expose failed")
-        return {"error": f"Failed to run strategy '{strategy}': {type(exc).__name__}: {exc}"}
+        return {"error": f"Failed to run strategy '{args['strategy']}': {type(exc).__name__}: {exc}"}
 
     if execution["exit_code"] != 0:
-        return {
-            "error": f"Exposure command failed with exit code {execution['exit_code']}",
-            "strategy": strategy,
-            "command": execution["command"],
-            "stdout": execution["stdout"],
-            "stderr": execution["stderr"],
-        }
-
+        return _build_execution_error("Exposure command failed with exit code {exit_code}", args, execution)
     if not execution["url"]:
-        return {
-            "error": "Exposure command succeeded but did not report a URL.",
-            "strategy": strategy,
-            "command": execution["command"],
-            "stdout": execution["stdout"],
-            "stderr": execution["stderr"],
-        }
+        return _build_execution_error("Exposure command succeeded but did not report a URL.", args, execution)
 
     return {
         "success": True,
-        "strategy": strategy,
-        "service_name": service_name,
+        "strategy": args["strategy"],
+        "service_name": args["service_name"],
         "url": execution["url"],
         "pid": execution["pid"],
         "log": execution["log"],
         "command": execution["command"],
         "stdout": execution["stdout"],
         "stderr": execution["stderr"],
-        "local_url": local_url,
-        "public": strategy != "tailscale-serve",
+        "local_url": args["local_url"],
+        "public": _STRATEGY_SPECS[args["strategy"]]["public"],
+    }
+
+
+def _build_execution_error(message_template: str, args: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "error": message_template.format(exit_code=execution["exit_code"]),
+        "strategy": args["strategy"],
+        "command": execution["command"],
+        "stdout": execution["stdout"],
+        "stderr": execution["stderr"],
     }
 
 

@@ -73,11 +73,11 @@ _PLANNOTATOR_SCHEMA = {
             },
             "fixed_host": {
                 "type": "string",
-                "description": "Optional fixed host to use for prepare/review/annotate/inline actions, e.g. 'plannotator-abc123.a.cloud77.it'. Inline actions will prepare and launch using the same host."
+                "description": "Optional fixed host to use for prepare/review/annotate/inline actions, e.g. 'review-abc123.example.com'. Inline actions will prepare and launch using the same host."
             },
             "exposure_strategy": {
                 "type": "string",
-                "enum": ["auto", "localhost", "cloud77", "tailscale-serve", "tailscale-funnel"],
+                "enum": ["auto", "localhost", "reverse-proxy", "tailscale-serve", "tailscale-funnel"],
                 "description": "Hint passed through to the launcher template so one Plannotator launcher can support multiple exposure backends."
             },
             "command_template": {

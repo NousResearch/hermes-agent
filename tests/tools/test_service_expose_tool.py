@@ -11,7 +11,7 @@ def test_describe_lists_supported_strategies():
     result = json.loads(service_expose_tool({"action": "describe"}))
 
     names = {item["name"] for item in result["strategies"]}
-    assert {"localhost", "cloud77", "tailscale-serve", "tailscale-funnel", "command"} <= names
+    assert {"localhost", "reverse-proxy", "tailscale-serve", "tailscale-funnel", "command"} <= names
     assert "{local_port}" in result["template_placeholders"]
 
 
@@ -65,13 +65,13 @@ def test_command_strategy_runs_template_and_parses_url_pid_log():
 
 def test_named_strategy_uses_env_template(monkeypatch):
     monkeypatch.setenv(
-        "HERMES_SERVICE_EXPOSE_CLOUD77_TEMPLATE",
+        "HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE",
         "router-expose --listen {local_url} --host {requested_host}",
     )
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],
         returncode=0,
-        stdout="URL=https://foo.a.cloud77.it/\n",
+        stdout="URL=https://review.example/\n",
         stderr="",
     )
 
@@ -80,16 +80,45 @@ def test_named_strategy_uses_env_template(monkeypatch):
             service_expose_tool(
                 {
                     "action": "expose",
-                    "strategy": "cloud77",
+                    "strategy": "reverse-proxy",
                     "local_port": 9999,
-                    "requested_host": "foo.a.cloud77.it",
+                    "requested_host": "review.example",
                 }
             )
         )
 
     assert result["success"] is True
-    assert result["url"] == "https://foo.a.cloud77.it/"
-    assert "router-expose --listen http://127.0.0.1:9999 --host foo.a.cloud77.it" in run_mock.call_args.args[0][2]
+    assert result["url"] == "https://review.example/"
+    assert "router-expose --listen http://127.0.0.1:9999 --host review.example" in run_mock.call_args.args[0][2]
+
+
+def test_reverse_proxy_uses_legacy_env_template_for_compat(monkeypatch):
+    monkeypatch.setenv(
+        "HERMES_SERVICE_EXPOSE_CLOUD77_TEMPLATE",
+        "legacy-expose --listen {local_url} --host {requested_host}",
+    )
+    completed = CompletedProcess(
+        args=["bash", "-lc", "echo"],
+        returncode=0,
+        stdout="URL=https://legacy.example/\n",
+        stderr="",
+    )
+
+    with patch("tools.exposure_helpers.subprocess.run", return_value=completed) as run_mock:
+        result = json.loads(
+            service_expose_tool(
+                {
+                    "action": "expose",
+                    "strategy": "reverse-proxy",
+                    "local_port": 7777,
+                    "requested_host": "legacy.example",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    assert result["url"] == "https://legacy.example/"
+    assert "legacy-expose --listen http://127.0.0.1:7777 --host legacy.example" in run_mock.call_args.args[0][2]
 
 
 def test_missing_template_returns_clear_error():

@@ -82,7 +82,7 @@ def test_review_with_target_strategy_and_fixed_host_passes_env_values():
                     "action": "review",
                     "review_target": "https://github.com/example/repo/pull/7",
                     "exposure_strategy": "tailscale-funnel",
-                    "fixed_host": "plannotator-fixed.a.cloud77.it",
+                    "fixed_host": "review-fixed.example.com",
                     "command_template": "launch-review {review_target_arg} --strategy {exposure_strategy}",
                     "wait_for_completion": False,
                 }
@@ -95,7 +95,7 @@ def test_review_with_target_strategy_and_fixed_host_passes_env_values():
     assert "https://github.com/example/repo/pull/7" in command
     assert "--strategy tailscale-funnel" in command
     assert run_mock.call_args.kwargs["env"]["PLANNOTATOR_EXPOSURE_STRATEGY"] == "tailscale-funnel"
-    assert run_mock.call_args.kwargs["env"]["PLANNOTATOR_HOST"] == "plannotator-fixed.a.cloud77.it"
+    assert run_mock.call_args.kwargs["env"]["PLANNOTATOR_HOST"] == "review-fixed.example.com"
     assert result["waited_for_completion"] is False
 
 
@@ -103,16 +103,16 @@ def test_inline_review_prepares_sends_and_waits():
     prepare_result = {
         "success": True,
         "action": "prepare",
-        "host": "plannotator-fixed.a.cloud77.it",
-        "url": "https://plannotator-fixed.a.cloud77.it/",
-        "suggested_message": "Temporary review URL:\nhttps://plannotator-fixed.a.cloud77.it/",
+        "host": "review-fixed.example.com",
+        "url": "https://review-fixed.example.com/",
+        "suggested_message": "Temporary review URL:\nhttps://review-fixed.example.com/",
         "waited_for_completion": False,
     }
     review_result = {
         "success": True,
         "action": "review",
-        "host": "plannotator-fixed.a.cloud77.it",
-        "url": "https://plannotator-fixed.a.cloud77.it/",
+        "host": "review-fixed.example.com",
+        "url": "https://review-fixed.example.com/",
         "completed": True,
         "waited_for_completion": True,
         "final_log": "Code review completed — no changes requested.\n",
@@ -126,13 +126,13 @@ def test_inline_review_prepares_sends_and_waits():
 
     assert result["success"] is True
     assert result["inline_message_sent"] is True
-    assert result["prepared_host"] == "plannotator-fixed.a.cloud77.it"
+    assert result["prepared_host"] == "review-fixed.example.com"
     assert result["send_message_result"]["success"] is True
     assert launch_mock.call_count == 2
     assert launch_mock.call_args_list[1].kwargs == {}
     second_args = launch_mock.call_args_list[1].args[0]
     assert second_args["action"] == "review"
-    assert second_args["fixed_host"] == "plannotator-fixed.a.cloud77.it"
+    assert second_args["fixed_host"] == "review-fixed.example.com"
     assert second_args["wait_for_completion"] is True
     send_mock.assert_called_once()
 
@@ -141,9 +141,9 @@ def test_inline_review_returns_error_if_send_fails():
     prepare_result = {
         "success": True,
         "action": "prepare",
-        "host": "plannotator-fixed.a.cloud77.it",
-        "url": "https://plannotator-fixed.a.cloud77.it/",
-        "suggested_message": "Temporary review URL:\nhttps://plannotator-fixed.a.cloud77.it/",
+        "host": "review-fixed.example.com",
+        "url": "https://review-fixed.example.com/",
+        "suggested_message": "Temporary review URL:\nhttps://review-fixed.example.com/",
         "waited_for_completion": False,
     }
 
@@ -154,7 +154,7 @@ def test_inline_review_returns_error_if_send_fails():
         result = json.loads(plannotator_session_tool({"action": "inline_review"}))
 
     assert "Failed to send prepared Plannotator URL message" in result["error"]
-    assert result["prepared_host"] == "plannotator-fixed.a.cloud77.it"
+    assert result["prepared_host"] == "review-fixed.example.com"
     assert launch_mock.call_count == 1
 
 

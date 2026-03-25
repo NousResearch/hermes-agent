@@ -1,43 +1,8 @@
-import importlib.util
 import json
-import sys
-import types
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _ensure_stub_registry():
-    if "tools" not in sys.modules:
-        pkg = types.ModuleType("tools")
-        pkg.__path__ = []
-        sys.modules["tools"] = pkg
-
-    if "tools.registry" not in sys.modules:
-        reg_mod = types.ModuleType("tools.registry")
-
-        class _DummyRegistry:
-            def register(self, *args, **kwargs):
-                return None
-
-        reg_mod.registry = _DummyRegistry()
-        sys.modules["tools.registry"] = reg_mod
-
-
-def _load_module(module_name: str, relative_path: str):
-    _ensure_stub_registry()
-    spec = importlib.util.spec_from_file_location(module_name, ROOT / relative_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-stt = _load_module("tools.transcription_tools", "tools/transcription_tools.py")
-tts_tool = _load_module("tools.tts_tool", "tools/tts_tool.py")
-
-
+import tools.transcription_tools as stt
+import tools.tts_tool as tts_tool
 class TestTranscriptionTools:
     def test_auto_falls_back_to_local_without_openai_key(self, tmp_path, monkeypatch):
         audio = tmp_path / "note.ogg"

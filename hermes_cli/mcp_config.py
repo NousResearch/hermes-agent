@@ -14,15 +14,14 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
     load_config,
     save_config,
     get_env_value,
     save_env_value,
-    get_hermes_home,
+    get_hermes_home,  # noqa: F401 — used by test mocks
 )
 from hermes_cli.colors import Colors, color
 

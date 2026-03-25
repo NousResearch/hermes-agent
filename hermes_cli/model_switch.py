@@ -13,9 +13,7 @@ concerns: state mutation, config persistence, output formatting.
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 
 @dataclass

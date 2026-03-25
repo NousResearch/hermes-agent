@@ -7,11 +7,9 @@ Provides options for:
 """
 
 import os
-import sys
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from hermes_cli.colors import Colors, color
 

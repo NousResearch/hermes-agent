@@ -629,7 +629,6 @@ def stream_tts_to_speaker(
             if client is not None:
                 try:
                     sd = _import_sounddevice()
-                    import numpy as _np
                     output_stream = sd.OutputStream(
                         samplerate=24000, channels=1, dtype="int16",
                     )

@@ -32,7 +32,7 @@ import httpx
 import yaml
 
 from tools.skills_guard import (
-    ScanResult, scan_skill, should_allow_install, content_hash, TRUSTED_REPOS,
+    ScanResult, content_hash, TRUSTED_REPOS,
 )
 
 logger = logging.getLogger(__name__)

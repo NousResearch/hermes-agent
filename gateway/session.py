@@ -16,7 +16,7 @@ import re
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def _looks_like_phone(value: str) -> bool:
 from .config import (
     Platform,
     GatewayConfig,
-    SessionResetPolicy,
+    SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
 )
 

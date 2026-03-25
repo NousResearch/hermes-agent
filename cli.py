@@ -458,13 +458,8 @@ from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
 
 # Extracted CLI modules (Phase 3)
-from hermes_cli.banner import (
-    cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
-    build_welcome_banner,
-)
-from hermes_cli.commands import COMMANDS, SlashCommandCompleter, SlashCommandAutoSuggest
-from hermes_cli import callbacks as _callbacks
+from hermes_cli.banner import build_welcome_banner
+from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
 from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
@@ -2341,7 +2336,7 @@ class HermesCLI:
             /rollback diff <N>        — preview changes since checkpoint N
             /rollback <N> <file>      — restore a single file from checkpoint N
         """
-        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+        from tools.checkpoint_manager import format_checkpoint_list
 
         if not hasattr(self, 'agent') or not self.agent:
             print("  No active agent session.")
@@ -2541,7 +2536,7 @@ class HermesCLI:
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
         try:
-            from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
+            from model_tools import check_tool_availability
             
             available, unavailable = check_tool_availability()
             
@@ -4134,7 +4129,6 @@ class HermesCLI:
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
         import platform as _plat
-        import subprocess as _sp
 
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
@@ -4636,7 +4630,7 @@ class HermesCLI:
         sees the updated tools on the next turn.
         """
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names
             with _lock:
@@ -4956,7 +4950,6 @@ class HermesCLI:
         try:
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
-            import json
             import re
 
             # Strip markdown and non-speech content for cleaner TTS
@@ -6530,8 +6523,7 @@ class HermesCLI:
             """Return provider/model info for /model autocomplete."""
             try:
                 from hermes_cli.models import (
-                    _PROVIDER_LABELS, _PROVIDER_MODELS, normalize_provider,
-                    provider_model_ids,
+                    _PROVIDER_LABELS, normalize_provider, provider_model_ids,
                 )
                 current = getattr(cli_ref, "provider", None) or getattr(cli_ref, "requested_provider", "openrouter")
                 current = normalize_provider(current)

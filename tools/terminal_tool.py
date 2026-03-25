@@ -31,7 +31,6 @@ import json
 import logging
 import os
 import platform
-import sys
 import time
 import threading
 import atexit
@@ -48,7 +47,7 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event
+from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 
 
 # =============================================================================
@@ -1232,7 +1231,7 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona
+            from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:

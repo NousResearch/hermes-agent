@@ -14,7 +14,6 @@ Improvements over v1:
 """
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm

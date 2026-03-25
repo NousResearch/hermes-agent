@@ -24,7 +24,6 @@ import re
 import smtplib
 import ssl
 import uuid
-from datetime import datetime
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -454,7 +453,6 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
-        pass
 
     async def send_image(
         self,

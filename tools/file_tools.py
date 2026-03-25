@@ -4,9 +4,7 @@
 import errno
 import json
 import logging
-import os
 import threading
-from typing import Optional
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
@@ -50,8 +48,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _check_disk_usage_warning,
-        _creation_locks, _creation_locks_lock,
+        _creation_locks,
+        _creation_locks_lock,
     )
     import time
 

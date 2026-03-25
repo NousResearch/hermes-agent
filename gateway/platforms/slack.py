@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -37,8 +37,6 @@ from gateway.platforms.base import (
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
-    cache_image_from_url,
-    cache_audio_from_url,
 )
 
 

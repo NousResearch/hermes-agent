@@ -6637,6 +6637,11 @@ class AIAgent:
             if restart_with_compressed_messages:
                 api_call_count -= 1
                 self.iteration_budget.refund()
+                # Count compression restarts toward the retry limit to prevent
+                # infinite loops when compression reduces messages but not enough
+                # to fit the context window.
+                retry_count += 1
+                restart_with_compressed_messages = False
                 continue
 
             if restart_with_length_continuation:

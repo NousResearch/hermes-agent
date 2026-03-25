@@ -40,7 +40,8 @@ class PersistentShellMixin:
     def _cleanup_temp_files(self): ...
 
     _session_id: str = ""
-    _poll_interval: float = 0.01
+    _poll_interval_start: float = 0.01  # initial poll interval (10ms)
+    _poll_interval_max: float = 0.25    # max poll interval (250ms) — reduces I/O for long commands
 
     @property
     def _temp_prefix(self) -> str:
@@ -224,7 +225,7 @@ class PersistentShellMixin:
         )
         self._send_to_shell(ipc_script)
         deadline = time.monotonic() + timeout
-        poll_interval = self._poll_interval
+        poll_interval = self._poll_interval_start  # starts at 10ms, backs off to 250ms
 
         while True:
             if is_interrupted():
@@ -256,6 +257,10 @@ class PersistentShellMixin:
                 break
 
             time.sleep(poll_interval)
+            # Exponential backoff: fast start (10ms) for quick commands,
+            # ramps up to 250ms for long-running commands — reduces I/O by 10-25x
+            # on WSL2 where polling keeps the VM hot and memory pressure high.
+            poll_interval = min(poll_interval * 1.5, self._poll_interval_max)
 
         output, exit_code, new_cwd = self._read_persistent_output()
         if new_cwd:

@@ -86,6 +86,36 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             chat_id, thread_id = rest.split(":", 1)
         else:
             chat_id, thread_id = rest, None
+
+        # Resolve human-friendly channel names (e.g. "#anglais-brian") to
+        # numeric platform IDs.  Valid platform IDs are always numeric (Discord
+        # snowflakes, Telegram chat IDs including negative group IDs, etc.).
+        if chat_id and not chat_id.lstrip("-").isdigit():
+            try:
+                from gateway.channel_directory import resolve_channel_name
+                resolved = resolve_channel_name(platform_name, chat_id)
+                if resolved:
+                    chat_id = resolved
+                else:
+                    logger.error(
+                        "Job '%s': cannot resolve channel name '%s' on %s — "
+                        "channel may not exist or the channel directory may be stale. "
+                        "Skipping delivery.",
+                        job.get("id", "?"),
+                        chat_id,
+                        platform_name,
+                    )
+                    return None
+            except Exception as exc:
+                logger.error(
+                    "Job '%s': channel name resolution failed for '%s' on %s: %s",
+                    job.get("id", "?"),
+                    chat_id,
+                    platform_name,
+                    exc,
+                )
+                return None
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,

@@ -478,7 +478,15 @@ class APIServerAdapter(BasePlatformAdapter):
             _stream_q: _q.Queue = _q.Queue()
 
             def _on_delta(delta):
-                _stream_q.put(delta)
+                # Filter out None — the agent fires stream_delta_callback(None)
+                # to signal the CLI display to close its response box before
+                # tool execution, but the SSE writer uses None as end-of-stream
+                # sentinel.  Forwarding it would prematurely close the HTTP
+                # response, causing Open WebUI (and similar frontends) to miss
+                # the final answer after tool calls.  The SSE loop detects
+                # completion via agent_task.done() instead.
+                if delta is not None:
+                    _stream_q.put(delta)
 
             # Start agent in background
             agent_task = asyncio.ensure_future(self._run_agent(

@@ -4816,9 +4816,9 @@ class AIAgent:
             is_error, _ = _detect_tool_failure(function_name, result)
             results[index] = (function_name, function_args, result, duration, is_error)
 
-        # Start spinner for CLI mode
+        # Start spinner for CLI mode (skip when TUI handles tool progress)
         spinner = None
-        if self.quiet_mode:
+        if self.quiet_mode and not self.tool_progress_callback:
             face = random.choice(KawaiiSpinner.KAWAII_WAITING)
             spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots')
             spinner.start()
@@ -5044,7 +5044,7 @@ class AIAgent:
                     goal_preview = (function_args.get("goal") or "")[:30]
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
                 spinner = None
-                if self.quiet_mode:
+                if self.quiet_mode and not self.tool_progress_callback:
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                     spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
                     spinner.start()
@@ -5069,13 +5069,15 @@ class AIAgent:
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
             elif self.quiet_mode:
-                face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                emoji = _get_tool_emoji(function_name)
-                preview = _build_tool_preview(function_name, function_args) or function_name
-                if len(preview) > 30:
-                    preview = preview[:27] + "..."
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
-                spinner.start()
+                spinner = None
+                if not self.tool_progress_callback:
+                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    emoji = _get_tool_emoji(function_name)
+                    preview = _build_tool_preview(function_name, function_args) or function_name
+                    if len(preview) > 30:
+                        preview = preview[:27] + "..."
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
+                    spinner.start()
                 _spinner_result = None
                 try:
                     function_result = handle_function_call(
@@ -5091,7 +5093,10 @@ class AIAgent:
                 finally:
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
-                    spinner.stop(cute_msg)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    else:
+                        self._vprint(f"  {cute_msg}")
             else:
                 try:
                     function_result = handle_function_call(

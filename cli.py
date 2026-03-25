@@ -1509,10 +1509,14 @@ class HermesCLI:
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
-        # Emit complete lines
+        # Emit complete lines, and force-flush long partial lines so
+        # reasoning is visible in real-time even without newlines.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
             _cprint(f"{_DIM}{line}{_RST}")
+        if len(self._reasoning_buf) > 80:
+            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""

@@ -419,8 +419,14 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search your long-term memory of past conversations. This is your recall -- "
+        "Search your long-term memory of past conversations, or browse recent sessions. This is your recall -- "
         "every past session is searchable, and this tool summarizes what happened.\n\n"
+        "TWO MODES:\n"
+        "1. Recent sessions (no query): Call with no arguments to see what was worked on recently. "
+        "Returns titles, previews, and timestamps. Zero LLM cost, instant. "
+        "Start here when the user asks what were we working on or what did we do recently.\n"
+        "2. Keyword search (with query): Search for specific topics across all past sessions. "
+        "Returns LLM-generated summaries of matching sessions.\n\n"
         "USE THIS PROACTIVELY when:\n"
         "- The user says 'we did this before', 'remember when', 'last time', 'as I mentioned'\n"
         "- The user asks about a topic you worked on before but don't have in current context\n"
@@ -440,7 +446,7 @@ SESSION_SEARCH_SCHEMA = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query — keywords, phrases, or boolean expressions to find in past sessions. Omit to list recent sessions instead (no search, just metadata).",
+                "description": "Search query — keywords, phrases, or boolean expressions to find in past sessions. Omit this parameter entirely to browse recent sessions instead (returns titles, previews, timestamps with no LLM cost).",
             },
             "role_filter": {
                 "type": "string",

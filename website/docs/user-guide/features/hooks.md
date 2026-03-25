@@ -6,9 +6,20 @@ description: "Run custom code at key lifecycle points — log activity, send ale
 
 # Event Hooks
 
-The hooks system lets you run custom code at key points in the agent lifecycle — session creation, slash commands, each tool-calling step, and more. Hooks fire automatically during gateway operation without blocking the main agent pipeline.
+Hermes has two hook systems that run custom code at key lifecycle points:
 
-## Creating a Hook
+| System | Registered via | Runs in | Use case |
+|--------|---------------|---------|----------|
+| **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
+| **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/docs/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
+
+Both systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
+
+## Gateway Event Hooks
+
+Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp) without blocking the main agent pipeline.
+
+### Creating a Hook
 
 Each hook is a directory under `~/.hermes/hooks/` containing two files:
 
@@ -19,7 +30,7 @@ Each hook is a directory under `~/.hermes/hooks/` containing two files:
     └── handler.py     # Python handler function
 ```
 
-### HOOK.yaml
+#### HOOK.yaml
 
 ```yaml
 name: my-hook
@@ -32,7 +43,7 @@ events:
 
 The `events` list determines which events trigger your handler. You can subscribe to any combination of events, including wildcards like `command:*`.
 
-### handler.py
+#### handler.py
 
 ```python
 import json
@@ -58,25 +69,26 @@ async def handle(event_type: str, context: dict):
 - Can be `async def` or regular `def` — both work
 - Errors are caught and logged, never crashing the agent
 
-## Available Events
+### Available Events
 
 | Event | When it fires | Context keys |
 |-------|---------------|--------------|
 | `gateway:startup` | Gateway process starts | `platforms` (list of active platform names) |
 | `session:start` | New messaging session created | `platform`, `user_id`, `session_id`, `session_key` |
+| `session:end` | Session ended (before reset) | `platform`, `user_id`, `session_key` |
 | `session:reset` | User ran `/new` or `/reset` | `platform`, `user_id`, `session_key` |
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 
-### Wildcard Matching
+#### Wildcard Matching
 
 Handlers registered for `command:*` fire for any `command:` event (`command:model`, `command:reset`, etc.). Monitor all slash commands with a single subscription.
 
-## Examples
+### Examples
 
-### Telegram Alert on Long Tasks
+#### Telegram Alert on Long Tasks
 
 Send yourself a message when the agent takes more than 10 steps:
 
@@ -109,7 +121,7 @@ async def handle(event_type: str, context: dict):
             )
 ```
 
-### Command Usage Logger
+#### Command Usage Logger
 
 Track which slash commands are used:
 
@@ -142,7 +154,7 @@ def handle(event_type: str, context: dict):
         f.write(json.dumps(entry) + "\n")
 ```
 
-### Session Start Webhook
+#### Session Start Webhook
 
 POST to an external service on new sessions:
 
@@ -169,7 +181,7 @@ async def handle(event_type: str, context: dict):
         }, timeout=5)
 ```
 
-## How It Works
+### How It Works
 
 1. On gateway startup, `HookRegistry.discover_and_load()` scans `~/.hermes/hooks/`
 2. Each subdirectory with `HOOK.yaml` + `handler.py` is loaded dynamically
@@ -178,5 +190,51 @@ async def handle(event_type: str, context: dict):
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
-Hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not currently load hooks.
+Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
 :::
+
+## Plugin Hooks
+
+[Plugins](/docs/user-guide/features/plugins) can register hooks that fire in **both CLI and gateway** sessions. These are registered programmatically via `ctx.register_hook()` in your plugin's `register()` function.
+
+```python
+def register(ctx):
+    ctx.register_hook("pre_tool_call", my_callback)
+    ctx.register_hook("post_tool_call", my_callback)
+```
+
+### Available Plugin Hooks
+
+| Hook | Fires when | Callback receives |
+|------|-----------|-------------------|
+| `pre_tool_call` | Before any tool executes | `tool_name`, `args`, `task_id` |
+| `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
+| `pre_llm_call` | Before LLM API request | *(planned — not yet wired)* |
+| `post_llm_call` | After LLM API response | *(planned — not yet wired)* |
+| `on_session_start` | Session begins | *(planned — not yet wired)* |
+| `on_session_end` | Session ends | *(planned — not yet wired)* |
+
+Callbacks receive keyword arguments matching the columns above:
+
+```python
+def my_callback(**kwargs):
+    tool = kwargs["tool_name"]
+    args = kwargs["args"]
+    # ...
+```
+
+### Example: Block Dangerous Tools
+
+```python
+# ~/.hermes/plugins/tool-guard/__init__.py
+BLOCKED = {"terminal", "write_file"}
+
+def guard(**kwargs):
+    if kwargs["tool_name"] in BLOCKED:
+        print(f"⚠ Blocked tool call: {kwargs['tool_name']}")
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", guard)
+```
+
+See the **[Plugins guide](/docs/user-guide/features/plugins)** for full details on creating plugins.

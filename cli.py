@@ -1093,7 +1093,7 @@ class HermesCLI:
         # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
         # custom endpoint → prefer OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.
-        if "openrouter.ai" in self.base_url:
+        if self.base_url and "openrouter.ai" in self.base_url:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")

@@ -573,6 +573,10 @@ class GatewayRunner:
                 session_id=old_session_id,
                 honcho_session_key=honcho_session_key,
             )
+            # Fully silence the flush agent — quiet_mode only suppresses init
+            # messages; tool call output still leaks to the terminal through
+            # _safe_print → _print_fn.  Set a no-op to prevent that.
+            tmp_agent._print_fn = lambda *a, **kw: None
 
             # Build conversation history from transcript
             msgs = [

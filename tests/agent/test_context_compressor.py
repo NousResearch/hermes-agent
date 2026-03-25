@@ -519,24 +519,26 @@ class TestSummaryTargetRatio:
     """Verify that summary_target_ratio properly scales budgets with context window."""
 
     def test_tail_budget_scales_with_context(self):
-        """Tail token budget should be context_length * summary_target_ratio."""
+        """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        assert c.tail_token_budget == 80_000
+        # 200K * 0.50 threshold * 0.40 ratio = 40K
+        assert c.tail_token_budget == 40_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        assert c.tail_token_budget == 400_000
+        # 1M * 0.50 threshold * 0.40 ratio = 200K
+        assert c.tail_token_budget == 200_000
 
     def test_summary_cap_scales_with_context(self):
-        """Max summary tokens should be 5% of context, capped at 32K."""
+        """Max summary tokens should be 5% of context, capped at 12K."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.max_summary_tokens == 10_000  # 200K * 0.05
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.max_summary_tokens == 32_000  # capped at ceiling
+        assert c.max_summary_tokens == 12_000  # capped at 12K ceiling
 
     def test_ratio_clamped(self):
         """Ratio should be clamped to [0.10, 0.80]."""
@@ -548,12 +550,12 @@ class TestSummaryTargetRatio:
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.95)
         assert c.summary_target_ratio == 0.80
 
-    def test_default_threshold_is_80_percent(self):
-        """Default compression threshold should be 80%."""
+    def test_default_threshold_is_50_percent(self):
+        """Default compression threshold should be 50%."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.threshold_percent == 0.80
-        assert c.threshold_tokens == 80_000
+        assert c.threshold_percent == 0.50
+        assert c.threshold_tokens == 50_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""

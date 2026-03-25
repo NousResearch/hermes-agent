@@ -10,6 +10,7 @@ from tools.plannotator_tool import _send_inline_url_message, plannotator_session
 PREPARE_TEMPLATE = "launcher prepare"
 REVIEW_TEMPLATE = "launcher review{review_target_arg}"
 ANNOTATE_TEMPLATE = "launcher annotate {artifact_path}"
+LAST_TEMPLATE = "launcher last"
 
 
 def test_annotate_requires_absolute_artifact_path():
@@ -199,6 +200,42 @@ def test_inline_review_returns_error_if_send_fails():
     assert "Failed to send prepared Plannotator URL message" in result["error"]
     assert result["prepared_host"] == "review-fixed.example.com"
     assert launch_mock.call_count == 1
+
+
+def test_inline_last_falls_back_to_transcript_markdown():
+    prepare_result = {
+        "success": True,
+        "action": "prepare",
+        "host": "review-fixed.example.com",
+        "url": "https://review-fixed.example.com/",
+        "suggested_message": "Temporary review URL:\nhttps://review-fixed.example.com/",
+        "waited_for_completion": False,
+    }
+    annotate_result = {
+        "success": True,
+        "action": "annotate",
+        "host": "review-fixed.example.com",
+        "url": "https://review-fixed.example.com/",
+        "completed": True,
+        "waited_for_completion": True,
+        "final_log": "Feedback returned.\n",
+    }
+
+    with (
+        patch("tools.plannotator_tool._get_last_assistant_message_from_gateway_session", return_value="Hello from Hermes") as last_mock,
+        patch("tools.plannotator_tool._write_last_message_markdown", return_value="/tmp/plannotator-last.md") as write_mock,
+        patch("tools.plannotator_tool._launch_plannotator", side_effect=[prepare_result, annotate_result]) as launch_mock,
+        patch("tools.plannotator_tool._send_inline_url_message", return_value={"success": True}) as send_mock,
+    ):
+        result = json.loads(plannotator_session_tool({"action": "inline_last", "command_template": LAST_TEMPLATE}))
+
+    assert result["success"] is True
+    last_mock.assert_called_once()
+    write_mock.assert_called_once_with("Hello from Hermes")
+    second_args = launch_mock.call_args_list[1].args[0]
+    assert second_args["action"] == "annotate"
+    assert second_args["artifact_path"] == "/tmp/plannotator-last.md"
+    send_mock.assert_called_once()
 
 
 def test_inline_send_uses_origin_target():

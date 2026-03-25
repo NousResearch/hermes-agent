@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ _ENV_TEMPLATE_BY_ACTION = {
 _INLINE_ACTION_MAP = {
     "inline_review": "review",
     "inline_annotate": "annotate",
+    "inline_last": "last",
 }
 
 _DEFAULT_LAUNCH_TIMEOUT_SECONDS = 120
@@ -51,8 +53,8 @@ _PLANNOTATOR_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["prepare", "review", "annotate", "inline_review", "inline_annotate", "last"],
-                "description": "prepare: reserve/generate a host+URL before launching. review: start a review session. annotate: start a markdown annotation session. inline_review / inline_annotate: post the URL into the active conversation, then wait for feedback. last: last-message flow if the launcher supports it."
+                "enum": ["prepare", "review", "annotate", "inline_review", "inline_annotate", "last", "inline_last"],
+                "description": "prepare: reserve/generate a host+URL before launching. review: start a review session. annotate: start a markdown annotation session. inline_review / inline_annotate / inline_last: post the URL into the active conversation, then wait for feedback. last: last-message flow if the launcher supports it, with Hermes fallback to the latest assistant message transcript when needed."
             },
             "review_target": {
                 "type": "string",
@@ -119,13 +121,20 @@ def plannotator_session_tool(args: dict[str, Any], **_kw) -> str:
 
 def _execute_inline_flow(args: dict[str, Any]) -> str:
     normalized = _normalize_args(args)
-    base_action = _INLINE_ACTION_MAP[normalized["action"]]
+    requested_action = normalized["action"]
+    base_action = _INLINE_ACTION_MAP[requested_action]
     normalized["action"] = base_action
     normalized["wait_for_completion"] = True
 
     validation_error = _validate_args(normalized)
     if validation_error:
         return json.dumps({"error": validation_error})
+
+    if base_action == "last":
+        fallback = _build_last_message_fallback_args(normalized)
+        if fallback:
+            normalized = fallback
+            normalized["wait_for_completion"] = True
 
     prepared = _launch_plannotator(
         {
@@ -196,6 +205,97 @@ def _validate_args(args: dict[str, Any]) -> str | None:
     if action == "annotate" and not os.path.isabs(artifact_path):
         return "'artifact_path' must be an absolute path"
     return None
+
+
+def _build_last_message_fallback_args(args: dict[str, Any]) -> dict[str, Any] | None:
+    last_message = _get_last_assistant_message_from_gateway_session()
+    if not last_message:
+        return None
+
+    artifact_path = _write_last_message_markdown(last_message)
+    fallback = dict(args)
+    fallback["action"] = "annotate"
+    fallback["artifact_path"] = artifact_path
+    fallback["command_template"] = os.getenv(_ENV_TEMPLATE_BY_ACTION["annotate"], "").strip() or None
+    return fallback
+
+
+def _get_last_assistant_message_from_gateway_session() -> str | None:
+    session_id = _resolve_current_gateway_session_id()
+    if not session_id:
+        return None
+
+    transcript_path = _get_gateway_sessions_dir() / f"{session_id}.jsonl"
+    if not transcript_path.exists():
+        return None
+
+    last_assistant = None
+    try:
+        with transcript_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    message = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if message.get("role") == "assistant" and message.get("content"):
+                    last_assistant = str(message["content"])
+    except OSError:
+        return None
+
+    return last_assistant
+
+
+def _resolve_current_gateway_session_id() -> str | None:
+    sessions_file = _get_gateway_sessions_dir() / "sessions.json"
+    if not sessions_file.exists():
+        return None
+
+    session_key = _build_current_gateway_session_key()
+    if not session_key:
+        return None
+
+    try:
+        data = json.loads(sessions_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    entry = data.get(session_key)
+    if isinstance(entry, dict):
+        return entry.get("session_id")
+    return None
+
+
+def _build_current_gateway_session_key() -> str | None:
+    platform_name = (os.getenv("HERMES_SESSION_PLATFORM") or "").strip().lower()
+    chat_id = (os.getenv("HERMES_SESSION_CHAT_ID") or "").strip()
+    thread_id = (os.getenv("HERMES_SESSION_THREAD_ID") or "").strip() or None
+    if not platform_name or not chat_id:
+        return None
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+
+    source = SessionSource(platform=Platform(platform_name), chat_id=chat_id, chat_type="dm", thread_id=thread_id)
+    return build_session_key(source)
+
+
+def _get_gateway_sessions_dir() -> Path:
+    hermes_home = Path(os.getenv("HERMES_HOME") or (Path.home() / ".hermes"))
+    return hermes_home / "sessions"
+
+
+def _write_last_message_markdown(content: str) -> str:
+    platform_name = (os.getenv("HERMES_SESSION_PLATFORM") or "session").strip().lower() or "session"
+    chat_id = (os.getenv("HERMES_SESSION_CHAT_ID") or "chat").strip() or "chat"
+    thread_id = (os.getenv("HERMES_SESSION_THREAD_ID") or "thread").strip() or "thread"
+    key = f"{platform_name}-{chat_id}-{thread_id}"
+    safe_key = ''.join(ch if ch.isalnum() else '-' for ch in key)[:80]
+    path = Path(tempfile.gettempdir()) / f"plannotator-last-{safe_key}.md"
+    path.write_text(f"# Last assistant message\n\n{content}\n", encoding="utf-8")
+    return str(path)
 
 
 def _launch_plannotator(args: dict[str, Any]) -> dict[str, Any]:

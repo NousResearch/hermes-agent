@@ -164,18 +164,32 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
+    # Extract MEDIA:<path> tags from the response so we can send files as
+    # native platform attachments instead of raw text paths.
+    from gateway.platforms.base import BasePlatformAdapter
+
+    media_items, cleaned_content = BasePlatformAdapter.extract_media(content)
+    # media_items: list of (path, is_voice) tuples
+    media_paths = []
+    for path, _is_voice in media_items:
+        expanded = os.path.expanduser(path)
+        if os.path.isfile(expanded):
+            media_paths.append(expanded)
+        else:
+            logger.warning("Job '%s': MEDIA path not found, skipping: %s", job["id"], path)
+
     # Wrap the content so the user knows this is a cron delivery and that
     # the interactive agent has no visibility into it.
     task_name = job.get("name", job["id"])
     wrapped = (
         f"Cronjob Response: {task_name}\n"
         f"-------------\n\n"
-        f"{content}\n\n"
+        f"{cleaned_content}\n\n"
         f"Note: The agent cannot see this message, and therefore cannot respond to it."
     )
 
     # Run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id)
+    coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id, media_files=media_paths)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -186,7 +200,7 @@ def _deliver_result(job: dict, content: str) -> None:
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id, media_files=media_paths))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)

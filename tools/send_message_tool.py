@@ -315,10 +315,24 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return last_result
 
     # --- Non-Telegram platforms ---
+    # Discord supports file attachments via multipart form data
+    if platform == Platform.DISCORD:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_discord(
+                pconfig.token, chat_id, chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
+                f"send_message MEDIA delivery is currently only supported for telegram and discord; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -326,14 +340,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            "native send_message media delivery is currently only supported for telegram and discord"
         )
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.DISCORD:
-            result = await _send_discord(pconfig.token, chat_id, chunk)
-        elif platform == Platform.SLACK:
+        if platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
@@ -478,10 +490,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {"error": f"Telegram send failed: {e}"}
 
 
-async def _send_discord(token, chat_id, message):
+async def _send_discord(token, chat_id, message, media_files=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
     Chunking is handled by _send_to_platform() before this is called.
+    Supports optional media_files (list of local file paths) sent as attachments
+    via multipart form data.
     """
     try:
         import aiohttp
@@ -489,13 +503,50 @@ async def _send_discord(token, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
-        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json={"content": message}) as resp:
-                if resp.status not in (200, 201):
-                    body = await resp.text()
-                    return {"error": f"Discord API error ({resp.status}): {body}"}
-                data = await resp.json()
+        headers = {"Authorization": f"Bot {token}"}
+
+        # Normalize media_files: may be plain strings or (path, is_voice) tuples
+        media_files = [f if isinstance(f, str) else f[0] for f in (media_files or [])]
+        if media_files:
+            # Use multipart form data to send file attachments
+            form = aiohttp.FormData()
+            # Build the JSON payload with attachment references
+            attachments = []
+            for i, fpath in enumerate(media_files):
+                attachments.append({"id": i, "filename": os.path.basename(fpath)})
+            payload = {"content": message or ""}
+            if attachments:
+                payload["attachments"] = attachments
+            form.add_field("payload_json", json.dumps(payload), content_type="application/json")
+            file_handles = []
+            try:
+                for i, fpath in enumerate(media_files):
+                    fh = open(fpath, "rb")
+                    file_handles.append(fh)
+                    form.add_field(
+                        f"files[{i}]",
+                        fh,
+                        filename=os.path.basename(fpath),
+                        content_type="application/octet-stream",
+                    )
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, data=form) as resp:
+                        if resp.status not in (200, 201):
+                            body = await resp.text()
+                            return {"error": f"Discord API error ({resp.status}): {body}"}
+                        data = await resp.json()
+            finally:
+                for fh in file_handles:
+                    fh.close()
+        else:
+            # Simple JSON message (no attachments)
+            headers["Content-Type"] = "application/json"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json={"content": message}) as resp:
+                    if resp.status not in (200, 201):
+                        body = await resp.text()
+                        return {"error": f"Discord API error ({resp.status}): {body}"}
+                    data = await resp.json()
         return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": data.get("id")}
     except Exception as e:
         return {"error": f"Discord send failed: {e}"}

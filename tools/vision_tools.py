@@ -325,8 +325,9 @@ async def vision_analyze_tool(
         logger.info("Processing image with vision model...")
         
         # Call the vision API via centralized router.
-        # Read timeout from config.yaml (auxiliary.vision.timeout), default 30s.
-        vision_timeout = 30.0
+        # Read timeout from config.yaml (auxiliary.vision.timeout), default 120s.
+        # Local vision models (llama.cpp, ollama) can take well over 30s.
+        vision_timeout = 120.0
         try:
             from hermes_cli.config import load_config
             _cfg = load_config()

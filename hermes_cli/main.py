@@ -529,6 +529,7 @@ def cmd_chat(args):
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
+        "output_format": getattr(args, "output_format", "text"),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -3124,6 +3125,13 @@ For more help on a command:
         "-Q", "--quiet",
         action="store_true",
         help="Quiet mode for programmatic use: suppress banner, spinner, and tool previews. Only output the final response and session info."
+    )
+    chat_parser.add_argument(
+        "--output-format",
+        dest="output_format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format for -q/--query mode: 'text' (default) or 'json' (structured JSON with metrics). Implies --quiet when set to 'json'."
     )
     chat_parser.add_argument(
         "--resume", "-r",

@@ -7175,6 +7175,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    output_format: str = "text",
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -7326,6 +7327,10 @@ def main(
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
     
+    # JSON output format implies quiet mode
+    if output_format == "json":
+        quiet = True
+
     # Handle single query mode
     if query:
         if quiet:
@@ -7342,14 +7347,49 @@ def main(
                     route_label=turn_route["label"],
                 ):
                     cli.agent.quiet_mode = True
+                    if output_format == "json":
+                        # Suppress all stdout during agent run (streaming response box, etc.)
+                        import io as _io, sys as _sys
+                        _orig_stdout = _sys.stdout
+                        _sys.stdout = _io.StringIO()
                     result = cli.agent.run_conversation(
                         user_message=query,
                         conversation_history=cli.conversation_history,
                     )
+                    if output_format == "json":
+                        _sys.stdout = _orig_stdout
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-                    if response:
-                        print(response)
-                    print(f"\nsession_id: {cli.session_id}")
+                    if output_format == "json":
+                        import json as _json
+                        from datetime import datetime as _dt
+                        elapsed = (_dt.now() - cli.session_start).total_seconds() if hasattr(cli, "session_start") and cli.session_start else None
+                        duration_ms = round(elapsed * 1000) if elapsed else None
+                        num_turns = result.get("api_calls", 0)
+                        output = {
+                            "type": "result",
+                            "subtype": "error" if result.get("interrupted") else "success",
+                            "is_error": bool(result.get("interrupted")),
+                            "result": response,
+                            "session_id": cli.session_id,
+                            "model": result.get("model", ""),
+                            "provider": result.get("provider", ""),
+                            "num_turns": num_turns,
+                            "duration_ms": duration_ms,
+                            "total_cost_usd": result.get("estimated_cost_usd", 0.0),
+                            "usage": {
+                                "input_tokens": result.get("input_tokens", 0),
+                                "output_tokens": result.get("output_tokens", 0),
+                                "cache_read_input_tokens": result.get("cache_read_tokens", 0),
+                                "cache_creation_input_tokens": result.get("cache_write_tokens", 0),
+                                "reasoning_tokens": result.get("reasoning_tokens", 0),
+                            },
+                            "tool_call_count": result.get("tool_call_count", 0),
+                        }
+                        print(_json.dumps(output))
+                    else:
+                        if response:
+                            print(response)
+                        print(f"\nsession_id: {cli.session_id}")
         else:
             cli.show_banner()
             cli.console.print(f"[bold blue]Query:[/] {query}")

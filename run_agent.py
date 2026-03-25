@@ -3657,6 +3657,7 @@ class AIAgent:
                                 "id": tc_delta.id or "",
                                 "type": "function",
                                 "function": {"name": "", "arguments": ""},
+                                "extra_content": None,
                             }
                         entry = tool_calls_acc[idx]
                         if tc_delta.id:
@@ -3666,6 +3667,13 @@ class AIAgent:
                                 entry["function"]["name"] += tc_delta.function.name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
+                        extra = getattr(tc_delta, "extra_content", None)
+                        if extra is None and hasattr(tc_delta, "model_extra"):
+                            extra = (tc_delta.model_extra or {}).get("extra_content")
+                        if extra is not None:
+                            if hasattr(extra, "model_dump"):
+                                extra = extra.model_dump()
+                            entry["extra_content"] = extra
                         # Fire once per tool when the full name is available
                         name = entry["function"]["name"]
                         if name and idx not in tool_gen_notified:
@@ -3690,6 +3698,7 @@ class AIAgent:
                     mock_tool_calls.append(SimpleNamespace(
                         id=tc["id"],
                         type=tc["type"],
+                        extra_content=tc.get("extra_content"),
                         function=SimpleNamespace(
                             name=tc["function"]["name"],
                             arguments=tc["function"]["arguments"],

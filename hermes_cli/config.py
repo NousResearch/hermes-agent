@@ -317,6 +317,8 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
+                               # independent of the parent's max_iterations)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

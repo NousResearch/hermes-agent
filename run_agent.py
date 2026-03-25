@@ -354,6 +354,27 @@ def _inject_honcho_turn_context(content, turn_context: str):
     return f"{text}\n\n{note}"
 
 
+def _inject_session_recall_turn_context(content, recall_context: str):
+    """Append session-search continuity recap to the current-turn user message."""
+    if not recall_context:
+        return content
+
+    note = (
+        "[System note: The following session recall was auto-fetched to help "
+        "resume continuity. It is context for this turn only, not new user "
+        "input.]\n\n"
+        f"{recall_context}"
+    )
+
+    if isinstance(content, list):
+        return list(content) + [{"type": "text", "text": note}]
+
+    text = "" if content is None else str(content)
+    if not text.strip():
+        return note
+    return f"{text}\n\n{note}"
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -2188,6 +2209,51 @@ class AIAgent:
             return header + "\n\n".join(parts)
         except Exception as e:
             logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+            return ""
+
+    def _session_resume_prefetch(self, user_message: str) -> str:
+        """Fetch continuity recap for resume-intent turns via session_search."""
+        if "session_search" not in self.valid_tool_names or not self._session_db:
+            return ""
+
+        try:
+            from tools.session_search_tool import _is_resume_query, session_search as _session_search
+
+            if not _is_resume_query(user_message or ""):
+                return ""
+
+            raw = _session_search(
+                query=user_message,
+                db=self._session_db,
+                current_session_id=self.session_id,
+                limit=2,
+            )
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or not payload.get("success"):
+                return ""
+
+            results = payload.get("results") or []
+            if not results:
+                return ""
+
+            snippets = []
+            for item in results[:2]:
+                summary = str(item.get("summary") or "").strip()
+                if not summary:
+                    continue
+                when = item.get("when") or "unknown"
+                source = item.get("source") or "unknown"
+                snippets.append(f"### {when} · {source}\n{summary}")
+
+            if not snippets:
+                return ""
+
+            merged = "## Session Recall\n" + "\n\n".join(snippets)
+            if len(merged) > 3500:
+                merged = merged[:3500].rstrip() + "\n\n...[session recall truncated]..."
+            return merged
+        except Exception as e:
+            logger.debug("Session resume prefetch failed (non-fatal): %s", e)
             return ""
 
     def _honcho_save_user_observation(self, content: str) -> str:
@@ -5455,6 +5521,7 @@ class AIAgent:
         # to consume background prefetch results from turn N-1.
         self._honcho_context = ""
         self._honcho_turn_context = ""
+        self._resume_turn_context = ""
         _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
         if self._honcho and self._honcho_session_key and _recall_mode != "tools":
             try:
@@ -5466,6 +5533,10 @@ class AIAgent:
                         self._honcho_turn_context = prefetched_context
             except Exception as e:
                 logger.debug("Honcho prefetch failed (non-fatal): %s", e)
+
+        # Resume-intent continuity prefetch (session_search), injected at API-call
+        # time only so persisted history remains the original user message.
+        self._resume_turn_context = self._session_resume_prefetch(original_user_message)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -5625,10 +5696,15 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                if idx == current_turn_user_idx and msg.get("role") == "user":
+                    if self._honcho_turn_context:
+                        api_msg["content"] = _inject_honcho_turn_context(
+                            api_msg.get("content", ""), self._honcho_turn_context
+                        )
+                    if self._resume_turn_context:
+                        api_msg["content"] = _inject_session_recall_turn_context(
+                            api_msg.get("content", ""), self._resume_turn_context
+                        )
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

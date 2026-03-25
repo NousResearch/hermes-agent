@@ -18,7 +18,7 @@ import pytest
 
 import run_agent
 from honcho_integration.client import HonchoClientConfig
-from run_agent import AIAgent, _inject_honcho_turn_context
+from run_agent import AIAgent, _inject_honcho_turn_context, _inject_session_recall_turn_context
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -1722,6 +1722,86 @@ class TestSystemPromptStability:
         assert "what were we doing?" in current_user["content"]
         assert "prior context" in current_user["content"]
         assert "Honcho memory was retrieved from prior sessions" in current_user["content"]
+
+    def test_inject_session_recall_turn_context_appends_system_note(self):
+        content = _inject_session_recall_turn_context("resume", "## Session Recall\nsummary")
+        assert "resume" in content
+        assert "session recall was auto-fetched" in content
+        assert "## Session Recall" in content
+
+    def test_resume_prefetch_is_injected_into_api_only_user_message(self):
+        captured = {}
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("session_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="***",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        def _fake_api_call(api_kwargs):
+            captured.update(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        agent._use_prompt_caching = False
+
+        with (
+            patch.object(agent, "_session_resume_prefetch", return_value="## Session Recall\nprior work"),
+            patch.object(agent, "_queue_honcho_prefetch"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+        ):
+            result = agent.run_conversation("pick up where we left off")
+
+        assert result["completed"] is True
+        user_message = captured["messages"][-1]
+        assert user_message["role"] == "user"
+        assert "pick up where we left off" in user_message["content"]
+        assert "## Session Recall" in user_message["content"]
+        assert "session recall was auto-fetched" in user_message["content"]
+
+    def test_session_resume_prefetch_parses_session_search_results(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("session_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="***",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        agent._session_db = MagicMock()
+
+        payload = {
+            "success": True,
+            "results": [
+                {
+                    "when": "March 25, 2026",
+                    "source": "slack",
+                    "summary": "We were implementing resume continuity.",
+                }
+            ],
+        }
+
+        with (
+            patch("tools.session_search_tool._is_resume_query", return_value=True),
+            patch("tools.session_search_tool.session_search", return_value=json.dumps(payload)),
+        ):
+            context = agent._session_resume_prefetch("pick up where we left off")
+
+        assert "## Session Recall" in context
+        assert "March 25, 2026" in context
+        assert "resume continuity" in context
 
     def test_honcho_prefetch_runs_on_first_turn(self):
         """Honcho prefetch should run when conversation_history is empty."""

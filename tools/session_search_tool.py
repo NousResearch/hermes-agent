@@ -123,6 +123,40 @@ def _truncate_around_matches(
     return prefix + truncated + suffix
 
 
+def _is_resume_query(query: str) -> bool:
+    """Detect 'continue where we left off' intent for same-thread recall."""
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+
+    # Direct high-signal phrases.
+    resume_markers = (
+        "pick up where we left off",
+        "where we left off",
+        "left off",
+        "continue where",
+        "continue from",
+        "resume",
+        "what did we do",
+        "what were we doing",
+        "where were we",
+        "thread summary",
+    )
+    if any(marker in q for marker in resume_markers):
+        return True
+
+    # Short conversational check-ins that usually mean "continue this thread".
+    # Keep this conservative to avoid hijacking normal search queries.
+    soft_markers = (
+        "what's next",
+        "whats next",
+        "next step",
+        "status",
+        "quick recap",
+    )
+    return len(q) <= 80 and any(marker in q for marker in soft_markers)
+
+
 async def _summarize_session(
     conversation_text: str, query: str, session_meta: Dict[str, Any]
 ) -> Optional[str]:
@@ -190,7 +224,8 @@ def session_search(
     Search past sessions and return focused summaries of matching conversations.
 
     Uses FTS5 to find matches, then summarizes the top sessions with Gemini Flash.
-    The current session is excluded from results since the agent already has that context.
+    By default the current session lineage is excluded, except for explicit
+    resume-style queries (e.g., "pick up where we left off").
     """
     if db is None:
         return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
@@ -207,22 +242,15 @@ def session_search(
         if role_filter and role_filter.strip():
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
+        resume_intent = _is_resume_query(query)
+
         # FTS5 search -- get matches ranked by relevance
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             limit=50,  # Get more matches to find unique sessions
             offset=0,
-        )
-
-        if not raw_results:
-            return json.dumps({
-                "success": True,
-                "query": query,
-                "results": [],
-                "count": 0,
-                "message": "No matching sessions found.",
-            }, ensure_ascii=False)
+        ) or []
 
         # Resolve child sessions to their parent — delegation stores detailed
         # content in child sessions, but the user's conversation is the parent.
@@ -256,24 +284,73 @@ def session_search(
         )
 
         # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # session lineage unless the user explicitly asks to resume.
+        #
+        # Resume-intent queries are thread-first: pre-seed the current lineage
+        # before FTS hits so "pick up where we left off" prioritizes this thread.
         seen_sessions = {}
+        if resume_intent and current_lineage_root:
+            try:
+                session_meta = db.get_session(current_lineage_root) or {}
+                seen_sessions[current_lineage_root] = {
+                    "session_id": current_lineage_root,
+                    "source": session_meta.get("source", "unknown"),
+                    "session_started": session_meta.get("started_at"),
+                    "model": session_meta.get("model"),
+                }
+            except Exception as e:
+                logging.debug(
+                    "Failed resume seed for session %s: %s",
+                    current_lineage_root,
+                    e,
+                    exc_info=True,
+                )
+
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
-            if current_lineage_root and resolved_sid == current_lineage_root:
-                continue
-            if current_session_id and raw_sid == current_session_id:
-                continue
+            if not resume_intent:
+                # Skip the current session lineage — the agent already has that
+                # context, even if older turns live in parent fragments.
+                if current_lineage_root and resolved_sid == current_lineage_root:
+                    continue
+                if current_session_id and raw_sid == current_session_id:
+                    continue
             if resolved_sid not in seen_sessions:
                 result = dict(result)
                 result["session_id"] = resolved_sid
                 seen_sessions[resolved_sid] = result
             if len(seen_sessions) >= limit:
                 break
+
+        # Resume fallback: if seeding failed and keyword search misses, still
+        # summarize current lineage so "pick up where we left off" has context.
+        if resume_intent and not seen_sessions and current_lineage_root:
+            try:
+                session_meta = db.get_session(current_lineage_root) or {}
+                seen_sessions[current_lineage_root] = {
+                    "session_id": current_lineage_root,
+                    "source": session_meta.get("source", "unknown"),
+                    "session_started": session_meta.get("started_at"),
+                    "model": session_meta.get("model"),
+                }
+            except Exception as e:
+                logging.debug(
+                    "Failed resume fallback for session %s: %s",
+                    current_lineage_root,
+                    e,
+                    exc_info=True,
+                )
+
+        if not seen_sessions:
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results": [],
+                "count": 0,
+                "sessions_searched": 0,
+                "message": "No matching sessions found.",
+            }, ensure_ascii=False)
 
         # Prepare all sessions for parallel summarization
         tasks = []

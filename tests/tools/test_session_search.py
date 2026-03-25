@@ -2,12 +2,14 @@
 
 import json
 import time
+from types import SimpleNamespace
 import pytest
 
 from tools.session_search_tool import (
     _format_timestamp,
     _format_conversation,
     _truncate_around_matches,
+    _is_resume_query,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
 )
@@ -133,6 +135,22 @@ class TestTruncateAroundMatches:
         text = "KEYWORD " + "x" * (MAX_SESSION_CHARS + 5000)
         result = _truncate_around_matches(text, "KEYWORD")
         assert "KEYWORD" in result
+
+
+# =========================================================================
+# _is_resume_query
+# =========================================================================
+
+class TestIsResumeQuery:
+    def test_detects_where_were_we_phrase(self):
+        assert _is_resume_query("where were we") is True
+
+    def test_detects_short_next_step_checkin(self):
+        assert _is_resume_query("what's next") is True
+
+    def test_does_not_trigger_on_long_plain_search(self):
+        query = "status of docker networking issue across api gateway and retry middleware from last week"
+        assert _is_resume_query(query) is False
 
 
 # =========================================================================
@@ -272,3 +290,152 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_resume_query_includes_current_session_lineage(self):
+        """Resume intent queries should include current lineage for thread continuity."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "20260304_120000_abc123"
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": current_sid,
+                "content": "latest turn",
+                "source": "slack",
+                "session_started": 1709500000,
+                "model": "test",
+            }
+        ]
+        mock_db.get_session.return_value = {
+            "parent_session_id": None,
+            "source": "slack",
+            "started_at": time.time(),
+            "model": "test",
+        }
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "pick up"},
+            {"role": "assistant", "content": "sure"},
+        ]
+
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(
+                session_search(
+                    query="pick up where we left off",
+                    db=mock_db,
+                    current_session_id=current_sid,
+                )
+            )
+
+        assert result["success"] is True
+        assert result["sessions_searched"] == 1
+
+    def test_resume_query_prioritizes_current_lineage_before_other_fts_hits(self):
+        """Resume intent should summarize current lineage first (thread-first)."""
+        from unittest.mock import AsyncMock, MagicMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "current_sid"
+        other_sid = "other_sid"
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": other_sid,
+                "content": "older related work",
+                "source": "slack",
+                "session_started": 1709400000,
+                "model": "test",
+            }
+        ]
+
+        def _get_session(session_id):
+            if session_id == current_sid:
+                return {
+                    "parent_session_id": None,
+                    "source": "slack",
+                    "started_at": 1709500000,
+                    "model": "test",
+                }
+            if session_id == other_sid:
+                return {
+                    "parent_session_id": None,
+                    "source": "slack",
+                    "started_at": 1709400000,
+                    "model": "test",
+                }
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "where were we"},
+            {"role": "assistant", "content": "we were fixing routing"},
+        ]
+
+        fake_summary = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="summary"))]
+        )
+
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            return_value=fake_summary,
+        ):
+            result = json.loads(
+                session_search(
+                    query="pick up where we left off",
+                    db=mock_db,
+                    current_session_id=current_sid,
+                    limit=2,
+                )
+            )
+
+        assert result["success"] is True
+        assert result["count"] >= 1
+        assert result["results"][0]["session_id"] == current_sid
+
+    def test_resume_query_falls_back_to_current_lineage_when_fts_empty(self):
+        """Resume intent should still summarize current lineage even with no FTS hits."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        current_sid = "20260304_120000_abc123"
+        mock_db.search_messages.return_value = []
+
+        def _get_session(session_id):
+            if session_id == current_sid:
+                return {
+                    "parent_session_id": None,
+                    "source": "slack",
+                    "started_at": time.time(),
+                    "model": "test",
+                }
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "where were we"},
+            {"role": "assistant", "content": "we were fixing routing"},
+        ]
+
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(
+                session_search(
+                    query="continue from where we left off",
+                    db=mock_db,
+                    current_session_id=current_sid,
+                )
+            )
+
+        assert result["success"] is True
+        assert result["sessions_searched"] == 1

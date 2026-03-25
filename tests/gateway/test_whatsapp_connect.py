@@ -52,6 +52,7 @@ def _make_adapter():
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._node_runtime = MagicMock(argv=("node",), env={})
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -417,3 +418,36 @@ class TestKillPortProcess:
         with patch("gateway.platforms.whatsapp._IS_WINDOWS", True), \
              patch("gateway.platforms.whatsapp.subprocess.run", side_effect=OSError("no netstat")):
             _kill_port_process(3000)  # must not raise
+
+
+class TestNodeRuntimeResolution:
+    """Verify WhatsApp can resolve a Node runtime without `node` on PATH."""
+
+    def test_prefers_node_from_path(self):
+        from gateway.platforms.whatsapp import _resolve_node_command
+
+        mock_result = MagicMock(returncode=0)
+        with patch("gateway.platforms.whatsapp.shutil.which", side_effect=lambda name: "/usr/local/bin/node" if name == "node" else None), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=mock_result):
+            runtime = _resolve_node_command()
+
+        assert runtime is not None
+        assert runtime == (["/usr/local/bin/node"], {})
+
+    def test_uses_vscode_helper_on_macos_when_node_missing(self):
+        from gateway.platforms.whatsapp import _resolve_node_command
+
+        vscode_helper = (
+            "/Applications/Visual Studio Code.app/Contents/Frameworks/"
+            "Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+        )
+        mock_result = MagicMock(returncode=0)
+
+        with patch("gateway.platforms.whatsapp.shutil.which", return_value=None), \
+             patch("gateway.platforms.whatsapp.platform.system", return_value="Darwin"), \
+             patch("gateway.platforms.whatsapp.Path.exists", return_value=True), \
+             patch("gateway.platforms.whatsapp.subprocess.run", return_value=mock_result):
+            runtime = _resolve_node_command()
+
+        assert runtime is not None
+        assert runtime == ([vscode_helper], {"ELECTRON_RUN_AS_NODE": "1"})

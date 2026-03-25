@@ -51,7 +51,7 @@ WZRD is a packaged Hermes plugin that treats model momentum as an attention prio
 
 The plugin keeps routing separate from execution: it surfaces momentum-informed candidates, but leaves the final provider and endpoint choice to the execution router.
 
-Source: [twzrd-sol/wzrd-final](https://github.com/twzrd-sol/wzrd-final/tree/main/agents/hermes-plugin/wzrd-plugin)
+Source: [twzrd-sol/wzrd-final](https://github.com/twzrd-sol/wzrd-final/tree/main/agents/hermes/wzrd_plugin)
 
 ## Available hooks
 

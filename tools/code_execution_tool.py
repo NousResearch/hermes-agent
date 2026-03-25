@@ -7,14 +7,15 @@ collapsing multi-step tool chains into a single inference turn.
 
 Architecture:
   1. Parent generates a `hermes_tools.py` stub module with RPC functions
-  2. Parent opens a Unix domain socket and starts an RPC listener thread
+  2. Parent opens a Unix domain socket (or TCP localhost on Windows) and
+     starts an RPC listener thread
   3. Parent spawns a child process that runs the LLM's script
-  4. When the script calls a tool function, the call travels over the UDS
-     back to the parent, which dispatches through handle_function_call
+  4. When the script calls a tool function, the call travels over the
+     socket back to the parent, which dispatches through handle_function_call
   5. Only the script's stdout is returned to the LLM; intermediate tool
      results never enter the context window
 
-Platform: Linux / macOS only (Unix domain sockets). Disabled on Windows.
+Platform: Linux / macOS (Unix domain sockets), Windows (TCP localhost).
 """
 
 import json
@@ -33,27 +34,45 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
-# Availability gate: requires AF_UNIX sockets (POSIX, or Windows 10 1803+)
+# Transport selection: prefer AF_UNIX, fall back to TCP localhost on Windows.
 logger = logging.getLogger(__name__)
 
+# Transport modes
+_TRANSPORT_UDS = "uds"
+_TRANSPORT_TCP = "tcp"
 
-def _check_af_unix() -> bool:
-    """Check if AF_UNIX sockets are available on this platform."""
+
+def _detect_transport() -> str:
+    """Pick the best IPC transport for this platform.
+
+    Returns _TRANSPORT_UDS when AF_UNIX sockets are available (all POSIX
+    systems, and Windows builds where CPython was compiled with AF_UNIX).
+    Falls back to _TRANSPORT_TCP (127.0.0.1 loopback) otherwise -- this
+    covers stock CPython on Windows where AF_UNIX is absent.
+    """
     if not hasattr(socket, "AF_UNIX"):
-        return False
+        return _TRANSPORT_TCP
     if sys.platform != "win32":
-        return True  # Always available on Unix
+        return _TRANSPORT_UDS
     # Windows: AF_UNIX added in build 17134 (Windows 10 1803)
     # but may not work in all environments — test it
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.close()
-        return True
+        return _TRANSPORT_UDS
     except (OSError, AttributeError):
-        return False
+        return _TRANSPORT_TCP
 
 
-SANDBOX_AVAILABLE = _check_af_unix()
+_RPC_TRANSPORT = _detect_transport()
+
+# Sandbox is always available now (UDS or TCP fallback).
+SANDBOX_AVAILABLE = True
+
+
+def check_sandbox_requirements() -> bool:
+    """Always True — TCP fallback ensures sandbox works on all platforms."""
+    return True
 
 # The 7 tools allowed inside the sandbox. The intersection of this list
 # and the session's enabled tools determines which stubs are generated.
@@ -73,10 +92,6 @@ DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
-
-def check_sandbox_requirements() -> bool:
-    """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
-    return SANDBOX_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +211,16 @@ def retry(fn, max_attempts=3, delay=2):
 def _connect():
     global _sock
     if _sock is None:
-        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        _sock.connect(os.environ["HERMES_RPC_SOCKET"])
+        addr = os.environ["HERMES_RPC_SOCKET"]
+        if addr.startswith("tcp:"):
+            # TCP localhost fallback (Windows without AF_UNIX)
+            _, host, port = addr.split(":", 2)
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            _sock.connect((host, int(port)))
+        else:
+            # Unix domain socket (Linux / macOS)
+            _sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            _sock.connect(addr)
         _sock.settimeout(300)
     return _sock
 
@@ -378,11 +401,6 @@ def execute_code(
     Returns:
         JSON string with execution results.
     """
-    if not SANDBOX_AVAILABLE:
-        return json.dumps({
-            "error": "execute_code is not available on Windows. Use normal tool calls instead."
-        })
-
     if not code or not code.strip():
         return json.dumps({"error": "No code provided."})
 
@@ -403,15 +421,22 @@ def execute_code(
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
-    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
-    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
-    # On Linux, tempfile.gettempdir() already returns /tmp.
-    # On Windows, use tempfile.gettempdir() which returns %TEMP%.
-    if sys.platform == "darwin":
-        _sock_tmpdir = "/tmp"
-    else:
-        _sock_tmpdir = tempfile.gettempdir()
-    sock_path = os.path.join(_sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+
+    # Determine transport-specific address.
+    # UDS: a file path for the socket.  TCP: we pick a random port later.
+    use_tcp = (_RPC_TRANSPORT == _TRANSPORT_TCP)
+    sock_path: Optional[str] = None  # only set for UDS
+    if not use_tcp:
+        # Use /tmp on macOS to avoid the long /var/folders/... path that
+        # pushes Unix domain socket paths past the 104-byte AF_UNIX limit.
+        # On Linux, tempfile.gettempdir() already returns /tmp.
+        if sys.platform == "darwin":
+            _sock_tmpdir = "/tmp"
+        else:
+            _sock_tmpdir = tempfile.gettempdir()
+        sock_path = os.path.join(
+            _sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock"
+        )
 
     tool_call_log: list = []
     tool_call_counter = [0]  # mutable so the RPC thread can increment
@@ -430,9 +455,16 @@ def execute_code(
         with open(os.path.join(tmpdir, "script.py"), "w") as f:
             f.write(code)
 
-        # --- Start UDS server ---
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(sock_path)
+        # --- Start RPC server (UDS or TCP) ---
+        if use_tcp:
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.bind(("127.0.0.1", 0))
+            _tcp_port = server_sock.getsockname()[1]
+            rpc_addr = f"tcp:127.0.0.1:{_tcp_port}"
+        else:
+            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server_sock.bind(sock_path)
+            rpc_addr = sock_path
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
@@ -473,7 +505,7 @@ def execute_code(
             # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
-        child_env["HERMES_RPC_SOCKET"] = sock_path
+        child_env["HERMES_RPC_SOCKET"] = rpc_addr
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
         # repo-root modules are available to child scripts.
@@ -664,10 +696,11 @@ def execute_code(
                 logger.debug("Server socket close error: %s", e)
         import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
-        try:
-            os.unlink(sock_path)
-        except OSError:
-            pass  # already cleaned up or never created
+        if sock_path:
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass  # already cleaned up or never created
 
 
 def _kill_process_group(proc, escalate: bool = False):

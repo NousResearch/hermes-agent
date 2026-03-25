@@ -103,8 +103,35 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def retry(", src)
         self.assertIn("import json, os, socket, shlex, time", src)
 
+    def test_connect_handles_tcp_address(self):
+        """Generated _connect() should handle tcp: addresses."""
+        src = generate_hermes_tools_module(["terminal"])
+        self.assertIn('if addr.startswith("tcp:")', src)
+        self.assertIn("AF_INET", src)
+        self.assertIn("AF_UNIX", src)
 
-@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+
+class TestTransportDetection(unittest.TestCase):
+    """Test that _detect_transport picks the right transport."""
+
+    def test_returns_valid_transport(self):
+        from tools.code_execution_tool import _detect_transport, _TRANSPORT_UDS, _TRANSPORT_TCP
+        result = _detect_transport()
+        self.assertIn(result, (_TRANSPORT_UDS, _TRANSPORT_TCP))
+
+    def test_linux_uses_uds(self):
+        """On Linux, should always use UDS."""
+        if sys.platform != "linux":
+            self.skipTest("Linux-only test")
+        from tools.code_execution_tool import _RPC_TRANSPORT, _TRANSPORT_UDS
+        self.assertEqual(_RPC_TRANSPORT, _TRANSPORT_UDS)
+
+    def test_sandbox_always_available(self):
+        from tools.code_execution_tool import SANDBOX_AVAILABLE
+        self.assertTrue(SANDBOX_AVAILABLE)
+
+
+@unittest.skipIf(sys.platform == "win32", "Subprocess sandboxing not tested on Windows CI")
 class TestExecuteCode(unittest.TestCase):
     """Integration tests using the mock dispatcher."""
 
@@ -535,7 +562,7 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
 # Environment variable filtering (security critical)
 # ---------------------------------------------------------------------------
 
-@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+@unittest.skipIf(sys.platform == "win32", "Subprocess sandboxing not tested on Windows CI")
 class TestEnvVarFiltering(unittest.TestCase):
     """Verify that execute_code filters environment variables correctly.
 
@@ -640,19 +667,18 @@ class TestEnvVarFiltering(unittest.TestCase):
 
 class TestExecuteCodeEdgeCases(unittest.TestCase):
 
-    def test_windows_returns_error(self):
-        """On Windows (or when SANDBOX_AVAILABLE is False), returns error JSON."""
-        with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
-            result = json.loads(execute_code("print('hi')", task_id="test"))
-            self.assertIn("error", result)
-            self.assertIn("Windows", result["error"])
+    def test_sandbox_always_available(self):
+        """Sandbox is always available (UDS or TCP fallback)."""
+        from tools.code_execution_tool import SANDBOX_AVAILABLE, check_sandbox_requirements
+        self.assertTrue(SANDBOX_AVAILABLE)
+        self.assertTrue(check_sandbox_requirements())
 
     def test_whitespace_only_code(self):
         result = json.loads(execute_code("   \n\t  ", task_id="test"))
         self.assertIn("error", result)
         self.assertIn("No code", result["error"])
 
-    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    @unittest.skipIf(sys.platform == "win32", "Subprocess sandboxing not tested on Windows CI")
     def test_none_enabled_tools_uses_all(self):
         """When enabled_tools is None, all sandbox tools should be available."""
         code = (
@@ -666,7 +692,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("all imports ok", result["output"])
 
-    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    @unittest.skipIf(sys.platform == "win32", "Subprocess sandboxing not tested on Windows CI")
     def test_empty_enabled_tools_uses_all(self):
         """When enabled_tools is [] (empty), all sandbox tools should be available."""
         code = (
@@ -680,7 +706,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("imports ok", result["output"])
 
-    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    @unittest.skipIf(sys.platform == "win32", "Subprocess sandboxing not tested on Windows CI")
     def test_nonoverlapping_tools_fallback(self):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
@@ -722,7 +748,7 @@ class TestLoadConfig(unittest.TestCase):
 # Interrupt event
 # ---------------------------------------------------------------------------
 
-@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+@unittest.skipIf(sys.platform == "win32", "Subprocess sandboxing not tested on Windows CI")
 class TestInterruptHandling(unittest.TestCase):
     def test_interrupt_event_stops_execution(self):
         """When _interrupt_event is set, execute_code should stop the script."""

@@ -1025,6 +1025,17 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    # SSRF protection — block private/internal addresses before navigating
+    try:
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            return json.dumps({
+                "success": False,
+                "error": f"Blocked: URL targets a private or internal address",
+            })
+    except ImportError:
+        logger.warning("url_safety module unavailable — SSRF check skipped")
+
     # Website policy check — block before navigating
     blocked = check_website_access(url)
     if blocked:

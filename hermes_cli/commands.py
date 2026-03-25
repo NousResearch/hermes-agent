@@ -301,7 +301,10 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         if cmd.cli_only:
             continue
         tg_name = cmd.name.replace("-", "_")
-        result.append((tg_name, cmd.description))
+        # Telegram BotFather rejects command descriptions containing Unicode dashes.
+        # Normalize em dash (U+2014) and en dash (U+2013) to ASCII hyphen-minus.
+        desc = cmd.description.replace("\u2014", "-").replace("\u2013", "-")
+        result.append((tg_name, desc))
     return result
 
 

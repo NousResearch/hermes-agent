@@ -35,8 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image + video generation
+    "vision_analyze", "image_generate", "video_generate",
     # MoA
     "mixture_of_agents",
     # Skills
@@ -94,7 +94,13 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "video_gen": {
+        "description": "Video generation tools (text-to-video and image-to-video via FAL.ai)",
+        "tools": ["video_generate"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

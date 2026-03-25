@@ -279,6 +279,13 @@ class SignalAdapter(BasePlatformAdapter):
                             line = line.strip()
                             if not line:
                                 continue
+                            # SSE keepalive comments (":") prove the
+                            # connection is alive.  Update the activity
+                            # timestamp so the health monitor doesn't
+                            # report false idle warnings.
+                            if line.startswith(":"):
+                                self._last_sse_activity = time.time()
+                                continue
                             # Parse SSE data lines
                             if line.startswith("data:"):
                                 data_str = line[5:].strip()

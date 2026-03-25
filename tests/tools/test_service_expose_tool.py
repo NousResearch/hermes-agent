@@ -4,6 +4,8 @@ import json
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+import pytest
+
 from tools.service_expose_tool import service_expose_tool
 
 
@@ -63,15 +65,23 @@ def test_command_strategy_runs_template_and_parses_url_pid_log():
     assert "launcher --port 19432 --name plannotator" in invoked[2]
 
 
-def test_named_strategy_uses_env_template(monkeypatch):
+@pytest.mark.parametrize(
+    "strategy,env_name,expected_url,is_public",
+    [
+        ("reverse-proxy", "HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE", "https://review.example/", True),
+        ("tailscale-serve", "HERMES_SERVICE_EXPOSE_TAILSCALE_SERVE_TEMPLATE", "https://tailnet.example/", False),
+        ("tailscale-funnel", "HERMES_SERVICE_EXPOSE_TAILSCALE_FUNNEL_TEMPLATE", "https://public.example/", True),
+    ],
+)
+def test_named_strategies_use_env_templates(monkeypatch, strategy, env_name, expected_url, is_public):
     monkeypatch.setenv(
-        "HERMES_SERVICE_EXPOSE_REVERSE_PROXY_TEMPLATE",
-        "router-expose --listen {local_url} --host {requested_host}",
+        env_name,
+        "launcher --listen {local_url} --host {requested_host} --mode {strategy}",
     )
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],
         returncode=0,
-        stdout="URL=https://review.example/\n",
+        stdout=f"URL={expected_url}\n",
         stderr="",
     )
 
@@ -80,7 +90,7 @@ def test_named_strategy_uses_env_template(monkeypatch):
             service_expose_tool(
                 {
                     "action": "expose",
-                    "strategy": "reverse-proxy",
+                    "strategy": strategy,
                     "local_port": 9999,
                     "requested_host": "review.example",
                 }
@@ -88,8 +98,10 @@ def test_named_strategy_uses_env_template(monkeypatch):
         )
 
     assert result["success"] is True
-    assert result["url"] == "https://review.example/"
-    assert "router-expose --listen http://127.0.0.1:9999 --host review.example" in run_mock.call_args.args[0][2]
+    assert result["url"] == expected_url
+    assert result["public"] is is_public
+    command = run_mock.call_args.args[0][2]
+    assert "launcher --listen http://127.0.0.1:9999 --host review.example --mode" in command
 
 
 def test_missing_template_returns_clear_error():

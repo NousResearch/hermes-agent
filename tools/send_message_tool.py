@@ -25,7 +25,6 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "If target is omitted while running inside a messaging session, send to the current chat/channel automatically. "
         "This is useful for status updates, pre-tool call notices, and progress messages in the active conversation.\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
@@ -43,7 +42,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Optional delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Special values: 'current' or 'origin' use the active messaging conversation. If omitted in a messaging session, the current conversation is used automatically. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
+                "description": "Delivery target for action='send'. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Special values: 'current' or 'origin' use the active messaging conversation. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
             },
             "message": {
                 "type": "string",
@@ -83,11 +82,11 @@ def _handle_send(args):
     target = (args.get("target") or "").strip()
     message = args.get("message", "")
     reply_to_current = bool(args.get("reply_to_current", False))
-    if not message:
-        return json.dumps({"error": "'message' is required when action='send'"})
+    if not target or not message:
+        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
 
     current_context = _get_current_session_target()
-    use_current_target = (not target) or target.lower() in {"current", "origin"}
+    use_current_target = target.lower() in {"current", "origin"}
 
     if use_current_target:
         if not current_context:

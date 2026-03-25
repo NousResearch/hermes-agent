@@ -12,7 +12,7 @@ import logging
 import os
 from typing import Any
 
-from tools.exposure_helpers import build_local_url, normalize_path_fragment, run_command_template
+from tools.exposure_helpers import run_command_template
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -162,9 +162,23 @@ def _handle_expose(args: dict[str, Any]) -> dict[str, Any]:
     return _run_template_strategy(normalized, template)
 
 
+def _normalize_path_fragment(path: str | None) -> str:
+    if not path:
+        return ""
+    stripped = path.strip()
+    if not stripped:
+        return ""
+    return stripped if stripped.startswith("/") else f"/{stripped}"
+
+
+def _build_local_url(host: str, port: int, path: str | None = None, scheme: str = "http") -> str:
+    suffix = _normalize_path_fragment(path)
+    return f"{scheme}://{host}:{port}{suffix}"
+
+
 def _normalize_expose_args(args: dict[str, Any]) -> dict[str, Any]:
     local_host = (args.get("local_host") or "127.0.0.1").strip() or "127.0.0.1"
-    path = normalize_path_fragment(args.get("path"))
+    path = _normalize_path_fragment(args.get("path"))
     service_name = (args.get("service_name") or "service").strip() or "service"
     requested_host = (args.get("requested_host") or "").strip()
     local_port = args.get("local_port")
@@ -182,7 +196,7 @@ def _normalize_expose_args(args: dict[str, Any]) -> dict[str, Any]:
         "path": path,
         "service_name": service_name,
         "requested_host": requested_host,
-        "local_url": build_local_url(local_host, int(port), path) if isinstance(port, int) else None,
+        "local_url": _build_local_url(local_host, int(port), path) if isinstance(port, int) else None,
         "command_template": (args.get("command_template") or "").strip(),
         "cwd": args.get("cwd") or None,
         "timeout_seconds": int(args.get("timeout_seconds") or 120),
@@ -216,10 +230,8 @@ def _resolve_strategy_template(args: dict[str, Any]) -> tuple[str | None, str | 
     if args["command_template"]:
         return args["command_template"], None
 
-    spec = _STRATEGY_SPECS[args["strategy"]]
-    template_names = [spec["env_template"]] if spec.get("env_template") else []
-
-    for env_name in template_names:
+    env_name = _STRATEGY_SPECS[args["strategy"]].get("env_template")
+    if env_name:
         template = os.getenv(env_name, "").strip()
         if template:
             return template, None
@@ -227,7 +239,7 @@ def _resolve_strategy_template(args: dict[str, Any]) -> tuple[str | None, str | 
     if args["strategy"] == _COMMAND:
         return None, "'command_template' is required when strategy='command'"
 
-    hint = " or ".join(template_names) if template_names else "command_template"
+    hint = env_name or "command_template"
     return None, f"No command template configured for strategy '{args['strategy']}'. Set {hint} or pass command_template directly."
 
 

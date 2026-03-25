@@ -1,7 +1,9 @@
-"""Native Plannotator session launcher.
+"""Native Plannotator integration for interactive review and annotation.
 
-This tool wraps operator-configured launch commands so Hermes can open
-Plannotator review/annotation sessions without relying on skills alone.
+Use this tool when a user wants browser-based feedback on a code diff or a
+markdown/text artifact. It launches a Plannotator session, shares the live URL,
+and can wait for browser-submitted feedback so Hermes can continue with the
+review result in the same workflow.
 """
 
 from __future__ import annotations
@@ -18,13 +20,6 @@ from tools.exposure_helpers import run_command_template
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_TEMPLATES = {
-    "prepare": "python3 ~/services/plannotator-bridge/start_session.py prepare",
-    "review": "python3 ~/services/plannotator-bridge/start_session.py review{review_target_arg}",
-    "annotate": "python3 ~/services/plannotator-bridge/start_session.py annotate {artifact_path}",
-    "last": "python3 ~/services/plannotator-bridge/start_session.py last",
-}
 
 _ENV_TEMPLATE_BY_ACTION = {
     "prepare": "HERMES_PLANNOTATOR_PREPARE_TEMPLATE",
@@ -47,9 +42,9 @@ _PLANNOTATOR_HOST_ENV = "PLANNOTATOR_HOST"
 _PLANNOTATOR_SCHEMA = {
     "name": "plannotator_session",
     "description": (
-        "Launch, prepare, or run an inline Plannotator review/annotation session using operator-configured command templates. "
-        "By default review/annotate waits synchronously for the session to finish or timeout and returns final log output. "
-        "For the most reliable inline UX, use action='inline_review' or action='inline_annotate': Hermes reserves a URL, posts it immediately in the active conversation, then launches Plannotator on that same fixed host and waits for the result."
+        "Open an interactive Plannotator review or annotation session for code changes or markdown files. "
+        "Use this when the user should inspect a live browser UI, add comments or replacements, and send feedback back to Hermes. "
+        "Inline actions can post the review URL immediately in the active conversation, then wait for the submitted feedback before returning."
     ),
     "parameters": {
         "type": "object",
@@ -57,11 +52,11 @@ _PLANNOTATOR_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": ["prepare", "review", "annotate", "inline_review", "inline_annotate", "last"],
-                "description": "prepare: reserve/generate a host+URL before launching. review: start a synchronous or async review session. annotate: start a markdown annotation session. inline_review / inline_annotate: reserve URL, send it to the current chat immediately, then launch on that exact host and wait. last: last-message flow if the launcher supports it."
+                "description": "prepare: reserve/generate a host+URL before launching. review: start a review session. annotate: start a markdown annotation session. inline_review / inline_annotate: post the URL into the active conversation, then wait for feedback. last: last-message flow if the launcher supports it."
             },
             "review_target": {
                 "type": "string",
-                "description": "Optional PR/MR URL or other review target for review/inline_review. Omit to review the current local diff."
+                "description": "Optional PR/MR URL or other review target for review/inline_review. Omit to review the current local diff if the configured launcher supports it."
             },
             "artifact_path": {
                 "type": "string",
@@ -73,7 +68,7 @@ _PLANNOTATOR_SCHEMA = {
             },
             "fixed_host": {
                 "type": "string",
-                "description": "Optional fixed host to use for prepare/review/annotate/inline actions, e.g. 'review-abc123.example.com'. Inline actions will prepare and launch using the same host."
+                "description": "Optional fixed host to use for prepare/review/annotate/inline actions, e.g. 'review-abc123.example.com'. Inline actions prepare and launch using the same host."
             },
             "exposure_strategy": {
                 "type": "string",
@@ -110,7 +105,7 @@ def plannotator_session_tool(args: dict[str, Any], **_kw) -> str:
     action = (args.get("action") or "").strip().lower()
     if action in _INLINE_ACTION_MAP:
         return _execute_inline_flow(args)
-    if action not in _DEFAULT_TEMPLATES:
+    if action not in _ENV_TEMPLATE_BY_ACTION:
         return json.dumps({"error": f"Unsupported action: {action}"})
 
     normalized = _normalize_args(args)
@@ -293,6 +288,7 @@ def _send_inline_url_message(message: str) -> dict[str, Any]:
 
         raw = send_message_tool({
             "action": "send",
+            "target": "origin",
             "message": f"{message}\n\nI’ll wait here for your annotations and report back once they arrive.",
             "reply_to_current": True,
         })
@@ -311,10 +307,8 @@ def _resolve_template(action: str, template_override: str | None) -> str:
     override = (template_override or "").strip()
     if override:
         return override
-    env_template = os.getenv(_ENV_TEMPLATE_BY_ACTION[action], "").strip()
-    if env_template:
-        return env_template
-    return _DEFAULT_TEMPLATES[action]
+    env_name = _ENV_TEMPLATE_BY_ACTION[action]
+    return os.getenv(env_name, "").strip()
 
 
 def _host_from_url(url: str | None) -> str | None:

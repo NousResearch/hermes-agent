@@ -1,7 +1,8 @@
-"""Shared helpers for command-template-based service exposure tools.
+"""Shared command-template execution helpers.
 
-These helpers keep operator-controlled launch/exposure commands out of the LLM
-prompt while still allowing tool handlers to run portable, configurable flows.
+These helpers are reused by both service_expose_tool.py and plannotator_tool.py
+so operator-configured launcher commands can be rendered and executed through a
+single, testable path.
 """
 
 from __future__ import annotations
@@ -14,22 +15,6 @@ from typing import Any
 
 _KEY_VALUE_RE = re.compile(r"^([A-Z][A-Z0-9_]*?)=(.*)$")
 _URL_RE = re.compile(r"https?://[^\s'\"]+")
-
-
-def normalize_path_fragment(path: str | None) -> str:
-    """Return a URL path fragment beginning with '/'. Empty -> ''."""
-    if not path:
-        return ""
-    stripped = path.strip()
-    if not stripped:
-        return ""
-    return stripped if stripped.startswith("/") else f"/{stripped}"
-
-
-def build_local_url(host: str, port: int, path: str | None = None, scheme: str = "http") -> str:
-    """Build a localhost-style URL."""
-    suffix = normalize_path_fragment(path)
-    return f"{scheme}://{host}:{port}{suffix}"
 
 
 def _stringify(value: Any) -> str:
@@ -46,11 +31,7 @@ class _SafeFormatDict(dict):
 
 
 def render_command_template(template: str, variables: dict[str, Any]) -> str:
-    """Render a shell command template with safely shell-quoted values.
-
-    Templates should use placeholders like ``{local_port}`` or ``{artifact_path}``
-    without adding their own shell quotes around those placeholders.
-    """
+    """Render a shell command template with safely shell-quoted values."""
     quoted = {key: shlex.quote(_stringify(value)) for key, value in variables.items()}
     return template.format_map(_SafeFormatDict(quoted))
 
@@ -90,8 +71,8 @@ def run_command_template(
 ) -> dict[str, Any]:
     """Render and execute a shell template via ``bash -lc``.
 
-    The template itself is considered operator-controlled configuration.
-    Dynamic values supplied by tool calls are shell-quoted before formatting.
+    The template itself is operator-controlled configuration. Dynamic values from
+    tool calls are shell-quoted before formatting.
     """
     command = render_command_template(template, variables)
     child_env = os.environ.copy()

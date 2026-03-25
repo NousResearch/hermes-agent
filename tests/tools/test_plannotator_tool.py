@@ -4,7 +4,12 @@ import json
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from tools.plannotator_tool import plannotator_session_tool
+from tools.plannotator_tool import _send_inline_url_message, plannotator_session_tool
+
+
+PREPARE_TEMPLATE = "launcher prepare"
+REVIEW_TEMPLATE = "launcher review{review_target_arg}"
+ANNOTATE_TEMPLATE = "launcher annotate {artifact_path}"
 
 
 def test_annotate_requires_absolute_artifact_path():
@@ -13,6 +18,7 @@ def test_annotate_requires_absolute_artifact_path():
             {
                 "action": "annotate",
                 "artifact_path": "relative.md",
+                "command_template": ANNOTATE_TEMPLATE,
             }
         )
     )
@@ -29,16 +35,18 @@ def test_prepare_returns_reserved_url_without_waiting():
     )
 
     with patch("tools.exposure_helpers.subprocess.run", return_value=completed) as run_mock:
-        result = json.loads(plannotator_session_tool({"action": "prepare"}))
+        result = json.loads(
+            plannotator_session_tool({"action": "prepare", "command_template": PREPARE_TEMPLATE})
+        )
 
     assert result["success"] is True
     assert result["host"] == "plannotator-demo.example"
     assert result["url"] == "https://plannotator-demo.example/"
     assert result["waited_for_completion"] is False
-    assert "start_session.py prepare" in run_mock.call_args.args[0][2]
+    assert "launcher prepare" in run_mock.call_args.args[0][2]
 
 
-def test_review_uses_default_bridge_template_without_target():
+def test_review_uses_command_template_without_target():
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],
         returncode=0,
@@ -50,13 +58,15 @@ def test_review_uses_default_bridge_template_without_target():
         patch("tools.exposure_helpers.subprocess.run", return_value=completed) as run_mock,
         patch("tools.plannotator_tool._wait_for_plannotator_completion", return_value={"completed": True, "status": "completed"}) as wait_mock,
     ):
-        result = json.loads(plannotator_session_tool({"action": "review"}))
+        result = json.loads(
+            plannotator_session_tool({"action": "review", "command_template": REVIEW_TEMPLATE})
+        )
 
     assert result["success"] is True
     assert result["host"] == "plannotator-demo.example"
     assert result["url"] == "https://plannotator-demo.example/"
     command = run_mock.call_args.args[0][2]
-    assert "start_session.py review" in command
+    assert "launcher review" in command
     assert result["suggested_message"].startswith("Temporary review URL:")
     assert result["waited_for_completion"] is True
     wait_mock.assert_called_once_with(
@@ -65,6 +75,38 @@ def test_review_uses_default_bridge_template_without_target():
         timeout_seconds=3600,
         poll_interval_seconds=2.0,
     )
+
+
+def test_review_requires_configured_template_when_none_provided(monkeypatch):
+    monkeypatch.delenv("HERMES_PLANNOTATOR_REVIEW_TEMPLATE", raising=False)
+
+    result = json.loads(plannotator_session_tool({"action": "review"}))
+
+    assert "No Plannotator launcher template configured" in result["error"]
+    assert "HERMES_PLANNOTATOR_REVIEW_TEMPLATE" in result["error"]
+
+
+def test_review_uses_env_template_when_configured(monkeypatch):
+    monkeypatch.setenv("HERMES_PLANNOTATOR_REVIEW_TEMPLATE", REVIEW_TEMPLATE)
+    completed = CompletedProcess(
+        args=["bash", "-lc", "echo"],
+        returncode=0,
+        stdout="URL=https://review.example/\n",
+        stderr="",
+    )
+
+    with patch("tools.exposure_helpers.subprocess.run", return_value=completed) as run_mock:
+        result = json.loads(
+            plannotator_session_tool(
+                {
+                    "action": "review",
+                    "wait_for_completion": False,
+                }
+            )
+        )
+
+    assert result["success"] is True
+    assert "launcher review" in run_mock.call_args.args[0][2]
 
 
 def test_review_with_target_strategy_and_fixed_host_passes_env_values():
@@ -129,12 +171,13 @@ def test_inline_review_prepares_sends_and_waits():
     assert result["prepared_host"] == "review-fixed.example.com"
     assert result["send_message_result"]["success"] is True
     assert launch_mock.call_count == 2
-    assert launch_mock.call_args_list[1].kwargs == {}
     second_args = launch_mock.call_args_list[1].args[0]
     assert second_args["action"] == "review"
     assert second_args["fixed_host"] == "review-fixed.example.com"
     assert second_args["wait_for_completion"] is True
-    send_mock.assert_called_once()
+    send_mock.assert_called_once_with(
+        "Temporary review URL:\nhttps://review-fixed.example.com/"
+    )
 
 
 def test_inline_review_returns_error_if_send_fails():
@@ -158,6 +201,21 @@ def test_inline_review_returns_error_if_send_fails():
     assert launch_mock.call_count == 1
 
 
+def test_inline_send_uses_origin_target():
+    with patch("tools.send_message_tool.send_message_tool", return_value=json.dumps({"success": True})) as send_mock:
+        result = _send_inline_url_message("Temporary review URL:\nhttps://review.example/")
+
+    assert result["success"] is True
+    send_mock.assert_called_once_with(
+        {
+            "action": "send",
+            "target": "origin",
+            "message": "Temporary review URL:\nhttps://review.example/\n\nI’ll wait here for your annotations and report back once they arrive.",
+            "reply_to_current": True,
+        }
+    )
+
+
 def test_last_action_reports_launcher_failure():
     completed = CompletedProcess(
         args=["bash", "-lc", "echo"],
@@ -167,7 +225,9 @@ def test_last_action_reports_launcher_failure():
     )
 
     with patch("tools.exposure_helpers.subprocess.run", return_value=completed):
-        result = json.loads(plannotator_session_tool({"action": "last"}))
+        result = json.loads(
+            plannotator_session_tool({"action": "last", "command_template": "launcher last"})
+        )
 
     assert "launcher failed" in result["error"]
     assert result["stderr"] == "unsupported"
@@ -193,6 +253,7 @@ def test_wait_returns_final_log_when_process_exits(tmp_path):
             plannotator_session_tool(
                 {
                     "action": "review",
+                    "command_template": REVIEW_TEMPLATE,
                     "completion_timeout_seconds": 60,
                     "poll_interval_seconds": 0.25,
                 }
@@ -228,6 +289,7 @@ def test_wait_times_out_and_preserves_last_log(tmp_path):
             plannotator_session_tool(
                 {
                     "action": "review",
+                    "command_template": REVIEW_TEMPLATE,
                     "completion_timeout_seconds": 60,
                     "poll_interval_seconds": 0.25,
                 }

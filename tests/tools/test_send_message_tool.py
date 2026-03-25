@@ -258,24 +258,24 @@ def test_get_current_session_target_from_env(monkeypatch):
     }
 
 
-def test_send_message_uses_current_session_when_target_omitted(monkeypatch):
+def test_send_message_uses_origin_target_for_current_session(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "12345")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "99")
     monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "777")
 
     config, telegram_cfg = _make_config()
-    send_mock = AsyncMock(return_value={"success": True, "platform": "telegram", "chat_id": "12345", "message_id": "888"})
+    send_mock = AsyncMock(return_value={"success": True})
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
          patch("model_tools._run_async", side_effect=_run_async_immediately), \
          patch("tools.send_message_tool._send_to_platform", new=send_mock), \
          patch("gateway.mirror.mirror_to_session", return_value=False):
-        result = json.loads(send_message_tool({"message": "status update", "reply_to_current": True}))
+        result = json.loads(send_message_tool({"target": "origin", "message": "status update", "reply_to_current": True}))
 
     assert result["success"] is True
-    assert "current telegram conversation" in result["note"]
+    assert result["note"] == "Sent to current telegram conversation (chat_id: 12345)"
     send_mock.assert_awaited_once_with(
         Platform.TELEGRAM,
         telegram_cfg,

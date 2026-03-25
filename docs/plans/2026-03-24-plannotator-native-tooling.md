@@ -1,14 +1,18 @@
 # Plannotator Native Tooling and Generic Exposure Integration
 
-## Context
+## Goal
+
+The goal is to integrate Plannotator review and annotate workflows as native
+Hermes tools for interactive feedback on code changes and files.
+
+That means Hermes should be able to:
+- open a browser-based Plannotator session for a diff or artifact
+- send the live review URL into chat
+- wait for browser-submitted feedback when needed
+- continue the conversation with the returned review result
 
 This note captures the design direction that led from a temporary skill-based
-Plannotator workflow to native Hermes tools.
-
-The immediate problem was straightforward:
-- Hermes could launch a Plannotator flow
-- Hermes could send a link into chat
-- but the end-to-end inline experience was unreliable when orchestration depended on the model composing multiple tool calls correctly
+workflow to native Hermes tooling.
 
 ## Product direction
 

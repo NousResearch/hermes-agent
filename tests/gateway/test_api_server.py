@@ -431,6 +431,63 @@ class TestChatCompletionsEndpoint:
             assert call_kwargs.kwargs.get("user_message") == "Hello"
 
     @pytest.mark.asyncio
+    async def test_system_prompt_as_list_content(self, adapter):
+        """System prompt with content as list of content parts (OpenAI format)."""
+        mock_result = {
+            "final_response": "Arrr!",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "system", "content": [{"type": "text", "text": "You are a pirate."}]},
+                            {"role": "user", "content": "Hello"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            # Check that system prompt content list was correctly converted to string
+            call_kwargs = mock_run.call_args
+            assert call_kwargs.kwargs.get("ephemeral_system_prompt") == "You are a pirate."
+
+    @pytest.mark.asyncio
+    async def test_user_message_as_list_content(self, adapter):
+        """User message with content as list of content parts (OpenAI format)."""
+        mock_result = {
+            "final_response": "Hello back!",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            # Check that user message content list was correctly converted to string
+            call_kwargs = mock_run.call_args
+            assert call_kwargs.kwargs.get("user_message") == "Hello"
+
+    @pytest.mark.asyncio
     async def test_conversation_history_passed(self, adapter):
         """Previous user/assistant messages become conversation_history."""
         mock_result = {"final_response": "3", "messages": [], "api_calls": 1}
@@ -580,6 +637,29 @@ class TestResponsesEndpoint:
                 )
 
             assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["ephemeral_system_prompt"] == "Talk like a pirate."
+
+    @pytest.mark.asyncio
+    async def test_instructions_as_list_content(self, adapter):
+        """Instructions with content as list of content parts (OpenAI format)."""
+        mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hello",
+                        "instructions": [{"type": "text", "text": "Talk like a pirate."}],
+                    },
+                )
+
+            assert resp.status == 200
+            # Check that instructions content list was correctly converted to string
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["ephemeral_system_prompt"] == "Talk like a pirate."
 

@@ -445,7 +445,20 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            raw_content = msg.get("content", "")
+            
+            # Handle content that may be a string or a list of content parts
+            if isinstance(raw_content, list):
+                text_parts = []
+                for part in raw_content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = "\n".join(text_parts)
+            else:
+                content = raw_content if isinstance(raw_content, str) else str(raw_content)
+            
             if role == "system":
                 # Accumulate system messages
                 if system_prompt is None:
@@ -649,7 +662,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        instructions = body.get("instructions")
+        # Normalize instructions (may be string or list of content parts)
+        raw_instructions = body.get("instructions")
+        if raw_instructions is None:
+            instructions = None
+        elif isinstance(raw_instructions, list):
+            text_parts = []
+            for part in raw_instructions:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            instructions = "\n".join(text_parts)
+        else:
+            instructions = raw_instructions if isinstance(raw_instructions, str) else str(raw_instructions)
+        
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = body.get("store", True)

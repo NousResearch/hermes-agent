@@ -4029,7 +4029,13 @@ class HermesCLI:
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # Display result in the CLI (thread-safe via patch_stdout)
+                # Display result in the CLI (thread-safe via patch_stdout).
+                # Force a TUI refresh first so spinner/status bar don't overlap
+                # with the output (fixes #2718).
+                if self._app:
+                    self._app.invalidate()
+                    import time as _tmod
+                    _tmod.sleep(0.05)  # brief pause for refresh
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
@@ -4066,6 +4072,11 @@ class HermesCLI:
                     sys.stdout.flush()
 
             except Exception as e:
+                # Same TUI refresh pattern as success path (#2718)
+                if self._app:
+                    self._app.invalidate()
+                    import time as _tmod
+                    _tmod.sleep(0.05)
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:

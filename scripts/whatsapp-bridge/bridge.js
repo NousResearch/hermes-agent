@@ -43,6 +43,8 @@ const WHATSAPP_DEBUG =
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
+const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
+const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -224,13 +226,47 @@ async function startSocket() {
         body = msg.message.videoMessage.caption || '';
         hasMedia = true;
         mediaType = 'video';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = msg.message.videoMessage.mimetype || 'video/mp4';
+          const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
+          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+          const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download video:', err.message);
+        }
       } else if (msg.message.audioMessage || msg.message.pttMessage) {
         hasMedia = true;
         mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
+        try {
+          const audioMsg = msg.message.pttMessage || msg.message.audioMessage;
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = audioMsg.mimetype || 'audio/ogg';
+          const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
+          mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
+          const filePath = path.join(AUDIO_CACHE_DIR, `aud_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download audio:', err.message);
+        }
       } else if (msg.message.documentMessage) {
-        body = msg.message.documentMessage.caption || msg.message.documentMessage.fileName || '';
+        body = msg.message.documentMessage.caption || '';
         hasMedia = true;
         mediaType = 'document';
+        const fileName = msg.message.documentMessage.fileName || 'document';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+          const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+          const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download document:', err.message);
+        }
       }
 
       // For media without caption, use a placeholder so the API message is never empty

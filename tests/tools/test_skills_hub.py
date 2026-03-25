@@ -305,6 +305,154 @@ class TestSkillsShSource:
         assert bundle.files["SKILL.md"] == "# react"
         assert mock_get.called
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    @patch.object(GitHubSource, "fetch")
+    def test_fetch_falls_back_to_tree_search_for_deeply_nested_skills(
+        self, mock_fetch, mock_get, _mock_read_cache, _mock_write_cache,
+    ):
+        """Skills in deeply nested dirs (e.g. cli-tool/components/skills/dev/my-skill/)
+        are found via the GitHub Trees API when candidate paths and shallow scan fail."""
+        tree_entries = [
+            {"path": "README.md", "type": "blob"},
+            {"path": "cli-tool/components/skills/development/my-skill/SKILL.md", "type": "blob"},
+            {"path": "cli-tool/components/skills/development/other-skill/SKILL.md", "type": "blob"},
+        ]
+
+        def _httpx_get_side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "/api/search" in url:
+                resp.status_code = 404
+                return resp
+            if url.endswith("/contents/"):
+                # Root listing for shallow scan — return empty so it falls through
+                resp.status_code = 200
+                resp.json = lambda: []
+                return resp
+            if "/contents/" in url:
+                # All contents API calls fail (candidate paths miss)
+                resp.status_code = 404
+                return resp
+            if url.endswith("owner/repo"):
+                # Repo info → default branch
+                resp.status_code = 200
+                resp.json = lambda: {"default_branch": "main"}
+                return resp
+            if "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"tree": tree_entries}
+                return resp
+            # skills.sh detail page
+            resp.status_code = 200
+            resp.text = "<h1>my-skill</h1>"
+            return resp
+
+        mock_get.side_effect = _httpx_get_side_effect
+
+        resolved_bundle = SkillBundle(
+            name="my-skill",
+            files={"SKILL.md": "# My Skill"},
+            source="github",
+            identifier="owner/repo/cli-tool/components/skills/development/my-skill",
+            trust_level="community",
+        )
+        mock_fetch.side_effect = lambda ident: resolved_bundle if "cli-tool/components" in ident else None
+
+        bundle = self._source().fetch("skills-sh/owner/repo/my-skill")
+
+        assert bundle is not None
+        assert bundle.source == "skills.sh"
+        assert bundle.files["SKILL.md"] == "# My Skill"
+        # Verify the tree-resolved identifier was used for the final GitHub fetch
+        mock_fetch.assert_any_call("owner/repo/cli-tool/components/skills/development/my-skill")
+
+
+class TestFindSkillInRepoTree:
+    """Tests for GitHubSource._find_skill_in_repo_tree."""
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
+        return GitHubSource(auth=auth)
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_finds_deeply_nested_skill(self, mock_get):
+        tree_entries = [
+            {"path": "README.md", "type": "blob"},
+            {"path": "cli-tool/components/skills/development/senior-backend/SKILL.md", "type": "blob"},
+            {"path": "cli-tool/components/skills/development/other/SKILL.md", "type": "blob"},
+        ]
+
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            if url.endswith("/davila7/claude-code-templates"):
+                resp.status_code = 200
+                resp.json = lambda: {"default_branch": "main"}
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"tree": tree_entries}
+            else:
+                resp.status_code = 404
+            return resp
+
+        mock_get.side_effect = _side_effect
+
+        result = self._source()._find_skill_in_repo_tree("davila7/claude-code-templates", "senior-backend")
+        assert result == "davila7/claude-code-templates/cli-tool/components/skills/development/senior-backend"
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_finds_root_level_skill(self, mock_get):
+        tree_entries = [
+            {"path": "my-skill/SKILL.md", "type": "blob"},
+        ]
+
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "/contents" not in url and "/git/" not in url:
+                resp.status_code = 200
+                resp.json = lambda: {"default_branch": "main"}
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"tree": tree_entries}
+            else:
+                resp.status_code = 404
+            return resp
+
+        mock_get.side_effect = _side_effect
+
+        result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
+        assert result == "owner/repo/my-skill"
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_returns_none_when_skill_not_found(self, mock_get):
+        tree_entries = [
+            {"path": "other-skill/SKILL.md", "type": "blob"},
+        ]
+
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "/contents" not in url and "/git/" not in url:
+                resp.status_code = 200
+                resp.json = lambda: {"default_branch": "main"}
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"tree": tree_entries}
+            else:
+                resp.status_code = 404
+            return resp
+
+        mock_get.side_effect = _side_effect
+
+        result = self._source()._find_skill_in_repo_tree("owner/repo", "nonexistent")
+        assert result is None
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_returns_none_when_repo_api_fails(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404)
+        result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
+        assert result is None
+
 
 class TestWellKnownSkillSource:
     def _source(self):

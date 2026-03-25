@@ -135,6 +135,27 @@ def _deliver_result(job: dict, content: str) -> None:
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
+    # Resolve channel names (e.g. #anglais-brian) to numeric IDs for Discord/Slack.
+    # Without this, deliver: "discord:#channel-name" causes a 404 because Discord
+    # requires numeric channel IDs, not names.
+    if platform_name.lower() in ("discord", "slack") and chat_id and chat_id.startswith("#"):
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name.lower(), chat_id)
+            if resolved:
+                # resolved is "platform:chat_id" or just "chat_id"
+                resolved_id = resolved.split(":")[-1] if ":" in resolved else resolved
+                logger.info("Job '%s': resolved channel '%s' -> '%s'", job["id"], chat_id, resolved_id)
+                chat_id = resolved_id
+            else:
+                logger.error(
+                    "Job '%s': could not resolve channel '%s' on %s — skipping delivery",
+                    job["id"], chat_id, platform_name,
+                )
+                return
+        except Exception as e:
+            logger.warning("Job '%s': channel name resolution failed: %s", job["id"], e)
+
     platform_map = {
         "telegram": Platform.TELEGRAM,
         "discord": Platform.DISCORD,

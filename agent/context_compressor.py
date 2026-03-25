@@ -40,7 +40,7 @@ _MIN_SUMMARY_TOKENS = 2000
 # Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
 # Absolute ceiling for summary tokens (even on very large context windows)
-_SUMMARY_TOKENS_CEILING = 32_000
+_SUMMARY_TOKENS_CEILING = 12_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -63,10 +63,10 @@ class ContextCompressor:
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.80,
+        threshold_percent: float = 0.50,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
-        summary_target_ratio: float = 0.40,
+        summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
@@ -92,8 +92,8 @@ class ContextCompressor:
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
 
-        # Derive token budgets from the target ratio and context length
-        target_tokens = int(self.context_length * self.summary_target_ratio)
+        # Derive token budgets: ratio is relative to the threshold, not total context
+        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
         self.tail_token_budget = target_tokens
         self.max_summary_tokens = min(
             int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,

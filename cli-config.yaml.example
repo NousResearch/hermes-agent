@@ -236,23 +236,24 @@ browser:
 # 5. Summarizes middle turns using a fast/cheap model
 # 6. Inserts summary as a user message, continues conversation seamlessly
 #
-# Post-compression size scales with the model's context window via target_ratio:
-#   MiniMax 200K context → ~80K post-compression (at 0.40 ratio)
-#   GPT-5   1M   context → ~400K post-compression (at 0.40 ratio)
+# Post-compression tail budget is target_ratio × threshold × context_length:
+#   200K context, threshold 0.50, ratio 0.20 → 20K tokens of recent tail preserved
+#   1M   context, threshold 0.50, ratio 0.20 → 100K tokens of recent tail preserved
 #
 compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
   
-  # Trigger compression at this % of model's context limit (default: 0.80 = 80%)
+  # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
-  threshold: 0.80
+  threshold: 0.50
   
-  # Target post-compression size as a fraction of context window (default: 0.40 = 40%)
-  # Controls how much context survives compression. Tail token budget and summary
-  # cap scale with this value. Range: 0.10 - 0.80
-  target_ratio: 0.40
+  # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
+  # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
+  # Summary output is separately capped at 12K tokens (Gemini output limit).
+  # Range: 0.10 - 0.80
+  target_ratio: 0.20
 
   # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
   # Higher values keep more recent conversation intact at the cost of more aggressive

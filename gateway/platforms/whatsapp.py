@@ -85,17 +85,58 @@ def check_whatsapp_requirements() -> bool:
     
     WhatsApp requires a Node.js bridge for most implementations.
     """
-    # Check for Node.js
-    try:
-        result = subprocess.run(
-            ["node", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    return bool(_find_node_executable())
+
+
+def _find_node_executable() -> Optional[str]:
+    """Find a usable Node.js executable.
+
+    Resolution order:
+    1. HERMES_NODE_PATH env var (explicit override)
+    2. PATH lookup (standard install)
+    3. macOS bundled runtimes (Electron apps, Homebrew, nvm, fnm)
+    """
+    import shutil
+    import sys
+
+    # 1. Explicit override
+    explicit = os.environ.get("HERMES_NODE_PATH", "").strip()
+    if explicit and os.path.isfile(explicit) and os.access(explicit, os.X_OK):
+        return explicit
+
+    # 2. Standard PATH lookup
+    node = shutil.which("node")
+    if node:
+        return node
+
+    # 3. macOS fallback: well-known bundled/installed Node locations
+    if sys.platform == "darwin":
+        candidates = [
+            # Homebrew (Apple Silicon)
+            "/opt/homebrew/bin/node",
+            "/opt/homebrew/opt/node/bin/node",
+            # Homebrew (Intel)
+            "/usr/local/bin/node",
+            "/usr/local/opt/node/bin/node",
+            # nvm default
+            os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
+            # fnm
+            os.path.expanduser("~/.fnm/node-versions/*/installation/bin/node"),
+            # Electron bundled Node (used by many macOS apps)
+            "/Applications/Cursor.app/Contents/MacOS/node",
+            "/Applications/Visual Studio Code.app/Contents/Frameworks/node",
+        ]
+        import glob
+        for pattern in candidates:
+            if "*" in pattern:
+                matches = sorted(glob.glob(pattern), reverse=True)
+                for m in matches:
+                    if os.path.isfile(m) and os.access(m, os.X_OK):
+                        return m
+            elif os.path.isfile(pattern) and os.access(pattern, os.X_OK):
+                return pattern
+
+    return None
 
 
 class WhatsAppAdapter(BasePlatformAdapter):
@@ -148,7 +189,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         This launches the Node.js bridge process and waits for it to be ready.
         """
         if not check_whatsapp_requirements():
-            logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
+            logger.warning("[%s] Node.js not found. WhatsApp requires Node.js. Set HERMES_NODE_PATH to override.", self.name)
             return False
         
         bridge_path = Path(self._bridge_script)
@@ -226,7 +267,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             self._bridge_process = subprocess.Popen(
                 [
-                    "node",
+                    _find_node_executable() or "node",
                     str(bridge_path),
                     "--port", str(self._bridge_port),
                     "--session", str(self._session_path),

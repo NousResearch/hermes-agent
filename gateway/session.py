@@ -891,13 +891,17 @@ class SessionStore:
         # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
+                _role = message.get("role", "unknown")
                 self._db.append_message(
                     session_id=session_id,
-                    role=message.get("role", "unknown"),
+                    role=_role,
                     content=message.get("content"),
                     tool_name=message.get("tool_name"),
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),
+                    reasoning=message.get("reasoning") if _role == "assistant" else None,
+                    reasoning_details=message.get("reasoning_details") if _role == "assistant" else None,
+                    codex_reasoning_items=message.get("codex_reasoning_items") if _role == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -918,13 +922,17 @@ class SessionStore:
             try:
                 self._db.clear_messages(session_id)
                 for msg in messages:
+                    _role = msg.get("role", "unknown")
                     self._db.append_message(
                         session_id=session_id,
-                        role=msg.get("role", "unknown"),
+                        role=_role,
                         content=msg.get("content"),
                         tool_name=msg.get("tool_name"),
                         tool_calls=msg.get("tool_calls"),
                         tool_call_id=msg.get("tool_call_id"),
+                        reasoning=msg.get("reasoning") if _role == "assistant" else None,
+                        reasoning_details=msg.get("reasoning_details") if _role == "assistant" else None,
+                        codex_reasoning_items=msg.get("codex_reasoning_items") if _role == "assistant" else None,
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)

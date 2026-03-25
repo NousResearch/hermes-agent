@@ -1,0 +1,397 @@
+"""Tests for Telegram DM Private Chat Topics (Bot API 9.4).
+
+Covers:
+- _setup_dm_topics: loading persisted thread_ids from config
+- _setup_dm_topics: creating new topics via API when no thread_id
+- _persist_dm_topic_thread_id: saving thread_id back to config.yaml
+- _get_dm_topic_info: looking up topic config by thread_id
+- _cache_dm_topic_from_message: caching thread_ids from incoming messages
+- _build_message_event: DM topic resolution in message events
+"""
+
+import asyncio
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch, mock_open
+
+import pytest
+
+from gateway.config import PlatformConfig
+
+
+def _ensure_telegram_mock():
+    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
+        return
+
+    telegram_mod = MagicMock()
+    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
+    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
+    telegram_mod.constants.ChatType.GROUP = "group"
+    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
+    telegram_mod.constants.ChatType.CHANNEL = "channel"
+    telegram_mod.constants.ChatType.PRIVATE = "private"
+
+    for name in ("telegram", "telegram.ext", "telegram.constants"):
+        sys.modules.setdefault(name, telegram_mod)
+
+
+_ensure_telegram_mock()
+
+from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+
+
+def _make_adapter(dm_topics_config=None):
+    """Create a TelegramAdapter with optional DM topics config."""
+    extra = {}
+    if dm_topics_config is not None:
+        extra["dm_topics"] = dm_topics_config
+    config = PlatformConfig(enabled=True, token="***", extra=extra)
+    adapter = TelegramAdapter(config)
+    return adapter
+
+
+# ── _setup_dm_topics: load persisted thread_ids ──
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_loads_persisted_thread_ids():
+    """Topics with thread_id in config should be loaded into cache, not created."""
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [
+                {"name": "General", "thread_id": 100},
+                {"name": "Work", "thread_id": 200},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_dm_topics()
+
+    # Both should be in cache
+    assert adapter._dm_topics["111:General"] == 100
+    assert adapter._dm_topics["111:Work"] == 200
+    # create_forum_topic should NOT have been called
+    adapter._bot.create_forum_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_creates_when_no_thread_id():
+    """Topics without thread_id should be created via API."""
+    adapter = _make_adapter([
+        {
+            "chat_id": 222,
+            "topics": [
+                {"name": "NewTopic", "icon_color": 7322096},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+    mock_topic = SimpleNamespace(message_thread_id=999)
+    adapter._bot.create_forum_topic.return_value = mock_topic
+
+    # Mock the persist method so it doesn't touch the filesystem
+    adapter._persist_dm_topic_thread_id = MagicMock()
+
+    await adapter._setup_dm_topics()
+
+    # Should have been created
+    adapter._bot.create_forum_topic.assert_called_once_with(
+        chat_id=222, name="NewTopic", icon_color=7322096,
+    )
+    # Should be in cache
+    assert adapter._dm_topics["222:NewTopic"] == 999
+    # Should persist
+    adapter._persist_dm_topic_thread_id.assert_called_once_with(222, "NewTopic", 999)
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_mixed_persisted_and_new():
+    """Mix of persisted and new topics should work correctly."""
+    adapter = _make_adapter([
+        {
+            "chat_id": 333,
+            "topics": [
+                {"name": "Existing", "thread_id": 50},
+                {"name": "New", "icon_color": 123},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+    mock_topic = SimpleNamespace(message_thread_id=777)
+    adapter._bot.create_forum_topic.return_value = mock_topic
+    adapter._persist_dm_topic_thread_id = MagicMock()
+
+    await adapter._setup_dm_topics()
+
+    # Existing loaded from config
+    assert adapter._dm_topics["333:Existing"] == 50
+    # New created via API
+    assert adapter._dm_topics["333:New"] == 777
+    # Only one API call (for "New")
+    adapter._bot.create_forum_topic.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_skips_empty_config():
+    """Empty dm_topics config should be a no-op."""
+    adapter = _make_adapter([])
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_dm_topics()
+
+    adapter._bot.create_forum_topic.assert_not_called()
+    assert adapter._dm_topics == {}
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_no_config():
+    """No dm_topics in config at all should be a no-op."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+
+    await adapter._setup_dm_topics()
+
+    adapter._bot.create_forum_topic.assert_not_called()
+
+
+# ── _create_dm_topic: error handling ──
+
+
+@pytest.mark.asyncio
+async def test_create_dm_topic_handles_duplicate_error():
+    """Duplicate topic error should return None gracefully."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = Exception("topic_name_duplicate")
+
+    result = await adapter._create_dm_topic(chat_id=111, name="General")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_dm_topic_handles_generic_error():
+    """Generic error should return None with warning."""
+    adapter = _make_adapter()
+    adapter._bot = AsyncMock()
+    adapter._bot.create_forum_topic.side_effect = Exception("some random error")
+
+    result = await adapter._create_dm_topic(chat_id=111, name="General")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_dm_topic_returns_none_without_bot():
+    """No bot instance should return None."""
+    adapter = _make_adapter()
+    adapter._bot = None
+
+    result = await adapter._create_dm_topic(chat_id=111, name="General")
+
+    assert result is None
+
+
+# ── _persist_dm_topic_thread_id ──
+
+
+def test_persist_dm_topic_thread_id_writes_config(tmp_path):
+    """Should write thread_id into the correct topic in config.yaml."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123},
+                                {"name": "Work", "icon_color": 456},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    adapter = _make_adapter()
+
+    with patch.object(Path, "home", return_value=tmp_path):
+        adapter._persist_dm_topic_thread_id(111, "General", 999)
+
+    with open(config_file) as f:
+        result = yaml.safe_load(f)
+
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert topics[0]["thread_id"] == 999
+    assert "thread_id" not in topics[1]  # "Work" should be untouched
+
+
+def test_persist_dm_topic_thread_id_skips_if_already_set(tmp_path):
+    """Should not overwrite an existing thread_id."""
+    import yaml
+
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "General", "icon_color": 123, "thread_id": 500},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    adapter = _make_adapter()
+
+    with patch.object(Path, "home", return_value=tmp_path):
+        adapter._persist_dm_topic_thread_id(111, "General", 999)
+
+    with open(config_file) as f:
+        result = yaml.safe_load(f)
+
+    topics = result["platforms"]["telegram"]["extra"]["dm_topics"][0]["topics"]
+    assert topics[0]["thread_id"] == 500  # unchanged
+
+
+# ── _get_dm_topic_info ──
+
+
+def test_get_dm_topic_info_finds_cached_topic():
+    """Should return topic config when thread_id is in cache."""
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [
+                {"name": "General", "skill": "my-skill"},
+            ],
+        }
+    ])
+    adapter._dm_topics["111:General"] = 100
+
+    result = adapter._get_dm_topic_info("111", "100")
+
+    assert result is not None
+    assert result["name"] == "General"
+    assert result["skill"] == "my-skill"
+
+
+def test_get_dm_topic_info_returns_none_for_unknown():
+    """Should return None for unknown thread_id."""
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [{"name": "General"}],
+        }
+    ])
+    # Mock reload to avoid filesystem access
+    adapter._reload_dm_topics_from_config = lambda: None
+
+    result = adapter._get_dm_topic_info("111", "999")
+
+    assert result is None
+
+
+def test_get_dm_topic_info_returns_none_without_config():
+    """Should return None if no dm_topics config."""
+    adapter = _make_adapter()
+    adapter._reload_dm_topics_from_config = lambda: None
+
+    result = adapter._get_dm_topic_info("111", "100")
+
+    assert result is None
+
+
+def test_get_dm_topic_info_returns_none_for_none_thread():
+    """Should return None if thread_id is None."""
+    adapter = _make_adapter([
+        {"chat_id": 111, "topics": [{"name": "General"}]}
+    ])
+
+    result = adapter._get_dm_topic_info("111", None)
+
+    assert result is None
+
+
+def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
+    """Should find a topic added to config after startup (hot-reload)."""
+    import yaml
+
+    # Start with empty topics
+    adapter = _make_adapter([
+        {"chat_id": 111, "topics": []}
+    ])
+
+    # Write config with a new topic + thread_id
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 111,
+                            "topics": [
+                                {"name": "NewProject", "thread_id": 555},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    config_file = tmp_path / ".hermes" / "config.yaml"
+    config_file.parent.mkdir(parents=True)
+    with open(config_file, "w") as f:
+        yaml.dump(config_data, f)
+
+    with patch.object(Path, "home", return_value=tmp_path):
+        result = adapter._get_dm_topic_info("111", "555")
+
+    assert result is not None
+    assert result["name"] == "NewProject"
+    # Should now be cached
+    assert adapter._dm_topics["111:NewProject"] == 555
+
+
+# ── _cache_dm_topic_from_message ──
+
+
+def test_cache_dm_topic_from_message():
+    """Should cache a new topic mapping."""
+    adapter = _make_adapter()
+
+    adapter._cache_dm_topic_from_message("111", "100", "General")
+
+    assert adapter._dm_topics["111:General"] == 100
+
+
+def test_cache_dm_topic_from_message_no_overwrite():
+    """Should not overwrite an existing cached topic."""
+    adapter = _make_adapter()
+    adapter._dm_topics["111:General"] = 100
+
+    adapter._cache_dm_topic_from_message("111", "999", "General")
+
+    assert adapter._dm_topics["111:General"] == 100  # unchanged

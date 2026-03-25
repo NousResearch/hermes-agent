@@ -887,7 +887,8 @@ class AIAgent:
                     user_id=None,
                 )
             except Exception as e:
-                logger.debug("Session DB create_session failed: %s", e)
+                logger.warning("Session DB create_session failed — messages will NOT be indexed: %s", e)
+                self._session_db = None  # prevent silent data loss on every subsequent flush
         
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
@@ -1546,7 +1547,7 @@ class AIAgent:
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
-            logger.debug("Session DB append_message failed: %s", e)
+            logger.warning("Session DB append_message failed: %s", e)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -4687,7 +4688,7 @@ class AIAgent:
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
             except Exception as e:
-                logger.debug("Session DB compression split failed: %s", e)
+                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
         # Reset context pressure warning and token estimate — usage drops
         # after compaction.  Without this, the stale last_prompt_tokens from

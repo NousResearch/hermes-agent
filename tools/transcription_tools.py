@@ -115,7 +115,12 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 
 
 def _resolve_openai_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
+    """Return the dedicated voice-tools OpenAI key for explicit OpenAI usage."""
+    return os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
+
+
+def _resolve_openai_api_key_autodetect() -> str:
+    """Auto-detect key path: allow OPENAI_API_KEY fallback when provider isn't explicit."""
     return os.getenv("VOICE_TOOLS_OPENAI_KEY", "") or os.getenv("OPENAI_API_KEY", "")
 
 
@@ -226,7 +231,7 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
-    if _HAS_OPENAI and _resolve_openai_api_key():
+    if _HAS_OPENAI and _resolve_openai_api_key_autodetect():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
     return "none"
@@ -440,7 +445,7 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {
             "success": False,
             "transcript": "",
-            "error": "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set",
+            "error": "VOICE_TOOLS_OPENAI_KEY is not set",
         }
 
     if not _HAS_OPENAI:
@@ -549,6 +554,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "for the OpenAI Whisper API."
         ),
     }

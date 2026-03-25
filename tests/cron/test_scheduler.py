@@ -555,6 +555,12 @@ class TestRunJobSkillBacked:
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_scheduler_lock(self, tmp_path, monkeypatch):
+        """Avoid cross-test lock contention from shared cron tick lock path."""
+        monkeypatch.setattr("cron.scheduler._LOCK_DIR", tmp_path)
+        monkeypatch.setattr("cron.scheduler._LOCK_FILE", tmp_path / "tick.lock")
+
     def _make_job(self):
         return {
             "id": "monitor-job",

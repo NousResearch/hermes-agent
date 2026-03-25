@@ -434,6 +434,56 @@ class GitHubSource(SkillSource):
 
         return files
 
+    def _find_skill_in_repo_tree(self, repo: str, skill_name: str) -> Optional[str]:
+        """Use the GitHub Trees API to find a skill directory anywhere in the repo.
+
+        Returns the full identifier (``repo/path/to/skill``) or ``None``.
+        This is a single API call regardless of repo depth, so it efficiently
+        handles deeply nested directory structures like
+        ``cli-tool/components/skills/development/<skill>/SKILL.md``.
+        """
+        # Get default branch
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}",
+                headers=self.auth.get_headers(),
+                timeout=15,
+                follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        # Get recursive tree (single API call for the entire repo)
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                params={"recursive": "1"},
+                headers=self.auth.get_headers(),
+                timeout=30,
+                follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                return None
+            tree_data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        # Look for SKILL.md files inside directories named <skill_name>
+        skill_md_suffix = f"/{skill_name}/SKILL.md"
+        for entry in tree_data.get("tree", []):
+            if entry.get("type") != "blob":
+                continue
+            path = entry.get("path", "")
+            if path.endswith(skill_md_suffix) or path == f"{skill_name}/SKILL.md":
+                # Strip /SKILL.md to get the skill directory path
+                skill_dir = path[: -len("/SKILL.md")]
+                return f"{repo}/{skill_dir}"
+
+        return None
+
     def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
         """Fetch a single file's content from GitHub."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
@@ -1013,6 +1063,14 @@ class SkillsShSource(SkillSource):
                                 return meta.identifier
         except Exception:
             pass
+
+        # Final fallback: use the GitHub Trees API to find the skill anywhere
+        # in the repo tree.  This handles deeply nested structures like
+        # cli-tool/components/skills/development/<skill>/ that the shallow
+        # scan above can't reach.
+        tree_result = self.github._find_skill_in_repo_tree(repo, skill_token)
+        if tree_result:
+            return tree_result
 
         return None
 

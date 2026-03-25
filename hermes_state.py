@@ -21,10 +21,11 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 
-DEFAULT_DB_PATH = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 6
 

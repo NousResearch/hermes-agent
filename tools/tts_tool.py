@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Callable, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
+DEFAULT_OUTPUT_DIR = str(get_hermes_home() / "audio_cache")
 MAX_TEXT_LENGTH = 4000
 
 

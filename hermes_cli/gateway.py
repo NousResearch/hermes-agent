@@ -134,7 +134,7 @@ def get_service_name() -> str:
     """
     import hashlib
     from pathlib import Path as _Path  # local import to avoid monkeypatch interference
-    home = _Path(os.getenv("HERMES_HOME", _Path.home() / ".hermes")).resolve()
+    home = get_hermes_home().resolve()
     default = (_Path.home() / ".hermes").resolve()
     if home == default:
         return _SERVICE_BASE
@@ -437,7 +437,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
     sane_path = ":".join(path_entries)
 
-    hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
+    hermes_home = str(get_hermes_home().resolve())
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)

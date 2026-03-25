@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional
 
 from rich.console import Console
@@ -136,7 +137,7 @@ def check_for_updates() -> Optional[int]:
     ``~/.hermes/.update_check``).  Returns the number of commits behind,
     or ``None`` if the check fails or isn't applicable.
     """
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_home = get_hermes_home()
     repo_dir = hermes_home / "hermes-agent"
     cache_file = hermes_home / ".update_check"
 

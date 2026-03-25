@@ -25,6 +25,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Optional
 
 from hermes_time import now as _hermes_now
@@ -42,7 +43,7 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 SILENT_MARKER = "[SILENT]"
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = get_hermes_home()
 
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
@@ -327,16 +328,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
         # Reasoning config from env or config.yaml
-        reasoning_config = None
+        from hermes_constants import parse_reasoning_effort
         effort = os.getenv("HERMES_REASONING_EFFORT", "")
         if not effort:
             effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        if effort and effort.lower() != "none":
-            valid = ("xhigh", "high", "medium", "low", "minimal")
-            if effort.lower() in valid:
-                reasoning_config = {"enabled": True, "effort": effort.lower()}
-        elif effort.lower() == "none":
-            reasoning_config = {"enabled": False}
+        reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None

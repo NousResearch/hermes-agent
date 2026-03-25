@@ -31,12 +31,13 @@ import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Where memory files live
-MEMORY_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "memories"
+MEMORY_DIR = get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value
+from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -1562,6 +1562,9 @@ def _setup_signal():
 
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
+    if is_managed():
+        managed_error("run gateway setup")
+        return
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
@@ -1716,6 +1719,9 @@ def gateway_command(args):
 
     # Service management commands
     if subcmd == "install":
+        if is_managed():
+            managed_error("install gateway service (managed by NixOS)")
+            return
         force = getattr(args, 'force', False)
         system = getattr(args, 'system', False)
         run_as_user = getattr(args, 'run_as_user', None)
@@ -1729,6 +1735,9 @@ def gateway_command(args):
             sys.exit(1)
     
     elif subcmd == "uninstall":
+        if is_managed():
+            managed_error("uninstall gateway service (managed by NixOS)")
+            return
         system = getattr(args, 'system', False)
         if is_linux():
             systemd_uninstall(system=system)

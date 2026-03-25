@@ -4994,78 +4994,87 @@ class GatewayRunner:
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
 
-            while True:
-                try:
-                    raw = progress_queue.get_nowait()
-                    
-                    # Handle dedup messages: update last line with repeat counter
-                    if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                        _, base_msg, count = raw
-                        if progress_lines:
-                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                        msg = progress_lines[-1] if progress_lines else base_msg
-                    else:
-                        msg = raw
-                        progress_lines.append(msg)
-
-                    if can_edit and progress_msg_id is not None:
-                        # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
-                        result = await adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=progress_msg_id,
-                            content=full_text,
-                        )
-                        if not result.success:
-                            # Platform doesn't support editing — stop trying,
-                            # send just this new line as a separate message
-                            can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
-                    else:
-                        if can_edit:
-                            # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+            try:
+                while True:
+                    try:
+                        raw = progress_queue.get_nowait()
+                        
+                        # Handle dedup messages: update last line with repeat counter
+                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                            _, base_msg, count = raw
+                            if progress_lines:
+                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            msg = progress_lines[-1] if progress_lines else base_msg
                         else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
+                            msg = raw
+                            progress_lines.append(msg)
 
-                    # Restore typing indicator
-                    await asyncio.sleep(0.3)
-                    await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
-
-                except queue.Empty:
-                    await asyncio.sleep(0.3)
-                except asyncio.CancelledError:
-                    # Drain remaining queued messages
-                    while not progress_queue.empty():
-                        try:
-                            raw = progress_queue.get_nowait()
-                            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                                _, base_msg, count = raw
-                                if progress_lines:
-                                    progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                            else:
-                                progress_lines.append(raw)
-                        except Exception:
-                            break
-                    # Final edit with all remaining tools (only if editing works)
-                    if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
-                        try:
-                            await adapter.edit_message(
+                        if can_edit and progress_msg_id is not None:
+                            # Try to edit the existing progress message
+                            full_text = "\n".join(progress_lines)
+                            result = await adapter.edit_message(
                                 chat_id=source.chat_id,
                                 message_id=progress_msg_id,
                                 content=full_text,
                             )
-                        except Exception:
-                            pass
-                    return
-                except Exception as e:
-                    logger.error("Progress message error: %s", e)
-                    await asyncio.sleep(1)
+                            if not result.success:
+                                # Platform doesn't support editing — stop trying,
+                                # send just this new line as a separate message
+                                can_edit = False
+                                await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                        else:
+                            if can_edit:
+                                # First tool: send all accumulated text as new message
+                                full_text = "\n".join(progress_lines)
+                                result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            else:
+                                # Editing unsupported: send just this line
+                                result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+
+                        # Restore typing indicator
+                        await asyncio.sleep(0.3)
+                        await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+
+                    except queue.Empty:
+                        await asyncio.sleep(0.3)
+                    except asyncio.CancelledError:
+                        # Drain remaining queued messages
+                        while not progress_queue.empty():
+                            try:
+                                raw = progress_queue.get_nowait()
+                                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                                    _, base_msg, count = raw
+                                    if progress_lines:
+                                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                                else:
+                                    progress_lines.append(raw)
+                            except Exception:
+                                break
+                        # Final edit with all remaining tools (only if editing works)
+                        if can_edit and progress_lines and progress_msg_id:
+                            full_text = "\n".join(progress_lines)
+                            try:
+                                await adapter.edit_message(
+                                    chat_id=source.chat_id,
+                                    message_id=progress_msg_id,
+                                    content=full_text,
+                                )
+                            except Exception:
+                                pass
+                        return
+                    except Exception as e:
+                        logger.error("Progress message error: %s", e)
+                        await asyncio.sleep(1)
+            finally:
+                # Always stop the typing loop when the progress task exits,
+                # regardless of how it exits (cancellation, exception, or return).
+                if hasattr(adapter, "stop_typing"):
+                    try:
+                        await adapter.stop_typing(source.chat_id)
+                    except Exception:
+                        pass
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance

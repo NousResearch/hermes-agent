@@ -6031,7 +6031,8 @@ class GatewayRunner:
                     transcript = result["transcript"]
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
+                        f'Here\'s what they said: "{transcript}"'
+                        f' (original audio: {path})]'
                     )
                 else:
                     error = result.get("error", "unknown error")
@@ -6056,13 +6057,15 @@ class GatewayRunner:
                     else:
                         enriched_parts.append(
                             "[The user sent a voice message but I had trouble "
-                            f"transcribing it~ ({error})]"
+                            f"transcribing it~ ({error})"
+                            f" (original audio: {path})]"
                         )
             except Exception as e:
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
                     "[The user sent a voice message but something went wrong "
-                    "when I tried to listen to it~ Let them know!]"
+                    "when I tried to listen to it~ Let them know!"
+                    f" (original audio: {path})]"
                 )
 
         if enriched_parts:

@@ -686,6 +686,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     cached_urls.append(url)
                     media_types.append("image/jpeg")
                     print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                elif msg_type == MessageType.VOICE and os.path.isabs(url):
+                    # Local file path — bridge already downloaded the audio
+                    cached_urls.append(url)
+                    media_types.append("audio/ogg")
+                    print(f"[{self.name}] Using bridge-cached voice: {url}", flush=True)
                 elif msg_type == MessageType.VOICE and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")

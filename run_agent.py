@@ -1326,6 +1326,24 @@ class AIAgent:
                     summary = detail.get('summary') or detail.get('content') or detail.get('text')
                     if summary and summary not in reasoning_parts:
                         reasoning_parts.append(summary)
+
+        # Some providers embed reasoning directly inside assistant content
+        # instead of returning structured reasoning fields.  Only fall back
+        # to inline extraction when no structured reasoning was found.
+        content = getattr(assistant_message, "content", None)
+        if not reasoning_parts and isinstance(content, str) and content:
+            inline_patterns = (
+                r"<think>(.*?)</think>",
+                r"<thinking>(.*?)</thinking>",
+                r"<reasoning>(.*?)</reasoning>",
+                r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
+            )
+            for pattern in inline_patterns:
+                flags = re.DOTALL | re.IGNORECASE
+                for block in re.findall(pattern, content, flags=flags):
+                    cleaned = block.strip()
+                    if cleaned and cleaned not in reasoning_parts:
+                        reasoning_parts.append(cleaned)
         
         # Combine all reasoning parts
         if reasoning_parts:
@@ -6392,6 +6410,7 @@ class AIAgent:
                         'exceeds the limit', 'context window',
                         'request entity too large',  # OpenRouter/Nous 413 safety net
                         'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
+                        'prompt exceeds max length',  # Z.AI / GLM: generic 400 overflow wording
                     ])
 
                     # Fallback heuristic: Anthropic sometimes returns a generic

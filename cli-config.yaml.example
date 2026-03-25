@@ -395,6 +395,13 @@ session_reset:
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Discord gateway behavior
+# discord:
+#   require_mention: true
+#   free_response_channels: ""   # Comma-separated channel IDs
+#   auto_thread: true
+#   generate_thread_titles: false
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────

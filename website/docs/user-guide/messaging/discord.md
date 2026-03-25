@@ -257,6 +257,9 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 # Optional: ignore messages that @mention other users but NOT the bot (default: true)
 # DISCORD_IGNORE_NO_MENTION=true
+
+# Optional: generate model-based titles before creating auto-threads (default: false)
+# DISCORD_GENERATE_THREAD_TITLES=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -264,11 +267,15 @@ Optional behavior settings in `~/.hermes/config.yaml`:
 ```yaml
 discord:
   require_mention: true
+  auto_thread: true
+  generate_thread_titles: false
 
 group_sessions_per_user: true
 ```
 
 - `discord.require_mention: true` keeps Hermes quiet in normal server traffic unless mentioned
+- `discord.auto_thread: true` creates a new Discord thread for each qualifying channel mention
+- `discord.generate_thread_titles: true` uses Hermes' auxiliary title generator before creating those auto-threads
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
 
 ### Start the Gateway
@@ -373,6 +380,5 @@ Always set `DISCORD_ALLOWED_USERS` to restrict who can interact with the bot. Wi
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 
 

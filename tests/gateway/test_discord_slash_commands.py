@@ -317,6 +317,49 @@ async def test_auto_create_thread_truncates_long_names(adapter):
 
 
 @pytest.mark.asyncio
+async def test_auto_create_thread_generates_title_before_creation(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_GENERATE_THREAD_TITLES", "true")
+
+    thread = SimpleNamespace(id=999, name="generated")
+    message = SimpleNamespace(
+        content="please help me debug the discord gateway startup",
+        create_thread=AsyncMock(return_value=thread),
+    )
+
+    with patch(
+        "gateway.platforms.discord.async_generate_title_from_message",
+        new=AsyncMock(return_value="Discord Gateway Startup"),
+    ) as gen:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    gen.assert_called_once_with("please help me debug the discord gateway startup", 15.0)
+    call_kwargs = message.create_thread.await_args[1]
+    assert call_kwargs["name"] == "Discord Gateway Startup"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_falls_back_when_generated_title_is_empty(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_GENERATE_THREAD_TITLES", "true")
+
+    thread = SimpleNamespace(id=999, name="fallback")
+    message = SimpleNamespace(
+        content="fallback title please",
+        create_thread=AsyncMock(return_value=thread),
+    )
+
+    with patch(
+        "gateway.platforms.discord.async_generate_title_from_message",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    call_kwargs = message.create_thread.await_args[1]
+    assert call_kwargs["name"] == "fallback title please"
+
+
+@pytest.mark.asyncio
 async def test_auto_create_thread_returns_none_on_failure(adapter):
     message = SimpleNamespace(
         content="Hello",
@@ -476,7 +519,7 @@ async def test_auto_thread_skips_threads_and_dms(adapter, monkeypatch):
 
 
 def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
-    """discord.auto_thread in config.yaml should be bridged to DISCORD_AUTO_THREAD env var."""
+    """Discord thread settings in config.yaml should be bridged to env vars."""
     import yaml
     from pathlib import Path
 
@@ -485,10 +528,14 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
     hermes_dir.mkdir()
     config_path = hermes_dir / "config.yaml"
     config_path.write_text(yaml.dump({
-        "discord": {"auto_thread": True},
+        "discord": {
+            "auto_thread": True,
+            "generate_thread_titles": True,
+        },
     }))
 
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_GENERATE_THREAD_TITLES", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -497,3 +544,4 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+    assert os.getenv("DISCORD_GENERATE_THREAD_TITLES") == "true"

@@ -547,6 +547,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+                if "generate_thread_titles" in discord_cfg and not os.getenv("DISCORD_GENERATE_THREAD_TITLES"):
+                    os.environ["DISCORD_GENERATE_THREAD_TITLES"] = str(discord_cfg["generate_thread_titles"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
 

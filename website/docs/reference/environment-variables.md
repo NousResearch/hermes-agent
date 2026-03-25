@@ -166,6 +166,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
+| `DISCORD_GENERATE_THREAD_TITLES` | Generate a model-based title before creating Discord auto-threads |
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |

@@ -10,6 +10,7 @@ import yaml
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+FALSEY_STRINGS = frozenset({"0", "false", "no", "off"})
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -26,6 +27,22 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
 def env_var_enabled(name: str, default: str = "") -> bool:
     """Return True when an environment variable is set to a truthy value."""
     return is_truthy_value(os.getenv(name, default), default=False)
+
+def env_var_is_truthy(name: str, default: str = "") -> bool:
+    """Return True when an env var is set to a truthy opt-in value."""
+    return env_var_enabled(name, default)
+
+
+def env_var_is_not_false(name: str, default: str = "") -> bool:
+    """Return True unless an env var is explicitly set to a false-like value."""
+    value = os.getenv(name, default)
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in FALSEY_STRINGS
+    return bool(value)
 
 
 def atomic_json_write(

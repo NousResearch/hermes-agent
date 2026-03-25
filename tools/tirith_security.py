@@ -34,6 +34,8 @@ import threading
 import time
 import urllib.request
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 _REPO = "sheeki03/tirith"
@@ -104,14 +106,8 @@ _MARKER_TTL = 86400  # 24 hours
 
 
 def _get_hermes_home() -> str:
-    """Return the Hermes home directory, respecting HERMES_HOME env var.
-
-    Matches the convention used throughout the codebase (hermes_cli.config,
-    cli.py, gateway/run.py, etc.) so tirith state stays inside the active
-    profile and tests get automatic isolation via conftest's HERMES_HOME
-    monkeypatch.
-    """
-    return os.getenv("HERMES_HOME") or os.path.join(os.path.expanduser("~"), ".hermes")
+    """Return the Hermes home directory, respecting HERMES_HOME env var."""
+    return str(get_hermes_home())
 
 
 def _failure_marker_path() -> str:

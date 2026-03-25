@@ -70,10 +70,10 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
 from hermes_cli.env_loader import load_hermes_dotenv
 
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
@@ -112,21 +112,12 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
 
 
 def _parse_reasoning_config(effort: str) -> dict | None:
-    """Parse a reasoning effort level into an OpenRouter reasoning config dict.
-    
-    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
-    Returns None to use the default (medium), or a config dict to override.
-    """
-    if not effort or not effort.strip():
-        return None
-    effort = effort.strip().lower()
-    if effort == "none":
-        return {"enabled": False}
-    valid = ("xhigh", "high", "medium", "low", "minimal")
-    if effort in valid:
-        return {"enabled": True, "effort": effort}
-    logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
-    return None
+    """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
+    from hermes_constants import parse_reasoning_effort
+    result = parse_reasoning_effort(effort)
+    if effort and effort.strip() and result is None:
+        logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
+    return result
 
 
 def load_cli_config() -> Dict[str, Any]:
@@ -2316,7 +2307,7 @@ class HermesCLI:
         """
         from hermes_cli.clipboard import save_clipboard_image
 
-        img_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "images"
+        img_dir = get_hermes_home() / "images"
         self._image_counter += 1
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"

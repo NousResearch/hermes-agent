@@ -416,7 +416,7 @@ def check_image_generation_requirements() -> bool:
             return False
         
         # Check if fal_client is available
-        import fal_client
+        import fal_client  # noqa: F401 — SDK presence check
         return True
         
     except ImportError:

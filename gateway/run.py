@@ -220,7 +220,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
 )
-from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 logger = logging.getLogger(__name__)
@@ -2771,8 +2771,6 @@ class GatewayRunner:
         """Handle /model command - show or change the current model."""
         import yaml
         from hermes_cli.models import (
-            parse_model_input,
-            validate_requested_model,
             curated_models_for_provider,
             normalize_provider,
             _PROVIDER_LABELS,

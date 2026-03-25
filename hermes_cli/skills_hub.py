@@ -186,7 +186,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     Official skills are always shown first, regardless of source filter.
     """
     from tools.skills_hub import (
-        GitHubAuth, create_source_router, OptionalSkillSource, SkillMeta,
+        GitHubAuth, create_source_router,
     )
 
     # Clamp page_size to safe range

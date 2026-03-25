@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 

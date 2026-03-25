@@ -18,10 +18,8 @@ from hermes_cli.setup import (
     print_header,
     print_info,
     print_success,
-    print_warning,
     print_error,
     prompt_yes_no,
-    prompt_choice,
 )
 
 logger = logging.getLogger(__name__)

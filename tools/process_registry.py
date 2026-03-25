@@ -34,7 +34,6 @@ import logging
 import os
 import platform
 import shlex
-import shutil
 import signal
 import subprocess
 import threading
@@ -44,7 +43,6 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home

@@ -24,7 +24,6 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 

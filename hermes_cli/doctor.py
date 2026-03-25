@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 import shutil
-from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 
@@ -448,7 +447,7 @@ def run_doctor(args):
             check_fail("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)")
             issues.append("Set DAYTONA_API_KEY environment variable")
         try:
-            from daytona import Daytona
+            from daytona import Daytona  # noqa: F401 — SDK presence check
             check_ok("daytona SDK", "(installed)")
         except ImportError:
             check_fail("daytona SDK not installed", "(pip install daytona)")

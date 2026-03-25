@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 try:
     import aiohttp
@@ -435,7 +435,6 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """No typing indicator for Home Assistant."""
-        pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the HA event channel."""

@@ -13,11 +13,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-import os
 
 from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
-    get_hermes_home,
 )
 from hermes_cli.colors import Colors, color
 
@@ -382,7 +380,7 @@ def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = Non
 
 def _get_platform_tools(config: dict, platform: str) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets", {})
     toolset_names = platform_toolsets.get(platform)

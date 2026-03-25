@@ -6463,12 +6463,31 @@ class HermesCLI:
             When the terminal supports bracketed paste, Ctrl+V / Cmd+V
             triggers this with the pasted text.  We also check the
             clipboard for an image on every paste event.
+
+            Large pastes (5+ lines) are collapsed to a file reference
+            placeholder while preserving any existing user text in the
+            buffer.
             """
             pasted_text = event.data or ""
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
-                event.current_buffer.insert_text(pasted_text)
+                line_count = pasted_text.count('\n')
+                buf = event.current_buffer
+                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                    _paste_counter[0] += 1
+                    paste_dir = _hermes_home / "pastes"
+                    paste_dir.mkdir(parents=True, exist_ok=True)
+                    paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
+                    paste_file.write_text(pasted_text, encoding="utf-8")
+                    placeholder = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                    prefix = ""
+                    if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n':
+                        prefix = "\n"
+                    _paste_just_collapsed[0] = True
+                    buf.insert_text(prefix + placeholder)
+                else:
+                    buf.insert_text(pasted_text)
 
         @kb.add('c-v')
         def handle_ctrl_v(event):
@@ -6581,15 +6600,25 @@ class HermesCLI:
         # Paste collapsing: detect large pastes and save to temp file
         _paste_counter = [0]
         _prev_text_len = [0]
+        _paste_just_collapsed = [False]
 
         def _on_text_changed(buf):
-            """Detect large pastes and collapse them to a file reference."""
+            """Detect large pastes and collapse them to a file reference.
+
+            When bracketed paste is available, handle_paste collapses
+            large pastes directly.  This handler is a fallback for
+            terminals without bracketed paste support.
+            """
             text = buf.text
-            line_count = text.count('\n')
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
+            if _paste_just_collapsed[0]:
+                _paste_just_collapsed[0] = False
+                return
+            line_count = text.count('\n')
             # Heuristic: a real paste adds many characters at once (not just a
             # single newline from Alt+Enter) AND the result has 5+ lines.
+            # Fallback for terminals without bracketed paste support.
             if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
@@ -6598,7 +6627,7 @@ class HermesCLI:
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
                 # Replace buffer with compact reference
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
+                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed
@@ -7113,23 +7142,33 @@ class HermesCLI:
                     
                     # Expand paste references back to full content
                     import re as _re
-                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input) if isinstance(user_input, str) else None
-                    if paste_match:
-                        paste_path = Path(paste_match.group(1))
+                    _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+                    paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                    if paste_refs:
+                        def _expand_ref(m):
+                            p = Path(m.group(1))
+                            return p.read_text(encoding="utf-8") if p.exists() else m.group(0)
+                        expanded = _paste_ref_re.sub(_expand_ref, user_input)
+                        total_lines = expanded.count('\n') + 1
+                        n_pastes = len(paste_refs)
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if paste_path.exists():
-                            full_text = paste_path.read_text(encoding="utf-8")
-                            line_count = full_text.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
+                        print()
+                        ChatConsole().print(_user_bar)
+                        # Show any surrounding user text alongside the paste summary
+                        split_parts = _paste_ref_re.split(user_input)
+                        visible_user_text = " ".join(
+                            split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
+                        )
+                        if visible_user_text:
                             ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]"
+                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
+                                f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
                             )
-                            user_input = full_text
                         else:
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                            ChatConsole().print(
+                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
+                            )
+                        user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:

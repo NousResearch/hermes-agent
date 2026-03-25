@@ -280,6 +280,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_name = job["name"]
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
+    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -411,7 +412,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             platform="cron",
-            session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+            session_id=_cron_session_id,
             session_db=_session_db,
         )
         
@@ -476,6 +477,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         ):
             os.environ.pop(key, None)
         if _session_db:
+            try:
+                _session_db.end_session(_cron_session_id, "cron_complete")
+            except Exception as e:
+                logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:
                 _session_db.close()
             except Exception as e:

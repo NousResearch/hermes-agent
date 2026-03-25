@@ -3193,8 +3193,48 @@ class GatewayRunner:
             return raw.guild.id
         return None
 
+    def _set_global_voice_tts_mode(self, mode: str, *, chat_id: str | None = None, adapter=None) -> str:
+        """Persist the spoken reply style and enable auto-TTS for the chat."""
+        normalized = (mode or "").strip().lower()
+        if normalized not in {"full", "summary"}:
+            return f"Unknown voice TTS mode: {mode}"
+
+        try:
+            from hermes_cli.config import set_config_value
+            set_config_value("tts.mode", normalized, quiet=True)
+        except Exception as e:
+            logger.warning("Failed to save TTS mode %s: %s", normalized, e)
+            return f"Couldn't save voice TTS mode: {e}"
+
+        detail = (
+            "Auto-spoken replies will use the full assistant response."
+            if normalized == "full"
+            else "Auto-spoken replies will be summarized before synthesis."
+        )
+        if chat_id:
+            self._voice_mode[chat_id] = "all"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=False)
+            return (
+                f"Voice TTS enabled in {normalized} mode.\n"
+                f"{detail}\n"
+                "All replies in this chat will include a voice message."
+            )
+
+        return f"Voice TTS mode set to {normalized}.\n{detail}"
+
+    def _get_global_voice_tts_mode(self) -> str:
+        """Return the configured spoken reply style for automatic TTS replies."""
+        try:
+            from hermes_cli.config import load_config
+            from tools.tts_tool import _get_tts_mode
+            return _get_tts_mode(load_config().get("tts", {}))
+        except Exception:
+            return "full"
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|full|summary|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
 
@@ -3225,12 +3265,17 @@ class GatewayRunner:
                 "Auto-TTS enabled.\n"
                 "All replies will include a voice message."
             )
+        elif args == "full":
+            return self._set_global_voice_tts_mode("full", chat_id=chat_id, adapter=adapter)
+        elif args == "summary":
+            return self._set_global_voice_tts_mode("summary", chat_id=chat_id, adapter=adapter)
         elif args in ("channel", "join"):
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
             mode = self._voice_mode.get(chat_id, "off")
+            speech_mode = self._get_global_voice_tts_mode()
             labels = {
                 "off": "Off (text only)",
                 "voice_only": "On (voice reply to voice messages)",
@@ -3244,6 +3289,7 @@ class GatewayRunner:
                 if info:
                     lines = [
                         f"Voice mode: {labels.get(mode, mode)}",
+                        f"Speech mode: {speech_mode}",
                         f"Voice channel: #{info['channel_name']}",
                         f"Participants: {info['member_count']}",
                     ]
@@ -3251,7 +3297,7 @@ class GatewayRunner:
                         status = " (speaking)" if m.get("is_speaking") else ""
                         lines.append(f"  - {m['display_name']}{status}")
                     return "\n".join(lines)
-            return f"Voice mode: {labels.get(mode, mode)}"
+            return f"Voice mode: {labels.get(mode, mode)}\nSpeech mode: {speech_mode}"
         else:
             # Toggle: off → on, on/all → off
             current = self._voice_mode.get(chat_id, "off")
@@ -3461,9 +3507,9 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import prepare_text_for_auto_tts, text_to_speech_tool
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = await asyncio.to_thread(prepare_text_for_auto_tts, text)
             if not tts_text:
                 return
 

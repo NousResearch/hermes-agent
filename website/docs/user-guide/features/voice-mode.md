@@ -120,6 +120,8 @@ Then use these commands inside the CLI:
 /voice on       Enable voice mode
 /voice off      Disable voice mode
 /voice tts      Toggle TTS output
+/voice full     Enable spoken replies and speak them in full
+/voice summary  Enable spoken replies and speak summarized versions
 /voice status   Show current state
 ```
 
@@ -153,7 +155,7 @@ Both `silence_threshold` and `silence_duration` are configurable in `config.yaml
 
 ### Streaming TTS
 
-When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response:
+When TTS is enabled in `tts.mode: "full"` with the ElevenLabs provider, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response:
 
 1. Buffers text deltas into complete sentences (min 20 chars)
 2. Strips markdown formatting and `<think>` blocks
@@ -210,6 +212,8 @@ These work in both Telegram and Discord (DMs and text channels):
 /voice          Toggle voice mode on/off
 /voice on       Voice replies only when you send a voice message
 /voice tts      Voice replies for ALL messages
+/voice full     Enable spoken replies and use full responses
+/voice summary  Enable spoken replies and use summarized responses
 /voice off      Disable voice replies
 /voice status   Show current setting
 ```
@@ -395,7 +399,14 @@ stt:
 
 # Text-to-Speech
 tts:
+  mode: "full"                    # "full" | "summary" for auto-spoken assistant replies
   provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts"
+  summary:
+    length: "2 sentences"          # target length when mode="summary"
+    provider: ""                   # optional override for summary routing
+    model: ""
+    base_url: ""
+    api_key: ""
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -411,6 +422,8 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+`tts.mode: "summary"` makes Hermes speak a short summary for automatic voice replies instead of reading the full response verbatim. The `tts.summary.*` block is specific to TTS and only falls back to compression summary routing if you leave it blank. Streaming sentence-by-sentence playback stays enabled only in `full` mode.
 
 ### Environment Variables
 

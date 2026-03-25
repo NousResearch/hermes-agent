@@ -279,7 +279,15 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
+        "mode": "full",  # "full" | "summary" for auto-spoken assistant replies
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
+        "summary": {
+            "length": "2 sentences",  # Spoken summary target when mode="summary"
+            "provider": "",  # empty = fall back to compression summary routing
+            "model": "",     # empty = fall back to compression summary model
+            "base_url": "",  # optional direct OpenAI-compatible summary endpoint
+            "api_key": "",   # optional API key for summary.base_url
+        },
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1801,7 +1809,7 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def set_config_value(key: str, value: str):
+def set_config_value(key: str, value: str, *, quiet: bool = False):
     """Set a configuration value."""
     if is_managed():
         managed_error("set configuration values")
@@ -1820,7 +1828,8 @@ def set_config_value(key: str, value: str):
     
     if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
-        print(f"✓ Set {key} in {get_env_path()}")
+        if not quiet:
+            print(f"✓ Set {key} in {get_env_path()}")
         return
     
     # Otherwise it goes to config.yaml
@@ -1878,7 +1887,8 @@ def set_config_value(key: str, value: str):
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))
 
-    print(f"✓ Set {key} = {value} in {config_path}")
+    if not quiet:
+        print(f"✓ Set {key} = {value} in {config_path}")
 
 
 # =============================================================================

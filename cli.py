@@ -4943,24 +4943,10 @@ class HermesCLI:
             return
         self._voice_tts_done.clear()
         try:
-            from tools.tts_tool import text_to_speech_tool
+            from tools.tts_tool import prepare_text_for_auto_tts, text_to_speech_tool
             from tools.voice_mode import play_audio_file
-            import json
-            import re
 
-            # Strip markdown and non-speech content for cleaner TTS
-            tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
-            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
-            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
-            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
-            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
-            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
-            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
-            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
-            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
-            tts_text = tts_text.strip()
+            tts_text = prepare_text_for_auto_tts(text)
             if not tts_text:
                 return
 
@@ -4992,7 +4978,7 @@ class HermesCLI:
             self._voice_tts_done.set()
 
     def _handle_voice_command(self, command: str):
-        """Handle /voice [on|off|tts|status] command."""
+        """Handle /voice [on|off|tts|full|summary|status] command."""
         parts = command.strip().split(maxsplit=1)
         subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
 
@@ -5002,6 +4988,10 @@ class HermesCLI:
             self._disable_voice_mode()
         elif subcommand == "tts":
             self._toggle_voice_tts()
+        elif subcommand == "full":
+            self._set_voice_tts_mode("full")
+        elif subcommand == "summary":
+            self._set_voice_tts_mode("summary")
         elif subcommand == "status":
             self._show_voice_status()
         elif subcommand == "":
@@ -5012,7 +5002,7 @@ class HermesCLI:
                 self._enable_voice_mode()
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
-            _cprint("Usage: /voice [on|off|tts|status]")
+            _cprint("Usage: /voice [on|off|tts|full|summary|status]")
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
@@ -5068,6 +5058,7 @@ class HermesCLI:
         _cprint(f"\n{_GOLD}Voice mode enabled{tts_status}{_RST}")
         _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
+        _cprint(f"  {_DIM}/voice full or /voice summary  to change spoken reply style{_RST}")
         _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
 
     def _disable_voice_mode(self):
@@ -5119,18 +5110,61 @@ class HermesCLI:
 
         _cprint(f"{_GOLD}Voice TTS {status}.{_RST}")
 
+    def _set_voice_tts_mode(self, mode: str):
+        """Persist the spoken reply style and enable spoken replies."""
+        normalized = (mode or "").strip().lower()
+        if normalized not in {"full", "summary"}:
+            _cprint(f"{_DIM}Unknown voice TTS mode: {mode}{_RST}")
+            return
+
+        # If the user explicitly asks for a speech mode, make sure voice mode
+        # is active so the setting has an immediate effect.
+        if not self._voice_mode:
+            self._enable_voice_mode()
+            if not self._voice_mode:
+                return
+
+        with self._voice_lock:
+            self._voice_tts = True
+
+        try:
+            from hermes_cli.config import set_config_value
+            set_config_value("tts.mode", normalized, quiet=True)
+        except Exception as e:
+            _cprint(f"{_DIM}Couldn't save voice TTS mode: {e}{_RST}")
+            return
+
+        try:
+            from tools.tts_tool import check_tts_requirements
+            if not check_tts_requirements():
+                _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+        except Exception:
+            pass
+
+        detail = (
+            "Auto-spoken replies will use the full assistant response."
+            if normalized == "full"
+            else "Auto-spoken replies will be summarized before synthesis."
+        )
+        _cprint(f"{_GOLD}Voice TTS enabled in {normalized} mode.{_RST}")
+        _cprint(f"{_DIM}{detail}{_RST}")
+
     def _show_voice_status(self):
         """Show current voice mode status."""
         from hermes_cli.config import load_config
         from tools.voice_mode import check_voice_requirements
+        from tools.tts_tool import _get_tts_mode
 
+        config = load_config()
         reqs = check_voice_requirements()
+        tts_mode = _get_tts_mode(config.get("tts", {}))
 
         _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
+        _cprint(f"  Speech:    {tts_mode.upper()}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
-        _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
+        _raw_key = config.get("voice", {}).get("record_key", "ctrl+b")
         _display_key = _raw_key.replace("ctrl+", "Ctrl+").upper() if "ctrl+" in _raw_key.lower() else _raw_key
         _cprint(f"  Record key: {_display_key}")
         _cprint(f"\n  {_BOLD}Requirements:{_RST}")
@@ -5537,6 +5571,7 @@ class HermesCLI:
             if self._voice_tts:
                 try:
                     from tools.tts_tool import (
+                        _get_tts_mode as _get_tts_mode,
                         _load_tts_config as _load_tts_cfg,
                         _get_provider as _get_prov,
                         _import_elevenlabs,
@@ -5544,7 +5579,8 @@ class HermesCLI:
                         stream_tts_to_speaker,
                     )
                     _tts_cfg = _load_tts_cfg()
-                    if _get_prov(_tts_cfg) == "elevenlabs":
+                    if (_get_prov(_tts_cfg) == "elevenlabs"
+                            and _get_tts_mode(_tts_cfg) == "full"):
                         # Verify both ElevenLabs SDK and audio output are available
                         _import_elevenlabs()
                         _import_sounddevice()

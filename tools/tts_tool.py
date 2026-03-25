@@ -74,6 +74,8 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
+DEFAULT_TTS_MODE = "full"
+DEFAULT_TTS_SUMMARY_LENGTH = "2 sentences"
 MAX_TEXT_LENGTH = 4000
 
 
@@ -564,6 +566,11 @@ _MD_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
 _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
+_THINK_BLOCK_RE = re.compile(r'<think[\s>].*?</think>', flags=re.IGNORECASE | re.DOTALL)
+_REFLECTION_BLOCK_RE = re.compile(r'<reflection[\s>].*?</reflection>', flags=re.IGNORECASE | re.DOTALL)
+_THINK_TAG_RE = re.compile(r'</?think[^>]*>', flags=re.IGNORECASE)
+_REFLECTION_TAG_RE = re.compile(r'</?reflection[^>]*>', flags=re.IGNORECASE)
+_WHITESPACE_RE = re.compile(r'\s+')
 
 
 def _strip_markdown_for_tts(text: str) -> str:
@@ -579,6 +586,144 @@ def _strip_markdown_for_tts(text: str) -> str:
     text = _MD_HR.sub('', text)
     text = _MD_EXCESS_NL.sub('\n\n', text)
     return text.strip()
+
+
+def _strip_reasoning_tags_for_tts(text: str) -> str:
+    """Remove thinking/reflection tags that should never be spoken aloud."""
+    text = _THINK_BLOCK_RE.sub(' ', text)
+    text = _REFLECTION_BLOCK_RE.sub(' ', text)
+    text = _THINK_TAG_RE.sub(' ', text)
+    text = _REFLECTION_TAG_RE.sub(' ', text)
+    return text
+
+
+def _normalize_tts_text(text: str) -> str:
+    """Collapse whitespace for smoother speech synthesis."""
+    return _WHITESPACE_RE.sub(' ', text).strip()
+
+
+def _get_tts_mode(tts_config: Optional[Dict[str, Any]] = None) -> str:
+    """Return the configured auto-TTS mode."""
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    mode = str(cfg.get("mode", DEFAULT_TTS_MODE)).strip().lower()
+    return mode if mode in {"full", "summary"} else DEFAULT_TTS_MODE
+
+
+def _get_tts_summary_config(tts_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return normalized summary config for auto-TTS."""
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    summary = cfg.get("summary", {})
+    if not isinstance(summary, dict):
+        summary = {}
+    return summary
+
+
+def _fallback_summary_for_tts(text: str) -> str:
+    """Best-effort summary when the configured summary model is unavailable."""
+    return " ".join(_normalize_tts_text(text).split()[:40]).strip()
+
+
+def _extract_llm_message_text(response: Any) -> str:
+    """Extract plain text content from an OpenAI-compatible chat response."""
+    try:
+        message = response.choices[0].message
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return ""
+
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            else:
+                item_type = getattr(item, "type", None)
+                if item_type == "text":
+                    parts.append(getattr(item, "text", ""))
+        return " ".join(p for p in parts if p)
+    return str(content or "")
+
+
+def _summarize_text_for_auto_tts(
+    text: str,
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Summarize assistant text for spoken playback, with safe fallback."""
+    cleaned = _normalize_tts_text(text)
+    if not cleaned:
+        return ""
+
+    summary_cfg = _get_tts_summary_config(tts_config)
+    summary_length = str(summary_cfg.get("length", DEFAULT_TTS_SUMMARY_LENGTH)).strip()
+    if not summary_length:
+        summary_length = DEFAULT_TTS_SUMMARY_LENGTH
+
+    prompt = "\n".join([
+        f"Summarize the following assistant response as spoken audio copy in {summary_length}.",
+        "Keep concrete facts, decisions, and next actions.",
+        "Do not mention that this is a summary.",
+        "Paraphrase instead of copying the opening words when possible.",
+        "Never output chain-of-thought, think tags, reflection tags, or XML-like tags.",
+        "Do not use bullets, numbering, markdown, or preamble.",
+        "",
+        cleaned,
+    ])
+
+    try:
+        from agent.auxiliary_client import call_llm
+
+        response = call_llm(
+            task="compression",
+            provider=str(summary_cfg.get("provider", "")).strip() or None,
+            model=str(summary_cfg.get("model", "")).strip() or None,
+            base_url=str(summary_cfg.get("base_url", "")).strip() or None,
+            api_key=str(summary_cfg.get("api_key", "")).strip() or None,
+            messages=[
+                {"role": "system", "content": "You are a compression model. Reply with plain text only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=200,
+            timeout=30.0,
+        )
+        summary = _normalize_tts_text(
+            _strip_reasoning_tags_for_tts(_extract_llm_message_text(response))
+        )
+        if summary:
+            return summary
+        raise RuntimeError("summary model returned no text")
+    except Exception as exc:
+        logger.warning("TTS summarization failed, falling back to a short excerpt: %s", exc)
+        return _fallback_summary_for_tts(cleaned)
+
+
+def prepare_text_for_auto_tts(
+    text: str,
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Prepare assistant text for auto-TTS playback.
+
+    This helper powers voice-mode playback and gateway auto-replies. It keeps
+    the explicit text_to_speech tool behavior unchanged, while allowing
+    config-driven summary mode for automatic spoken responses.
+    """
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    cleaned = _normalize_tts_text(
+        _strip_reasoning_tags_for_tts(_strip_markdown_for_tts(text or ""))
+    )
+    if not cleaned:
+        return ""
+
+    if _get_tts_mode(cfg) == "summary":
+        summary = _summarize_text_for_auto_tts(cleaned, cfg)
+        return summary[:MAX_TEXT_LENGTH].strip()
+
+    if len(cleaned) > MAX_TEXT_LENGTH:
+        cleaned = cleaned[:MAX_TEXT_LENGTH]
+    return cleaned
 
 
 def stream_tts_to_speaker(

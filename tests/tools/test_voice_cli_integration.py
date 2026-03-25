@@ -39,10 +39,10 @@ def _make_voice_cli(**overrides):
 
 
 # ============================================================================
-# Markdown stripping — import real function from tts_tool
+# Markdown stripping / auto-TTS prep — import real helpers from tts_tool
 # ============================================================================
 
-from tools.tts_tool import _strip_markdown_for_tts
+from tools.tts_tool import _get_tts_mode, _strip_markdown_for_tts, prepare_text_for_auto_tts
 
 
 class TestMarkdownStripping:
@@ -124,6 +124,50 @@ class TestMarkdownStripping:
 
 
 # ============================================================================
+# Auto-TTS preparation
+# ============================================================================
+
+class TestAutoTtsPreparation:
+    def test_mode_defaults_to_full(self):
+        assert _get_tts_mode({}) == "full"
+        assert _get_tts_mode({"mode": "summary"}) == "summary"
+        assert _get_tts_mode({"mode": "weird"}) == "full"
+
+    def test_prepare_text_full_mode_strips_reasoning_tags(self):
+        result = prepare_text_for_auto_tts(
+            "## Title\n<think>hidden</think>**bold** and `code`",
+            tts_config={"mode": "full"},
+        )
+        assert result == "Title bold and code"
+
+    def test_prepare_text_summary_mode_uses_summary_model(self):
+        mock_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short spoken summary."))]
+        )
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call:
+            result = prepare_text_for_auto_tts(
+                "## Title\nA much longer assistant response that should be summarized.",
+                tts_config={"mode": "summary", "summary": {"length": "1 sentence"}},
+            )
+
+        assert result == "Short spoken summary."
+        assert mock_call.call_args.kwargs["task"] == "compression"
+        assert "1 sentence" in mock_call.call_args.kwargs["messages"][1]["content"]
+
+    def test_prepare_text_summary_mode_falls_back_on_error(self):
+        text = " ".join(f"word{i}" for i in range(60))
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("boom")):
+            result = prepare_text_for_auto_tts(
+                text,
+                tts_config={"mode": "summary"},
+            )
+
+        assert result == " ".join(f"word{i}" for i in range(40))
+
+
+# ============================================================================
 # Voice command parsing
 # ============================================================================
 
@@ -136,6 +180,8 @@ class TestVoiceCommandParsing:
             ("/voice on", "on"),
             ("/voice off", "off"),
             ("/voice tts", "tts"),
+            ("/voice full", "full"),
+            ("/voice summary", "summary"),
             ("/voice status", "status"),
             ("/voice", ""),
             ("/voice  ON  ", "on"),
@@ -277,6 +323,32 @@ class TestStreamingTTSActivation:
                 )
                 cfg = load_cfg()
                 if get_prov(cfg) == "elevenlabs":
+                    import_el()
+                    import_sd()
+                    use_streaming_tts = True
+            except (ImportError, OSError):
+                pass
+
+        assert use_streaming_tts is False
+
+    def test_does_not_activate_when_tts_mode_is_summary(self):
+        """Streaming TTS is disabled when auto-TTS is in summary mode."""
+        use_streaming_tts = False
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs", "mode": "summary"}), \
+             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
+             patch("tools.tts_tool._get_tts_mode", return_value="summary"), \
+             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
+             patch("tools.tts_tool._import_sounddevice", return_value=MagicMock()):
+            try:
+                from tools.tts_tool import (
+                    _get_tts_mode as get_mode,
+                    _load_tts_config as load_cfg,
+                    _get_provider as get_prov,
+                    _import_elevenlabs as import_el,
+                    _import_sounddevice as import_sd,
+                )
+                cfg = load_cfg()
+                if get_prov(cfg) == "elevenlabs" and get_mode(cfg) == "full":
                     import_el()
                     import_sd()
                     use_streaming_tts = True
@@ -807,6 +879,7 @@ class TestHandleVoiceCommandReal:
         cli._enable_voice_mode = MagicMock()
         cli._disable_voice_mode = MagicMock()
         cli._toggle_voice_tts = MagicMock()
+        cli._set_voice_tts_mode = MagicMock()
         cli._show_voice_status = MagicMock()
         return cli
 
@@ -835,6 +908,18 @@ class TestHandleVoiceCommandReal:
         cli._show_voice_status.assert_called_once()
 
     @patch("cli._cprint")
+    def test_full_calls_set_mode(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice full")
+        cli._set_voice_tts_mode.assert_called_once_with("full")
+
+    @patch("cli._cprint")
+    def test_summary_calls_set_mode(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice summary")
+        cli._set_voice_tts_mode.assert_called_once_with("summary")
+
+    @patch("cli._cprint")
     def test_toggle_off_when_enabled(self, _cp):
         cli = self._cli()
         cli._voice_mode = True
@@ -857,6 +942,46 @@ class TestHandleVoiceCommandReal:
         # Should print usage via _cprint
         assert any("Unknown" in str(c) or "unknown" in str(c)
                     for c in mock_cp.call_args_list)
+
+
+class TestVoiceTtsModePersistence:
+    @patch("cli._cprint")
+    def test_set_voice_tts_mode_summary_saves_config(self, mock_cp):
+        cli = _make_voice_cli(_voice_mode=True)
+        with patch("hermes_cli.config.set_config_value") as mock_set, \
+             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+            cli._set_voice_tts_mode("summary")
+
+        mock_set.assert_called_once_with("tts.mode", "summary", quiet=True)
+        assert cli._voice_tts is True
+        assert any("summary" in str(call) for call in mock_cp.call_args_list)
+
+    @patch("cli._cprint")
+    def test_set_voice_tts_mode_full_saves_config(self, mock_cp):
+        cli = _make_voice_cli(_voice_mode=True)
+        with patch("hermes_cli.config.set_config_value") as mock_set, \
+             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+            cli._set_voice_tts_mode("full")
+
+        mock_set.assert_called_once_with("tts.mode", "full", quiet=True)
+        assert cli._voice_tts is True
+        assert any("full" in str(call) for call in mock_cp.call_args_list)
+
+    @patch("cli._cprint")
+    def test_set_voice_tts_mode_enables_voice_mode_when_needed(self, _cp):
+        cli = _make_voice_cli(_voice_mode=False)
+
+        def enable():
+            cli._voice_mode = True
+
+        cli._enable_voice_mode = MagicMock(side_effect=enable)
+        with patch("hermes_cli.config.set_config_value") as mock_set, \
+             patch("tools.tts_tool.check_tts_requirements", return_value=True):
+            cli._set_voice_tts_mode("summary")
+
+        cli._enable_voice_mode.assert_called_once()
+        mock_set.assert_called_once_with("tts.mode", "summary", quiet=True)
+        assert cli._voice_tts is True
 
 
 class TestEnableVoiceModeReal:

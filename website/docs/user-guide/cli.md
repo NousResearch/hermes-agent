@@ -112,6 +112,8 @@ Common examples:
 | `/skin` | Show or switch the active CLI skin |
 | `/voice on` | Enable CLI voice mode (press `Ctrl+B` to record) |
 | `/voice tts` | Toggle spoken playback for Hermes replies |
+| `/voice full` | Enable spoken replies and read them in full |
+| `/voice summary` | Enable spoken replies and summarize them before speaking |
 | `/reasoning high` | Increase reasoning effort |
 | `/title My Session` | Name the current session |
 

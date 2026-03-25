@@ -117,17 +117,43 @@ class TestHandleVoiceCommand:
         assert runner._voice_mode["123"] == "all"
 
     @pytest.mark.asyncio
+    async def test_voice_full(self, runner):
+        event = _make_event("/voice full")
+        adapter = SimpleNamespace(_auto_tts_disabled_chats=set())
+        runner.adapters[event.source.platform] = adapter
+        with patch("hermes_cli.config.set_config_value") as mock_set:
+            result = await runner._handle_voice_command(event)
+        mock_set.assert_called_once_with("tts.mode", "full", quiet=True)
+        assert runner._voice_mode["123"] == "all"
+        assert "full" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_voice_summary(self, runner):
+        event = _make_event("/voice summary")
+        adapter = SimpleNamespace(_auto_tts_disabled_chats=set())
+        runner.adapters[event.source.platform] = adapter
+        with patch("hermes_cli.config.set_config_value") as mock_set:
+            result = await runner._handle_voice_command(event)
+        mock_set.assert_called_once_with("tts.mode", "summary", quiet=True)
+        assert runner._voice_mode["123"] == "all"
+        assert "summary" in result.lower()
+
+    @pytest.mark.asyncio
     async def test_voice_status_off(self, runner):
         event = _make_event("/voice status")
-        result = await runner._handle_voice_command(event)
+        with patch.object(runner, "_get_global_voice_tts_mode", return_value="full"):
+            result = await runner._handle_voice_command(event)
         assert "off" in result.lower()
+        assert "speech mode: full" in result.lower()
 
     @pytest.mark.asyncio
     async def test_voice_status_on(self, runner):
         runner._voice_mode["123"] = "voice_only"
         event = _make_event("/voice status")
-        result = await runner._handle_voice_command(event)
+        with patch.object(runner, "_get_global_voice_tts_mode", return_value="summary"):
+            result = await runner._handle_voice_command(event)
         assert "voice reply" in result.lower()
+        assert "speech mode: summary" in result.lower()
 
     @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
@@ -354,8 +380,8 @@ class TestSendVoiceReply:
 
         tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
 
-        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+        with patch("tools.tts_tool.prepare_text_for_auto_tts", return_value="Hello world"), \
+             patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -370,7 +396,7 @@ class TestSendVoiceReply:
         event = _make_event()
 
         with patch("tools.tts_tool.text_to_speech_tool") as mock_tts, \
-             patch("tools.tts_tool._strip_markdown_for_tts", return_value=""):
+             patch("tools.tts_tool.prepare_text_for_auto_tts", return_value=""):
             await runner._send_voice_reply(event, "```code only```")
 
         mock_tts.assert_not_called()
@@ -382,8 +408,8 @@ class TestSendVoiceReply:
         runner.adapters[event.source.platform] = mock_adapter
         tts_result = json.dumps({"success": False, "error": "API error"})
 
-        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+        with patch("tools.tts_tool.prepare_text_for_auto_tts", return_value="Hello"), \
+             patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
              patch("os.path.isfile", return_value=False), \
              patch("os.makedirs"):
             await runner._send_voice_reply(event, "Hello")
@@ -393,11 +419,29 @@ class TestSendVoiceReply:
     @pytest.mark.asyncio
     async def test_exception_caught(self, runner):
         event = _make_event()
-        with patch("tools.tts_tool.text_to_speech_tool", side_effect=RuntimeError("boom")), \
-             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+        with patch("tools.tts_tool.prepare_text_for_auto_tts", return_value="Hello"), \
+             patch("tools.tts_tool.text_to_speech_tool", side_effect=RuntimeError("boom")), \
              patch("os.makedirs"):
             # Should not raise
             await runner._send_voice_reply(event, "Hello")
+
+    @pytest.mark.asyncio
+    async def test_summary_preparation_feeds_tts_text(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.prepare_text_for_auto_tts", return_value="Short summary") as mock_prepare, \
+             patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result) as mock_tts, \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Long detailed response")
+
+        mock_prepare.assert_called_once_with("Long detailed response")
+        assert mock_tts.call_args.kwargs["text"] == "Short summary"
 
 
 # =====================================================================

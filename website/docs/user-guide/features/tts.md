@@ -33,7 +33,14 @@ Convert text to speech with four providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
+  mode: "full"                  # "full" | "summary" for auto-spoken assistant replies
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
+  summary:
+    length: "2 sentences"       # target length when mode="summary"
+    provider: ""                # optional: override summary provider
+    model: ""                   # optional: override summary model
+    base_url: ""                # optional: direct OpenAI-compatible summary endpoint
+    api_key: ""                 # optional: API key for summary.base_url
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
   elevenlabs:
@@ -49,6 +56,8 @@ tts:
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+When `tts.mode` is set to `summary`, Hermes compresses auto-spoken assistant replies into short spoken copy before synthesis. `tts.summary.*` is its own config surface for TTS; if you leave those fields blank, Hermes falls back to the compression summary routing as a convenience.
 
 ### Telegram Voice Bubbles & ffmpeg
 

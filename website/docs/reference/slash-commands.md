@@ -49,7 +49,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/verbose` | Cycle tool progress display: off → new → all → verbose |
 | `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
 | `/skin` | Show or change the display skin/theme |
-| `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
+| `/voice [on\|off\|tts\|full\|summary\|status]` | Toggle CLI voice mode and spoken playback. `full` and `summary` enable spoken replies in the selected style. Recording uses `voice.record_key` (default: `Ctrl+B`). |
 
 ### Tools & Skills
 
@@ -112,7 +112,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, and session duration. |
 | `/insights [days]` | Show usage analytics. |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
-| `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
+| `/voice [on\|off\|tts\|full\|summary\|join\|channel\|leave\|status]` | Control spoken replies in chat. `full` and `summary` enable spoken replies in the selected style. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |

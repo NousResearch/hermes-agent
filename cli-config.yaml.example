@@ -605,6 +605,36 @@ platform_toolsets:
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================
+# Text-to-Speech (TTS)
+# =============================================================================
+# Used by the text_to_speech tool and automatic spoken replies in CLI/gateway
+# voice mode. `mode: "summary"` compresses automatic spoken replies before
+# synthesis; the explicit text_to_speech tool still speaks the full input.
+tts:
+  mode: "full"                 # "full" | "summary"
+  provider: "edge"             # "edge" | "elevenlabs" | "openai" | "neutts"
+  summary:
+    length: "2 sentences"      # target spoken summary length when mode="summary"
+    # provider: "openrouter"   # optional override just for TTS summaries
+    # model: "google/gemini-3-flash-preview"
+    # base_url: ""
+    # api_key: ""
+  edge:
+    voice: "en-US-AriaNeural"
+  elevenlabs:
+    voice_id: "pNInz6obpgDQGcFmaJgB"
+    model_id: "eleven_multilingual_v2"
+  openai:
+    model: "gpt-4o-mini-tts"
+    voice: "alloy"
+    base_url: "https://api.openai.com/v1"
+  neutts:
+    ref_audio: ""
+    ref_text: ""
+    model: "neuphonic/neutts-air-q4-gguf"
+    device: "cpu"
+
+# =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.

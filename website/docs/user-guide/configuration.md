@@ -1139,7 +1139,14 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 
 ```yaml
 tts:
+  mode: "full"                  # "full" | "summary" for automatic spoken replies
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
+  summary:
+    length: "2 sentences"       # target spoken summary length in summary mode
+    provider: ""                # optional override just for TTS summarization
+    model: ""                   # optional override just for TTS summarization
+    base_url: ""                # optional direct OpenAI-compatible summary endpoint
+    api_key: ""                 # optional API key for summary.base_url
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
   elevenlabs:
@@ -1157,6 +1164,7 @@ tts:
 ```
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
+`tts.summary.*` is dedicated to auto-spoken reply summarization; if left blank, Hermes falls back to the compression summary routing.
 
 ## Display Settings
 

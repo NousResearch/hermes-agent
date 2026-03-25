@@ -99,7 +99,7 @@ hermes gateway status --system         # Linux only: inspect the system service 
 | `/usage` | Show token usage for this session |
 | `/insights [days]` | Show usage insights and analytics |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
-| `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
+| `/voice [on\|off\|tts\|full\|summary\|join\|leave\|status]` | Control messaging voice replies, enable full/summary spoken reply styles, and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
 | `/background <prompt>` | Run a prompt in a separate background session |
 | `/reload-mcp` | Reload MCP servers from config |

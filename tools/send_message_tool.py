@@ -276,15 +276,21 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter
-    from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
+
+    try:
+        from gateway.platforms.telegram import TelegramAdapter
+        _telegram_max = TelegramAdapter.MAX_MESSAGE_LENGTH
+    except ImportError:
+        TelegramAdapter = None  # type: ignore[assignment,misc]
+        _telegram_max = 4096  # Telegram hard limit
 
     media_files = media_files or []
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
-        Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
+        Platform.TELEGRAM: _telegram_max,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }

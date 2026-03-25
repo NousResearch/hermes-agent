@@ -16,12 +16,28 @@ for the AI agent to access all capabilities.
 """
 
 # Export all tools for easy importing
-from .web_tools import (
-    web_search_tool,
-    web_extract_tool,
-    web_crawl_tool,
-    check_firecrawl_api_key
-)
+try:
+    from .web_tools import (
+        web_search_tool,
+        web_extract_tool,
+        web_crawl_tool,
+        check_firecrawl_api_key,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "firecrawl":
+        raise
+
+    def _missing_firecrawl(*args, **kwargs):
+        raise ModuleNotFoundError(
+            "firecrawl is not installed; web_tools are unavailable in this environment"
+        )
+
+    web_search_tool = _missing_firecrawl
+    web_extract_tool = _missing_firecrawl
+    web_crawl_tool = _missing_firecrawl
+
+    def check_firecrawl_api_key():
+        return False
 
 # Primary terminal tool (local/docker/singularity/modal/daytona/ssh)
 from .terminal_tool import (
@@ -45,10 +61,22 @@ from .mixture_of_agents_tool import (
     check_moa_requirements
 )
 
-from .image_generation_tool import (
-    image_generate_tool,
-    check_image_generation_requirements
-)
+try:
+    from .image_generation_tool import (
+        image_generate_tool,
+        check_image_generation_requirements,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "fal_client":
+        raise
+
+    def image_generate_tool(*args, **kwargs):
+        raise ModuleNotFoundError(
+            "fal_client is not installed; image generation tools are unavailable in this environment"
+        )
+
+    def check_image_generation_requirements():
+        return False
 
 from .skills_tool import (
     skills_list,
@@ -259,4 +287,3 @@ __all__ = [
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
 ]
-

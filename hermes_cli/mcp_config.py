@@ -10,6 +10,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 
 import asyncio
 import getpass
+import json
 import logging
 import os
 import re
@@ -25,6 +26,22 @@ from hermes_cli.config import (
     get_hermes_home,
 )
 from hermes_cli.colors import Colors, color
+from agent.security.admission import (
+    AdmissionStatus,
+    CandidateKind,
+    admission_store,
+    find_records,
+    load_quarantined_mcp_server,
+    load_latest_record,
+    mark_record_approved,
+    quarantine_mcp_server,
+    read_report,
+    reject_record,
+    requarantine_mcp_server,
+    revoke_record,
+    write_approved_json_snapshot,
+    verify_record_integrity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -327,14 +344,145 @@ def cmd_mcp_add(args):
         tool_count = len(tools)
         total = len(tools)
 
-    # ── Save ──────────────────────────────────────────────────────────
+    # ── Quarantine ────────────────────────────────────────────────────
 
-    server_config["enabled"] = True
-    _save_mcp_server(name, server_config)
+    record = quarantine_mcp_server(name, server_config, tools)
 
     print()
-    _success(f"Saved '{name}' to ~/.hermes/config.yaml ({tool_count}/{total} tools enabled)")
-    _info("Start a new session to use these tools.")
+    _success(f"Quarantined '{name}' ({tool_count}/{total} tools selected)")
+    _info(f"Inspection report: {record.report_path}")
+    _info(f"Approve when ready: hermes mcp approve {name}")
+
+
+def cmd_mcp_approve(args):
+    """Approve a quarantined MCP server and write it into active config."""
+    name = args.name
+    try:
+        record, payload = load_quarantined_mcp_server(name)
+    except FileNotFoundError:
+        _error(f"No quarantined MCP server named '{name}'")
+        return
+    except Exception as exc:
+        _error(f"Failed to load quarantine record: {exc}")
+        return
+
+    if not verify_record_integrity(record):
+        _error(f"Quarantine integrity check failed for '{name}'")
+        _info("Review the quarantined artifact and re-run hermes mcp add if needed.")
+        return
+
+    server_config = dict(payload.get("server_config", {}))
+    server_config["enabled"] = False
+    _save_mcp_server(name, server_config)
+    approved_snapshot = write_approved_json_snapshot(
+        record,
+        "server-config.json",
+        {
+            "name": name,
+            "server_config": server_config,
+            "tools": payload.get("tools", []),
+        },
+    )
+    mark_record_approved(
+        record,
+        approved_path=str(approved_snapshot),
+        integrity_path=approved_snapshot,
+    )
+
+    _success(f"Approved '{name}' and saved it to ~/.hermes/config.yaml")
+    _info("It remains disabled until you explicitly enable or configure it.")
+    _info(f"Enable later with: hermes mcp configure {name}")
+
+
+def cmd_mcp_inspect(args):
+    """Show the stored inspection report for a quarantined or revised MCP server."""
+    name = args.name
+    try:
+        record = load_latest_record(CandidateKind.MCP_SERVER, name)
+        print()
+        print(read_report(record))
+        if record.notes:
+            _info("Notes:")
+            for note in record.notes:
+                _info(f"  - {note}")
+    except FileNotFoundError:
+        _error(f"No admission record found for MCP server '{name}'")
+    except Exception as exc:
+        _error(f"Failed to inspect '{name}': {exc}")
+
+
+def cmd_mcp_reject(args):
+    """Reject the latest quarantined MCP server record."""
+    name = args.name
+    try:
+        record = load_latest_record(
+            CandidateKind.MCP_SERVER,
+            name,
+            statuses=(AdmissionStatus.QUARANTINED,),
+        )
+    except FileNotFoundError:
+        _error(f"No quarantined MCP server named '{name}'")
+        return
+    reject_record(record, note="user rejected candidate")
+    _success(f"Rejected quarantined MCP server '{name}'")
+
+
+def cmd_mcp_quarantine_list(args=None):
+    """List quarantined, rejected, and revoked MCP admission records."""
+    records = find_records(CandidateKind.MCP_SERVER)
+    if not records:
+        print()
+        _info("No MCP admission records.")
+        print()
+        return
+    print()
+    print(color("  MCP Admission Records:", Colors.CYAN + Colors.BOLD))
+    print()
+    print(f"  {'Name':<16} {'Status':<14} {'Updated':<22} {'Record ID':<36}")
+    print(f"  {'─' * 16} {'─' * 14} {'─' * 22} {'─' * 36}")
+    for record in records:
+        print(
+            f"  {record.source.display_name:<16} "
+            f"{record.status:<14} "
+            f"{record.updated_at.isoformat(timespec='seconds'):<22} "
+            f"{record.record_id:<36}"
+        )
+    print()
+
+
+def audit_mcp_integrity() -> list[str]:
+    """Revoke and re-quarantine approved MCP servers that drift from their approved snapshot."""
+    messages: list[str] = []
+    store = admission_store()
+    servers = _get_mcp_servers()
+    for record in store.list_records():
+        if record.kind != "mcp_server" or record.status != "approved" or not record.approved_path:
+            continue
+        snapshot_path = Path(record.approved_path)
+        if not snapshot_path.exists():
+            revoke_record(record, note="approved MCP snapshot missing")
+            messages.append(f"Revoked {record.source.display_name}: approved snapshot missing")
+            continue
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        name = snapshot.get("name") or record.source.display_name
+        current = servers.get(name)
+        approved_config = snapshot.get("server_config", {})
+        if current != approved_config:
+            if current is not None:
+                requarantine_mcp_server(
+                    name,
+                    {
+                        "name": name,
+                        "server_config": current,
+                        "tools": snapshot.get("tools", []),
+                    },
+                    note="active MCP config drifted from approved snapshot",
+                    previous_record=record,
+                )
+                _remove_mcp_server(name)
+            revoke_record(record, note="active MCP config drifted from approved snapshot")
+            messages.append(f"Revoked {name}: configuration drift detected")
+    return messages
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
@@ -355,22 +503,34 @@ def cmd_mcp_remove(args):
         _info("Cancelled.")
         return
 
+    removed_cfg = existing.get(name, {})
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
 
     # Clean up OAuth tokens if they exist
+    token_file = get_hermes_home() / "mcp-tokens" / f"{name}.json"
+    cleaned = False
+    if removed_cfg.get("auth") == "oauth" and token_file.exists():
+        token_file.unlink()
+        cleaned = True
+
     try:
         from tools.mcp_oauth import remove_oauth_tokens
+
         remove_oauth_tokens(name)
-        _success("Cleaned up OAuth tokens")
+        cleaned = True or cleaned
     except Exception:
         pass
+
+    if cleaned:
+        _success("Cleaned up OAuth tokens")
 
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────
 
 def cmd_mcp_list(args=None):
     """List all configured MCP servers."""
+    audit_mcp_integrity()
     servers = _get_mcp_servers()
 
     if not servers:
@@ -610,6 +770,10 @@ def mcp_command(args):
 
     handlers = {
         "add": cmd_mcp_add,
+        "approve": cmd_mcp_approve,
+        "inspect": cmd_mcp_inspect,
+        "reject": cmd_mcp_reject,
+        "quarantine-list": cmd_mcp_quarantine_list,
         "remove": cmd_mcp_remove,
         "rm": cmd_mcp_remove,
         "list": cmd_mcp_list,
@@ -628,6 +792,10 @@ def mcp_command(args):
         print(color("  Commands:", Colors.CYAN))
         _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
+        _info("hermes mcp approve <name>                     Approve a quarantined server")
+        _info("hermes mcp inspect <name>                     Show admission report")
+        _info("hermes mcp reject <name>                      Reject a quarantined server")
+        _info("hermes mcp quarantine-list                    List admission records")
         _info("hermes mcp remove <name>                      Remove a server")
         _info("hermes mcp list                               List servers")
         _info("hermes mcp test <name>                        Test connection")

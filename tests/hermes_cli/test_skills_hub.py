@@ -3,7 +3,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-from hermes_cli.skills_hub import do_check, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_approve, do_audit, do_check, do_install, do_inspect, do_list, do_quarantine_list, do_reject, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -20,6 +20,7 @@ def hub_env(monkeypatch, tmp_path):
     import tools.skills_hub as hub
 
     hub_dir = tmp_path / "skills" / ".hub"
+    original_lock_file_cls = hub.HubLockFile
     monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
     monkeypatch.setattr(hub, "HUB_DIR", hub_dir)
     monkeypatch.setattr(hub, "LOCK_FILE", hub_dir / "lock.json")
@@ -27,6 +28,8 @@ def hub_env(monkeypatch, tmp_path):
     monkeypatch.setattr(hub, "AUDIT_LOG", hub_dir / "audit.log")
     monkeypatch.setattr(hub, "TAPS_FILE", hub_dir / "taps.json")
     monkeypatch.setattr(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache")
+    monkeypatch.setattr(hub, "HubLockFile", lambda: original_lock_file_cls(hub.LOCK_FILE))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     return hub_dir
 
@@ -177,3 +180,219 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_do_install_quarantines_third_party_skill(monkeypatch, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    class Meta:
+        extra = {}
+
+    bundle = hub.SkillBundle(
+        name="demo-skill",
+        files={"SKILL.md": "# Demo\n", "script.py": "print('hi')\n"},
+        source="github",
+        identifier="github/example/demo-skill",
+        trust_level="community",
+        metadata={},
+    )
+    result = guard.ScanResult(
+        skill_name="demo-skill",
+        source="github/example/demo-skill",
+        trust_level="community",
+        verdict="safe",
+        findings=[],
+        scanned_at="2026-03-25T00:00:00Z",
+        summary="demo-skill: safe",
+    )
+
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: [])
+    monkeypatch.setattr("hermes_cli.skills_hub._resolve_source_meta_and_bundle", lambda identifier, sources: (Meta(), bundle, None))
+    monkeypatch.setattr(guard, "scan_skill", lambda q_path, source=None: result)
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (True, "ok"))
+
+    do_install("github/example/demo-skill", console=console, skip_confirm=True)
+    output = sink.getvalue()
+
+    assert "Quarantined:" in output
+    assert "approve demo-skill" in output
+    assert (hub.QUARANTINE_DIR / "demo-skill" / ".hermes-admission.json").exists()
+
+
+def test_do_inspect_and_reject_quarantined_skill(monkeypatch, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    class Meta:
+        extra = {}
+
+    bundle = hub.SkillBundle(
+        name="demo-skill",
+        files={"SKILL.md": "# Demo\n"},
+        source="github",
+        identifier="github/example/demo-skill",
+        trust_level="community",
+        metadata={},
+    )
+    result = guard.ScanResult(
+        skill_name="demo-skill",
+        source="github/example/demo-skill",
+        trust_level="community",
+        verdict="safe",
+        findings=[],
+        scanned_at="2026-03-25T00:00:00Z",
+        summary="demo-skill: safe",
+    )
+
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: [])
+    monkeypatch.setattr("hermes_cli.skills_hub._resolve_source_meta_and_bundle", lambda identifier, sources: (Meta(), bundle, None))
+    monkeypatch.setattr(guard, "scan_skill", lambda q_path, source=None: result)
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (True, "ok"))
+
+    do_install("github/example/demo-skill", console=console, skip_confirm=True)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect("demo-skill", console=console)
+    output = sink.getvalue()
+    assert "Admission Report: demo-skill" in output
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_quarantine_list(console=console)
+    output = sink.getvalue()
+    assert "demo-skill" in output
+    assert "quarantined" in output
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_reject("demo-skill", console=console)
+    output = sink.getvalue()
+    assert "Rejected:" in output
+
+
+def test_do_approve_installs_quarantined_skill(monkeypatch, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    class Meta:
+        extra = {}
+
+    bundle = hub.SkillBundle(
+        name="demo-skill",
+        files={"SKILL.md": "# Demo\n"},
+        source="github",
+        identifier="github/example/demo-skill",
+        trust_level="community",
+        metadata={},
+    )
+    result = guard.ScanResult(
+        skill_name="demo-skill",
+        source="github/example/demo-skill",
+        trust_level="community",
+        verdict="safe",
+        findings=[],
+        scanned_at="2026-03-25T00:00:00Z",
+        summary="demo-skill: safe",
+    )
+
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda _auth: [])
+    monkeypatch.setattr("hermes_cli.skills_hub._resolve_source_meta_and_bundle", lambda identifier, sources: (Meta(), bundle, None))
+    monkeypatch.setattr(guard, "scan_skill", lambda q_path, source=None: result)
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (True, "ok"))
+
+    pre_sink = StringIO()
+    pre_console = Console(file=pre_sink, force_terminal=False, color_system=None)
+    do_install("github/example/demo-skill", console=pre_console, skip_confirm=True)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_approve("demo-skill", console=console)
+    output = sink.getvalue()
+
+    assert "Installed:" in output
+    assert (hub.SKILLS_DIR / "demo-skill" / "SKILL.md").exists()
+
+
+def test_do_audit_revokes_drifted_skill(monkeypatch, hub_env):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+    from agent.security.admission import (
+        AdmissionRecord,
+        CandidateKind,
+        CandidateSource,
+        mark_record_approved,
+    )
+
+    result = guard.ScanResult(
+        skill_name="demo-skill",
+        source="github/example/demo-skill",
+        trust_level="community",
+        verdict="safe",
+        findings=[],
+        scanned_at="2026-03-25T00:00:00Z",
+        summary="demo-skill: safe",
+    )
+
+    monkeypatch.setattr(guard, "scan_skill", lambda q_path, source=None: result)
+    installed_dir = hub.SKILLS_DIR / "demo-skill"
+    installed_dir.mkdir(parents=True, exist_ok=True)
+    installed = installed_dir / "SKILL.md"
+    installed.write_text("# Demo\n", encoding="utf-8")
+
+    class LockShim:
+        def __init__(self):
+            self._installed = {
+                "demo-skill": {
+                    "name": "demo-skill",
+                    "source": "github",
+                    "identifier": "github/example/demo-skill",
+                    "trust_level": "community",
+                    "scan_verdict": "safe",
+                    "content_hash": "sha256:test",
+                    "install_path": "demo-skill",
+                    "files": ["SKILL.md"],
+                    "metadata": {},
+                }
+            }
+
+        def list_installed(self):
+            return list(self._installed.values())
+
+        def get_installed(self, name):
+            return self._installed.get(name)
+
+        def record_uninstall(self, name):
+            self._installed.pop(name, None)
+
+    monkeypatch.setattr(hub, "HubLockFile", LockShim)
+
+    record = AdmissionRecord(
+        record_id="skill-demo-skill",
+        kind=CandidateKind.SKILL,
+        source=CandidateSource(
+            uri="github/example/demo-skill",
+            display_name="demo-skill",
+            installer="test",
+        ),
+    )
+    mark_record_approved(record, approved_path=str(installed_dir), integrity_path=installed_dir)
+    installed.write_text("# Tampered\n", encoding="utf-8")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_audit("demo-skill", console=console)
+    output = sink.getvalue()
+
+    assert "Revoked:" in output
+    assert not any(".hub" not in path.parts for path in hub.SKILLS_DIR.rglob("SKILL.md"))

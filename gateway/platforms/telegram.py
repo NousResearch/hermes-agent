@@ -115,6 +115,7 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -442,6 +443,26 @@ class TelegramAdapter(BasePlatformAdapter):
         self._token_lock_identity = None
         logger.info("[%s] Disconnected from Telegram", self.name)
 
+    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
+        """Determine if this message chunk should thread to the original message.
+
+        Args:
+            reply_to: The original message ID to reply to
+            chunk_index: Index of this chunk (0 = first chunk)
+
+        Returns:
+            True if this chunk should be threaded to the original message
+        """
+        if not reply_to:
+            return False
+        mode = self._reply_to_mode
+        if mode == "off":
+            return False
+        elif mode == "all":
+            return True
+        else:  # "first" (default)
+            return chunk_index == 0
+
     async def send(
         self,
         chat_id: str,
@@ -475,6 +496,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 _NetErr = OSError  # type: ignore[misc,assignment]
 
             for i, chunk in enumerate(chunks):
+                should_thread = self._should_thread_reply(reply_to, i)
+                reply_to_id = int(reply_to) if should_thread else None
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -484,7 +508,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                                reply_to_message_id=reply_to_id,
                                 message_thread_id=int(thread_id) if thread_id else None,
                             )
                         except Exception as md_error:
@@ -496,7 +520,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
-                                    reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
+                                    reply_to_message_id=reply_to_id,
                                     message_thread_id=int(thread_id) if thread_id else None,
                                 )
                             else:

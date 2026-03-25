@@ -946,3 +946,77 @@ class TestFallbackPreservesThreadContext:
 
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "important screenshot" in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
+# Thread parent message context injection tests
+# ---------------------------------------------------------------------------
+
+class TestThreadParentContext:
+    """Tests for thread context injection in _handle_slack_message."""
+
+    @pytest.fixture
+    def adapter(self):
+        _ensure_slack_mock()
+        from gateway.platforms.slack import SlackAdapter
+        config = PlatformConfig(enabled=True, token="xoxb-test")
+        a = SlackAdapter(config)
+        a._bot_user_id = "UBOTID"
+        a._app = MagicMock()
+        a.handle_message = AsyncMock()
+        a._resolve_user_name = AsyncMock(return_value="Alice")
+        a._add_reaction = AsyncMock()
+        a._remove_reaction = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_thread_parent_prepended_to_text(self, adapter):
+        """Parent message text is prepended when bot receives a thread reply."""
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {"ts": "1000.000", "user": "U123", "text": "Original question"},
+                {"ts": "1001.000", "user": "UBOTID", "text": "Bot reply", "bot_id": "BBOT"},
+                {"ts": "1002.000", "user": "U123", "text": "Follow up question"},
+            ]
+        })
+
+        event = {
+            "type": "message", "channel": "C123", "user": "U123",
+            "text": f"<@UBOTID> Follow up question",
+            "ts": "1002.000", "thread_ts": "1000.000",
+            "channel_type": "channel",
+        }
+        await adapter._handle_slack_message(event)
+
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert "[Thread context:" in dispatched.text
+        assert "thread parent" in dispatched.text
+        assert "Original question" in dispatched.text
+
+    @pytest.mark.asyncio
+    async def test_thread_fetch_failure_does_not_crash(self, adapter):
+        """API error during thread fetch is silently ignored."""
+        adapter._app.client.conversations_replies = AsyncMock(side_effect=Exception("API error"))
+
+        event = {
+            "type": "message", "channel": "C123", "user": "U123",
+            "text": f"<@UBOTID> Follow up",
+            "ts": "1002.000", "thread_ts": "1000.000",
+            "channel_type": "channel",
+        }
+        await adapter._handle_slack_message(event)
+        assert adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_no_thread_fetch(self, adapter):
+        """No thread fetch for top-level messages (ts == thread_ts)."""
+        adapter._app.client.conversations_replies = AsyncMock()
+
+        event = {
+            "type": "message", "channel": "C123", "user": "U123",
+            "text": f"<@UBOTID> Hello",
+            "ts": "1000.000", "thread_ts": "1000.000",
+            "channel_type": "channel",
+        }
+        await adapter._handle_slack_message(event)
+        adapter._app.client.conversations_replies.assert_not_called()

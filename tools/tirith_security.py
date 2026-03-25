@@ -520,13 +520,6 @@ def ensure_installed(*, log_failures: bool = True):
     """
     global _resolved_path, _install_thread, _install_failure_reason
 
-    # Allow safe read-only HTTP requests (e.g., curl GET)
-    if _is_safe_readonly_http(command):
-        return {
-            "action": "allow",
-            "findings": [],
-            "summary": "safe read-only http request",
-        }
 
     cfg = _load_security_config()
     if not cfg["tirith_enabled"]:
@@ -604,6 +597,10 @@ def ensure_installed(*, log_failures: bool = True):
 # ---------------------------------------------------------------------------
 # Main API
 # ---------------------------------------------------------------------------
+_MAX_FINDINGS = 50
+_MAX_SUMMARY_LEN = 500
+
+# ---------------------------------------------------------------------------
 
 def _is_safe_readonly_http(command: str) -> bool:
     cmd = command.strip().lower()
@@ -611,13 +608,13 @@ def _is_safe_readonly_http(command: str) -> bool:
     return (
         cmd.startswith("curl ")
         and ("http://" in cmd or "https://" in cmd)
-        and not any(x in cmd for x in [
+        and not any(cmd.split().count(x) for x in [
             "-x", "--request",
         ])
-        and not any(x in cmd for x in [
+        and not any(cmd.split().count(x) for x in [
             "--data", "-d", "--upload-file", "-t"
         ])
-        and not any(x in cmd for x in ["|", ">", ">>"])
+        and not any(cmd.split().count(x) for x in ["|", ">", ">>"])
     )
 
 def check_command_security(command: str) -> dict:
@@ -638,6 +635,8 @@ def check_command_security(command: str) -> dict:
             "findings": [],
             "summary": "safe read-only http request",
         }
+
+
 
     cfg = _load_security_config()
 

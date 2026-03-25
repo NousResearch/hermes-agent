@@ -2394,7 +2394,8 @@ class GatewayRunner:
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
-                session_key=session_key
+                session_key=session_key,
+                event_message_id=event.message_id,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -4842,6 +4843,7 @@ class GatewayRunner:
         session_id: str,
         session_key: str = None,
         _interrupt_depth: int = 0,
+        event_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -4978,7 +4980,12 @@ class GatewayRunner:
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited
-        _progress_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        # For DM top-level Slack messages, source.thread_id is None but the
+        # final reply will be threaded under the original message via reply_to.
+        # Use event_message_id as fallback so progress messages land in the
+        # same thread as the final response instead of going to the DM root.
+        _progress_thread_id = source.thread_id or event_message_id
+        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():
             if not progress_queue:
@@ -5093,7 +5100,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -5174,7 +5181,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
                         )
                         _stream_delta_cb = _stream_consumer.on_delta
                         stream_consumer_holder[0] = _stream_consumer

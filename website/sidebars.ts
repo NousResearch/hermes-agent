@@ -96,6 +96,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/acp',
             'user-guide/features/mcp',
             'user-guide/features/honcho',
+            'user-guide/features/mem0',
             'user-guide/features/provider-routing',
             'user-guide/features/fallback-providers',
           ],

@@ -2,27 +2,38 @@
 """
 Video Generation Tools Module
 
-Generates short MP4 videos from text prompts using FAL.ai video models.
+Generates short MP4 videos from text prompts (or images) using FAL.ai video models.
 Follows the same pattern as image_generation_tool.py.
 
 Available tools:
-- video_generate_tool: Generate video from a text prompt
+- video_generate_tool: Generate video from a text prompt or image URL
 
 Supported models:
-- kling  → fal-ai/kling-video/v2/master/text-to-video  (default)
-- luma   → fal-ai/luma-dream-machine
-- minimax → fal-ai/minimax/video-01-live
+- kling    → fal-ai/kling-video/v1.5/pro          (default, text+image-to-video)
+- luma     → fal-ai/luma-dream-machine             (text+image-to-video)
+- minimax  → fal-ai/minimax/video-01-live          (text+image-to-video)
+- hunyuan  → fal-ai/hunyuan-video                  (text-to-video, high quality)
+- veo2     → fal-ai/veo2                           (text-to-video, up to 4K)
+- ltx      → fal-ai/ltx-video-v095/multiconditioning (text+image-to-video)
 
 Output: local MP4 file path (downloaded from FAL.ai CDN).
 
 Usage:
     from tools.video_generation_tool import video_generate_tool
 
+    # Text-to-video
     result = video_generate_tool(
         prompt="A cat walking through a neon-lit Tokyo street at night",
         model="kling",
         duration=5,
         aspect_ratio="landscape",
+    )
+
+    # Image-to-video
+    result = video_generate_tool(
+        prompt="Make it move, gentle waves",
+        model="kling",
+        image_url="https://cdn.fal.ai/some-image.png",
     )
 """
 
@@ -44,10 +55,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 MODEL_MAP = {
-    "kling":   "fal-ai/kling-video/v2/master/text-to-video",
+    "kling":   "fal-ai/kling-video/v1.5/pro",
     "luma":    "fal-ai/luma-dream-machine",
     "minimax": "fal-ai/minimax/video-01-live",
+    "hunyuan": "fal-ai/hunyuan-video",
+    "veo2":    "fal-ai/veo2",
+    "ltx":     "fal-ai/ltx-video-v095/multiconditioning",
 }
+
+# Models that support image_url as input
+IMAGE_TO_VIDEO_MODELS = {"kling", "luma", "minimax", "ltx"}
 
 DEFAULT_MODEL_KEY = "kling"
 
@@ -56,19 +73,11 @@ DEFAULT_MODEL_KEY = "kling"
 # ---------------------------------------------------------------------------
 
 # Aspect ratio display → API value mappings per model family
-_KLING_ASPECT = {
+_ASPECT_MAP = {
     "landscape": "16:9",
     "portrait":  "9:16",
     "square":    "1:1",
 }
-
-_LUMA_ASPECT = {
-    "landscape": "16:9",
-    "portrait":  "9:16",
-    "square":    "1:1",
-}
-
-# MiniMax video-01-live accepts prompt only (no aspect_ratio param)
 
 VALID_DURATIONS = [5, 10]          # seconds; Kling supports both, others default to 5
 VALID_ASPECT_RATIOS = ["landscape", "portrait", "square"]
@@ -87,23 +96,41 @@ _debug = DebugSession("video_tools", env_var="VIDEO_TOOLS_DEBUG")
 # ---------------------------------------------------------------------------
 
 def _build_arguments(model_key: str, prompt: str, duration: int, aspect_ratio: str,
-                     negative_prompt: Optional[str]) -> dict:
+                     negative_prompt: Optional[str], image_url: Optional[str]) -> dict:
     """Build the FAL.ai arguments dict for the given model."""
     args: dict = {"prompt": prompt.strip()}
 
     if model_key == "kling":
         args["duration"] = str(duration)          # Kling expects string "5" / "10"
-        args["aspect_ratio"] = _KLING_ASPECT[aspect_ratio]
+        args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
         if negative_prompt:
             args["negative_prompt"] = negative_prompt
+        if image_url:
+            args["image_url"] = image_url
 
     elif model_key == "luma":
-        args["aspect_ratio"] = _LUMA_ASPECT[aspect_ratio]
+        args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
         args["loop"] = False
-        # Luma doesn't support duration parameter
+        if image_url:
+            args["image_url"] = image_url
 
     elif model_key == "minimax":
-        pass  # minimax/video-01-live only needs prompt
+        if image_url:
+            args["image_url"] = image_url
+
+    elif model_key == "hunyuan":
+        args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
+        # hunyuan is text-to-video only
+
+    elif model_key == "veo2":
+        args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
+        args["duration"] = str(duration)
+        # veo2 is text-to-video only
+
+    elif model_key == "ltx":
+        args["aspect_ratio"] = _ASPECT_MAP[aspect_ratio]
+        if image_url:
+            args["image_url"] = image_url
 
     return args
 
@@ -161,27 +188,30 @@ def video_generate_tool(
     duration: int = DEFAULT_DURATION,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     negative_prompt: Optional[str] = None,
+    image_url: Optional[str] = None,
 ) -> str:
     """
-    Generate a short video from a text prompt using FAL.ai.
+    Generate a short video from a text prompt (or image) using FAL.ai.
 
     Uses fal_client.submit() (sync) to avoid event-loop lifecycle issues
     in the gateway thread-pool pattern — same reason as image_generation_tool.
 
     Args:
-        prompt:          Text description of the desired video.
-        model:           "kling" (default), "luma", or "minimax".
+        prompt:          Text description / motion description for the video.
+        model:           "kling" (default), "luma", "minimax", "hunyuan", "veo2", "ltx".
         duration:        Video length in seconds — 5 (default) or 10.
-                         Only Kling supports 10s; others use 5s.
         aspect_ratio:    "landscape" (16:9, default), "portrait" (9:16), "square" (1:1).
-        negative_prompt: Things to avoid in the video (Kling only).
+        negative_prompt: Things to avoid in the video (kling only).
+        image_url:       Image URL for image-to-video. Supported by: kling, luma, minimax, ltx.
+                         Pass the URL returned by image_generate to animate a still image.
 
     Returns:
         JSON string:
         {
             "success": bool,
-            "video_path": str | null,   # local temp file path, ready for send_message
+            "video_path": str | null,   # local temp file path
             "video_url":  str | null,   # original CDN URL
+            "media_tag":  str | null,   # MEDIA:<path> — include in response for delivery
             "model": str,
             "duration_seconds": int
         }
@@ -192,6 +222,7 @@ def video_generate_tool(
         "model": model,
         "duration": duration,
         "aspect_ratio": aspect_ratio,
+        "image_url": image_url,
         "error": None,
         "success": False,
     }
@@ -225,7 +256,7 @@ def video_generate_tool(
         aspect_key = DEFAULT_ASPECT_RATIO
 
     fal_model_id = MODEL_MAP[model_key]
-    arguments = _build_arguments(model_key, prompt, duration, aspect_key, negative_prompt)
+    arguments = _build_arguments(model_key, prompt, duration, aspect_key, negative_prompt, image_url)
 
     logger.info("Generating video | model=%s | duration=%ss | aspect=%s", model_key, duration, aspect_key)
     logger.info("Prompt: %s", prompt[:120])
@@ -293,11 +324,14 @@ from tools.registry import registry  # noqa: E402
 VIDEO_GENERATE_SCHEMA = {
     "name": "video_generate",
     "description": (
-        "Generate a short MP4 video from a text prompt using FAL.ai AI video models. "
+        "Generate a short MP4 video from a text prompt or image using FAL.ai video models. "
+        "Pass image_url (from image_generate) to animate a still image. "
         "Returns a media_tag (MEDIA:<path>) — include it in your response to deliver the video "
         "as a native video message (Telegram inline playback, Discord/Slack attachment). "
         "Generation takes 30–120 seconds — warn the user before starting. "
-        "Models: 'kling' (default, best quality, supports 10s), 'luma' (cinematic), 'minimax' (fast)."
+        "Models: 'kling' (default, image+text), 'luma' (cinematic, image+text), "
+        "'minimax' (image+text), 'hunyuan' (high quality, text only), "
+        "'veo2' (4K, text only), 'ltx' (fast, image+text)."
     ),
     "parameters": {
         "type": "object",
@@ -308,8 +342,8 @@ VIDEO_GENERATE_SCHEMA = {
             },
             "model": {
                 "type": "string",
-                "enum": ["kling", "luma", "minimax"],
-                "description": "Video generation model. Default: 'kling'.",
+                "enum": ["kling", "luma", "minimax", "hunyuan", "veo2", "ltx"],
+                "description": "Video generation model. Default: 'kling'. For image-to-video use kling/luma/minimax/ltx.",
                 "default": "kling",
             },
             "duration": {
@@ -328,6 +362,10 @@ VIDEO_GENERATE_SCHEMA = {
                 "type": "string",
                 "description": "Things to avoid in the video (supported by kling only). Optional.",
             },
+            "image_url": {
+                "type": "string",
+                "description": "Image URL to animate (image-to-video). Supported by kling, luma, minimax, ltx. Pass the URL returned by image_generate. Optional.",
+            },
         },
         "required": ["prompt"],
     },
@@ -344,6 +382,7 @@ def _handle_video_generate(args, **kw):
         duration=int(args.get("duration", DEFAULT_DURATION)),
         aspect_ratio=args.get("aspect_ratio", DEFAULT_ASPECT_RATIO),
         negative_prompt=args.get("negative_prompt"),
+        image_url=args.get("image_url"),
     )
 
 

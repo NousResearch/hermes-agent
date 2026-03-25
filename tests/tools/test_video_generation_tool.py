@@ -70,37 +70,63 @@ class TestBuildArguments:
         self._build = _build_arguments
 
     def test_kling_includes_duration_and_aspect(self):
-        args = self._build("kling", "a dog running", 5, "landscape", None)
+        args = self._build("kling", "a dog running", 5, "landscape", None, None)
         assert args["prompt"] == "a dog running"
         assert args["duration"] == "5"
         assert args["aspect_ratio"] == "16:9"
         assert "negative_prompt" not in args
 
     def test_kling_10s_duration(self):
-        args = self._build("kling", "sunset timelapse", 10, "portrait", None)
+        args = self._build("kling", "sunset timelapse", 10, "portrait", None, None)
         assert args["duration"] == "10"
         assert args["aspect_ratio"] == "9:16"
 
     def test_kling_negative_prompt_included(self):
-        args = self._build("kling", "a scene", 5, "square", "blurry, shaky")
+        args = self._build("kling", "a scene", 5, "square", "blurry, shaky", None)
         assert args["negative_prompt"] == "blurry, shaky"
         assert args["aspect_ratio"] == "1:1"
 
     def test_luma_has_aspect_and_loop(self):
-        args = self._build("luma", "a galaxy", 5, "landscape", None)
+        args = self._build("luma", "a galaxy", 5, "landscape", None, None)
         assert args["aspect_ratio"] == "16:9"
         assert args["loop"] is False
         assert "duration" not in args
 
     def test_minimax_prompt_only(self):
-        args = self._build("minimax", "waves crashing", 5, "landscape", None)
+        args = self._build("minimax", "waves crashing", 5, "landscape", None, None)
         assert args["prompt"] == "waves crashing"
         assert "aspect_ratio" not in args
         assert "duration" not in args
 
     def test_prompt_stripped(self):
-        args = self._build("kling", "  spaced prompt  ", 5, "landscape", None)
+        args = self._build("kling", "  spaced prompt  ", 5, "landscape", None, None)
         assert args["prompt"] == "spaced prompt"
+
+    def test_kling_image_url_included(self):
+        args = self._build("kling", "make it move", 5, "landscape", None, "https://cdn.fal.ai/img.png")
+        assert args["image_url"] == "https://cdn.fal.ai/img.png"
+
+    def test_luma_image_url_included(self):
+        args = self._build("luma", "ocean waves", 5, "landscape", None, "https://cdn.fal.ai/img.png")
+        assert args["image_url"] == "https://cdn.fal.ai/img.png"
+
+    def test_minimax_image_url_included(self):
+        args = self._build("minimax", "gentle motion", 5, "landscape", None, "https://cdn.fal.ai/img.png")
+        assert args["image_url"] == "https://cdn.fal.ai/img.png"
+
+    def test_hunyuan_no_image_url(self):
+        args = self._build("hunyuan", "a galaxy", 5, "landscape", None, "https://cdn.fal.ai/img.png")
+        assert "image_url" not in args
+        assert args["aspect_ratio"] == "16:9"
+
+    def test_veo2_no_image_url(self):
+        args = self._build("veo2", "a volcano", 5, "landscape", None, "https://cdn.fal.ai/img.png")
+        assert "image_url" not in args
+        assert args["aspect_ratio"] == "16:9"
+
+    def test_ltx_image_url_included(self):
+        args = self._build("ltx", "slow zoom", 5, "landscape", None, "https://cdn.fal.ai/img.png")
+        assert args["image_url"] == "https://cdn.fal.ai/img.png"
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +272,7 @@ class TestVideoGenerateToolSuccess:
     def test_fal_submit_called_with_kling_model_id(self):
         _, fake_fal = self._run(model="kling")
         call_args = fake_fal.submit.call_args
-        assert call_args[0][0] == "fal-ai/kling-video/v2/master/text-to-video"
+        assert call_args[0][0] == "fal-ai/kling-video/v1.5/pro"
 
     def test_fal_submit_called_with_luma_model_id(self):
         _, fake_fal = self._run(model="luma")
@@ -371,7 +397,13 @@ class TestRegistryRegistration:
         import tools.video_generation_tool  # noqa: F401
         schema = registry._tools["video_generate"].schema
         model_enum = schema["parameters"]["properties"]["model"]["enum"]
-        assert set(model_enum) == {"kling", "luma", "minimax"}
+        assert set(model_enum) == {"kling", "luma", "minimax", "hunyuan", "veo2", "ltx"}
+
+    def test_schema_has_image_url_param(self):
+        from tools.registry import registry
+        import tools.video_generation_tool  # noqa: F401
+        schema = registry._tools["video_generate"].schema
+        assert "image_url" in schema["parameters"]["properties"]
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +478,13 @@ class TestHandleVideoGenerate:
         assert result["success"] is True
         assert result["model"] == "kling"
         assert result["duration_seconds"] == 5
+
+    def test_image_url_forwarded(self):
+        img_url = "https://cdn.fal.ai/image.png"
+        result, fake_fal = self._dispatch({"prompt": "make it move", "image_url": img_url})
+        assert result["success"] is True
+        call_kwargs = fake_fal.submit.call_args[1]["arguments"]
+        assert call_kwargs["image_url"] == img_url
 
     def cleanup_paths(self, result):
         path = result.get("video_path")

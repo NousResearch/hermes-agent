@@ -649,7 +649,8 @@ def format_token_count_compact(value: int) -> str:
                 text = f"{scaled:.1f}"
             else:
                 text = f"{scaled:.0f}"
-            text = text.rstrip("0").rstrip(".")
+            if "." in text:
+                text = text.rstrip("0").rstrip(".")
             return f"{sign}{text}{suffix}"
 
     return f"{value:,}"

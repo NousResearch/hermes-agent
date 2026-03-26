@@ -513,6 +513,10 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
+    if getattr(args, "source", None):
+        os.environ["HERMES_SESSION_SOURCE"] = args.source
+
     # Import and run the CLI
     from cli import main as cli_main
     
@@ -3170,6 +3174,11 @@ For more help on a command:
         default=False,
         help="Include the session ID in the agent's system prompt"
     )
+    chat_parser.add_argument(
+        "--source",
+        default=None,
+        help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists."
+    )
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
@@ -3868,8 +3877,12 @@ For more help on a command:
 
         action = args.sessions_action
 
+        # Hide third-party tool sessions by default, but honour explicit --source
+        _source = getattr(args, "source", None)
+        _exclude = None if _source else ["tool"]
+
         if action == "list":
-            sessions = db.list_sessions_rich(source=args.source, limit=args.limit)
+            sessions = db.list_sessions_rich(source=args.source, exclude_sources=_exclude, limit=args.limit)
             if not sessions:
                 print("No sessions found.")
                 return
@@ -3952,7 +3965,8 @@ For more help on a command:
         elif action == "browse":
             limit = getattr(args, "limit", 50) or 50
             source = getattr(args, "source", None)
-            sessions = db.list_sessions_rich(source=source, limit=limit)
+            _browse_exclude = None if source else ["tool"]
+            sessions = db.list_sessions_rich(source=source, exclude_sources=_browse_exclude, limit=limit)
             db.close()
             if not sessions:
                 print("No sessions found.")

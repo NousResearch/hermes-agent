@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import threading
+import unicodedata
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -82,13 +83,31 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+def _normalize_command_for_detection(command: str) -> str:
+    """Normalize a command string before dangerous-pattern matching.
+
+    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
+    null bytes, and normalizes Unicode fullwidth characters so that
+    obfuscation techniques cannot bypass the pattern-based detection.
+    """
+    from tools.ansi_strip import strip_ansi
+
+    # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
+    command = strip_ansi(command)
+    # Strip null bytes
+    command = command.replace('\x00', '')
+    # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
+    command = unicodedata.normalize('NFKC', command)
+    return command
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = command.lower()
+    command_lower = _normalize_command_for_detection(command).lower()
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = description

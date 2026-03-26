@@ -583,11 +583,16 @@ def load_gateway_config() -> GatewayConfig:
     return config
 
 
+def _strip_env(key: str) -> str:
+    """Read env var and strip whitespace; return empty string if unset or blank."""
+    return (os.getenv(key) or "").strip()
+
+
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
-    
+
     # Telegram
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_token = _strip_env("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         if Platform.TELEGRAM not in config.platforms:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
@@ -610,7 +615,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
     
     # Discord
-    discord_token = os.getenv("DISCORD_BOT_TOKEN")
+    discord_token = _strip_env("DISCORD_BOT_TOKEN")
     if discord_token:
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
@@ -633,7 +638,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.WHATSAPP].enabled = True
     
     # Slack
-    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_token = _strip_env("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
             config.platforms[Platform.SLACK] = PlatformConfig()
@@ -649,8 +654,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
     
     # Signal
-    signal_url = os.getenv("SIGNAL_HTTP_URL")
-    signal_account = os.getenv("SIGNAL_ACCOUNT")
+    signal_url = _strip_env("SIGNAL_HTTP_URL")
+    signal_account = _strip_env("SIGNAL_ACCOUNT")
     if signal_url and signal_account:
         if Platform.SIGNAL not in config.platforms:
             config.platforms[Platform.SIGNAL] = PlatformConfig()
@@ -669,7 +674,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
 
     # Mattermost
-    mattermost_token = os.getenv("MATTERMOST_TOKEN")
+    mattermost_token = _strip_env("MATTERMOST_TOKEN")
     if mattermost_token:
         mattermost_url = os.getenv("MATTERMOST_URL", "")
         if not mattermost_url:
@@ -688,7 +693,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
 
     # Matrix
-    matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
+    matrix_token = _strip_env("MATRIX_ACCESS_TOKEN")
     matrix_homeserver = os.getenv("MATRIX_HOMESERVER", "")
     if matrix_token or os.getenv("MATRIX_PASSWORD"):
         if not matrix_homeserver:
@@ -716,7 +721,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
 
     # Home Assistant
-    hass_token = os.getenv("HASS_TOKEN")
+    hass_token = _strip_env("HASS_TOKEN")
     if hass_token:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
@@ -727,10 +732,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 
     # Email
-    email_addr = os.getenv("EMAIL_ADDRESS")
-    email_pwd = os.getenv("EMAIL_PASSWORD")
-    email_imap = os.getenv("EMAIL_IMAP_HOST")
-    email_smtp = os.getenv("EMAIL_SMTP_HOST")
+    email_addr = _strip_env("EMAIL_ADDRESS")
+    email_pwd = _strip_env("EMAIL_PASSWORD")
+    email_imap = _strip_env("EMAIL_IMAP_HOST")
+    email_smtp = _strip_env("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
@@ -749,7 +754,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
 
     # SMS (Twilio)
-    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_sid = _strip_env("TWILIO_ACCOUNT_SID")
     if twilio_sid:
         if Platform.SMS not in config.platforms:
             config.platforms[Platform.SMS] = PlatformConfig()

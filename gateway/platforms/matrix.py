@@ -551,9 +551,20 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
+        import nio
+
         while not self._closing:
             try:
-                await self._client.sync(timeout=30000)
+                resp = await self._client.sync(timeout=30000)
+                if isinstance(resp, nio.SyncError):
+                    if self._closing:
+                        return
+                    logger.warning(
+                        "Matrix: sync returned %s: %s — retrying in 5s",
+                        type(resp).__name__,
+                        getattr(resp, "message", resp),
+                    )
+                    await asyncio.sleep(5)
             except asyncio.CancelledError:
                 return
             except Exception as exc:

@@ -178,10 +178,16 @@ async def _summarize_session(
                 return None
 
 
+# Sources that are excluded from session browsing/searching by default.
+# Third-party integrations (Paperclip agents, etc.) tag their sessions with
+# HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
+_HIDDEN_SESSION_SOURCES = ("tool",)
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5)  # fetch extra to skip current
+        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -265,6 +271,7 @@ def session_search(
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             limit=50,  # Get more matches to find unique sessions
             offset=0,
         )

@@ -307,9 +307,8 @@ class TestExpiredCodexFallback:
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
-        """Hermes OAuth credentials should get is_oauth=True (token is not sk-ant-api-*)."""
+        """OAuth-style tokens should get is_oauth=True (token is not sk-ant-api-*)."""
         # Mock resolve_anthropic_token to return an OAuth-style token
-        # (simulates what read_hermes_oauth_credentials would return)
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()

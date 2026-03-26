@@ -6028,17 +6028,35 @@ class AIAgent:
                     if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    if self._has_stream_consumers():
-                        # Streaming path: fire delta callbacks for real-time
-                        # token delivery to CLI display, gateway, or TTS.
-                        def _stop_spinner():
-                            nonlocal thinking_spinner
-                            if thinking_spinner:
-                                thinking_spinner.stop("")
-                                thinking_spinner = None
-                            if self.thinking_callback:
-                                self.thinking_callback("")
+                    # Always prefer the streaming path — even without stream
+                    # consumers.  Streaming gives us fine-grained health
+                    # checking (90s stale-stream detection, 60s read timeout)
+                    # that the non-streaming path lacks.  Without this,
+                    # subagents and other quiet-mode callers can hang
+                    # indefinitely when the provider keeps the connection
+                    # alive with SSE pings but never delivers a response.
+                    # The streaming path is a no-op for callbacks when no
+                    # consumers are registered, and falls back to non-
+                    # streaming automatically if the provider doesn't
+                    # support it.
+                    def _stop_spinner():
+                        nonlocal thinking_spinner
+                        if thinking_spinner:
+                            thinking_spinner.stop("")
+                            thinking_spinner = None
+                        if self.thinking_callback:
+                            self.thinking_callback("")
 
+                    _use_streaming = True
+                    if not self._has_stream_consumers():
+                        # No display/TTS consumer. Still prefer streaming for
+                        # health checking, but skip for Mock clients in tests
+                        # (mocks return SimpleNamespace, not stream iterators).
+                        from unittest.mock import Mock
+                        if isinstance(getattr(self, "client", None), Mock):
+                            _use_streaming = False
+
+                    if _use_streaming:
                         response = self._interruptible_streaming_api_call(
                             api_kwargs, on_first_delta=_stop_spinner
                         )

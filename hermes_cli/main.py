@@ -2641,26 +2641,89 @@ def _invalidate_update_cache():
     except Exception:
         pass
 
+def _update_via_nix():
+    """Update Hermes Agent via Nix (auto-detect when /nix/store in path).
+
+    Runs ``nix profile upgrade hermes-agent``, restarts the gateway service,
+    and verifies the new version — all non-interactive.
+    """
+    print("⚡ Nix installation detected.")
+    print()
+
+    # Step 1: Upgrade via nix
+    print("→ Pulling latest release from Nix store...")
+    result = subprocess.run(
+        ["nix", "profile", "upgrade", "hermes-agent"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"✗ nix profile upgrade failed: {result.stderr.strip()}")
+        sys.exit(1)
+    # nix prints progress to stderr
+    if result.stderr.strip():
+        print(result.stderr.strip())
+
+    # Step 2: Restart gateway service
+    print()
+    print("→ Restarting gateway service...")
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "gateway", "restart"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"⚠ Gateway restart failed (non-fatal): {result.stderr.strip()}")
+        print("  You may need to restart manually: hermes gateway restart")
+    else:
+        if result.stdout.strip():
+            print(result.stdout.strip())
+
+    # Step 3: Verify
+    new_version = subprocess.run(
+        [sys.argv[0], "--version"],
+        capture_output=True, text=True
+    )
+    if new_version.stdout.strip():
+        print()
+        print(new_version.stdout.strip())
+
+    print()
+    print("✓ Update complete.")
+
 def cmd_update(args):
-    """Update Hermes Agent to the latest version."""
+    """Update Hermes Agent to the latest version.
+
+    Dispatches to the correct update path based on install type:
+      - Git-based  (default) — fetch + pull in-place
+      - Nix         — 'nix profile upgrade' + gateway restart
+      - ZIP         — Windows fallback when git I/O is broken
+    """
     import shutil
     
     print("⚕ Updating Hermes Agent...")
     print()
     
-    # Try git-based update first, fall back to ZIP download on Windows
-    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
+    # Three update paths based on install type:
+    #  1. Git (most installs) — fetch + pull on current PROJECT_ROOT
+    #  2. Nix  — detected when PROJECT_ROOT is inside /nix/store; runs
+    #     'nix profile upgrade hermes-agent' then restarts the gateway
+    #  3. ZIP  — Windows fallback when git file I/O is broken (antivirus,
+    #     NTFS filter drivers causing 'Invalid argument' on object creation)
     use_zip_update = False
+    use_nix_update = False
     git_dir = PROJECT_ROOT / '.git'
     
     if not git_dir.exists():
         if sys.platform == "win32":
             use_zip_update = True
+        # Nix installs are symlinked into /nix/store — no .git, but we can
+        # upgrade natively via 'nix profile upgrade' + gateway restart.
+        elif "/nix/store" in str(PROJECT_ROOT) or "/nix/var" in str(PROJECT_ROOT):
+            use_nix_update = True
         else:
             print("✗ Not a git repository. Please reinstall:")
             print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
             sys.exit(1)
-    
+
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
     if sys.platform == "win32" and git_dir.exists():
@@ -2669,12 +2732,16 @@ def cmd_update(args):
             cwd=PROJECT_ROOT, check=False, capture_output=True
         )
 
+    if use_nix_update:
+        _update_via_nix()
+        return
+
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
         _update_via_zip(args)
         return
 
-    # Fetch and pull
+    # --- Default: git-based update (fetch + pull) ---
     try:
         print("→ Fetching updates...")
         git_cmd = ["git"]

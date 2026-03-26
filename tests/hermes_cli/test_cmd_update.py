@@ -1,6 +1,7 @@
-"""Tests for cmd_update — branch fallback when remote branch doesn't exist."""
+"""Tests for cmd_update — git fallback, Nix detection, and ZIP update paths."""
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -105,3 +106,78 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+
+class TestCmdUpdateNix:
+    """cmd_update detects Nix store and runs the full Nix upgrade path.
+
+    Patches PROJECT_ROOT to a fake /nix/store path so the Nix detection
+    branch is triggered without needing a real Nix install.
+    """
+
+    def _nix_side_effect(self, cmd, **kwargs):
+        """Simulate nix and hermes gateway restart calls."""
+        joined = " ".join(str(c) for c in cmd)
+        if "nix" in joined and "profile" in joined and "upgrade" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="upgrading hermes-agent...\n")
+        if "hermes_cli.main" in joined or ("gateway" in joined and "restart" in joined):
+            return subprocess.CompletedProcess(cmd, 0, stdout="✓ User service restarted\n", stderr="")
+        if "--version" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Hermes Agent v0.5.0\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def test_nix_update_runs_upgrade_and_restart(self, mock_args, capsys):
+        """Happy path: nix upgrade → restart → verify → returns normally."""
+        # _update_via_nix does NOT call sys.exit on success — it returns.
+        with patch("subprocess.run", side_effect=self._nix_side_effect):
+            with patch("hermes_cli.main.PROJECT_ROOT", new=Path("/nix/store/fake-hermes-agent")):
+                cmd_update(mock_args)  # should return, not raise
+
+        captured = capsys.readouterr()
+        assert "Nix installation detected" in captured.out
+        assert "Pulling latest release from Nix store" in captured.out
+        assert "Restarting gateway service" in captured.out
+        assert "Update complete" in captured.out
+
+    def test_nix_update_with_nix_var_path(self, mock_args, capsys):
+        """Also detects /nix/var as a valid Nix path."""
+        with patch("subprocess.run", side_effect=self._nix_side_effect):
+            with patch("hermes_cli.main.PROJECT_ROOT", new=Path("/nix/var/nix/profiles/per-user/itenev/hermes-agent")):
+                cmd_update(mock_args)
+        captured = capsys.readouterr()
+        assert "Nix installation detected" in captured.out
+
+    def test_nix_update_exits_nonzero_on_nix_failure(self, mock_args, capsys):
+        """If nix profile upgrade fails, sys.exit(1) is called."""
+        def fail_on_nix(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "nix" in joined and "upgrade" in joined:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: flake not found\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fail_on_nix):
+            with patch("hermes_cli.main.sys.exit") as mock_exit:
+                with patch("hermes_cli.main.PROJECT_ROOT", new=Path("/nix/store/fake-hermes-agent")):
+                    cmd_update(mock_args)
+        mock_exit.assert_called_with(1)
+        captured = capsys.readouterr()
+        assert "nix profile upgrade failed" in captured.out
+
+    def test_nix_update_gateway_restart_nonfatal(self, mock_args, capsys):
+        """Gateway restart failure prints a warning but still returns normally."""
+        def nix_then_restart_fail(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "nix" in joined and "upgrade" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "restart" in joined:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="service not found\n")
+            if "--version" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="Hermes Agent v0.5.0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=nix_then_restart_fail):
+            with patch("hermes_cli.main.PROJECT_ROOT", new=Path("/nix/store/fake-hermes-agent")):
+                cmd_update(mock_args)  # returns normally, no sys.exit on restart failure
+        captured = capsys.readouterr()
+        assert "Gateway restart failed" in captured.out
+        assert "Update complete" in captured.out

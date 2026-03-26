@@ -179,6 +179,28 @@ class TestFlushAgentSilenced:
         # Confirm it is callable and produces no output (no exception)
         agent._print_fn("should be silenced")
 
+    def test_kawaii_spinner_respects_print_fn(self):
+        """KawaiiSpinner must route all output through print_fn when supplied."""
+        from agent.display import KawaiiSpinner
+
+        written = []
+        spinner = KawaiiSpinner("test", print_fn=lambda *a, **kw: written.append(a))
+        spinner._write("hello")
+        assert written == [("hello",)], "spinner should route through print_fn"
+
+        # A no-op print_fn must produce no output to stdout
+        import io, sys
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            silent_spinner = KawaiiSpinner("silent", print_fn=lambda *a, **kw: None)
+            silent_spinner._write("should not appear")
+            silent_spinner.stop("done")
+        finally:
+            sys.stdout = old_stdout
+        assert buf.getvalue() == "", "no-op print_fn spinner must not write to stdout"
+
 
 class TestFlushPromptStructure:
     """Verify the flush prompt retains its core instructions."""

@@ -974,35 +974,51 @@ class SessionStore:
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
+        db_messages = []
         # Try SQLite first
         if self._db:
             try:
-                messages = self._db.get_messages_as_conversation(session_id)
-                if messages:
-                    return messages
+                db_messages = self._db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.debug("Could not load messages from DB: %s", e)
-        
-        # Fall back to legacy JSONL
+
+        # Load legacy JSONL transcript (may contain more history than SQLite
+        # for sessions created before the DB layer was introduced).
         transcript_path = self.get_transcript_path(session_id)
-        
-        if not transcript_path.exists():
-            return []
-        
-        messages = []
-        with open(transcript_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        messages.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Skipping corrupt line in transcript %s: %s",
-                            session_id, line[:120],
-                        )
-        
-        return messages
+        jsonl_messages = []
+        if transcript_path.exists():
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            jsonl_messages.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Skipping corrupt line in transcript %s: %s",
+                                session_id, line[:120],
+                            )
+
+        # Prefer whichever source has more messages.
+        #
+        # Background: when a session pre-dates SQLite storage (or when the DB
+        # layer was added while a long-lived session was already active), the
+        # first post-migration turn writes only the *new* messages to SQLite
+        # (because _flush_messages_to_session_db skips messages already in
+        # conversation_history, assuming they're persisted).  On the *next*
+        # turn load_transcript returns those few SQLite rows and ignores the
+        # full JSONL history — the model sees a context of 1-4 messages instead
+        # of hundreds.  Using the longer source prevents this silent truncation.
+        if len(jsonl_messages) > len(db_messages):
+            if db_messages:
+                logger.debug(
+                    "Session %s: JSONL has %d messages vs SQLite %d — "
+                    "using JSONL (legacy session not yet fully migrated)",
+                    session_id, len(jsonl_messages), len(db_messages),
+                )
+            return jsonl_messages
+
+        return db_messages
 
 
 def build_session_context(

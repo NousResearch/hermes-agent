@@ -386,6 +386,100 @@ class TestLoadTranscriptCorruptLines:
         assert messages[1]["content"] == "b"
 
 
+class TestLoadTranscriptPreferLongerSource:
+    """Regression: load_transcript must return whichever source (SQLite or JSONL)
+    has more messages to prevent silent truncation.  GH-3212."""
+
+    @pytest.fixture()
+    def store_with_db(self, tmp_path):
+        """SessionStore with both SQLite and JSONL active."""
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = SessionDB(db_path=tmp_path / "state.db")
+        s._loaded = True
+        return s
+
+    def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
+        """Legacy session: JSONL has full history, SQLite has only recent turn."""
+        sid = "legacy_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # JSONL has 10 messages (legacy history — written before SQLite existed)
+        for i in range(10):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db.append_to_transcript(
+                sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
+            )
+        # SQLite has only 2 messages (recent turn after migration)
+        store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 10
+        assert result[0]["content"] == "msg-0"
+
+    def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
+        """Fully migrated session: SQLite has more (JSONL stopped growing)."""
+        sid = "migrated_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # JSONL has 2 old messages
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "old-q"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
+        )
+        # SQLite has 4 messages (superset after migration)
+        for i in range(4):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 4
+        assert result[0]["content"] == "db-0"
+
+    def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
+        """No SQLite rows — falls back to JSONL (original behavior preserved)."""
+        sid = "no_db_rows"
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "hello"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "hi"}, skip_db=True,
+        )
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        assert result[0]["content"] == "hello"
+
+    def test_both_empty_returns_empty(self, store_with_db):
+        """Neither source has data — returns empty list."""
+        result = store_with_db.load_transcript("nonexistent")
+        assert result == []
+
+    def test_equal_length_prefers_sqlite(self, store_with_db):
+        """When both have same count, SQLite wins (has richer fields like reasoning)."""
+        sid = "equal_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # Write 2 messages to JSONL only
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
+        )
+        # Write 2 different messages to SQLite only
+        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        # Should be the SQLite version (equal count → prefers SQLite)
+        assert result[0]["content"] == "db-q"
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""

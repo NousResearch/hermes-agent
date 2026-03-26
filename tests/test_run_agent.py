@@ -1425,8 +1425,8 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
-    def test_api_error_raises_after_retries(self, agent):
-        """Exhausted retries on API errors must raise, not fall through."""
+    def test_api_error_returns_gracefully_after_retries(self, agent):
+        """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
         with (
@@ -1435,8 +1435,11 @@ class TestRetryExhaustion:
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
         ):
-            with pytest.raises(RuntimeError, match="rate limited"):
-                agent.run_conversation("hello")
+            result = agent.run_conversation("hello")
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "error" in result
+        assert "rate limited" in result["error"]
 
 
 # ---------------------------------------------------------------------------

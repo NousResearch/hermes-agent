@@ -78,8 +78,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Show or change the current model", "Configuration",
-               args_hint="[name]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
@@ -330,29 +328,8 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
-        model_completer_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
-        # model_completer_provider returns {"current_provider": str,
-        #   "providers": {id: label, ...}, "models_for": callable(provider) -> list[str]}
-        self._model_completer_provider = model_completer_provider
-        self._model_info_cache: dict[str, Any] | None = None
-        self._model_info_cache_time: float = 0
-
-    def _get_model_info(self) -> dict[str, Any]:
-        """Get cached model/provider info for /model autocomplete."""
-        import time
-        now = time.monotonic()
-        if self._model_info_cache is not None and now - self._model_info_cache_time < 60:
-            return self._model_info_cache
-        if self._model_completer_provider is None:
-            return {}
-        try:
-            self._model_info_cache = self._model_completer_provider() or {}
-            self._model_info_cache_time = now
-        except Exception:
-            self._model_info_cache = self._model_info_cache or {}
-        return self._model_info_cache
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
         if self._skill_commands_provider is None:
@@ -591,52 +568,6 @@ class SlashCommandCompleter(Completer):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
 
-            # /model gets two-stage completion:
-            #   Stage 1: provider names (with : suffix)
-            #   Stage 2: after "provider:", list that provider's models
-            if base_cmd == "/model" and " " not in sub_text:
-                info = self._get_model_info()
-                if info:
-                    current_prov = info.get("current_provider", "")
-                    providers = info.get("providers", {})
-                    models_for = info.get("models_for")
-
-                    if ":" in sub_text:
-                        # Stage 2: "anthropic:cl" → models for anthropic
-                        prov_part, model_part = sub_text.split(":", 1)
-                        model_lower = model_part.lower()
-                        if models_for:
-                            try:
-                                prov_models = models_for(prov_part)
-                            except Exception:
-                                prov_models = []
-                            for mid in prov_models:
-                                if mid.lower().startswith(model_lower) and mid.lower() != model_lower:
-                                    full = f"{prov_part}:{mid}"
-                                    yield Completion(
-                                        full,
-                                        start_position=-len(sub_text),
-                                        display=mid,
-                                    )
-                    else:
-                        # Stage 1: providers sorted: non-current first, current last
-                        for pid, plabel in sorted(
-                            providers.items(),
-                            key=lambda kv: (kv[0] == current_prov, kv[0]),
-                        ):
-                            display_name = f"{pid}:"
-                            if display_name.lower().startswith(sub_lower):
-                                meta = f"({plabel})" if plabel != pid else ""
-                                if pid == current_prov:
-                                    meta = f"(current — {plabel})" if plabel != pid else "(current)"
-                                yield Completion(
-                                    display_name,
-                                    start_position=-len(sub_text),
-                                    display=display_name,
-                                    display_meta=meta,
-                                )
-                return
-
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS:
                 for sub in SUBCOMMANDS[base_cmd]:
@@ -717,32 +648,6 @@ class SlashCommandAutoSuggest(AutoSuggest):
         # Command is complete — suggest subcommands or model names
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
-
-        # /model gets two-stage ghost text
-        if base_cmd == "/model" and " " not in sub_text and self._completer:
-            info = self._completer._get_model_info()
-            if info:
-                providers = info.get("providers", {})
-                models_for = info.get("models_for")
-                current_prov = info.get("current_provider", "")
-
-                if ":" in sub_text:
-                    # Stage 2: after provider:, suggest model
-                    prov_part, model_part = sub_text.split(":", 1)
-                    model_lower = model_part.lower()
-                    if models_for:
-                        try:
-                            for mid in models_for(prov_part):
-                                if mid.lower().startswith(model_lower) and mid.lower() != model_lower:
-                                    return Suggestion(mid[len(model_part):])
-                        except Exception:
-                            pass
-                else:
-                    # Stage 1: suggest provider name with :
-                    for pid in sorted(providers, key=lambda p: (p == current_prov, p)):
-                        candidate = f"{pid}:"
-                        if candidate.lower().startswith(sub_lower) and candidate.lower() != sub_lower:
-                            return Suggestion(candidate[len(sub_text):])
 
         # Static subcommands
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:

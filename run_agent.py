@@ -4494,6 +4494,7 @@ class AIAgent:
         so both the tool-call path and the final-response path share one builder.
         """
         reasoning_text = self._extract_reasoning(assistant_message)
+        _from_structured = bool(reasoning_text)
 
         # Fallback: extract inline <think> blocks from content when no structured
         # reasoning fields are present (some models/providers embed thinking
@@ -4509,10 +4510,15 @@ class AIAgent:
             logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
         if reasoning_text and self.reasoning_callback:
-            try:
-                self.reasoning_callback(reasoning_text)
-            except Exception:
-                pass
+            # Skip callback for <think>-extracted reasoning when streaming is active.
+            # _stream_delta() already displayed <think> blocks during streaming;
+            # firing the callback again would cause duplicate display.
+            # Structured reasoning (from reasoning_content field) always fires.
+            if _from_structured or not self.stream_delta_callback:
+                try:
+                    self.reasoning_callback(reasoning_text)
+                except Exception:
+                    pass
 
         msg = {
             "role": "assistant",

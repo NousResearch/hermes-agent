@@ -357,7 +357,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    result = scan_skill(q_path, source=identifier)
+    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
     # Check install policy

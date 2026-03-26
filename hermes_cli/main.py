@@ -60,9 +60,6 @@ from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
 
-# Point mini-swe-agent at ~/.hermes/ so it shares our config
-os.environ.setdefault("MSWEA_GLOBAL_CONFIG_DIR", str(get_hermes_home()))
-os.environ.setdefault("MSWEA_SILENT_STARTUP", "1")
 
 import logging
 import time as _time
@@ -393,7 +390,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 return sessions[idx]["id"]
             print(f"  Invalid selection. Enter 1-{len(sessions)} or q to cancel.")
         except ValueError:
-            print(f"  Invalid input. Enter a number or q to cancel.")
+            print("  Invalid input. Enter a number or q to cancel.")
         except (KeyboardInterrupt, EOFError):
             print()
             return None
@@ -551,7 +548,6 @@ def cmd_gateway(args):
 
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
-    import os
     import subprocess
     from pathlib import Path
     from hermes_cli.config import get_env_value, save_env_value
@@ -745,12 +741,9 @@ def cmd_setup(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     from hermes_cli.auth import (
-        resolve_provider, get_provider_auth_state, PROVIDER_REGISTRY,
-        _prompt_model_selection, _save_model_choice, _update_config_for_provider,
-        resolve_nous_runtime_credentials, fetch_nous_models, AuthError, format_auth_error,
-        _login_nous,
+        resolve_provider, AuthError, format_auth_error,
     )
-    from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
+    from hermes_cli.config import load_config, get_env_value
 
     config = load_config()
     current_model = config.get("model")
@@ -1986,7 +1979,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax)."""
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
-        _update_config_for_provider, deactivate_provider,
+        deactivate_provider,
     )
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
 
@@ -2045,8 +2038,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     else:
         model_list = _PROVIDER_MODELS.get(provider_id, [])
         if model_list:
-            print(f"  ⚠ Could not auto-detect models from API — showing defaults.")
-            print(f"    Use \"Enter custom model name\" if you don't see your model.")
+            print("  ⚠ Could not auto-detect models from API — showing defaults.")
+            print("    Use \"Enter custom model name\" if you don't see your model.")
         # else: no defaults either, will fall through to raw input
 
     if model_list:
@@ -2170,7 +2163,7 @@ def _model_flow_anthropic(config, current_model=""):
     import os
     from hermes_cli.auth import (
         PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
-        _update_config_for_provider, deactivate_provider,
+        deactivate_provider,
     )
     from hermes_cli.config import (
         get_env_value, save_env_value, load_config, save_config,
@@ -2446,8 +2439,9 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT, check=True, env=uv_env,
             )
     else:
-        venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-        pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+        # Use sys.executable to explicitly call the venv's pip module,
+        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu
+        pip_cmd = [sys.executable, "-m", "pip"]
         try:
             subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
         except subprocess.CalledProcessError:
@@ -2759,8 +2753,9 @@ def cmd_update(args):
                     cwd=PROJECT_ROOT, check=True, env=uv_env,
                 )
         else:
-            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+            # Use sys.executable to explicitly call the venv's pip module,
+            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu
+            pip_cmd = [sys.executable, "-m", "pip"]
             try:
                 subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
             except subprocess.CalledProcessError:
@@ -2819,7 +2814,10 @@ def cmd_update(args):
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
             
             print()
-            response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            if sys.stdin.isatty():
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            else:
+                response = "n"
             
             if response in ('', 'y', 'yes'):
                 print()
@@ -3846,6 +3844,13 @@ For more help on a command:
     sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
 
+    def _confirm_prompt(prompt: str) -> bool:
+        """Prompt for y/N confirmation, safe against non-TTY environments."""
+        try:
+            return input(prompt).strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
     def cmd_sessions(args):
         import json as _json
         try:
@@ -3906,8 +3911,7 @@ For more help on a command:
                 print(f"Session '{args.session_id}' not found.")
                 return
             if not args.yes:
-                confirm = input(f"Delete session '{resolved_session_id}' and all its messages? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
+                if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
                     print("Cancelled.")
                     return
             if db.delete_session(resolved_session_id):
@@ -3919,8 +3923,7 @@ For more help on a command:
             days = args.older_than
             source_msg = f" from '{args.source}'" if args.source else ""
             if not args.yes:
-                confirm = input(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
+                if not _confirm_prompt(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "):
                     print("Cancelled.")
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)

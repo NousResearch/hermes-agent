@@ -40,9 +40,11 @@ import uuid
 import logging
 from datetime import datetime
 import yaml
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ HERMES_ROOT = Path(__file__).parent.parent
 TINKER_ATROPOS_ROOT = HERMES_ROOT / "tinker-atropos"
 ENVIRONMENTS_DIR = TINKER_ATROPOS_ROOT / "tinker_atropos" / "environments"
 CONFIGS_DIR = TINKER_ATROPOS_ROOT / "configs"
-LOGS_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "logs" / "rl_training"
+LOGS_DIR = get_hermes_home() / "logs" / "rl_training"
 
 def _ensure_logs_dir():
     """Lazily create logs directory on first use (avoid side effects at import time)."""
@@ -454,7 +456,7 @@ async def _monitor_training_run(run_state: RunState):
         
         if run_state.api_process and run_state.api_process.poll() is not None:
             run_state.status = "failed"
-            run_state.error_message = f"API server exited unexpectedly"
+            run_state.error_message = "API server exited unexpectedly"
             _stop_training_run(run_state)
             break
 
@@ -1231,11 +1233,11 @@ async def rl_test_inference(
                 print(f"\n  ❌ Error: {model_results['error']}")
                 # Print last few lines of stderr for debugging
                 if stderr_lines:
-                    print(f"  Last errors:")
+                    print("  Last errors:")
                     for line in stderr_lines[-5:]:
                         print(f"    {line}")
             else:
-                print(f"\n  ✅ Process completed successfully")
+                print("\n  ✅ Process completed successfully")
                 print(f"  Output file: {output_file}")
                 print(f"  File exists: {output_file.exists()}")
                 
@@ -1270,7 +1272,7 @@ async def rl_test_inference(
                     
         except asyncio.TimeoutError:
             model_results["error"] = "Process timed out after 10 minutes"
-            print(f"  Timeout!")
+            print("  Timeout!")
         except Exception as e:
             model_results["error"] = str(e)
             print(f"  Error: {e}")

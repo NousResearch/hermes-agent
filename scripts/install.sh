@@ -637,13 +637,6 @@ clone_repo() {
 
     cd "$INSTALL_DIR"
 
-    # Only init mini-swe-agent (terminal tool backend — required).
-    # tinker-atropos (RL training) is optional and heavy — users can opt in later
-    # with: git submodule update --init tinker-atropos && uv pip install -e ./tinker-atropos
-    log_info "Initializing mini-swe-agent submodule (terminal backend)..."
-    git submodule update --init mini-swe-agent
-    log_success "Submodule ready"
-
     log_success "Repository ready"
 }
 
@@ -717,15 +710,6 @@ install_deps() {
     fi
 
     log_success "Main package installed"
-
-    # Install submodules
-    log_info "Installing mini-swe-agent (terminal tool backend)..."
-    if [ -d "mini-swe-agent" ] && [ -f "mini-swe-agent/pyproject.toml" ]; then
-        $UV_CMD pip install -e "./mini-swe-agent" || log_warn "mini-swe-agent install failed (terminal tools may not work)"
-        log_success "mini-swe-agent installed"
-    else
-        log_warn "mini-swe-agent not found (run: git submodule update --init)"
-    fi
 
     # tinker-atropos (RL training) is optional — skip by default.
     # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"

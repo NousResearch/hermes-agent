@@ -721,7 +721,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -819,6 +819,16 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
+        finally:
+            # Ensure the underlying platform typing loop is stopped.
+            # _keep_typing may have called send_typing() after an outer
+            # stop_typing() cleared the task dict, recreating the loop.
+            # Cancelling _keep_typing alone won't clean that up.
+            if hasattr(self, "stop_typing"):
+                try:
+                    await self.stop_typing(chat_id)
+                except Exception:
+                    pass
     
     async def handle_message(self, event: MessageEvent) -> None:
         """
@@ -1129,6 +1139,13 @@ class BasePlatformAdapter(ABC):
             try:
                 await typing_task
             except asyncio.CancelledError:
+                pass
+            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
+            # that may have been recreated by _keep_typing after the last stop_typing()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
                 pass
             # Clean up session tracking
             if session_key in self._active_sessions:

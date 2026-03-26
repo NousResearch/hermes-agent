@@ -309,3 +309,6 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
+
+
+

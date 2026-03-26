@@ -17,14 +17,13 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import mimetypes
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (

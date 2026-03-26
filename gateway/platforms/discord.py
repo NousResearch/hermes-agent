@@ -20,7 +20,7 @@ import threading
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -529,6 +529,11 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_message(message: DiscordMessage):
                 # Always ignore our own messages
                 if message.author == self._client.user:
+                    return
+                
+                # Ignore Discord system messages (thread renames, pins, member joins, etc.)
+                # Allow both default and reply types — replies have a distinct MessageType.
+                if message.type not in (discord.MessageType.default, discord.MessageType.reply):
                     return
                 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):

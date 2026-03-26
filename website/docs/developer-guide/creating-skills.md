@@ -57,6 +57,15 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    requires_toolsets: [web]            # Optional — only show when these toolsets are active
+    requires_tools: [web_search]        # Optional — only show when these tools are available
+    fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
+    fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+required_environment_variables:          # Optional — env vars the skill needs
+  - name: MY_API_KEY
+    prompt: "Enter your API key"
+    help: "Get one at https://example.com"
+    required_for: "API access"
 ---
 
 # Skill Title
@@ -91,6 +100,57 @@ platforms: [windows]          # Windows only
 
 When set, the skill is automatically hidden from the system prompt, `skills_list()`, and slash commands on incompatible platforms. If omitted or empty, the skill loads on all platforms (backward compatible).
 
+### Conditional Skill Activation
+
+Skills can declare dependencies on specific tools or toolsets. This controls whether the skill appears in the system prompt for a given session.
+
+```yaml
+metadata:
+  hermes:
+    requires_toolsets: [web]           # Hide if the web toolset is NOT active
+    requires_tools: [web_search]       # Hide if web_search tool is NOT available
+    fallback_for_toolsets: [browser]   # Hide if the browser toolset IS active
+    fallback_for_tools: [browser_navigate]  # Hide if browser_navigate IS available
+```
+
+| Field | Behavior |
+|-------|----------|
+| `requires_toolsets` | Skill is **hidden** when ANY listed toolset is **not** available |
+| `requires_tools` | Skill is **hidden** when ANY listed tool is **not** available |
+| `fallback_for_toolsets` | Skill is **hidden** when ANY listed toolset **is** available |
+| `fallback_for_tools` | Skill is **hidden** when ANY listed tool **is** available |
+
+**Use case for `fallback_for_*`:** Create a skill that serves as a workaround when a primary tool isn't available. For example, a `duckduckgo-search` skill with `fallback_for_tools: [web_search]` only shows when the web search tool (which requires an API key) is not configured.
+
+**Use case for `requires_*`:** Create a skill that only makes sense when certain tools are present. For example, a web scraping workflow skill with `requires_toolsets: [web]` won't clutter the prompt when web tools are disabled.
+
+### Environment Variable Requirements
+
+Skills can declare environment variables they need. When a skill is loaded via `skill_view`, its required vars are automatically registered for passthrough into sandboxed execution environments (terminal, execute_code).
+
+```yaml
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: "Tenor API key"               # Shown when prompting user
+    help: "Get your key at https://tenor.com"  # Help text or URL
+    required_for: "GIF search functionality"   # What needs this var
+```
+
+Each entry supports:
+- `name` (required) — the environment variable name
+- `prompt` (optional) — prompt text when asking the user for the value
+- `help` (optional) — help text or URL for obtaining the value
+- `required_for` (optional) — describes which feature needs this variable
+
+Users can also manually configure passthrough variables in `config.yaml`:
+
+```yaml
+terminal:
+  env_passthrough:
+    - MY_CUSTOM_VAR
+    - ANOTHER_VAR
+```
+
 See `skills/apple/` for examples of macOS-only skills.
 
 ## Secure Setup on Load
@@ -106,6 +166,10 @@ required_environment_variables:
 ```
 
 The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
+
+:::tip Sandbox Passthrough
+When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+:::
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
 

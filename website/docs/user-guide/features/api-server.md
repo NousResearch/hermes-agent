@@ -231,6 +231,6 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 
 ## Limitations
 
-- **Response storage is in-memory** — stored responses (for `previous_response_id`) are lost on gateway restart. Max 100 stored responses (LRU eviction).
+- **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
 - **No file upload** — vision/document analysis via uploaded files is not yet supported through the API.
 - **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.

@@ -25,6 +25,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse, urlunparse
 
@@ -32,7 +33,7 @@ import httpx
 import yaml
 
 from tools.skills_guard import (
-    ScanResult, scan_skill, should_allow_install, content_hash, TRUSTED_REPOS,
+    ScanResult, content_hash, TRUSTED_REPOS,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 HUB_DIR = SKILLS_DIR / ".hub"
 LOCK_FILE = HUB_DIR / "lock.json"
@@ -404,11 +405,75 @@ class GitHubSource(SkillSource):
         return skills
 
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
-        """Recursively download all text files from a GitHub directory."""
+        """Recursively download all text files from a GitHub directory.
+
+        Uses the Git Trees API first (single call for the entire tree) to
+        avoid per-directory rate limiting that causes silent subdirectory
+        loss.  Falls back to the recursive Contents API when the tree
+        endpoint is unavailable or the response is truncated.
+        """
+        files = self._download_directory_via_tree(repo, path)
+        if files is not None:
+            return files
+        logger.debug("Tree API unavailable for %s/%s, falling back to Contents API", repo, path)
+        return self._download_directory_recursive(repo, path)
+
+    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
+        """Download an entire directory using the Git Trees API (single request)."""
+        path = path.rstrip("/")
+        headers = self.auth.get_headers()
+
+        # Resolve the default branch via the repo endpoint
+        try:
+            repo_url = f"https://api.github.com/repos/{repo}"
+            resp = httpx.get(repo_url, headers=headers, timeout=15, follow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Fetch the full recursive tree (branch name works as tree-ish)
+        try:
+            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
+            resp = httpx.get(
+                tree_url, params={"recursive": "1"},
+                headers=headers, timeout=30, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                return None
+            tree_data = resp.json()
+            if tree_data.get("truncated"):
+                logger.debug("Git tree truncated for %s, falling back to Contents API", repo)
+                return None
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Filter to blobs under our target path and fetch content
+        prefix = f"{path}/"
+        files: Dict[str, str] = {}
+        for item in tree_data.get("tree", []):
+            if item.get("type") != "blob":
+                continue
+            item_path = item.get("path", "")
+            if not item_path.startswith(prefix):
+                continue
+            rel_path = item_path[len(prefix):]
+            content = self._fetch_file_content(repo, item_path)
+            if content is not None:
+                files[rel_path] = content
+            else:
+                logger.debug("Skipped file (fetch failed): %s/%s", repo, item_path)
+
+        return files if files else None
+
+    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
+        """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
             resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
             if resp.status_code != 200:
+                logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
                 return {}
         except httpx.HTTPError:
             return {}
@@ -428,11 +493,63 @@ class GitHubSource(SkillSource):
                     rel_path = name
                     files[rel_path] = content
             elif entry_type == "dir":
-                sub_files = self._download_directory(repo, entry.get("path", ""))
+                sub_files = self._download_directory_recursive(repo, entry.get("path", ""))
+                if not sub_files:
+                    logger.debug("Empty or failed subdirectory: %s/%s", repo, entry.get("path", ""))
                 for sub_name, sub_content in sub_files.items():
                     files[f"{name}/{sub_name}"] = sub_content
 
         return files
+
+    def _find_skill_in_repo_tree(self, repo: str, skill_name: str) -> Optional[str]:
+        """Use the GitHub Trees API to find a skill directory anywhere in the repo.
+
+        Returns the full identifier (``repo/path/to/skill``) or ``None``.
+        This is a single API call regardless of repo depth, so it efficiently
+        handles deeply nested directory structures like
+        ``cli-tool/components/skills/development/<skill>/SKILL.md``.
+        """
+        # Get default branch
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}",
+                headers=self.auth.get_headers(),
+                timeout=15,
+                follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        # Get recursive tree (single API call for the entire repo)
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                params={"recursive": "1"},
+                headers=self.auth.get_headers(),
+                timeout=30,
+                follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                return None
+            tree_data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
+        # Look for SKILL.md files inside directories named <skill_name>
+        skill_md_suffix = f"/{skill_name}/SKILL.md"
+        for entry in tree_data.get("tree", []):
+            if entry.get("type") != "blob":
+                continue
+            path = entry.get("path", "")
+            if path.endswith(skill_md_suffix) or path == f"{skill_name}/SKILL.md":
+                # Strip /SKILL.md to get the skill directory path
+                skill_dir = path[: -len("/SKILL.md")]
+                return f"{repo}/{skill_dir}"
+
+        return None
 
     def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
         """Fetch a single file's content from GitHub."""
@@ -1013,6 +1130,14 @@ class SkillsShSource(SkillSource):
                                 return meta.identifier
         except Exception:
             pass
+
+        # Final fallback: use the GitHub Trees API to find the skill anywhere
+        # in the repo tree.  This handles deeply nested structures like
+        # cli-tool/components/skills/development/<skill>/ that the shallow
+        # scan above can't reach.
+        tree_result = self.github._find_skill_in_repo_tree(repo, skill_token)
+        if tree_result:
+            return tree_result
 
         return None
 
@@ -1896,8 +2021,8 @@ class LobeHubSource(SkillSource):
             "metadata:",
             "  hermes:",
             f"    tags: [{', '.join(str(t) for t in tag_list)}]",
-            f"  lobehub:",
-            f"    source: lobehub",
+            "  lobehub:",
+            "    source: lobehub",
             "---",
         ]
 

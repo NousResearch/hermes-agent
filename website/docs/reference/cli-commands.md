@@ -66,7 +66,8 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `opencode-zen`, `opencode-go`, `ai-gateway`, `kilocode`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`. |
+| `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
@@ -98,7 +99,24 @@ Use this when you want to:
 - switch default providers
 - log into OAuth-backed providers during model selection
 - pick from provider-specific model lists
+- configure a custom/self-hosted endpoint
 - save the new default into config
+
+### `/model` slash command (mid-session)
+
+Switch models without leaving a session:
+
+```
+/model                              # Show current model and available options
+/model claude-sonnet-4              # Switch model (auto-detects provider)
+/model zai:glm-5                    # Switch provider and model
+/model custom:qwen-2.5              # Use model on your custom endpoint
+/model custom                       # Auto-detect model from custom endpoint
+/model custom:local:qwen-2.5        # Use a named custom provider
+/model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
+```
+
+Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
 ## `hermes gateway`
 
@@ -325,6 +343,41 @@ pip install -e '.[acp]'
 ```
 
 See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
+
+## `hermes mcp`
+
+```bash
+hermes mcp <subcommand>
+```
+
+Manage MCP (Model Context Protocol) server configurations.
+
+| Subcommand | Description |
+|------------|-------------|
+| `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add an MCP server with automatic tool discovery. |
+| `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
+| `list` (alias: `ls`) | List configured MCP servers. |
+| `test <name>` | Test connection to an MCP server. |
+| `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
+
+See [MCP Config Reference](./mcp-config-reference.md) and [Use MCP with Hermes](../guides/use-mcp-with-hermes.md).
+
+## `hermes plugins`
+
+```bash
+hermes plugins <subcommand>
+```
+
+Manage Hermes Agent plugins.
+
+| Subcommand | Description |
+|------------|-------------|
+| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
+| `update <name>` | Pull latest changes for an installed plugin. |
+| `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
+| `list` (alias: `ls`) | List installed plugins. |
+
+See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
 
 ## `hermes tools`
 

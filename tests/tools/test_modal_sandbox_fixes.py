@@ -1,11 +1,11 @@
 """Tests for Modal sandbox infrastructure fixes (TBLite baseline).
 
-Covers the 9 bugs discovered while setting up TBLite evaluation:
-1. Tool resolution — terminal + file tools load with minisweagent
+Covers the bugs discovered while setting up TBLite evaluation:
+1. Tool resolution — terminal + file tools load correctly
 2. CWD fix — host paths get replaced with /root for container backends
 3. ephemeral_disk version check
 4. Tilde ~ replaced with /root for container backends
-5. ensurepip fix in patches.py for Modal image builder
+5. ensurepip fix in Modal image builder
 6. install_pipx stays True for swerex-remote
 7. /home/ added to host prefix check
 """
@@ -36,17 +36,8 @@ except ImportError:
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
-    def _has_minisweagent(self):
-        try:
-            import minisweagent  # noqa: F401
-            return True
-        except ImportError:
-            return False
-
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
-        if not self._has_minisweagent():
-            pytest.skip("minisweagent not installed (git submodule update --init)")
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["terminal", "file"],
@@ -58,18 +49,13 @@ class TestToolResolution:
 
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
-        if not self._has_minisweagent():
-            pytest.skip("minisweagent not installed (git submodule update --init)")
         from model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["terminal", "file"],
             quiet_mode=True,
         )
         names = [t["function"]["name"] for t in tools]
-        assert "terminal" in names, (
-            f"terminal tool missing! Only got: {names}. "
-            "Check that minisweagent is installed (git submodule update --init)."
-        )
+        assert "terminal" in names, f"terminal tool missing! Only got: {names}."
 
 
 # =========================================================================
@@ -269,38 +255,37 @@ class TestModalEnvironmentDefaults:
 # =========================================================================
 
 class TestEnsurepipFix:
-    """Verify the pip fix is applied in the patched Modal init."""
+    """Verify the pip fix is applied in the ModalEnvironment init."""
 
-    def test_patched_init_creates_image_with_setup_commands(self):
-        """The patched __init__ should create a modal.Image with pip fix."""
+    def test_modal_environment_creates_image_with_setup_commands(self):
+        """ModalEnvironment.__init__ should create a modal.Image with pip fix."""
         try:
-            from environments.patches import _patch_swerex_modal
+            from tools.environments.modal import ModalEnvironment
         except ImportError:
-            pytest.skip("environments.patches not importable")
+            pytest.skip("tools.environments.modal not importable")
 
-        # Check that the patch code references ensurepip
         import inspect
-        source = inspect.getsource(_patch_swerex_modal)
+        source = inspect.getsource(ModalEnvironment.__init__)
         assert "ensurepip" in source, (
-            "patches._patch_swerex_modal should include ensurepip fix "
+            "ModalEnvironment should include ensurepip fix "
             "for Modal's legacy image builder"
         )
         assert "setup_dockerfile_commands" in source, (
-            "patches._patch_swerex_modal should use setup_dockerfile_commands "
+            "ModalEnvironment should use setup_dockerfile_commands "
             "to fix pip before Modal's bootstrap"
         )
 
-    def test_patched_init_uses_install_pipx_from_config(self):
-        """The patched init should respect install_pipx from config."""
+    def test_modal_environment_uses_install_pipx(self):
+        """ModalEnvironment should pass install_pipx to ModalDeployment."""
         try:
-            from environments.patches import _patch_swerex_modal
+            from tools.environments.modal import ModalEnvironment
         except ImportError:
-            pytest.skip("environments.patches not importable")
+            pytest.skip("tools.environments.modal not importable")
 
         import inspect
-        source = inspect.getsource(_patch_swerex_modal)
+        source = inspect.getsource(ModalEnvironment.__init__)
         assert "install_pipx" in source, (
-            "patches._patch_swerex_modal should pass install_pipx to ModalDeployment"
+            "ModalEnvironment should pass install_pipx to ModalDeployment"
         )
 
 

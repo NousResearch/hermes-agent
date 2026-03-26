@@ -8,6 +8,8 @@ import logging
 import os
 import re
 from pathlib import Path
+
+from hermes_constants import get_hermes_home
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -320,7 +322,7 @@ def build_skills_system_prompt(
     match skills by meaning, not just name.
     Filters out skills incompatible with the current OS platform.
     """
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_home = get_hermes_home()
     skills_dir = hermes_home / "skills"
 
     if not skills_dir.exists():
@@ -354,8 +356,15 @@ def build_skills_system_prompt(
         fm_name = frontmatter.get("name", skill_name)
         if fm_name in disabled or skill_name in disabled:
             continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
+        # Extract conditions inline from already-parsed frontmatter
+        # (avoids redundant file re-read that _read_skill_conditions would do)
+        hermes_meta = (frontmatter.get("metadata") or {}).get("hermes") or {}
+        conditions = {
+            "fallback_for_toolsets": hermes_meta.get("fallback_for_toolsets", []),
+            "requires_toolsets": hermes_meta.get("requires_toolsets", []),
+            "fallback_for_tools": hermes_meta.get("fallback_for_tools", []),
+            "requires_tools": hermes_meta.get("requires_tools", []),
+        }
         if not _skill_should_show(conditions, available_tools, available_toolsets):
             continue
         skills_by_category.setdefault(category, []).append((skill_name, desc))
@@ -442,7 +451,7 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
     try:
@@ -481,39 +490,19 @@ def _load_hermes_md(cwd_path: Path) -> str:
 
 
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — hierarchical, recursive directory walk."""
-    top_level_agents = None
+    """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
         if candidate.exists():
-            top_level_agents = candidate
-            break
-
-    if not top_level_agents:
-        return ""
-
-    agents_files = []
-    for root, dirs, files in os.walk(cwd_path):
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
-        for f in files:
-            if f.lower() == "agents.md":
-                agents_files.append(Path(root) / f)
-    agents_files.sort(key=lambda p: len(p.parts))
-
-    total_content = ""
-    for agents_path in agents_files:
-        try:
-            content = agents_path.read_text(encoding="utf-8").strip()
-            if content:
-                rel_path = agents_path.relative_to(cwd_path)
-                content = _scan_context_content(content, str(rel_path))
-                total_content += f"## {rel_path}\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read %s: %s", agents_path, e)
-
-    if not total_content:
-        return ""
-    return _truncate_content(total_content, "AGENTS.md")
+            try:
+                content = candidate.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, name)
+                    result = f"## {name}\n\n{content}"
+                    return _truncate_content(result, "AGENTS.md")
+            except Exception as e:
+                logger.debug("Could not read %s: %s", candidate, e)
+    return ""
 
 
 def _load_claude_md(cwd_path: Path) -> str:
@@ -567,7 +556,7 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (recursive directory walk)
+      2. AGENTS.md / agents.md   (cwd only)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 

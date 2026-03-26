@@ -18,6 +18,8 @@ import os
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from hermes_constants import get_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -29,11 +31,6 @@ GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
-def _get_hermes_home() -> Path:
-    """Get HERMES_HOME without importing hermes_cli (avoids circular deps)."""
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-
-
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
@@ -41,7 +38,7 @@ def resolve_config_path() -> Path:
     to ~/.honcho/config.json (global).  Returns the global path if neither
     exists (for first-time setup writes).
     """
-    local_path = _get_hermes_home() / "honcho.json"
+    local_path = get_hermes_home() / "honcho.json"
     if local_path.exists():
         return local_path
     return GLOBAL_CONFIG_PATH

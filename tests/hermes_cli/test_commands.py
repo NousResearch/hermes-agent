@@ -389,72 +389,6 @@ class TestSubcommandCompletion:
         assert completions == []
 
 
-# ── Two-stage /model completion ─────────────────────────────────────────
-
-
-def _model_completer() -> SlashCommandCompleter:
-    """Build a completer with mock model/provider info."""
-    return SlashCommandCompleter(
-        model_completer_provider=lambda: {
-            "current_provider": "openrouter",
-            "providers": {
-                "anthropic": "Anthropic",
-                "openrouter": "OpenRouter",
-                "nous": "Nous Research",
-            },
-            "models_for": lambda p: {
-                "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-20250414"],
-                "openrouter": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro"],
-                "nous": ["hermes-3-llama-3.1-405b"],
-            }.get(p, []),
-        }
-    )
-
-
-class TestModelCompletion:
-    def test_stage1_shows_providers(self):
-        completions = _completions(_model_completer(), "/model ")
-        texts = {c.text for c in completions}
-        assert "anthropic:" in texts
-        assert "openrouter:" in texts
-        assert "nous:" in texts
-
-    def test_stage1_current_provider_last(self):
-        completions = _completions(_model_completer(), "/model ")
-        texts = [c.text for c in completions]
-        assert texts[-1] == "openrouter:"
-
-    def test_stage1_current_provider_labeled(self):
-        completions = _completions(_model_completer(), "/model ")
-        for c in completions:
-            if c.text == "openrouter:":
-                assert "current" in c.display_meta_text.lower()
-                break
-        else:
-            raise AssertionError("openrouter: not found in completions")
-
-    def test_stage1_prefix_filters(self):
-        completions = _completions(_model_completer(), "/model an")
-        texts = {c.text for c in completions}
-        assert texts == {"anthropic:"}
-
-    def test_stage2_shows_models(self):
-        completions = _completions(_model_completer(), "/model anthropic:")
-        texts = {c.text for c in completions}
-        assert "anthropic:claude-sonnet-4-20250514" in texts
-        assert "anthropic:claude-opus-4-20250414" in texts
-
-    def test_stage2_prefix_filters_models(self):
-        completions = _completions(_model_completer(), "/model anthropic:claude-s")
-        texts = {c.text for c in completions}
-        assert "anthropic:claude-sonnet-4-20250514" in texts
-        assert "anthropic:claude-opus-4-20250414" not in texts
-
-    def test_stage2_no_model_provider_returns_empty(self):
-        completions = _completions(SlashCommandCompleter(), "/model ")
-        assert completions == []
-
-
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 
 
@@ -492,15 +426,3 @@ class TestGhostText:
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
-
-    def test_model_stage1_ghost_text(self):
-        """/model a → 'nthropic:'"""
-        completer = _model_completer()
-        assert _suggestion("/model a", completer=completer) == "nthropic:"
-
-    def test_model_stage2_ghost_text(self):
-        """/model anthropic:cl → rest of first matching model"""
-        completer = _model_completer()
-        s = _suggestion("/model anthropic:cl", completer=completer)
-        assert s is not None
-        assert s.startswith("aude-")

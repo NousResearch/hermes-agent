@@ -87,6 +87,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "zai": [
         "glm-5",
+        "glm-5-turbo",
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
@@ -345,6 +346,15 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+            # Support custom:name:model triple syntax for named custom
+            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
+            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
+            if provider_part == "custom" and ":" in model_part:
+                second_colon = model_part.find(":")
+                custom_name = model_part[:second_colon].strip()
+                actual_model = model_part[second_colon + 1:].strip()
+                if custom_name and actual_model:
+                    return (f"custom:{custom_name}", actual_model)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

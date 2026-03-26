@@ -232,19 +232,34 @@ browser:
 # 1. Tracks actual token usage from API responses (not estimates)
 # 2. When prompt_tokens >= threshold% of model's context_length, triggers compression
 # 3. Protects first 3 turns (system prompt, initial request, first response)
-# 4. Protects last 4 turns (recent context is most relevant)
+# 4. Protects last N turns (default 20 messages = ~10 full turns of recent context)
 # 5. Summarizes middle turns using a fast/cheap model
 # 6. Inserts summary as a user message, continues conversation seamlessly
+#
+# Post-compression tail budget is target_ratio × threshold × context_length:
+#   200K context, threshold 0.50, ratio 0.20 → 20K tokens of recent tail preserved
+#   1M   context, threshold 0.50, ratio 0.20 → 100K tokens of recent tail preserved
 #
 compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
   
-  # Trigger compression at this % of model's context limit (default: 0.85 = 85%)
+  # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
-  threshold: 0.85
+  threshold: 0.50
   
+  # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
+  # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
+  # Summary output is separately capped at 12K tokens (Gemini output limit).
+  # Range: 0.10 - 0.80
+  target_ratio: 0.20
+
+  # Number of most-recent messages to always preserve (default: 20 ≈ 10 full turns)
+  # Higher values keep more recent conversation intact at the cost of more aggressive
+  # compression of older turns.
+  protect_last_n: 20
+
   # Model to use for generating summaries (fast/cheap recommended)
   # This model compresses the middle turns into a concise summary.
   # IMPORTANT: it receives the full middle section of the conversation, so it

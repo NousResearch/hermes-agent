@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_sync import (
+    _get_bundled_dir,
     _read_manifest,
     _write_manifest,
     _discover_bundled_skills,
@@ -467,3 +468,24 @@ class TestSyncSkills:
         new_bundled_hash = _dir_hash(bundled / "old-skill")
         assert manifest["old-skill"] == new_bundled_hash
         assert manifest["old-skill"] != old_hash
+
+
+class TestGetBundledDir:
+    def test_env_var_override(self, tmp_path, monkeypatch):
+        """HERMES_BUNDLED_SKILLS env var overrides the default path resolution."""
+        custom_dir = tmp_path / "custom_skills"
+        custom_dir.mkdir()
+        monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(custom_dir))
+        assert _get_bundled_dir() == custom_dir
+
+    def test_default_without_env_var(self, monkeypatch):
+        """Without the env var, falls back to relative path from __file__."""
+        monkeypatch.delenv("HERMES_BUNDLED_SKILLS", raising=False)
+        result = _get_bundled_dir()
+        assert result.name == "skills"
+
+    def test_env_var_empty_string_ignored(self, monkeypatch):
+        """Empty HERMES_BUNDLED_SKILLS should fall back to default."""
+        monkeypatch.setenv("HERMES_BUNDLED_SKILLS", "")
+        result = _get_bundled_dir()
+        assert result.name == "skills"

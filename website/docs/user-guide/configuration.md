@@ -55,6 +55,22 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+## Environment Variable Substitution
+
+You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:
+
+```yaml
+auxiliary:
+  vision:
+    api_key: ${GOOGLE_API_KEY}
+    base_url: ${CUSTOM_VISION_URL}
+
+delegation:
+  api_key: ${DELEGATION_KEY}
+```
+
+Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
+
 ## Inference Providers
 
 You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
@@ -214,24 +230,57 @@ Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server impl
 
 ### General Setup
 
-Two ways to configure a custom endpoint:
+Three ways to configure a custom endpoint:
 
-**Interactive (recommended):**
+**Interactive setup (recommended):**
 ```bash
 hermes model
 # Select "Custom endpoint (self-hosted / VLLM / etc.)"
 # Enter: API base URL, API key, Model name
 ```
 
-**Manual (`.env` file):**
+**Manual config (`config.yaml`):**
+```yaml
+# In ~/.hermes/config.yaml
+model:
+  default: your-model-name
+  provider: custom
+  base_url: http://localhost:8000/v1
+  api_key: your-key-or-leave-empty-for-local
+```
+
+**Environment variables (`.env` file):**
 ```bash
 # Add to ~/.hermes/.env
 OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=***
+OPENAI_API_KEY=your-key     # Any non-empty string for local servers
 LLM_MODEL=your-model-name
 ```
 
-`hermes model` and the manual `.env` approach end up in the same runtime path. If you save a custom endpoint through `hermes model`, Hermes persists the provider + base URL in `config.yaml` so later sessions keep using that endpoint even if `OPENAI_BASE_URL` is not exported in your current shell.
+All three approaches end up in the same runtime path. `hermes model` persists provider, model, and base URL to `config.yaml` so later sessions keep using that endpoint even if env vars are not set.
+
+### Switching Models with `/model`
+
+Once a custom endpoint is configured, you can switch models mid-session:
+
+```
+/model custom:qwen-2.5          # Switch to a model on your custom endpoint
+/model custom                    # Auto-detect the model from the endpoint
+/model openrouter:claude-sonnet-4 # Switch back to a cloud provider
+```
+
+If you have **named custom providers** configured (see below), use the triple syntax:
+
+```
+/model custom:local:qwen-2.5    # Use the "local" custom provider with model qwen-2.5
+/model custom:work:llama3       # Use the "work" custom provider with llama3
+```
+
+When switching providers, Hermes persists the base URL and provider to config so the change survives restarts. When switching away from a custom endpoint to a built-in provider, the stale base URL is automatically cleared.
+
+:::tip
+`/model custom` (bare, no model name) queries your endpoint's `/models` API and auto-selects the model if exactly one is loaded. Useful for local servers running a single model.
+:::
 
 Everything below follows this same pattern — just change the URL, key, and model name.
 
@@ -287,7 +336,7 @@ vLLM supports tool calling, structured output, and multi-modal models. Use `--en
 
 ```bash
 # Start SGLang server
-pip install sglang[all]
+pip install "sglang[all]"
 python -m sglang.launch_server \
   --model meta-llama/Llama-3.1-70B-Instruct \
   --port 8000 \
@@ -330,7 +379,7 @@ Download GGUF models from [Hugging Face](https://huggingface.co/models?library=g
 
 ```bash
 # Install and start
-pip install litellm[proxy]
+pip install "litellm[proxy]"
 litellm --model anthropic/claude-sonnet-4 --port 4000
 
 # Or with a config file for multiple models:
@@ -459,6 +508,37 @@ custom_providers:
 - You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
 - You're running behind a proxy that doesn't expose `/v1/models`
 :::
+
+---
+
+### Named Custom Providers
+
+If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`:
+
+```yaml
+custom_providers:
+  - name: local
+    base_url: http://localhost:8080/v1
+    # api_key omitted — Hermes uses "no-key-required" for keyless local servers
+  - name: work
+    base_url: https://gpu-server.internal.corp/v1
+    api_key: corp-api-key
+    api_mode: chat_completions   # optional, auto-detected from URL
+  - name: anthropic-proxy
+    base_url: https://proxy.example.com/anthropic
+    api_key: proxy-key
+    api_mode: anthropic_messages  # for Anthropic-compatible proxies
+```
+
+Switch between them mid-session with the triple syntax:
+
+```
+/model custom:local:qwen-2.5       # Use the "local" endpoint with qwen-2.5
+/model custom:work:llama3-70b      # Use the "work" endpoint with llama3-70b
+/model custom:anthropic-proxy:claude-sonnet-4  # Use the proxy
+```
+
+You can also select named custom providers from the interactive `hermes model` menu.
 
 ---
 
@@ -1265,6 +1345,23 @@ Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging
 - **Type** — only `exec` is supported (runs a shell command); other types show an error
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
+## Gateway Streaming
+
+Enable progressive token delivery on messaging platforms. When streaming is enabled, responses appear character-by-character in Telegram, Discord, and Slack via message editing, rather than waiting for the full response.
+
+```yaml
+streaming:
+  enabled: false              # Enable streaming token delivery (default: off)
+  transport: edit             # "edit" (progressive message editing) or "off"
+  edit_interval: 0.3          # Min seconds between message edits
+  buffer_threshold: 40        # Characters accumulated before forcing an edit
+  cursor: " ▉"               # Cursor character shown during streaming
+```
+
+**Platform support:** Telegram, Discord, and Slack support edit-based streaming. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
+
+**Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
+
 ## Human Delay
 
 Simulate human-like response pacing in messaging platforms:
@@ -1272,8 +1369,8 @@ Simulate human-like response pacing in messaging platforms:
 ```yaml
 human_delay:
   mode: "off"                  # off | natural | custom
-  min_ms: 500                  # Minimum delay (custom mode)
-  max_ms: 2000                 # Maximum delay (custom mode)
+  min_ms: 800                  # Minimum delay (custom mode)
+  max_ms: 2500                 # Maximum delay (custom mode)
 ```
 
 ## Code Execution
@@ -1285,6 +1382,27 @@ code_execution:
   timeout: 300                 # Max execution time in seconds
   max_tool_calls: 50           # Max tool calls within code execution
 ```
+
+## Web Search Backends
+
+The `web_search`, `web_extract`, and `web_crawl` tools support three backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+
+```yaml
+web:
+  backend: firecrawl    # firecrawl | parallel | tavily
+```
+
+| Backend | Env Var | Search | Extract | Crawl |
+|---------|---------|--------|---------|-------|
+| **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
+| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
+
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+
+**Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
+
+**Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
 ## Browser
 
@@ -1303,14 +1421,15 @@ The browser toolset supports multiple providers. See the [Browser feature page](
 Block specific domains from being accessed by the agent's web and browser tools:
 
 ```yaml
-website_blocklist:
-  enabled: false               # Enable URL blocking (default: false)
-  domains:                     # List of blocked domain patterns
-    - "*.internal.company.com"
-    - "admin.example.com"
-    - "*.local"
-  shared_files:                # Load additional rules from external files
-    - "/etc/hermes/blocked-sites.txt"
+security:
+  website_blocklist:
+    enabled: false               # Enable URL blocking (default: false)
+    domains:                     # List of blocked domain patterns
+      - "*.internal.company.com"
+      - "admin.example.com"
+      - "*.local"
+    shared_files:                # Load additional rules from external files
+      - "/etc/hermes/blocked-sites.txt"
 ```
 
 When enabled, any URL matching a blocked domain pattern is rejected before the web or browser tool executes. This applies to `web_search`, `web_extract`, `browser_navigate`, and any tool that accesses URLs.
@@ -1329,19 +1448,20 @@ The policy is cached for 30 seconds, so config changes take effect quickly witho
 Control how Hermes handles potentially dangerous commands:
 
 ```yaml
-approval_mode: ask   # ask | smart | off
+approvals:
+  mode: manual   # manual | smart | off
 ```
 
 | Mode | Behavior |
 |------|----------|
-| `ask` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
+| `manual` (default) | Prompt the user before executing any flagged command. In the CLI, shows an interactive approval dialog. In messaging, queues a pending approval request. |
 | `smart` | Use an auxiliary LLM to assess whether a flagged command is actually dangerous. Low-risk commands are auto-approved with session-level persistence. Genuinely risky commands are escalated to the user. |
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
 :::warning
-Setting `approval_mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
+Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::
 
 ## Checkpoints
@@ -1350,7 +1470,7 @@ Automatic filesystem snapshots before destructive file operations. See the [Chec
 
 ```yaml
 checkpoints:
-  enabled: false                 # Enable automatic checkpoints (also: hermes --checkpoints)
+  enabled: true                  # Enable automatic checkpoints (also: hermes --checkpoints)
   max_snapshots: 50              # Max checkpoints to keep per directory
 ```
 
@@ -1361,11 +1481,6 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
-  max_iterations: 50           # Max iterations per subagent
-  default_toolsets:             # Toolsets available to subagents
-    - terminal
-    - file
-    - web
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -1396,12 +1511,15 @@ Hermes uses two different context scopes:
 | File | Purpose | Scope |
 |------|---------|-------|
 | `SOUL.md` | **Primary agent identity** — defines who the agent is (slot #1 in the system prompt) | `~/.hermes/SOUL.md` or `$HERMES_HOME/SOUL.md` |
-| `AGENTS.md` | Project-specific instructions, coding conventions | Working directory / project tree |
-| `.cursorrules` | Cursor IDE rules (also detected) | Working directory |
-| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory |
+| `.hermes.md` / `HERMES.md` | Project-specific instructions (highest priority) | Walks to git root |
+| `AGENTS.md` | Project-specific instructions, coding conventions | Recursive directory walk |
+| `CLAUDE.md` | Claude Code context files (also detected) | Working directory only |
+| `.cursorrules` | Cursor IDE rules (also detected) | Working directory only |
+| `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory only |
 
 - **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
 - If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
+- **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
 - All loaded context files are capped at 20,000 characters with smart truncation.

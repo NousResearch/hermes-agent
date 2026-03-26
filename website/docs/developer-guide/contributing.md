@@ -49,7 +49,6 @@ export VIRTUAL_ENV="$(pwd)/venv"
 
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
-uv pip install -e "./mini-swe-agent"
 uv pip install -e "./tinker-atropos"
 
 # Optional: browser tools

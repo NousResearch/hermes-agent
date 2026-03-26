@@ -16,7 +16,7 @@ Import chain (circular-import safe):
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,13 @@ class ToolRegistry:
         emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        existing = self._tools.get(name)
+        if existing and existing.toolset != toolset:
+            logger.warning(
+                "Tool name collision: '%s' (toolset '%s') is being "
+                "overwritten by toolset '%s'",
+                name, existing.toolset, toolset,
+            )
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,

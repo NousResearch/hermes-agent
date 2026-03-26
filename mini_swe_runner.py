@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Mini-SWE-Agent Runner with Hermes Trajectory Format
+SWE Runner with Hermes Trajectory Format
 
-This module provides a runner that uses mini-swe-agent's execution environments
-(local, docker, modal) but outputs trajectories in the Hermes-Agent format
+A runner that uses Hermes-Agent's built-in execution environments
+(local, docker, modal) and outputs trajectories in the Hermes-Agent format
 compatible with batch_runner.py and trajectory_compressor.py.
 
 Features:
-- Uses mini-swe-agent's Docker, Modal, or Local environments for command execution
+- Uses Hermes-Agent's Docker, Modal, or Local environments for command execution
 - Outputs trajectories in Hermes format (from/value pairs with <tool_call>/<tool_response> XML)
 - Compatible with the trajectory compression pipeline
 - Supports batch processing from JSONL prompt files
@@ -42,11 +42,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Add mini-swe-agent to path if not installed. In git worktrees the populated
-# submodule may live in the main checkout rather than the worktree itself.
-from minisweagent_path import ensure_minisweagent_on_path
 
-ensure_minisweagent_on_path(Path(__file__).resolve().parent)
 
 
 # ============================================================================
@@ -110,7 +106,7 @@ def create_environment(
     **kwargs
 ):
     """
-    Create an execution environment from mini-swe-agent.
+    Create an execution environment using Hermes-Agent's built-in backends.
     
     Args:
         env_type: One of "local", "docker", "modal"
@@ -120,19 +116,19 @@ def create_environment(
         **kwargs: Additional environment-specific options
         
     Returns:
-        Environment instance with execute() method
+        Environment instance with execute() and cleanup() methods
     """
     if env_type == "local":
-        from minisweagent.environments.local import LocalEnvironment
+        from tools.environments.local import LocalEnvironment
         return LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
-        from minisweagent.environments.docker import DockerEnvironment
+        from tools.environments.docker import DockerEnvironment
         return DockerEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
     
     elif env_type == "modal":
-        from minisweagent.environments.extra.swerex_modal import SwerexModalEnvironment
-        return SwerexModalEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
+        from tools.environments.modal import ModalEnvironment
+        return ModalEnvironment(image=image, cwd=cwd, timeout=timeout, **kwargs)
     
     else:
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
@@ -144,8 +140,8 @@ def create_environment(
 
 class MiniSWERunner:
     """
-    Agent runner that uses mini-swe-agent environments but outputs
-    trajectories in Hermes-Agent format.
+    Agent runner that uses Hermes-Agent's built-in execution environments
+    and outputs trajectories in Hermes-Agent format.
     """
     
     def __init__(
@@ -221,7 +217,7 @@ class MiniSWERunner:
         # Tool definition
         self.tools = [TERMINAL_TOOL_DEFINITION]
         
-        print(f"🤖 Mini-SWE Runner initialized")
+        print("🤖 Mini-SWE Runner initialized")
         print(f"   Model: {self.model}")
         print(f"   Environment: {self.env_type}")
         if self.env_type != "local":
@@ -237,7 +233,7 @@ class MiniSWERunner:
             cwd=self.cwd,
             timeout=self.command_timeout
         )
-        print(f"✅ Environment ready")
+        print("✅ Environment ready")
     
     def _cleanup_env(self):
         """Cleanup the execution environment."""
@@ -369,7 +365,7 @@ class MiniSWERunner:
                         except (json.JSONDecodeError, AttributeError):
                             pass
                         
-                        tool_response = f"<tool_response>\n"
+                        tool_response = "<tool_response>\n"
                         tool_response += json.dumps({
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
                             "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] \
@@ -509,7 +505,7 @@ Complete the user's task step by step."""
                         
                         # Check for task completion signal
                         if "MINI_SWE_AGENT_FINAL_OUTPUT" in result["output"]:
-                            print(f"   ✅ Task completion signal detected!")
+                            print("   ✅ Task completion signal detected!")
                             completed = True
                         
                         # Add tool response
@@ -534,7 +530,7 @@ Complete the user's task step by step."""
                         "content": final_response
                     })
                     completed = True
-                    print(f"🎉 Agent finished (no more tool calls)")
+                    print("🎉 Agent finished (no more tool calls)")
                     break
             
             if api_call_count >= self.max_iterations:
@@ -618,7 +614,7 @@ Complete the user's task step by step."""
 def main(
     task: str = None,
     prompts_file: str = None,
-    output_file: str = "mini-swe-agent-test1.jsonl",
+    output_file: str = "swe-runner-test1.jsonl",
     model: str = "claude-sonnet-4-20250514",
     base_url: str = None,
     api_key: str = None,
@@ -630,7 +626,7 @@ def main(
     verbose: bool = False,
 ):
     """
-    Run mini-swe-agent tasks with Hermes trajectory format output.
+    Run SWE tasks with Hermes trajectory format output.
     
     Args:
         task: Single task to run (use this OR prompts_file)

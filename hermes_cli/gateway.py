@@ -14,7 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value
+from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -134,7 +134,7 @@ def get_service_name() -> str:
     """
     import hashlib
     from pathlib import Path as _Path  # local import to avoid monkeypatch interference
-    home = _Path(os.getenv("HERMES_HOME", _Path.home() / ".hermes")).resolve()
+    home = get_hermes_home().resolve()
     default = (_Path.home() / ".hermes").resolve()
     if home == default:
         return _SERVICE_BASE
@@ -371,13 +371,37 @@ def print_systemd_linger_guidance() -> None:
 def get_launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
 
+def _detect_venv_dir() -> Path | None:
+    """Detect the active virtualenv directory.
+
+    Checks ``sys.prefix`` first (works regardless of the directory name),
+    then falls back to probing common directory names under PROJECT_ROOT.
+    Returns ``None`` when no virtualenv can be found.
+    """
+    # If we're running inside a virtualenv, sys.prefix points to it.
+    if sys.prefix != sys.base_prefix:
+        venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    # Fallback: check common virtualenv directory names under the project root.
+    for candidate in (".venv", "venv"):
+        venv = PROJECT_ROOT / candidate
+        if venv.is_dir():
+            return venv
+
+    return None
+
+
 def get_python_path() -> str:
-    if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    venv = _detect_venv_dir()
+    if venv is not None:
+        if is_windows():
+            venv_python = venv / "Scripts" / "python.exe"
+        else:
+            venv_python = venv / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
     return sys.executable
 
 def get_hermes_cli_path() -> str:
@@ -399,8 +423,9 @@ def get_hermes_cli_path() -> str:
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    detected_venv = _detect_venv_dir()
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
@@ -412,7 +437,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
     sane_path = ":".join(path_entries)
 
-    hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
+    hermes_home = str(get_hermes_home().resolve())
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -1307,9 +1332,9 @@ def _setup_standard_platform(platform: dict):
 
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
-            print_info(f"  The gateway DENIES all users by default for security.")
-            print_info(f"  Enter user IDs to create an allowlist, or leave empty")
-            print_info(f"  and you'll be asked about open access next.")
+            print_info("  The gateway DENIES all users by default for security.")
+            print_info("  Enter user IDs to create an allowlist, or leave empty")
+            print_info("  and you'll be asked about open access next.")
             value = prompt(f"  {var['prompt']}", password=False)
             if value:
                 cleaned = value.replace(" ", "")
@@ -1326,7 +1351,7 @@ def _setup_standard_platform(platform: dict):
                             parts.append(uid)
                     cleaned = ",".join(parts)
                 save_env_value(var["name"], cleaned)
-                print_success(f"  Saved — only these users can interact with the bot.")
+                print_success("  Saved — only these users can interact with the bot.")
                 allowed_val_set = cleaned
             else:
                 # No allowlist — ask about open access vs DM pairing
@@ -1355,7 +1380,7 @@ def _setup_standard_platform(platform: dict):
             print_warning(f"  Skipped — {label} won't work without this.")
             return
         else:
-            print_info(f"  Skipped (can configure later)")
+            print_info("  Skipped (can configure later)")
 
     # If an allowlist was set and home channel wasn't, offer to reuse
     # the first user ID (common for Telegram DMs).
@@ -1531,12 +1556,15 @@ def _setup_signal():
     print_success("Signal configured!")
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
-    print_info(f"  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
+    print_info("  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
+    if is_managed():
+        managed_error("run gateway setup")
+        return
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
@@ -1691,6 +1719,9 @@ def gateway_command(args):
 
     # Service management commands
     if subcmd == "install":
+        if is_managed():
+            managed_error("install gateway service (managed by NixOS)")
+            return
         force = getattr(args, 'force', False)
         system = getattr(args, 'system', False)
         run_as_user = getattr(args, 'run_as_user', None)
@@ -1704,6 +1735,9 @@ def gateway_command(args):
             sys.exit(1)
     
     elif subcmd == "uninstall":
+        if is_managed():
+            managed_error("uninstall gateway service (managed by NixOS)")
+            return
         system = getattr(args, 'system', False)
         if is_linux():
             systemd_uninstall(system=system)

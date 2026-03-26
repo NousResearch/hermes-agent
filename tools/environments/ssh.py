@@ -87,7 +87,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
-    _poll_interval: float = 0.15
+    _poll_interval_start: float = 0.15  # SSH: higher initial interval (150ms) for network latency
 
     @property
     def _temp_prefix(self) -> str:

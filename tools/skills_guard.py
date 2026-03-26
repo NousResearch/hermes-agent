@@ -1050,6 +1050,9 @@ def _get_configured_model() -> str:
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
+    # Agent-created skills get their own permissive trust level
+    if source == "agent-created":
+        return "agent-created"
     # Official optional skills shipped with the repo
     if source.startswith("official/") or source == "official":
         return "builtin"

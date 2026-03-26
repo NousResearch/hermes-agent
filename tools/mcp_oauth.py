@@ -156,7 +156,7 @@ async def _redirect_to_browser(auth_url: str) -> None:
     try:
         if _can_open_browser():
             webbrowser.open(auth_url)
-            print(f"  Opened browser for authorization...")
+            print("  Opened browser for authorization...")
         else:
             print(f"\n  Open this URL to authorize:\n  {auth_url}\n")
     except Exception:

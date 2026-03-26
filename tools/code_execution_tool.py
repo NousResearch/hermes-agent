@@ -428,21 +428,34 @@ def execute_code(
         # Build a minimal environment for the child. We intentionally exclude
         # API keys and tokens to prevent credential exfiltration from LLM-
         # generated scripts. The child accesses tools via RPC, not direct API.
+        # Exception: env vars declared by loaded skills (via env_passthrough
+        # registry) or explicitly allowed by the user in config.yaml
+        # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                               "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
+        try:
+            from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        except Exception:
+            _is_passthrough = lambda _: False  # noqa: E731
         child_env = {}
         for k, v in os.environ.items():
+            # Passthrough vars (skill-declared or user-configured) always pass.
+            if _is_passthrough(k):
+                child_env[k] = v
+                continue
+            # Block vars with secret-like names.
             if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
                 continue
+            # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
-        # modules like minisweagent_path are available to child scripts.
+        # repo-root modules are available to child scripts.
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _existing_pp = child_env.get("PYTHONPATH", "")
         child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
@@ -576,6 +589,12 @@ def execute_code(
         server_sock.close()  # break accept() so thread exits promptly
         server_sock = None  # prevent double close in finally
         rpc_thread.join(timeout=3)
+
+        # Strip ANSI escape sequences so the model never sees terminal
+        # formatting — prevents it from copying escapes into file writes.
+        from tools.ansi_strip import strip_ansi
+        stdout_text = strip_ansi(stdout_text)
+        stderr_text = strip_ansi(stderr_text)
 
         # Build response
         result: Dict[str, Any] = {

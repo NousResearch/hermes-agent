@@ -53,7 +53,16 @@ hermes model
 # Context length: 32768   ← set this to match your server's actual context window
 ```
 
-Hermes persists the endpoint in `config.yaml` and prompts for the context window size so compression triggers at the right time. If you leave context length blank, Hermes auto-detects it from the server's `/models` endpoint or [models.dev](https://models.dev).
+Or configure it directly in `config.yaml`:
+
+```yaml
+model:
+  default: qwen3.5:27b
+  provider: custom
+  base_url: http://localhost:11434/v1
+```
+
+Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
@@ -84,7 +93,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 from hermes.agent import AIAgent
 
 agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
-response = await agent.chat("Explain quantum computing briefly")
+response = agent.chat("Explain quantum computing briefly")
 ```
 
 See the [Python Library guide](../user-guide/features/code-execution.md) for full API usage.
@@ -166,8 +175,8 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 **Solution:**
 ```bash
-# Check which keys are set
-hermes config get OPENROUTER_API_KEY
+# Check your configuration
+hermes config show
 
 # Re-configure your provider
 hermes model
@@ -187,7 +196,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 **Solution:**
 ```bash
 # List available models for your provider
-hermes models
+hermes model
 
 # Set a valid model
 hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
@@ -223,10 +232,7 @@ hermes chat --model openrouter/google/gemini-2.0-flash-001
 
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
 
-```bash
-# Look at the status bar — it shows the detected context length
-/context
-```
+Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
 To fix context detection, set it explicitly:
 
@@ -309,7 +315,7 @@ hermes gateway status
 hermes gateway start
 
 # Check logs for errors
-hermes gateway logs
+cat ~/.hermes/logs/gateway.log | tail -50
 ```
 
 #### Messages not delivering
@@ -318,7 +324,7 @@ hermes gateway logs
 
 **Solution:**
 - Verify your bot token is valid with `hermes gateway setup`
-- Check gateway logs: `hermes gateway logs`
+- Check gateway logs: `cat ~/.hermes/logs/gateway.log | tail -50`
 - For webhook-based platforms (Slack, WhatsApp), ensure your server is publicly accessible
 
 #### Allowlist confusion — who can talk to the bot?
@@ -342,7 +348,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install messaging dependencies
-pip install hermes-agent[telegram]   # or [discord], [slack], [whatsapp]
+pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
 
 # Check for port conflicts
 lsof -i :8080
@@ -374,8 +380,8 @@ hermes config show
 # Compress the conversation to reduce tokens
 /compress
 
-# Check session token count
-/stats
+# Check session token usage
+/usage
 ```
 
 :::tip

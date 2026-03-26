@@ -257,25 +257,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
-def _platform_config_key(platform: "Platform") -> str:
-    """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
-    return "cli" if platform == Platform.LOCAL else platform.value
-
-
-def _load_gateway_config() -> dict:
-    """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
-    try:
-        config_path = _hermes_home / 'config.yaml'
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-    except Exception:
-        logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
-    return {}
-
-
-def _resolve_gateway_model(config: dict | None = None) -> str:
+def _resolve_gateway_model() -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
     Without this, temporary AIAgent instances (memory flush, /compress) fall
@@ -283,12 +265,19 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     when the active provider is openai-codex.
     """
     model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
-    cfg = config if config is not None else _load_gateway_config()
-    model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, str):
-        model = model_cfg
-    elif isinstance(model_cfg, dict):
-        model = model_cfg.get("default", model)
+    try:
+        import yaml as _y
+        _cfg_path = _hermes_home / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                _cfg = _y.safe_load(_f) or {}
+            _model_cfg = _cfg.get("model", {})
+            if isinstance(_model_cfg, str):
+                model = _model_cfg
+            elif isinstance(_model_cfg, dict):
+                model = _model_cfg.get("default", model)
+    except Exception:
+        pass
     return model
 
 
@@ -413,9 +402,6 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
-
-        # Track background tasks to prevent garbage collection mid-execution
-        self._background_tasks: set = set()
 
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
@@ -1301,11 +1287,6 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
 
-        # Cancel any pending background tasks
-        for _task in list(self._background_tasks):
-            _task.cancel()
-        self._background_tasks.clear()
-
         self.adapters.clear()
         self._running_agents.clear()
         self._pending_messages.clear()
@@ -1715,9 +1696,6 @@ class GatewayRunner:
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
-
-        if canonical == "verbose":
-            return await self._handle_verbose_command(event)
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -2748,11 +2726,9 @@ class GatewayRunner:
         try:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
-                _flush_task = asyncio.create_task(
+                asyncio.create_task(
                     self._async_flush_memories(old_entry.session_id, session_key)
                 )
-                self._background_tasks.add(_flush_task)
-                _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
 
@@ -2959,8 +2935,11 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = ""
-                with open(config_path, "w") as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                import tempfile as _tf
+                with _tf.NamedTemporaryFile(mode="w", suffix=".tmp", dir=os.path.dirname(str(config_path)), delete=False) as _t:
+                    yaml.dump(config, _t, default_flow_style=False, sort_keys=False)
+                    _tp = _t.name
+                os.replace(_tp, config_path)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
             self._ephemeral_system_prompt = ""
@@ -2973,8 +2952,11 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = new_prompt
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                import tempfile as _tf
+                with _tf.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".tmp", dir=os.path.dirname(str(config_path)), delete=False) as _t:
+                    yaml.dump(config, _t, default_flow_style=False, sort_keys=False)
+                    _tp = _t.name
+                os.replace(_tp, config_path)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
 
@@ -3064,8 +3046,11 @@ class GatewayRunner:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config[env_key] = chat_id
-            with open(config_path, 'w', encoding="utf-8") as f:
-                yaml.dump(user_config, f, default_flow_style=False)
+            import tempfile as _tf, os as _os
+            with _tf.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".tmp", dir=os.path.dirname(str(config_path)), delete=False) as _t:
+                yaml.dump(user_config, _t, default_flow_style=False)
+                _tp = _t.name
+            _os.replace(_tp, config_path)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
         except Exception as e:
@@ -3565,11 +3550,9 @@ class GatewayRunner:
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
 
         # Fire-and-forget the background task
-        _task = asyncio.create_task(
+        asyncio.create_task(
             self._run_background_task(prompt, source, task_id)
         )
-        self._background_tasks.add(_task)
-        _task.add_done_callback(self._background_tasks.discard)
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
@@ -3597,12 +3580,52 @@ class GatewayRunner:
                 )
                 return
 
-            user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
-            platform_key = _platform_config_key(source.platform)
+            # Read model from config via shared helper
+            model = _resolve_gateway_model()
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            # Determine toolset (same logic as _run_agent)
+            default_toolset_map = {
+                Platform.LOCAL: "hermes-cli",
+                Platform.TELEGRAM: "hermes-telegram",
+                Platform.DISCORD: "hermes-discord",
+                Platform.WHATSAPP: "hermes-whatsapp",
+                Platform.SLACK: "hermes-slack",
+                Platform.SIGNAL: "hermes-signal",
+                Platform.HOMEASSISTANT: "hermes-homeassistant",
+                Platform.EMAIL: "hermes-email",
+                Platform.DINGTALK: "hermes-dingtalk",
+            }
+            platform_toolsets_config = {}
+            try:
+                config_path = _hermes_home / 'config.yaml'
+                if config_path.exists():
+                    import yaml
+                    with open(config_path, 'r', encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                    platform_toolsets_config = user_config.get("platform_toolsets", {})
+            except Exception:
+                pass
+
+            platform_config_key = {
+                Platform.LOCAL: "cli",
+                Platform.TELEGRAM: "telegram",
+                Platform.DISCORD: "discord",
+                Platform.WHATSAPP: "whatsapp",
+                Platform.SLACK: "slack",
+                Platform.SIGNAL: "signal",
+                Platform.HOMEASSISTANT: "homeassistant",
+                Platform.EMAIL: "email",
+                Platform.DINGTALK: "dingtalk",
+            }.get(source.platform, "telegram")
+
+            config_toolsets = platform_toolsets_config.get(platform_config_key)
+            if config_toolsets and isinstance(config_toolsets, list):
+                enabled_toolsets = config_toolsets
+            else:
+                default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+                enabled_toolsets = [default_toolset]
+
+            platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -3733,8 +3756,11 @@ class GatewayRunner:
                         current[k] = {}
                     current = current[k]
                 current[keys[-1]] = value
-                with open(config_path, "w", encoding="utf-8") as f:
-                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                import tempfile as _tf, os as _os
+                with _tf.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".tmp", dir=os.path.dirname(str(config_path)), delete=False) as _t:
+                    yaml.dump(user_config, _t, default_flow_style=False, sort_keys=False)
+                    _tp = _t.name
+                _os.replace(_tp, config_path)
                 return True
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
@@ -3786,68 +3812,6 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
-
-    async def _handle_verbose_command(self, event: MessageEvent) -> str:
-        """Handle /verbose command — cycle tool progress display mode.
-
-        Gated by ``display.tool_progress_command`` in config.yaml (default off).
-        When enabled, cycles the tool progress mode through off → new → all →
-        verbose → off, same as the CLI.
-        """
-        import yaml
-
-        config_path = _hermes_home / "config.yaml"
-
-        # --- check config gate ------------------------------------------------
-        try:
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            gate_enabled = user_config.get("display", {}).get("tool_progress_command", False)
-        except Exception:
-            gate_enabled = False
-
-        if not gate_enabled:
-            return (
-                "The `/verbose` command is not enabled for messaging platforms.\n\n"
-                "Enable it in `config.yaml`:\n```yaml\n"
-                "display:\n  tool_progress_command: true\n```"
-            )
-
-        # --- cycle mode -------------------------------------------------------
-        cycle = ["off", "new", "all", "verbose"]
-        descriptions = {
-            "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes.",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown.",
-            "verbose": "⚙️ Tool progress: **VERBOSE** — full args and results.",
-        }
-
-        raw_progress = user_config.get("display", {}).get("tool_progress", "all")
-        # YAML 1.1 parses bare "off" as boolean False — normalise back
-        if raw_progress is False:
-            current = "off"
-        elif raw_progress is True:
-            current = "all"
-        else:
-            current = str(raw_progress).lower()
-        if current not in cycle:
-            current = "all"
-        idx = (cycle.index(current) + 1) % len(cycle)
-        new_mode = cycle[idx]
-
-        # Save to config.yaml
-        try:
-            if "display" not in user_config or not isinstance(user_config.get("display"), dict):
-                user_config["display"] = {}
-            user_config["display"]["tool_progress"] = new_mode
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
-            return f"{descriptions[new_mode]}\n_(saved to config — takes effect on next message)_"
-        except Exception as e:
-            logger.warning("Failed to save tool_progress mode: %s", e)
-            return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
@@ -4006,11 +3970,9 @@ class GatewayRunner:
 
         # Flush memories for current session before switching
         try:
-            _flush_task = asyncio.create_task(
+            asyncio.create_task(
                 self._async_flush_memories(current_entry.session_id, session_key)
             )
-            self._background_tasks.add(_flush_task)
-            _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 
@@ -4734,18 +4696,10 @@ class GatewayRunner:
         prompt cache hits.
         """
         import hashlib, json as _j
-
-        # Fingerprint the FULL credential string instead of using a short
-        # prefix. OAuth/JWT-style tokens frequently share a common prefix
-        # (e.g. "eyJhbGci"), which can cause false cache hits across auth
-        # switches if only the first few characters are considered.
-        _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
-
         blob = _j.dumps(
             [
                 model,
-                _api_key_fingerprint,
+                runtime.get("api_key", "")[:8],  # first 8 chars only
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
@@ -4792,16 +4746,67 @@ class GatewayRunner:
         from run_agent import AIAgent
         import queue
         
-        user_config = _load_gateway_config()
-        platform_key = _platform_config_key(source.platform)
+        # Determine toolset based on platform.
+        # Check config.yaml for per-platform overrides, fallback to hardcoded defaults.
+        default_toolset_map = {
+            Platform.LOCAL: "hermes-cli",
+            Platform.TELEGRAM: "hermes-telegram",
+            Platform.DISCORD: "hermes-discord",
+            Platform.WHATSAPP: "hermes-whatsapp",
+            Platform.SLACK: "hermes-slack",
+            Platform.SIGNAL: "hermes-signal",
+            Platform.HOMEASSISTANT: "hermes-homeassistant",
+            Platform.EMAIL: "hermes-email",
+            Platform.DINGTALK: "hermes-dingtalk",
+        }
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        # Try to load platform_toolsets from config
+        platform_toolsets_config = {}
+        try:
+            config_path = _hermes_home / 'config.yaml'
+            if config_path.exists():
+                import yaml
+                with open(config_path, 'r', encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+                platform_toolsets_config = user_config.get("platform_toolsets", {})
+        except Exception as e:
+            logger.debug("Could not load platform_toolsets config: %s", e)
 
+        # Map platform enum to config key
+        platform_config_key = {
+            Platform.LOCAL: "cli",
+            Platform.TELEGRAM: "telegram",
+            Platform.DISCORD: "discord",
+            Platform.WHATSAPP: "whatsapp",
+            Platform.SLACK: "slack",
+            Platform.SIGNAL: "signal",
+            Platform.HOMEASSISTANT: "homeassistant",
+            Platform.EMAIL: "email",
+            Platform.DINGTALK: "dingtalk",
+        }.get(source.platform, "telegram")
+        
+        # Use config override if present (list of toolsets), otherwise hardcoded default
+        config_toolsets = platform_toolsets_config.get(platform_config_key)
+        if config_toolsets and isinstance(config_toolsets, list):
+            enabled_toolsets = config_toolsets
+        else:
+            default_toolset = default_toolset_map.get(source.platform, "hermes-telegram")
+            enabled_toolsets = [default_toolset]
+        
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility
+        _progress_cfg = {}
+        try:
+            _tp_cfg_path = _hermes_home / "config.yaml"
+            if _tp_cfg_path.exists():
+                import yaml as _tp_yaml
+                with open(_tp_cfg_path, encoding="utf-8") as _tp_f:
+                    _tp_data = _tp_yaml.safe_load(_tp_f) or {}
+                _progress_cfg = _tp_data.get("display", {})
+        except Exception:
+            pass
         progress_mode = (
-            user_config.get("display", {}).get("tool_progress")
+            _progress_cfg.get("tool_progress")
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
@@ -5024,7 +5029,7 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = _resolve_gateway_model(user_config)
+            model = _resolve_gateway_model()
 
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()

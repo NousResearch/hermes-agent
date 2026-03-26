@@ -464,14 +464,15 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
 
-    def test_recursive_agents_md(self, tmp_path):
+    def test_agents_md_top_level_only(self, tmp_path):
+        """AGENTS.md is loaded from cwd only — subdirectory copies are ignored."""
         (tmp_path / "AGENTS.md").write_text("Top level instructions.")
         sub = tmp_path / "src"
         sub.mkdir()
         (sub / "AGENTS.md").write_text("Src-specific instructions.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Top level" in result
-        assert "Src-specific" in result
+        assert "Src-specific" not in result
 
     # --- .hermes.md / HERMES.md discovery ---
 

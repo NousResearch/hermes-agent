@@ -198,12 +198,12 @@ async def test_command_messages_do_not_leave_sentinel():
 
 
 # ------------------------------------------------------------------
-# Test 6: /stop during sentinel returns helpful message
+# Test 6: /stop during sentinel force-cleans and unlocks session
 # ------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_stop_during_sentinel_returns_message():
+async def test_stop_during_sentinel_force_cleans_session():
     """If /stop arrives while the sentinel is set (agent still starting),
-    it should return a helpful message instead of crashing or queuing."""
+    it should force-clean the sentinel and unlock the session."""
     runner = _make_runner()
     event1 = _make_event(text="hello")
     session_key = build_session_key(event1.source)
@@ -221,11 +221,16 @@ async def test_stop_during_sentinel_returns_message():
         # Sentinel should be set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
 
-        # Send /stop — should get a message, not crash
+        # Send /stop — should force-clean the sentinel
         stop_event = _make_event(text="/stop")
         result = await runner._handle_message(stop_event)
         assert result is not None, "/stop during sentinel should return a message"
-        assert "starting up" in result.lower()
+        assert "force-stopped" in result.lower() or "unlocked" in result.lower()
+
+        # Sentinel must be cleaned up
+        assert session_key not in runner._running_agents, (
+            "/stop must remove sentinel so the session is unlocked"
+        )
 
         # Should NOT be queued as pending
         adapter = runner.adapters[Platform.TELEGRAM]
@@ -233,6 +238,73 @@ async def test_stop_during_sentinel_returns_message():
 
         barrier.set()
         await task1
+
+
+# ------------------------------------------------------------------
+# Test 6b: /stop hard-kills a running agent and unlocks session
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_stop_hard_kills_running_agent():
+    """When /stop arrives while a real agent is running, it must:
+    1. Call interrupt() on the agent
+    2. Force-clean _running_agents to unlock the session
+    3. Return a confirmation message
+    This fixes the bug where a hung agent kept the session locked
+    forever — showing 'writing...' but never producing output."""
+    runner = _make_runner()
+    session_key = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    )
+
+    # Simulate a running (possibly hung) agent
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+
+    # Send /stop
+    stop_event = _make_event(text="/stop")
+    result = await runner._handle_message(stop_event)
+
+    # Agent must have been interrupted
+    fake_agent.interrupt.assert_called_once_with("Stop requested")
+
+    # Session must be unlocked
+    assert session_key not in runner._running_agents, (
+        "/stop must remove the agent from _running_agents so the session is unlocked"
+    )
+
+    # Must return a confirmation
+    assert result is not None
+    assert "force-stopped" in result.lower() or "unlocked" in result.lower()
+
+
+# ------------------------------------------------------------------
+# Test 6c: /stop clears pending messages to prevent stale replays
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_stop_clears_pending_messages():
+    """When /stop hard-kills a running agent, any pending messages
+    queued during the run must be discarded."""
+    runner = _make_runner()
+    session_key = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+    )
+
+    fake_agent = MagicMock()
+    runner._running_agents[session_key] = fake_agent
+    runner._pending_messages[session_key] = "some queued text"
+
+    # Queue a pending message in the adapter too
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter._pending_messages[session_key] = _make_event(text="queued")
+    adapter.get_pending_message = MagicMock(return_value=_make_event(text="queued"))
+    adapter.has_pending_interrupt = MagicMock(return_value=False)
+
+    stop_event = _make_event(text="/stop")
+    await runner._handle_message(stop_event)
+
+    # Pending messages must be cleared
+    assert session_key not in runner._pending_messages
+    adapter.get_pending_message.assert_called_once_with(session_key)
 
 
 # ------------------------------------------------------------------

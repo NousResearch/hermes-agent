@@ -1873,6 +1873,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 
+            # After stripping the mention, if the message is empty and has no
+            # attachments the user just pinged the bot with nothing to say.
+            # Ignore it to avoid sending empty content to the API.  (#3143)
+            if not message.content and not message.attachments:
+                return
+
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.

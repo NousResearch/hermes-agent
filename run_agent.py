@@ -2415,6 +2415,19 @@ class AIAgent:
                 len(missing_results),
             )
 
+        # 3. Ensure no user message has empty content (#3143)
+        for msg in messages:
+            if msg.get("role") == "user":
+                c = msg.get("content")
+                if isinstance(c, str) and not c.strip():
+                    msg["content"] = "(empty message)"
+                elif isinstance(c, list):
+                    text_blocks = [b for b in c if b.get("type") == "text"]
+                    if text_blocks and all(not b.get("text", "").strip() for b in text_blocks):
+                        msg["content"] = [{"type": "text", "text": "(empty message)"}]
+                elif c is None:
+                    msg["content"] = "(empty message)"
+
         return messages
 
     @staticmethod

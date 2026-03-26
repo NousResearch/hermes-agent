@@ -94,11 +94,18 @@ def _is_oauth_token(key: str) -> bool:
 
     Regular API keys start with 'sk-ant-api'. Everything else (setup-tokens
     starting with 'sk-ant-oat', managed keys, JWTs, etc.) needs Bearer auth.
+
+    When a custom ANTHROPIC_BASE_URL is set (e.g. Sub2API proxy), treat all
+    non-OAuth-prefix keys as regular API keys — proxies expect x-api-key.
     """
     if not key:
         return False
     # Regular Console API keys use x-api-key header
     if key.startswith("sk-ant-api"):
+        return False
+    # Custom base URL set → likely a proxy (Sub2API, LiteLLM, etc.)
+    # that expects x-api-key header, not Bearer auth
+    if os.getenv("ANTHROPIC_BASE_URL"):
         return False
     # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
     return True
@@ -910,14 +917,20 @@ def convert_messages_to_anthropic(
                 result.append({"role": "user", "content": [tool_result]})
             continue
 
-        # Regular user message
+        # Regular user message — reject empty content (Anthropic requires non-empty)
         if isinstance(content, list):
             converted_blocks = _convert_content_to_anthropic(content)
+            if not converted_blocks or all(
+                b.get("text", "").strip() == "" for b in converted_blocks if b.get("type") == "text"
+            ):
+                converted_blocks = [{"type": "text", "text": "(empty message)"}]
             result.append({
                 "role": "user",
-                "content": converted_blocks or [{"type": "text", "text": ""}],
+                "content": converted_blocks,
             })
         else:
+            if not content or (isinstance(content, str) and not content.strip()):
+                content = "(empty message)"
             result.append({"role": "user", "content": content})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)

@@ -2087,6 +2087,15 @@ class GatewayRunner:
 
         # -----------------------------------------------------------------
         # Inject reply context when user replies to a message not in history.
+        # -----------------------------------------------------------------
+        # Guard: ensure message_text is never empty before sending to agent.
+        # Empty user messages cause Anthropic 400: "user messages must have
+        # non-empty content".  Common triggers: mention-only Discord msgs,
+        # unrecognised attachment types, stickers, etc.  (#3143)
+        # -----------------------------------------------------------------
+        if not message_text or not message_text.strip():
+            message_text = "(The user sent a message with no text content)"
+
         # Telegram (and other platforms) let users reply to specific messages,
         # but if the quoted message is from a previous session, cron delivery,
         # or background task, the agent has no context about what's being

@@ -172,7 +172,9 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            # YAML parses bare `off` as boolean False — coerce to string
+            reply_to_mode=("off" if data.get("reply_to_mode") is False
+                           else data.get("reply_to_mode", "first")),
             extra=data.get("extra", {}),
         )
 
@@ -199,9 +201,13 @@ class StreamingConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
         if not data:
             return cls()
+        # YAML parses bare `off` as boolean False — coerce to string
+        raw_transport = data.get("transport", "edit")
+        if isinstance(raw_transport, bool):
+            raw_transport = "off" if not raw_transport else "edit"
         return cls(
             enabled=data.get("enabled", False),
-            transport=data.get("transport", "edit"),
+            transport=raw_transport,
             edit_interval=float(data.get("edit_interval", 0.3)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),
             cursor=data.get("cursor", " ▉"),

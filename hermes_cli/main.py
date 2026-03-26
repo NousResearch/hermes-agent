@@ -2812,7 +2812,10 @@ def cmd_update(args):
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
             
             print()
-            response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            if sys.stdin.isatty():
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            else:
+                response = "n"
             
             if response in ('', 'y', 'yes'):
                 print()

@@ -14,6 +14,10 @@ import run_agent
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length",
+        lambda *args, **kwargs: 131072,
+    )
+    monkeypatch.setattr(
         run_agent,
         "get_tool_definitions",
         lambda **kwargs: [
@@ -62,6 +66,55 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
         max_iterations=4,
         skip_context_files=True,
         skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
+def _build_local_responses_agent(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="qwen3.5-27b",
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="http://localhost:1234/v1",
+        api_key="local-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
+def _build_anthropic_agent_with_local_fallback(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        api_mode="anthropic_messages",
+        base_url="https://api.anthropic.com",
+        api_key="anthropic-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        fallback_model={
+            "provider": "custom",
+            "api_mode": "codex_responses",
+            "base_url": "http://localhost:1234/v1",
+            "api_key": "local-token",
+            "model": "qwen3.5-27b",
+        },
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -287,6 +340,79 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "prompt_cache_key" not in kwargs
 
 
+def test_build_api_kwargs_local_responses_chains_previous_response_id(monkeypatch):
+    agent = _build_local_responses_agent(monkeypatch)
+    agent._responses_previous_response_id = "resp_prev"
+    agent._responses_stateful_instructions = "You are Hermes."
+    agent._responses_stateful_history_items = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+    agent._responses_stateful_raw_messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+    agent._responses_current_raw_messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+        {"role": "user", "content": "what next"},
+    ]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "what next"},
+        ]
+    )
+
+    assert kwargs["store"] is True
+    assert kwargs["previous_response_id"] == "resp_prev"
+    assert kwargs["input"] == [{"role": "user", "content": "what next"}]
+    assert "prompt_cache_key" not in kwargs
+    assert "include" not in kwargs
+
+
+def test_build_api_kwargs_local_responses_chains_when_prior_api_only_prefix_differs(monkeypatch):
+    agent = _build_local_responses_agent(monkeypatch)
+    agent._responses_previous_response_id = "resp_prev"
+    agent._responses_stateful_instructions = "You are Hermes."
+    agent._responses_stateful_history_items = [
+        {
+            "role": "user",
+            "content": (
+                "hello\n\n"
+                "Current local time: Wed Mar 26 2026 02:00 AM PDT\n"
+                "Session elapsed: 1m"
+            ),
+        },
+        {"role": "assistant", "content": "hi there"},
+    ]
+    agent._responses_stateful_raw_messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+    agent._responses_current_raw_messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+        {"role": "user", "content": "what next"},
+    ]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "what next"},
+        ]
+    )
+
+    assert kwargs["store"] is True
+    assert kwargs["previous_response_id"] == "resp_prev"
+    assert kwargs["input"] == [{"role": "user", "content": "what next"}]
+
+
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0}
@@ -457,7 +583,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -598,6 +724,17 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
     assert result["max_output_tokens"] == 4096
 
 
+def test_preflight_codex_api_kwargs_allows_stateful_responses_fields(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["store"] = True
+    kwargs["previous_response_id"] = "resp_123"
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+    assert result["store"] is True
+    assert result["previous_response_id"] == "resp_123"
+
+
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
@@ -609,7 +746,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -633,6 +770,125 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
     assert function_call["call_id"] == "call_1"
     assert "id" not in function_call
     assert function_output["call_id"] == "call_1"
+
+
+def test_run_conversation_local_responses_only_send_tool_output_after_first_turn(monkeypatch):
+    agent = _build_local_responses_agent(monkeypatch)
+    first = _codex_tool_call_response()
+    first.id = "resp_tool"
+    second = _codex_message_response("done")
+    second.id = "resp_done"
+    responses = [first, second]
+    requests = []
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": '{"ok":true}',
+                }
+            )
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("run a command")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "done"
+    assert len(requests) >= 2
+    assert requests[0]["store"] is True
+    assert "previous_response_id" not in requests[0]
+    assert requests[1]["previous_response_id"] == "resp_tool"
+    assert requests[1]["input"] == [
+        {"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'}
+    ]
+
+
+def test_run_conversation_local_responses_second_turn_only_sends_new_user_delta(monkeypatch):
+    agent = _build_local_responses_agent(monkeypatch)
+    first = _codex_message_response("hi there")
+    first.id = "resp_turn_1"
+    second = _codex_message_response("done")
+    second.id = "resp_turn_2"
+    responses = [first, second]
+    requests = []
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    first_result = agent.run_conversation("hello")
+    second_result = agent.run_conversation(
+        "what next",
+        conversation_history=first_result["messages"],
+    )
+
+    assert first_result["completed"] is True
+    assert second_result["completed"] is True
+    assert len(requests) == 2
+    assert "previous_response_id" not in requests[0]
+    assert requests[1]["previous_response_id"] == "resp_turn_1"
+    assert len(requests[1]["input"]) == 1
+    assert requests[1]["input"][0]["role"] == "user"
+    assert "what next" in requests[1]["input"][0]["content"]
+
+
+def test_fallback_from_anthropic_prompt_cache_rebuilds_plain_local_responses_request(monkeypatch):
+    agent = _build_anthropic_agent_with_local_fallback(monkeypatch)
+    first = _codex_message_response("fallback ok")
+    first.id = "resp_fallback_1"
+    second = _codex_message_response("done")
+    second.id = "resp_fallback_2"
+    fallback_responses = [first, second]
+    requests = []
+
+    class _RateLimitError(Exception):
+        def __init__(self, message="rate limit"):
+            super().__init__(message)
+            self.status_code = 429
+
+    def _fake_api_call(api_kwargs):
+        if agent.api_mode == "anthropic_messages":
+            raise _RateLimitError()
+        requests.append(api_kwargs)
+        return fallback_responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    first_result = agent.run_conversation(
+        "hello",
+        conversation_history=[
+            {"role": "user", "content": "older hello"},
+            {"role": "assistant", "content": "older hi", "reasoning": None, "finish_reason": "stop"},
+        ],
+    )
+    second_result = agent.run_conversation(
+        "what next",
+        conversation_history=first_result["messages"],
+    )
+
+    assert first_result["completed"] is True
+    assert second_result["completed"] is True
+    assert len(requests) == 2
+    assert requests[0]["instructions"].startswith("You are Hermes Agent")
+    assert not requests[0]["instructions"].startswith("[{'type': 'text'")
+    assert requests[0]["input"][-1]["role"] == "user"
+    assert "hello" in requests[0]["input"][-1]["content"]
+    assert not requests[0]["input"][-1]["content"].startswith("[{'type': 'text'")
+    assert requests[1]["previous_response_id"] == "resp_fallback_1"
+    assert len(requests[1]["input"]) == 1
+    assert requests[1]["input"][0]["role"] == "user"
+    assert "what next" in requests[1]["input"][0]["content"]
 
 
 def test_run_conversation_codex_continues_after_incomplete_interim_message(monkeypatch):

@@ -574,6 +574,18 @@ class AIAgent:
         is_native_anthropic = self.api_mode == "anthropic_messages"
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
+
+        # Local Responses backends like LM Studio can preserve conversation
+        # state server-side via previous_response_id. Track that state
+        # separately from the stateless OpenAI/Copilot Responses flows.
+        self._responses_previous_response_id = None
+        self._responses_stateful_instructions = None
+        self._responses_stateful_history_items = None
+        self._responses_stateful_raw_messages = None
+        self._responses_last_built_instructions = None
+        self._responses_last_built_full_input_items = None
+        self._responses_last_built_raw_messages = None
+        self._responses_current_raw_messages = None
         
         # Iteration budget pressure: warn the LLM as it approaches max_iterations.
         # Warnings are injected into the last tool result JSON (not as separate
@@ -1114,6 +1126,7 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        self._reset_stateful_responses_chain()
         
         # Context compressor internal counters (if present)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -1122,6 +1135,63 @@ class AIAgent:
             self.context_compressor.last_total_tokens = 0
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
+
+    def _uses_stateful_local_responses(self) -> bool:
+        """True when a local/custom Responses backend should use previous_response_id."""
+        if self.api_mode != "codex_responses":
+            return False
+        if self.provider in {"openai-codex", "copilot", "copilot-acp"}:
+            return False
+        try:
+            from agent.model_metadata import is_local_endpoint
+
+            return is_local_endpoint(self.base_url)
+        except Exception:
+            return False
+
+    def _reset_stateful_responses_chain(self) -> None:
+        self._responses_previous_response_id = None
+        self._responses_stateful_instructions = None
+        self._responses_stateful_history_items = None
+        self._responses_stateful_raw_messages = None
+        self._responses_last_built_instructions = None
+        self._responses_last_built_full_input_items = None
+        self._responses_last_built_raw_messages = None
+        self._responses_current_raw_messages = None
+
+    def _commit_stateful_responses_turn(self, response: Any, assistant_msg: Optional[Dict[str, Any]]) -> None:
+        """Advance the local Responses chain after a successful response."""
+        if not self._uses_stateful_local_responses():
+            return
+
+        response_id = getattr(response, "id", None)
+        if not isinstance(response_id, str) or not response_id.strip():
+            self._reset_stateful_responses_chain()
+            return
+
+        full_input_items = self._responses_last_built_full_input_items
+        instructions = self._responses_last_built_instructions
+        raw_messages = self._responses_last_built_raw_messages
+        if (
+            not isinstance(full_input_items, list)
+            or not isinstance(instructions, str)
+            or not isinstance(raw_messages, list)
+        ):
+            self._reset_stateful_responses_chain()
+            return
+
+        committed_items = copy.deepcopy(full_input_items)
+        committed_raw_messages = copy.deepcopy(raw_messages)
+        if isinstance(assistant_msg, dict):
+            committed_items.extend(
+                self._chat_messages_to_responses_input([copy.deepcopy(assistant_msg)])
+            )
+            committed_raw_messages.append(copy.deepcopy(assistant_msg))
+
+        self._responses_previous_response_id = response_id.strip()
+        self._responses_stateful_instructions = instructions
+        self._responses_stateful_history_items = committed_items
+        self._responses_stateful_raw_messages = committed_raw_messages
     
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -2868,20 +2938,21 @@ class AIAgent:
                 )
 
         store = api_kwargs.get("store", False)
-        if store is not False:
-            raise ValueError("Codex Responses contract requires 'store' to be false.")
+        if not isinstance(store, bool):
+            raise ValueError("Codex Responses 'store' must be a boolean.")
 
         allowed_keys = {
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
             "tool_choice", "parallel_tool_calls", "prompt_cache_key",
+            "previous_response_id",
         }
         normalized: Dict[str, Any] = {
             "model": model,
             "instructions": instructions,
             "input": normalized_input,
             "tools": normalized_tools,
-            "store": False,
+            "store": store,
         }
 
         # Pass through reasoning config
@@ -2905,6 +2976,12 @@ class AIAgent:
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
+
+        previous_response_id = api_kwargs.get("previous_response_id")
+        if previous_response_id is not None:
+            if not isinstance(previous_response_id, str) or not previous_response_id.strip():
+                raise ValueError("Codex Responses previous_response_id must be a non-empty string.")
+            normalized["previous_response_id"] = previous_response_id.strip()
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -3817,34 +3894,52 @@ class AIAgent:
         try:
             from agent.auxiliary_client import resolve_provider_client
             fb_client, _ = resolve_provider_client(
-                fb_provider, model=fb_model, raw_codex=True)
+                fb_provider, model=fb_model, raw_codex=True,
+                explicit_base_url=fb.get("base_url"),
+                explicit_api_key=fb.get("api_key"))
             if fb_client is None:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
                 return False
 
-            # Determine api_mode from provider / base URL
-            fb_api_mode = "chat_completions"
+            # Respect an explicit fallback api_mode when configured. This is
+            # required for OpenAI-compatible local servers (for example LM
+            # Studio's /v1/responses path) where the best mode cannot be
+            # inferred from provider/base_url alone.
+            valid_api_modes = {
+                "chat_completions",
+                "codex_responses",
+                "anthropic_messages",
+            }
+            configured_api_mode = str(fb.get("api_mode") or "").strip().lower()
+            fb_api_mode = (
+                configured_api_mode
+                if configured_api_mode in valid_api_modes
+                else "chat_completions"
+            )
             fb_base_url = str(fb_client.base_url)
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
-                fb_api_mode = "anthropic_messages"
-            elif self._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
+            if fb_api_mode == "chat_completions":
+                if fb_provider == "openai-codex":
+                    fb_api_mode = "codex_responses"
+                elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+                    fb_api_mode = "anthropic_messages"
+                elif self._is_direct_openai_url(fb_base_url):
+                    fb_api_mode = "codex_responses"
 
             old_model = self.model
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            self._reset_stateful_responses_chain()
             self._fallback_activated = True
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
                 effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+                self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = getattr(fb_client, "base_url", None)
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
@@ -3853,9 +3948,10 @@ class AIAgent:
                 self._client_kwargs = {}
             else:
                 # Swap OpenAI client and config in-place
+                self.api_key = fb_client.api_key or ""
                 self.client = fb_client
                 self._client_kwargs = {
-                    "api_key": fb_client.api_key,
+                    "api_key": self.api_key,
                     "base_url": fb_base_url,
                 }
 
@@ -4068,17 +4164,19 @@ class AIAgent:
                 elif self.reasoning_config.get("effort"):
                     reasoning_effort = self.reasoning_config["effort"]
 
+            stateful_local_responses = self._uses_stateful_local_responses()
+            full_input_items = self._chat_messages_to_responses_input(payload_messages)
             kwargs = {
                 "model": self.model,
                 "instructions": instructions,
-                "input": self._chat_messages_to_responses_input(payload_messages),
+                "input": full_input_items,
                 "tools": self._responses_tools(),
                 "tool_choice": "auto",
                 "parallel_tool_calls": True,
-                "store": False,
+                "store": True if stateful_local_responses else False,
             }
 
-            if not is_github_responses:
+            if not is_github_responses and not stateful_local_responses:
                 kwargs["prompt_cache_key"] = self.session_id
 
             if reasoning_enabled:
@@ -4091,12 +4189,48 @@ class AIAgent:
                         kwargs["reasoning"] = github_reasoning
                 else:
                     kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                    kwargs["include"] = ["reasoning.encrypted_content"]
-            elif not is_github_responses:
+                    if not stateful_local_responses:
+                        kwargs["include"] = ["reasoning.encrypted_content"]
+            elif not is_github_responses and not stateful_local_responses:
                 kwargs["include"] = []
 
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
+
+            if stateful_local_responses:
+                self._responses_last_built_instructions = instructions
+                self._responses_last_built_full_input_items = copy.deepcopy(full_input_items)
+                current_raw_messages = getattr(self, "_responses_current_raw_messages", None)
+                self._responses_last_built_raw_messages = (
+                    copy.deepcopy(current_raw_messages)
+                    if isinstance(current_raw_messages, list)
+                    else None
+                )
+
+                previous_response_id = self._responses_previous_response_id
+                prior_items = self._responses_stateful_history_items
+                prior_raw_messages = self._responses_stateful_raw_messages
+                prior_instructions = self._responses_stateful_instructions
+                current_raw_messages = self._responses_last_built_raw_messages
+                if (
+                    isinstance(previous_response_id, str)
+                    and previous_response_id.strip()
+                    and isinstance(prior_items, list)
+                    and isinstance(prior_raw_messages, list)
+                    and isinstance(current_raw_messages, list)
+                    and prior_instructions == instructions
+                    and len(full_input_items) >= len(prior_items)
+                    and len(current_raw_messages) >= len(prior_raw_messages)
+                    and current_raw_messages[:len(prior_raw_messages)] == prior_raw_messages
+                ):
+                    delta_items = full_input_items[len(prior_items):]
+                    if delta_items:
+                        kwargs["input"] = copy.deepcopy(delta_items)
+                        kwargs["previous_response_id"] = previous_response_id.strip()
+            else:
+                self._responses_last_built_instructions = None
+                self._responses_last_built_full_input_items = None
+                self._responses_last_built_raw_messages = None
 
             return kwargs
 
@@ -4582,6 +4716,7 @@ class AIAgent:
         self._invalidate_system_prompt()
         new_system_prompt = self._build_system_prompt(system_message)
         self._cached_system_prompt = new_system_prompt
+        self._reset_stateful_responses_chain()
 
         if self._session_db:
             try:
@@ -5706,23 +5841,34 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
-            if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl, native_anthropic=(self.api_mode == 'anthropic_messages'))
-
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
-            api_messages = self._sanitize_api_messages(api_messages)
+            uncached_api_messages = self._sanitize_api_messages(api_messages)
+
+            # Apply Anthropic prompt caching for Claude models via OpenRouter.
+            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
+            # inject cache_control breakpoints (system + last 3 messages) to reduce
+            # input token costs by ~75% on multi-turn conversations.
+            #
+            # Keep an uncached copy around as well. If this turn falls back from
+            # Anthropic/Claude to a local Responses backend, reusing the
+            # cache_control-mutated message blocks would stringify structured
+            # content into the fallback request and break previous_response_id
+            # chaining on the next turn.
+            api_messages = uncached_api_messages
+            if self._use_prompt_caching:
+                api_messages = apply_anthropic_cache_control(
+                    copy.deepcopy(uncached_api_messages),
+                    cache_ttl=self._cache_ttl,
+                    native_anthropic=(self.api_mode == 'anthropic_messages'),
+                )
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
-            
+
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None
             
@@ -5766,7 +5912,15 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
-                    api_kwargs = self._build_api_kwargs(api_messages)
+                    if self._uses_stateful_local_responses():
+                        self._responses_current_raw_messages = copy.deepcopy(messages)
+                    else:
+                        self._responses_current_raw_messages = None
+
+                    request_api_messages = (
+                        api_messages if self._use_prompt_caching else uncached_api_messages
+                    )
+                    api_kwargs = self._build_api_kwargs(request_api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
@@ -6624,6 +6778,7 @@ class AIAgent:
                         )
                         if not duplicate_interim:
                             messages.append(interim_msg)
+                        self._commit_stateful_responses_turn(response, interim_msg)
 
                     if self._codex_incomplete_retries < 3:
                         if not self.quiet_mode:
@@ -6693,6 +6848,7 @@ class AIAgent:
 
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
+                        self._commit_stateful_responses_turn(response, assistant_msg)
                         for tc in assistant_message.tool_calls:
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
@@ -6748,6 +6904,7 @@ class AIAgent:
                             # Append the assistant message with its (broken) tool_calls
                             recovery_assistant = self._build_assistant_message(assistant_message, finish_reason)
                             messages.append(recovery_assistant)
+                            self._commit_stateful_responses_turn(response, recovery_assistant)
                             
                             # Respond with tool error results for each tool call
                             invalid_names = {name for name, _ in invalid_json_args}
@@ -6800,6 +6957,7 @@ class AIAgent:
                                 self._vprint(f"  ┊ 💬 {clean}")
                     
                     messages.append(assistant_msg)
+                    self._commit_stateful_responses_turn(response, assistant_msg)
 
                     # Close any open streaming display (response box, reasoning
                     # box) before tool execution begins.  Intermediate turns may
@@ -7000,6 +7158,7 @@ class AIAgent:
                         codex_ack_continuations += 1
                         interim_msg = self._build_assistant_message(assistant_message, "incomplete")
                         messages.append(interim_msg)
+                        self._commit_stateful_responses_turn(response, interim_msg)
 
                         continue_msg = {
                             "role": "user",
@@ -7026,6 +7185,7 @@ class AIAgent:
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
                     messages.append(final_msg)
+                    self._commit_stateful_responses_turn(response, final_msg)
                     
                     if not self.quiet_mode:
                         self._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

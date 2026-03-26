@@ -196,6 +196,29 @@ class TestTryActivateFallback:
             assert agent.client is mock_client
             assert agent.model == "my-model"
 
+    def test_custom_fallback_respects_explicit_api_mode(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "qwen3.5-27b",
+                "base_url": "http://localhost:1234/v1",
+                "api_mode": "codex_responses",
+            },
+        )
+        mock_client = _mock_resolve(
+            api_key="custom-secret",
+            base_url="http://localhost:1234/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "qwen3.5-27b"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.api_mode == "codex_responses"
+            assert agent.api_key == "custom-secret"
+            assert agent._client_kwargs["api_key"] == "custom-secret"
+            assert agent.client is mock_client
+
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},

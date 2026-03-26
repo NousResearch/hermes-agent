@@ -622,6 +622,7 @@ fallback_model:
   provider: openrouter                    # required
   model: anthropic/claude-sonnet-4        # required
   # base_url: http://localhost:8000/v1    # optional, for custom endpoints
+  # api_mode: codex_responses             # optional, for Responses-capable endpoints
   # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
 ```
 

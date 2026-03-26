@@ -510,12 +510,19 @@ async function startSocket() {
         continue;
       }
 
+      // Resolve LID → phone for the senderId so the gateway can match
+      // against phone-based allowlists (WHATSAPP_ALLOWED_USERS).
+      const resolvedSenderId = lidToPhone[senderNumber]
+        ? (lidToPhone[senderNumber] + '@s.whatsapp.net')
+        : senderId;
+      const resolvedSenderNumber = lidToPhone[senderNumber] || senderNumber;
+
       const event = {
         messageId: msg.key.id,
         chatId,
-        senderId,
-        senderName: msg.pushName || senderNumber,
-        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
+        senderId: resolvedSenderId,
+        senderName: msg.pushName || resolvedSenderNumber,
+        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || resolvedSenderNumber),
         isGroup,
         body,
         hasMedia,

@@ -15,6 +15,7 @@ requests
 jinja2
 pydantic>=2.0
 PyJWT[crypto]
+debugpy
 
 # Web tools
 firecrawl-py

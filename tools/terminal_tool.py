@@ -3,18 +3,22 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH, Singularity, and Daytona environments.
-Supports local execution, Docker containers, and Modal cloud sandboxes.
+Supports local execution, containerized backends, and Modal cloud sandboxes, including managed gateway mode.
 
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
-- "modal": Execute in Modal cloud sandboxes (scalable, requires Modal account)
+- "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 
 Features:
 - Multiple execution backends (local, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
+
+Cloud sandbox note:
+- Persistent filesystems preserve working state across sandbox recreation
+- Persistent filesystems do NOT guarantee the same live sandbox or long-running processes survive cleanup, idle reaping, or Hermes exit
 
 Usage:
     from terminal_tool import terminal_tool
@@ -50,12 +54,18 @@ logger = logging.getLogger(__name__)
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 
 
+def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
+    """Backward-compatible no-op after minisweagent_path.py removal."""
+    return
+
+
 # =============================================================================
 # Custom Singularity Environment with more space
 # =============================================================================
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
+from tools.tool_backend_helpers import has_direct_modal_credentials, normalize_modal_mode
 
 
 # Disk usage warning threshold (in GB)
@@ -361,10 +371,12 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem persists between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -380,6 +392,7 @@ Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
+Important: cloud sandboxes may be cleaned up, idled out, or recreated between turns. Persistent filesystem means files can resume later; it does NOT guarantee a continuously running machine or surviving background processes. Use terminal sandboxes for task work, not durable hosting.
 """
 
 # Global state for environment lifecycle management
@@ -493,6 +506,7 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
+        "modal_mode": normalize_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
@@ -522,6 +536,27 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+    }
+
+
+def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
+    """Resolve direct vs managed Modal backend selection."""
+    normalized_mode = normalize_modal_mode(modal_mode)
+    has_direct = has_direct_modal_credentials()
+    managed_ready = is_managed_tool_gateway_ready("modal")
+
+    if normalized_mode == "managed":
+        selected_backend = "managed" if managed_ready else None
+    elif normalized_mode == "direct":
+        selected_backend = "direct" if has_direct else None
+    else:
+        selected_backend = "direct" if has_direct else "managed" if managed_ready else None
+
+    return {
+        "mode": normalized_mode,
+        "has_direct": has_direct,
+        "managed_ready": managed_ready,
+        "selected_backend": selected_backend,
     }
 
 
@@ -590,7 +625,29 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
                 pass
-        
+
+        modal_state = _get_modal_backend_state(cc.get("modal_mode"))
+
+        if modal_state["selected_backend"] == "managed":
+            return _ManagedModalEnvironment(
+                image=image, cwd=cwd, timeout=timeout,
+                modal_sandbox_kwargs=sandbox_kwargs,
+                persistent_filesystem=persistent, task_id=task_id,
+            )
+
+        if modal_state["selected_backend"] != "direct":
+            if modal_state["mode"] == "managed":
+                raise ValueError(
+                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
+                )
+            if modal_state["mode"] == "direct":
+                raise ValueError(
+                    "Modal backend is configured for direct mode, but no direct Modal credentials/config were found."
+                )
+            raise ValueError(
+                "Modal backend selected but no direct Modal credentials/config or managed tool gateway was found."
+            )
+
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
@@ -956,6 +1013,7 @@ def terminal_tool(
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
+                                "modal_mode": config.get("modal_mode", "auto"),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                             }
@@ -1173,10 +1231,14 @@ def terminal_tool(
             }, ensure_ascii=False)
 
     except Exception as e:
+        import traceback
+        tb_str = traceback.format_exc()
+        logger.error("terminal_tool exception:\n%s", tb_str)
         return json.dumps({
             "output": "",
             "exit_code": -1,
             "error": f"Failed to execute command: {str(e)}",
+            "traceback": tb_str,
             "status": "error"
         }, ensure_ascii=False)
 
@@ -1216,18 +1278,35 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "modal":
+            modal_state = _get_modal_backend_state(config.get("modal_mode"))
+            if modal_state["selected_backend"] == "managed":
+                return True
+
+            if modal_state["selected_backend"] != "direct":
+                if modal_state["mode"] == "managed":
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
+                        "tool gateway is unavailable. Configure the managed gateway or choose "
+                        "TERMINAL_MODAL_MODE=direct/auto."
+                    )
+                elif modal_state["mode"] == "direct":
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                        "Modal credentials/config were found. Configure Modal or choose "
+                        "TERMINAL_MODAL_MODE=managed/auto."
+                    )
+                else:
+                    logger.error(
+                        "Modal backend selected but no direct Modal credentials/config or managed "
+                        "tool gateway was found. Configure Modal, set up the managed gateway, "
+                        "or choose a different TERMINAL_ENV."
+                    )
+                return False
+
             if importlib.util.find_spec("swerex") is None:
-                logger.error("swe-rex is required for modal terminal backend: pip install 'swe-rex[modal]'")
+                logger.error("swe-rex is required for direct modal terminal backend: pip install 'swe-rex[modal]'")
                 return False
-            has_token = os.getenv("MODAL_TOKEN_ID") is not None
-            has_config = Path.home().joinpath(".modal.toml").exists()
-            if not (has_token or has_config):
-                logger.error(
-                    "Modal backend selected but no MODAL_TOKEN_ID environment variable "
-                    "or ~/.modal.toml config file was found. Configure Modal or choose "
-                    "a different TERMINAL_ENV."
-                )
-                return False
+
             return True
 
         elif env_type == "daytona":

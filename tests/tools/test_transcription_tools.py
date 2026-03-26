@@ -231,6 +231,7 @@ class TestTranscribeGroq:
         assert result["success"] is True
         assert result["transcript"] == "hello world"
         assert result["provider"] == "groq"
+        mock_client.close.assert_called_once()
 
     def test_whitespace_stripped(self, monkeypatch, sample_wav):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
@@ -272,6 +273,7 @@ class TestTranscribeGroq:
 
         assert result["success"] is False
         assert "API error" in result["error"]
+        mock_client.close.assert_called_once()
 
     def test_permission_error(self, monkeypatch, sample_wav):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
@@ -327,6 +329,7 @@ class TestTranscribeOpenAIExtended:
             result = _transcribe_openai(sample_wav, "whisper-1")
 
         assert result["transcript"] == "hello"
+        mock_client.close.assert_called_once()
 
     def test_permission_error(self, monkeypatch, sample_wav):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
@@ -341,6 +344,7 @@ class TestTranscribeOpenAIExtended:
 
         assert result["success"] is False
         assert "Permission denied" in result["error"]
+        mock_client.close.assert_called_once()
 
 
 class TestTranscribeLocalCommand:

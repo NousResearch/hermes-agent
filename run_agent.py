@@ -6697,7 +6697,15 @@ class AIAgent:
                         self._dump_api_request_debug(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
-                        raise api_error
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": f"API call failed after {max_retries} retries: {_final_summary}",
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": _final_summary,
+                        }
 
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
                     logger.warning(

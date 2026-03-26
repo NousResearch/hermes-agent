@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+import logging
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
@@ -52,6 +53,9 @@ def _secure_write(path: Path, data: str) -> None:
         os.chmod(path, 0o600)
     except OSError:
         pass  # Windows doesn't support chmod the same way
+
+
+logger = logging.getLogger(__name__)
 
 
 class PairingStore:
@@ -253,8 +257,7 @@ class PairingStore:
             lockout_key = f"_lockout:{platform}"
             limits[lockout_key] = time.time() + LOCKOUT_SECONDS
             limits[fail_key] = 0  # Reset counter
-            print(f"[pairing] Platform {platform} locked out for {LOCKOUT_SECONDS}s "
-                  f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
+            logger.warning("[pairing] Platform %s locked out for %ds after %d failed attempts", platform, LOCKOUT_SECONDS, MAX_FAILED_ATTEMPTS)
         self._save_json(self._rate_limit_path(), limits)
 
     # ----- Cleanup -----

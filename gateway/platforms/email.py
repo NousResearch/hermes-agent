@@ -251,7 +251,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        logger.info("[Email] Connected as %s", self._address)
         return True
 
     async def disconnect(self) -> None:

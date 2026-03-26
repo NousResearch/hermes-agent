@@ -1957,7 +1957,39 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
-        
+
+        # Auto-load skill for DM topic bindings (e.g., Telegram Private Chat Topics)
+        # Only inject on NEW sessions — for ongoing conversations the skill content
+        # is already in the conversation history from the first message.
+        if _is_new_session and getattr(event, "auto_skill", None):
+            try:
+                from agent.skill_commands import _load_skill_payload, _build_skill_message
+                _skill_name = event.auto_skill
+                _loaded = _load_skill_payload(_skill_name, task_id=_quick_key)
+                if _loaded:
+                    _loaded_skill, _skill_dir, _display_name = _loaded
+                    _activation_note = (
+                        f'[SYSTEM: This conversation is in a topic with the "{_display_name}" skill '
+                        f"auto-loaded. Follow its instructions for the duration of this session.]"
+                    )
+                    _skill_msg = _build_skill_message(
+                        _loaded_skill, _skill_dir, _activation_note,
+                        user_instruction=event.text,
+                    )
+                    if _skill_msg:
+                        event.text = _skill_msg
+                        logger.info(
+                            "[Gateway] Auto-loaded skill '%s' for DM topic session %s",
+                            _skill_name, session_key,
+                        )
+                else:
+                    logger.warning(
+                        "[Gateway] DM topic skill '%s' not found in available skills",
+                        _skill_name,
+                    )
+            except Exception as e:
+                logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
+
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         

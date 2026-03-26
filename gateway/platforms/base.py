@@ -296,6 +296,9 @@ class MessageEvent:
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     
+    # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
+    auto_skill: Optional[str] = None
+    
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

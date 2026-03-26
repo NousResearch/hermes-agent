@@ -227,7 +227,11 @@ PLATFORM_HINTS = {
         "The user is on a Rabbit R1 device with a small 2.88-inch touchscreen. "
         "Keep responses concise and conversational — no markdown, no long lists. "
         "The device has voice output so short spoken-style answers work best. "
-        "Aim for 1-3 sentences unless the user asks for detail."
+        "Aim for 1-3 sentences unless the user asks for detail. "
+        "If the user asks for the R1 QR code or needs to reconnect their R1, "
+        "the pairing QR code PNG is saved at ~/.hermes/rabbit_r1_qr.png — "
+        "send or share that file. The R1 auto-reconnects using the same QR code "
+        "as long as the token has not changed."
     ),
 }
 

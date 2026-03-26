@@ -165,8 +165,70 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - When privacy mode is off (or bot is admin), the bot sees all messages and can participate naturally
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
 
-## Recent Bot API Features (2024–2025)
+## Private Chat Topics (Bot API 9.4)
 
+Telegram Bot API 9.4 (February 2026) introduced **Private Chat Topics** — bots can create forum-style topic threads directly in 1-on-1 DM chats, no supergroup needed. This lets you run multiple isolated workspaces within your existing DM with Hermes.
+
+### Use case
+
+If you work on several long-running projects, topics keep their context separate:
+
+- **Topic "Website"** — work on your production web service
+- **Topic "Research"** — literature review and paper exploration
+- **Topic "General"** — miscellaneous tasks and quick questions
+
+Each topic gets its own conversation session, history, and context — completely isolated from the others.
+
+### Configuration
+
+Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      dm_topics:
+      - chat_id: 123456789        # Your Telegram user ID
+        topics:
+        - name: General
+          icon_color: 7322096
+        - name: Website
+          icon_color: 9367192
+        - name: Research
+          icon_color: 16766590
+          skill: arxiv              # Auto-load a skill in this topic
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Topic display name |
+| `icon_color` | No | Telegram icon color code (integer) |
+| `icon_custom_emoji_id` | No | Custom emoji ID for the topic icon |
+| `skill` | No | Skill to auto-load on new sessions in this topic |
+| `thread_id` | No | Auto-populated after topic creation — don't set manually |
+
+### How it works
+
+1. On gateway startup, Hermes calls `createForumTopic` for each topic that doesn't have a `thread_id` yet
+2. The `thread_id` is saved back to `config.yaml` automatically — subsequent restarts skip the API call
+3. Each topic maps to an isolated session key: `agent:main:telegram:dm:{chat_id}:{thread_id}`
+4. Messages in each topic have their own conversation history, memory flush, and context window
+
+### Skill binding
+
+Topics with a `skill` field automatically load that skill when a new session starts in the topic. This works exactly like typing `/skill-name` at the start of a conversation — the skill content is injected into the first message, and subsequent messages see it in the conversation history.
+
+For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (due to idle timeout, daily reset, or manual `/reset`).
+
+:::tip
+Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
+:::
+
+## Recent Bot API Features
+
+- **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
 

@@ -438,6 +438,71 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
+def load_working_state() -> Optional[str]:
+    """Load working state from HERMES_HOME/working_state.md.
+
+    Provides cross-session context: active tasks, recent decisions, blockers.
+    Returns None if file doesn't exist or is empty.
+    """
+    state_path = get_hermes_home() / "working_state.md"
+    if not state_path.exists():
+        return None
+    try:
+        content = state_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _truncate_content(content, "working_state.md")
+        return content
+    except Exception as e:
+        logger.debug("Could not read working_state.md: %s", e)
+        return None
+
+
+def load_rules() -> Optional[str]:
+    """Load governance rules from HERMES_HOME/rules/ directory.
+
+    Each .md file in the rules directory is loaded and concatenated.
+    Rules supplement SOUL.md with extended traps, quality gates, etc.
+    Returns None if no rules directory or no files found.
+    """
+    rules_dir = get_hermes_home() / "rules"
+    if not rules_dir.is_dir():
+        return None
+    parts = []
+    for md_file in sorted(rules_dir.glob("*.md")):
+        try:
+            content = md_file.read_text(encoding="utf-8").strip()
+            if content:
+                content = _truncate_content(content, md_file.name)
+                parts.append(content)
+        except Exception as e:
+            logger.debug("Could not read rule %s: %s", md_file, e)
+    return "\n\n".join(parts) if parts else None
+
+
+def load_samples() -> Optional[str]:
+    """Load teaching samples from HERMES_HOME/samples/ directory.
+
+    Each .md file demonstrates correct vs incorrect behavior for
+    common scenarios. Returns None if no samples dir or no files.
+    """
+    samples_dir = get_hermes_home() / "samples"
+    if not samples_dir.is_dir():
+        return None
+    parts = []
+    for md_file in sorted(samples_dir.glob("*.md")):
+        try:
+            content = md_file.read_text(encoding="utf-8").strip()
+            if content:
+                content = _truncate_content(content, md_file.name)
+                parts.append(content)
+        except Exception as e:
+            logger.debug("Could not read sample %s: %s", md_file, e)
+    if not parts:
+        return None
+    return "## Behavioral Samples (learn from these)\n\n" + "\n\n---\n\n".join(parts)
+
+
 def load_soul_md() -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 

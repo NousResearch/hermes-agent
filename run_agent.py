@@ -83,7 +83,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, load_rules, load_samples, load_working_state
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -2143,6 +2143,29 @@ class AIAgent:
                 logger.debug("Honcho context prefetch failed (non-fatal): %s", exc)
 
         self._register_honcho_exit_hook()
+        self._register_working_state_snapshot()
+
+    @staticmethod
+    def _register_working_state_snapshot():
+        """Register atexit handler to snapshot working_state.md on process exit."""
+        def _snapshot_working_state():
+            try:
+                home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+                state = Path(home) / "working_state.md"
+                if not state.exists():
+                    return
+                snapdir = Path(home) / "checkpoints" / "working_state"
+                snapdir.mkdir(parents=True, exist_ok=True)
+                from datetime import datetime
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                import shutil
+                shutil.copy2(state, snapdir / f"working_state_{ts}_atexit.md")
+                # Prune to last 10
+                for old in sorted(snapdir.glob("working_state_*.md"))[:-10]:
+                    old.unlink()
+            except Exception:
+                pass  # Never block process exit
+        atexit.register(_snapshot_working_state)
 
     def _register_honcho_exit_hook(self) -> None:
         """Register a process-exit flush hook without clobbering signal handlers."""
@@ -2296,6 +2319,15 @@ class AIAgent:
                 _identity = DEFAULT_AGENT_IDENTITY
             prompt_parts = [_identity]
 
+        # Governance rules from ~/.hermes/rules/*.md (extended traps, quality gate)
+        if not self.skip_context_files:
+            _rules_content = load_rules()
+            if _rules_content:
+                prompt_parts.append(_rules_content)
+            _samples_content = load_samples()
+            if _samples_content:
+                prompt_parts.append(_samples_content)
+
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
         if "memory" in self.valid_tool_names:
@@ -2376,6 +2408,12 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # Working state: cross-session context (active tasks, decisions, blockers)
+        if not self.skip_context_files:
+            _ws_content = load_working_state()
+            if _ws_content:
+                prompt_parts.append(_ws_content)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:

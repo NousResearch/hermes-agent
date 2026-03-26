@@ -48,6 +48,28 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-opus-4.6", runtime, ["hermes-telegram"], "")
         assert sig1 != sig2
 
+    def test_same_token_prefix_different_full_token_changes_signature(self):
+        """Tokens sharing a JWT-style prefix must not collide."""
+        from gateway.run import GatewayRunner
+
+        rt1 = {
+            "api_key": "eyJhbGci.token-for-account-a",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+        }
+        rt2 = {
+            "api_key": "eyJhbGci.token-for-account-b",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+        }
+
+        assert rt1["api_key"][:8] == rt2["api_key"][:8]
+        sig1 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt1, ["hermes-telegram"], "")
+        sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["hermes-telegram"], "")
+        assert sig1 != sig2
+
     def test_provider_change_different_signature(self):
         from gateway.run import GatewayRunner
 

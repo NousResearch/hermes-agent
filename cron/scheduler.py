@@ -474,11 +474,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
-            except Exception as e:
+            except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to end session: %s", job_id, e)
             try:
                 _session_db.close()
-            except Exception as e:
+            except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 

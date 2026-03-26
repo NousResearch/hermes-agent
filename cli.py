@@ -7163,13 +7163,13 @@ class HermesCLI:
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:
                     self.agent._honcho.shutdown()
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
-                except Exception as e:
+                except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
             _run_cleanup()
             self._print_exit_summary()

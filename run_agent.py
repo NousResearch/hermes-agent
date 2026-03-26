@@ -2274,7 +2274,7 @@ class AIAgent:
                 return
             try:
                 manager.flush_all()
-            except Exception as exc:
+            except (Exception, KeyboardInterrupt) as exc:
                 logger.debug("Honcho flush on exit failed (non-fatal): %s", exc)
 
         atexit.register(_flush_honcho_on_exit)

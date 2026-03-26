@@ -1150,6 +1150,7 @@ class GatewayRunner:
                     try:
                         await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
+                        self._evict_cached_agent(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
@@ -5080,6 +5081,12 @@ class GatewayRunner:
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
+                        # LRU eviction: keep cache bounded to prevent memory leaks
+                        _MAX_CACHED_AGENTS = 200
+                        if len(_cache) > _MAX_CACHED_AGENTS:
+                            oldest_key = next(iter(_cache))
+                            if oldest_key != session_key:
+                                _cache.pop(oldest_key, None)
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
             # Per-message state — callbacks and reasoning config change every

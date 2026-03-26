@@ -1050,15 +1050,27 @@ def _get_configured_model() -> str:
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
+    prefix_aliases = (
+        "skills-sh/",
+        "skills.sh/",
+        "skils-sh/",
+        "skils.sh/",
+    )
+    normalized_source = source
+    for prefix in prefix_aliases:
+        if normalized_source.startswith(prefix):
+            normalized_source = normalized_source[len(prefix):]
+            break
+
     # Agent-created skills get their own permissive trust level
-    if source == "agent-created":
+    if normalized_source == "agent-created":
         return "agent-created"
     # Official optional skills shipped with the repo
-    if source.startswith("official/") or source == "official":
+    if normalized_source.startswith("official/") or normalized_source == "official":
         return "builtin"
     # Check if source matches any trusted repo
     for trusted in TRUSTED_REPOS:
-        if source.startswith(trusted) or source == trusted:
+        if normalized_source.startswith(trusted) or normalized_source == trusted:
             return "trusted"
     return "community"
 

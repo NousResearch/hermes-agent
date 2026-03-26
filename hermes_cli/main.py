@@ -3844,6 +3844,13 @@ For more help on a command:
     sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
 
+    def _confirm_prompt(prompt: str) -> bool:
+        """Prompt for y/N confirmation, safe against non-TTY environments."""
+        try:
+            return input(prompt).strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
     def cmd_sessions(args):
         import json as _json
         try:
@@ -3904,8 +3911,7 @@ For more help on a command:
                 print(f"Session '{args.session_id}' not found.")
                 return
             if not args.yes:
-                confirm = input(f"Delete session '{resolved_session_id}' and all its messages? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
+                if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
                     print("Cancelled.")
                     return
             if db.delete_session(resolved_session_id):
@@ -3917,8 +3923,7 @@ For more help on a command:
             days = args.older_than
             source_msg = f" from '{args.source}'" if args.source else ""
             if not args.yes:
-                confirm = input(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
+                if not _confirm_prompt(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "):
                     print("Cancelled.")
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)

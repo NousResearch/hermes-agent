@@ -483,7 +483,34 @@ class SessionStore:
         # via the background session expiry watcher in GatewayRunner.
         self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
         
-        # Initialize SQLite session database
+        # Persist _pre_flushed_sessions to a small JSON sidecar so the set
+        # survives gateway restarts and prevents double-flushing.
+        self._flushed_marker_path = sessions_dir / ".flushed_sessions.json"
+        self._load_flushed_markers()
+        
+        def _load_flushed_markers(self) -> None:
+        """Load persisted flushed-session markers from disk."""
+        try:
+            if self._flushed_marker_path.exists():
+                import json
+                data = json.loads(self._flushed_marker_path.read_text())
+                if isinstance(data, list):
+                    self._pre_flushed_sessions.update(data)
+        except Exception:
+            pass  # non-critical; worst case is a redundant flush
+
+    def _save_flushed_markers(self) -> None:
+        """Persist flushed-session markers to disk."""
+        try:
+            import json
+            with self._lock:
+                self._flushed_marker_path.write_text(
+                    json.dumps(list(self._pre_flushed_sessions))
+                )
+        except Exception:
+            pass
+
+    # Initialize SQLite session database
         self._db = None
         try:
             from hermes_state import SessionDB
@@ -693,6 +720,7 @@ class SessionStore:
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
                     self._pre_flushed_sessions.discard(entry.session_id)
+                    self._save_flushed_markers()
             else:
                 was_auto_reset = False
                 auto_reset_reason = None

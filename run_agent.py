@@ -6863,6 +6863,15 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                # Parse <tool_call> JSON format embedded in content (Kimi K2, etc.)
+                if assistant_message.content and "<tool_call>" in assistant_message.content:
+                    from agent.response_adapters import adapt_hermes_tool_call_response
+                    parsed = adapt_hermes_tool_call_response(assistant_message.content)
+                    if parsed["tool_calls"]:
+                        assistant_message.content = parsed["content"] or ""
+                        existing = list(assistant_message.tool_calls) if assistant_message.tool_calls else []
+                        assistant_message.tool_calls = existing + list(parsed["tool_calls"])
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:

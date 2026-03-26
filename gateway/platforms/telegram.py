@@ -219,7 +219,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_network_error_count = 0
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
-            # The next network error will trigger another attempt.
+            # start_polling failed — polling is dead and no further error
+            # callbacks will fire, so schedule the next retry ourselves.
+            if not self.has_fatal_error:
+                task = asyncio.ensure_future(
+                    self._handle_polling_network_error(retry_err)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":

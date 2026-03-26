@@ -363,7 +363,10 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # Non-blocking — return 202 Accepted immediately
-        asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(self.handle_message(event))
+        if hasattr(self, "_background_tasks"):
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         return web.json_response(
             {

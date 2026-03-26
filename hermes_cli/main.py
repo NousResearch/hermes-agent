@@ -2383,6 +2383,12 @@ def _update_via_zip(args):
         
         print("→ Extracting...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
+            # Validate paths to prevent zip-slip (path traversal)
+            tmp_dir_real = os.path.realpath(tmp_dir)
+            for member in zf.infolist():
+                member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
+                if not member_path.startswith(tmp_dir_real + os.sep) and member_path != tmp_dir_real:
+                    raise ValueError(f"Zip-slip detected: {member.filename} escapes extraction directory")
             zf.extractall(tmp_dir)
         
         # GitHub ZIPs extract to hermes-agent-<branch>/

@@ -7097,11 +7097,19 @@ class AIAgent:
                     turn_content = assistant_message.content or ""
                     if turn_content and self._has_content_after_think_block(turn_content):
                         self._last_content_with_tools = turn_content
-                        # The response was already streamed to the user in the
-                        # response box.  The remaining tool calls (memory, skill,
-                        # todo, etc.) are post-response housekeeping — mute all
-                        # subsequent CLI output so they run invisibly.
-                        if self._has_stream_consumers():
+                        # Only mute subsequent output when EVERY tool call in
+                        # this turn is post-response housekeeping (memory, todo,
+                        # skill_manage, etc.).  If any substantive tool is present
+                        # (search_files, read_file, write_file, terminal, ...),
+                        # keep output visible so the user sees progress.
+                        _HOUSEKEEPING_TOOLS = frozenset({
+                            "memory", "todo", "skill_manage", "session_search",
+                        })
+                        _all_housekeeping = all(
+                            tc.function.name in _HOUSEKEEPING_TOOLS
+                            for tc in assistant_message.tool_calls
+                        )
+                        if _all_housekeeping and self._has_stream_consumers():
                             self._mute_post_response = True
                         elif self.quiet_mode:
                             clean = self._strip_think_blocks(turn_content).strip()

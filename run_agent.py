@@ -1174,6 +1174,26 @@ class AIAgent:
             return
         self._safe_print(*args, **kwargs)
 
+    def _emit_status(self, message: str) -> None:
+        """Emit a lifecycle status message to both CLI and gateway channels.
+
+        CLI users see the message via ``_vprint(force=True)`` so it is always
+        visible regardless of verbose/quiet mode.  Gateway consumers receive
+        it through ``status_callback("lifecycle", ...)``.
+
+        This helper never raises — exceptions are swallowed so it cannot
+        interrupt the retry/fallback logic.
+        """
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback("lifecycle", message)
+            except Exception:
+                logger.debug("status_callback error in _emit_status", exc_info=True)
+
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         url = (base_url or self._base_url_lower).lower()
@@ -4091,8 +4111,8 @@ class AIAgent:
                 or is_native_anthropic
             )
 
-            print(
-                f"{self.log_prefix}🔄 Primary model failed — switching to fallback: "
+            self._emit_status(
+                f"🔄 Primary model failed — switching to fallback: "
                 f"{fb_model} via {fb_provider}"
             )
             logging.info(
@@ -6094,6 +6114,8 @@ class AIAgent:
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
+                        if not self._fallback_activated:
+                            self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
                         if not self._fallback_activated and self._try_activate_fallback():
                             retry_count = 0
                             continue
@@ -6128,10 +6150,11 @@ class AIAgent:
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
+                            self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                             if self._try_activate_fallback():
                                 retry_count = 0
                                 continue
-                            self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.", force=True)
+                            self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -6477,6 +6500,7 @@ class AIAgent:
                         or "quota" in error_msg
                     )
                     if is_rate_limited and not self._fallback_activated:
+                        self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
@@ -6501,7 +6525,7 @@ class AIAgent:
                                 "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True
                             }
-                        self._vprint(f"{self.log_prefix}⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -6510,7 +6534,7 @@ class AIAgent:
                         )
 
                         if len(messages) < original_len:
-                            self._vprint(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                            self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
@@ -6603,7 +6627,7 @@ class AIAgent:
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
-                                self._vprint(f"{self.log_prefix}   🗜️  Compressed {original_len} → {len(messages)} messages, retrying...")
+                                self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
@@ -6649,6 +6673,7 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
+                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
@@ -6692,6 +6717,7 @@ class AIAgent:
 
                     if retry_count >= max_retries:
                         # Try fallback before giving up entirely
+                        self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
@@ -6717,6 +6743,7 @@ class AIAgent:
                         }
 
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
+                    self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,

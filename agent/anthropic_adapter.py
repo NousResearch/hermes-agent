@@ -210,9 +210,12 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     Only works for credentials that have a refresh token (from claude /login
     or claude setup-token with OAuth flow).
 
+    Tries the new platform.claude.com endpoint first (Claude Code >=2.1.81),
+    then falls back to console.anthropic.com for older tokens.
+
     Returns the new access token, or None if refresh fails.
     """
-    import urllib.parse
+    import time
     import urllib.request
 
     refresh_token = creds.get("refreshToken", "")
@@ -223,38 +226,42 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     # Client ID used by Claude Code's OAuth flow
     CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
-    data = urllib.parse.urlencode({
+    # Anthropic migrated OAuth from console.anthropic.com to platform.claude.com
+    # (Claude Code v2.1.81+). Try new endpoint first, fall back to old.
+    token_endpoints = [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
+    ]
+
+    payload = json.dumps({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": CLIENT_ID,
     }).encode()
 
-    req = urllib.request.Request(
-        "https://console.anthropic.com/v1/oauth/token",
-        data=data,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
-        },
-        method="POST",
-    )
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+    }
 
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode())
-            new_access = result.get("access_token", "")
-            new_refresh = result.get("refresh_token", refresh_token)
-            expires_in = result.get("expires_in", 3600)  # seconds
+    for endpoint in token_endpoints:
+        req = urllib.request.Request(
+            endpoint, data=payload, headers=headers, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+                new_access = result.get("access_token", "")
+                new_refresh = result.get("refresh_token", refresh_token)
+                expires_in = result.get("expires_in", 3600)
 
-            if new_access:
-                import time
-                new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
-                # Write refreshed credentials back to ~/.claude/.credentials.json
-                _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
-                logger.debug("Successfully refreshed Claude Code OAuth token")
-                return new_access
-    except Exception as e:
-        logger.debug("Failed to refresh Claude Code token: %s", e)
+                if new_access:
+                    new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
+                    _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
+                    logger.debug("Refreshed Claude Code OAuth token via %s", endpoint)
+                    return new_access
+        except Exception as e:
+            logger.debug("Token refresh failed at %s: %s", endpoint, e)
 
     return None
 

@@ -4018,6 +4018,7 @@ class AIAgent:
                 # Build native Anthropic client instead of using OpenAI client
                 from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token, _is_oauth_token
                 effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
+                self.api_key = effective_key
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = getattr(fb_client, "base_url", None)
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
@@ -4026,6 +4027,7 @@ class AIAgent:
                 self._client_kwargs = {}
             else:
                 # Swap OpenAI client and config in-place
+                self.api_key = fb_client.api_key
                 self.client = fb_client
                 self._client_kwargs = {
                     "api_key": fb_client.api_key,

@@ -2369,8 +2369,12 @@ class GatewayRunner:
                     from agent.context_references import preprocess_context_references_async
                     from agent.model_metadata import get_model_context_length
                     _msg_cwd = os.environ.get("MESSAGING_CWD", os.path.expanduser("~"))
+                    _msg_runtime = _resolve_runtime_agent_kwargs()
                     _msg_ctx_len = get_model_context_length(
-                        self._model, base_url=self._base_url or "")
+                        self._model,
+                        base_url=self._base_url or _msg_runtime.get("base_url") or "",
+                        api_key=_msg_runtime.get("api_key") or "",
+                    )
                     _ctx_result = await preprocess_context_references_async(
                         message_text, cwd=_msg_cwd,
                         context_length=_msg_ctx_len, allowed_root=_msg_cwd)

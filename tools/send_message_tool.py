@@ -490,7 +490,7 @@ async def _send_discord(token, chat_id, message):
     try:
         url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(url, headers=headers, json={"content": message}) as resp:
                 if resp.status not in (200, 201):
                     body = await resp.text()
@@ -510,7 +510,7 @@ async def _send_slack(token, chat_id, message):
     try:
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.post(url, headers=headers, json={"channel": chat_id, "text": message}) as resp:
                 data = await resp.json()
                 if data.get("ok"):
@@ -649,7 +649,7 @@ async def _send_sms(auth_token, chat_id, message):
         url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
         headers = {"Authorization": f"Basic {encoded}"}
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             form_data = aiohttp.FormData()
             form_data.add_field("From", from_number)
             form_data.add_field("To", chat_id)

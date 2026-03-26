@@ -7288,12 +7288,9 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Check config for CLI toolsets, fallback to hermes-cli
-        config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
-        if config_cli_toolsets and isinstance(config_cli_toolsets, list):
-            toolsets_list = config_cli_toolsets
-        else:
-            toolsets_list = ["hermes-cli"]
+        # Use the shared resolver so MCP servers are included at runtime
+        from hermes_cli.tools_config import _get_platform_tools
+        toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
 

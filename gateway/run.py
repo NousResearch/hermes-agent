@@ -414,6 +414,9 @@ class GatewayRunner:
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
 
+        # Track background tasks to prevent garbage collection mid-execution
+        self._background_tasks: set = set()
+
     def _get_or_create_gateway_honcho(self, session_key: str):
         """Return a persistent Honcho manager/config pair for this gateway session."""
         if not hasattr(self, "_honcho_managers"):
@@ -1297,6 +1300,11 @@ class GatewayRunner:
                 logger.info("✓ %s disconnected", platform.value)
             except Exception as e:
                 logger.error("✗ %s disconnect error: %s", platform.value, e)
+
+        # Cancel any pending background tasks
+        for _task in list(self._background_tasks):
+            _task.cancel()
+        self._background_tasks.clear()
 
         self.adapters.clear()
         self._running_agents.clear()
@@ -2737,9 +2745,11 @@ class GatewayRunner:
         try:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
-                asyncio.create_task(
+                _flush_task = asyncio.create_task(
                     self._async_flush_memories(old_entry.session_id, session_key)
                 )
+                self._background_tasks.add(_flush_task)
+                _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
 
@@ -3552,9 +3562,11 @@ class GatewayRunner:
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
 
         # Fire-and-forget the background task
-        asyncio.create_task(
+        _task = asyncio.create_task(
             self._run_background_task(prompt, source, task_id)
         )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
@@ -3929,9 +3941,11 @@ class GatewayRunner:
 
         # Flush memories for current session before switching
         try:
-            asyncio.create_task(
+            _flush_task = asyncio.create_task(
                 self._async_flush_memories(current_entry.session_id, session_key)
             )
+            self._background_tasks.add(_flush_task)
+            _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 

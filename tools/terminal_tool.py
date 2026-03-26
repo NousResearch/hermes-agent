@@ -1252,7 +1252,7 @@ if __name__ == "__main__":
     print("=" * 50)
     
     config = _get_env_config()
-    print(f"\nCurrent Configuration:")
+    print("\nCurrent Configuration:")
     print(f"  Environment type: {config['env_type']}")
     print(f"  Docker image: {config['docker_image']}")
     print(f"  Modal image: {config['modal_image']}")

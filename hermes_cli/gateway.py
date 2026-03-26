@@ -1332,9 +1332,9 @@ def _setup_standard_platform(platform: dict):
 
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
-            print_info(f"  The gateway DENIES all users by default for security.")
-            print_info(f"  Enter user IDs to create an allowlist, or leave empty")
-            print_info(f"  and you'll be asked about open access next.")
+            print_info("  The gateway DENIES all users by default for security.")
+            print_info("  Enter user IDs to create an allowlist, or leave empty")
+            print_info("  and you'll be asked about open access next.")
             value = prompt(f"  {var['prompt']}", password=False)
             if value:
                 cleaned = value.replace(" ", "")
@@ -1351,7 +1351,7 @@ def _setup_standard_platform(platform: dict):
                             parts.append(uid)
                     cleaned = ",".join(parts)
                 save_env_value(var["name"], cleaned)
-                print_success(f"  Saved — only these users can interact with the bot.")
+                print_success("  Saved — only these users can interact with the bot.")
                 allowed_val_set = cleaned
             else:
                 # No allowlist — ask about open access vs DM pairing
@@ -1380,7 +1380,7 @@ def _setup_standard_platform(platform: dict):
             print_warning(f"  Skipped — {label} won't work without this.")
             return
         else:
-            print_info(f"  Skipped (can configure later)")
+            print_info("  Skipped (can configure later)")
 
     # If an allowlist was set and home channel wasn't, offer to reuse
     # the first user ID (common for Telegram DMs).
@@ -1556,7 +1556,7 @@ def _setup_signal():
     print_success("Signal configured!")
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
-    print_info(f"  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
+    print_info("  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 

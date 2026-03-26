@@ -390,7 +390,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 return sessions[idx]["id"]
             print(f"  Invalid selection. Enter 1-{len(sessions)} or q to cancel.")
         except ValueError:
-            print(f"  Invalid input. Enter a number or q to cancel.")
+            print("  Invalid input. Enter a number or q to cancel.")
         except (KeyboardInterrupt, EOFError):
             print()
             return None
@@ -2038,8 +2038,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     else:
         model_list = _PROVIDER_MODELS.get(provider_id, [])
         if model_list:
-            print(f"  ⚠ Could not auto-detect models from API — showing defaults.")
-            print(f"    Use \"Enter custom model name\" if you don't see your model.")
+            print("  ⚠ Could not auto-detect models from API — showing defaults.")
+            print("    Use \"Enter custom model name\" if you don't see your model.")
         # else: no defaults either, will fall through to raw input
 
     if model_list:

@@ -1665,7 +1665,7 @@ if __name__ == "__main__":
     print("  # - Final processed results")
     print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
     
-    print(f"\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
+    print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
 
 
 # ---------------------------------------------------------------------------

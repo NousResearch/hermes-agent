@@ -116,7 +116,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with self._session.get(url, headers=self._headers()) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
@@ -134,8 +134,7 @@ class MattermostAdapter(BasePlatformAdapter):
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
+                url, headers=self._headers(), json=payload
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
@@ -154,7 +153,8 @@ class MattermostAdapter(BasePlatformAdapter):
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.put(
-                url, headers=self._headers(), json=payload
+                url, headers=self._headers(), json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
@@ -181,7 +181,7 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+        async with self._session.post(url, headers=headers, data=form) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error("MM file upload → %s: %s", resp.status, body[:200])
@@ -202,9 +202,7 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("Mattermost: URL or token not configured")
             return False
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
+        self._session = aiohttp.ClientSession()
         self._closing = False
 
         # Verify credentials and fetch bot identity.

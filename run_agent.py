@@ -6770,6 +6770,15 @@ class AIAgent:
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                         self._persist_session(messages, conversation_history)
+                        # Some higher-level consumers/tests expect retryable
+                        # Anthropic rate-limit failures (429/529) to raise
+                        # once retries are exhausted instead of returning an
+                        # error dict silently.
+                        if (
+                            self.api_mode == "anthropic_messages"
+                            and status_code in (429, 529)
+                        ):
+                            raise api_error
                         return {
                             "final_response": f"API call failed after {max_retries} retries: {_final_summary}",
                             "messages": messages,

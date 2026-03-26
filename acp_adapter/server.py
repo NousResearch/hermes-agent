@@ -12,7 +12,6 @@ import acp
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
-    AuthMethod,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
@@ -33,6 +32,12 @@ from acp.schema import (
     TextContentBlock,
     Usage,
 )
+
+try:
+    # `AuthMethod` may not exist in older/newer `acp.schema` versions.
+    from acp.schema import AuthMethod  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover
+    AuthMethod = None  # type: ignore[assignment]
 
 from acp_adapter.auth import detect_provider, has_provider
 from acp_adapter.events import (
@@ -101,7 +106,7 @@ class HermesACPAgent(acp.Agent):
     ) -> InitializeResponse:
         provider = detect_provider()
         auth_methods = None
-        if provider:
+        if provider and AuthMethod is not None:
             auth_methods = [
                 AuthMethod(
                     id=provider,

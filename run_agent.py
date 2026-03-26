@@ -893,8 +893,15 @@ class AIAgent:
                     user_id=None,
                 )
             except Exception as e:
-                logger.warning("Session DB create_session failed — messages will NOT be indexed: %s", e)
-                self._session_db = None  # prevent silent data loss on every subsequent flush
+                # Transient SQLite lock contention (e.g. CLI and gateway writing
+                # concurrently) must NOT permanently disable session_search for
+                # this agent.  Keep _session_db alive — subsequent message
+                # flushes and session_search calls will still work once the
+                # lock clears.  The session row may be missing from the index
+                # for this run, but that is recoverable (flushes upsert rows).
+                logger.warning(
+                    "Session DB create_session failed (session_search still available): %s", e
+                )
         
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
@@ -1578,6 +1585,14 @@ class AIAgent:
             return
         self._apply_persist_user_message_override(messages)
         try:
+            # If create_session() failed at startup (e.g. transient lock), the
+            # session row may not exist yet.  ensure_session() uses INSERT OR
+            # IGNORE so it is a no-op when the row is already there.
+            self._session_db.ensure_session(
+                self.session_id,
+                source=self.platform or "cli",
+                model=self.model,
+            )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:

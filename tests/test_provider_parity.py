@@ -556,7 +556,7 @@ class TestAuxiliaryClientProviderPriority:
         with patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "nous-tok"}), \
              patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
-        assert model == "gemini-3-flash"
+        assert model == "google/gemini-3-flash-preview"
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

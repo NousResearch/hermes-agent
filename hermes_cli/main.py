@@ -872,7 +872,7 @@ def cmd_model(args):
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
-        _model_flow_nous(config, current_model)
+        _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "copilot-acp":
@@ -981,7 +981,7 @@ def _model_flow_openrouter(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_nous(config, current_model=""):
+def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state, _prompt_model_selection, _save_model_choice,
@@ -989,7 +989,11 @@ def _model_flow_nous(config, current_model=""):
         fetch_nous_models, AuthError, format_auth_error,
         _login_nous, PROVIDER_REGISTRY,
     )
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, save_config, save_env_value
+    from hermes_cli.nous_subscription import (
+        apply_nous_provider_defaults,
+        get_nous_subscription_explainer_lines,
+    )
     import argparse
 
     state = get_provider_auth_state("nous")
@@ -998,11 +1002,19 @@ def _model_flow_nous(config, current_model=""):
         print()
         try:
             mock_args = argparse.Namespace(
-                portal_url=None, inference_url=None, client_id=None,
-                scope=None, no_browser=False, timeout=15.0,
-                ca_bundle=None, insecure=False,
+                portal_url=getattr(args, "portal_url", None),
+                inference_url=getattr(args, "inference_url", None),
+                client_id=getattr(args, "client_id", None),
+                scope=getattr(args, "scope", None),
+                no_browser=bool(getattr(args, "no_browser", False)),
+                timeout=getattr(args, "timeout", None) or 15.0,
+                ca_bundle=getattr(args, "ca_bundle", None),
+                insecure=bool(getattr(args, "insecure", False)),
             )
             _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+            print()
+            for line in get_nous_subscription_explainer_lines():
+                print(line)
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -1049,11 +1061,36 @@ def _model_flow_nous(config, current_model=""):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        current_model_cfg = config.get("model")
+        if isinstance(current_model_cfg, dict):
+            model_cfg = dict(current_model_cfg)
+        elif isinstance(current_model_cfg, str) and current_model_cfg.strip():
+            model_cfg = {"default": current_model_cfg.strip()}
+        else:
+            model_cfg = {}
+        model_cfg["provider"] = "nous"
+        model_cfg["default"] = selected
+        if inference_url and inference_url.strip():
+            model_cfg["base_url"] = inference_url.rstrip("/")
+        else:
+            model_cfg.pop("base_url", None)
+        config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
+        changed_defaults = apply_nous_provider_defaults(config)
+        save_config(config)
         print(f"Default model set to: {selected} (via Nous Portal)")
+        if "tts" in changed_defaults:
+            print("TTS provider set to: OpenAI TTS via your Nous subscription")
+        else:
+            current_tts = str(config.get("tts", {}).get("provider") or "edge")
+            if current_tts.lower() not in {"", "edge"}:
+                print(f"Keeping your existing TTS provider: {current_tts}")
+        print()
+        for line in get_nous_subscription_explainer_lines():
+            print(line)
     else:
         print("No change.")
 
@@ -3173,6 +3210,44 @@ For more help on a command:
         "model",
         help="Select default model and provider",
         description="Interactively select your inference provider and default model"
+    )
+    model_parser.add_argument(
+        "--portal-url",
+        help="Portal base URL for Nous login (default: production portal)"
+    )
+    model_parser.add_argument(
+        "--inference-url",
+        help="Inference API base URL for Nous login (default: production inference API)"
+    )
+    model_parser.add_argument(
+        "--client-id",
+        default=None,
+        help="OAuth client id to use for Nous login (default: hermes-cli)"
+    )
+    model_parser.add_argument(
+        "--scope",
+        default=None,
+        help="OAuth scope to request for Nous login"
+    )
+    model_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not attempt to open the browser automatically during Nous login"
+    )
+    model_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="HTTP request timeout in seconds for Nous login (default: 15)"
+    )
+    model_parser.add_argument(
+        "--ca-bundle",
+        help="Path to CA bundle PEM file for Nous TLS verification"
+    )
+    model_parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Disable TLS verification for Nous login (testing only)"
     )
     model_parser.set_defaults(func=cmd_model)
 

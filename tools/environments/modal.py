@@ -20,6 +20,7 @@ from tools.interrupt import is_interrupted
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "modal_snapshots.json"
+_DIRECT_SNAPSHOT_NAMESPACE = "direct"
 
 
 def _load_snapshots() -> Dict[str, str]:
@@ -38,12 +39,72 @@ def _save_snapshots(data: Dict[str, str]) -> None:
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
 
 
-class _AsyncWorker:
-    """Background thread with its own event loop for async-safe swe-rex calls.
+def _direct_snapshot_key(task_id: str) -> str:
+    return f"{_DIRECT_SNAPSHOT_NAMESPACE}:{task_id}"
 
-    Allows sync code to submit async coroutines and block for results,
-    even when called from inside another running event loop (e.g. Atropos).
-    """
+
+def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
+    """Return a snapshot id for direct Modal restore and whether the key is legacy."""
+    snapshots = _load_snapshots()
+
+    namespaced_key = _direct_snapshot_key(task_id)
+    snapshot_id = snapshots.get(namespaced_key)
+    if isinstance(snapshot_id, str) and snapshot_id:
+        return snapshot_id, False
+
+    legacy_snapshot_id = snapshots.get(task_id)
+    if isinstance(legacy_snapshot_id, str) and legacy_snapshot_id:
+        return legacy_snapshot_id, True
+
+    return None, False
+
+
+def _store_direct_snapshot(task_id: str, snapshot_id: str) -> None:
+    """Persist the direct Modal snapshot id under the direct namespace."""
+    snapshots = _load_snapshots()
+    snapshots[_direct_snapshot_key(task_id)] = snapshot_id
+    snapshots.pop(task_id, None)
+    _save_snapshots(snapshots)
+
+
+def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
+    """Remove direct Modal snapshot entries for a task, including legacy keys."""
+    snapshots = _load_snapshots()
+    updated = False
+
+    for key in (_direct_snapshot_key(task_id), task_id):
+        value = snapshots.get(key)
+        if value is None:
+            continue
+        if snapshot_id is None or value == snapshot_id:
+            snapshots.pop(key, None)
+            updated = True
+
+    if updated:
+        _save_snapshots(snapshots)
+
+
+def _resolve_modal_image(image_spec: Any) -> Any:
+    """Convert registry references or snapshot ids into Modal image objects."""
+    import modal as _modal
+
+    if not isinstance(image_spec, str):
+        return image_spec
+
+    if image_spec.startswith("im-"):
+        return _modal.Image.from_id(image_spec)
+
+    return _modal.Image.from_registry(
+        image_spec,
+        setup_dockerfile_commands=[
+            "RUN rm -rf /usr/local/lib/python*/site-packages/pip* 2>/dev/null; "
+            "python -m ensurepip --upgrade --default-pip 2>/dev/null || true",
+        ],
+    )
+
+
+class _AsyncWorker:
+    """Background thread with its own event loop for async-safe swe-rex calls."""
 
     def __init__(self):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -101,42 +162,20 @@ class ModalEnvironment(BaseEnvironment):
 
         sandbox_kwargs = dict(modal_sandbox_kwargs or {})
 
-        # If persistent, try to restore from a previous snapshot
-        restored_image = None
+        restored_snapshot_id = None
+        restored_from_legacy_key = False
         if self._persistent:
-            snapshot_id = _load_snapshots().get(self._task_id)
-            if snapshot_id:
-                try:
-                    import modal
-                    restored_image = modal.Image.from_id(snapshot_id)
-                    logger.info("Modal: restoring from snapshot %s", snapshot_id[:20])
-                except Exception as e:
-                    logger.warning("Modal: failed to restore snapshot, using base image: %s", e)
-                    restored_image = None
+            restored_snapshot_id, restored_from_legacy_key = _get_snapshot_restore_candidate(self._task_id)
+            if restored_snapshot_id:
+                logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
 
-        effective_image = restored_image if restored_image else image
-
-        # Pre-build a modal.Image with pip fix for Modal's legacy image builder.
-        # Some task images have broken pip; fix via ensurepip before Modal uses it.
-        import modal as _modal
-        if isinstance(effective_image, str):
-            effective_image = _modal.Image.from_registry(
-                effective_image,
-                setup_dockerfile_commands=[
-                    "RUN rm -rf /usr/local/lib/python*/site-packages/pip* 2>/dev/null; "
-                    "python -m ensurepip --upgrade --default-pip 2>/dev/null || true",
-                ],
-            )
-
-        # Start the async worker thread and create the deployment on it
-        # so all gRPC channels are bound to the worker's event loop.
         self._worker.start()
 
         from swerex.deployment.modal import ModalDeployment
 
-        async def _create_and_start():
+        async def _create_and_start(image_spec: Any):
             deployment = ModalDeployment(
-                image=effective_image,
+                image=image_spec,
                 startup_timeout=180.0,
                 runtime_timeout=3600.0,
                 deployment_timeout=3600.0,
@@ -146,7 +185,30 @@ class ModalEnvironment(BaseEnvironment):
             await deployment.start()
             return deployment
 
-        self._deployment = self._worker.run_coroutine(_create_and_start())
+        try:
+            target_image_spec = restored_snapshot_id or image
+            try:
+                effective_image = _resolve_modal_image(target_image_spec)
+                self._deployment = self._worker.run_coroutine(_create_and_start(effective_image))
+            except Exception as exc:
+                if not restored_snapshot_id:
+                    raise
+
+                logger.warning(
+                    "Modal: failed to restore snapshot %s, retrying with base image: %s",
+                    restored_snapshot_id[:20],
+                    exc,
+                )
+                _delete_direct_snapshot(self._task_id, restored_snapshot_id)
+                base_image = _resolve_modal_image(image)
+                self._deployment = self._worker.run_coroutine(_create_and_start(base_image))
+            else:
+                if restored_snapshot_id and restored_from_legacy_key:
+                    _store_direct_snapshot(self._task_id, restored_snapshot_id)
+                    logger.info("Modal: migrated legacy snapshot entry for task %s", self._task_id)
+        except Exception:
+            self._worker.stop()
+            raise
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
@@ -160,7 +222,7 @@ class ModalEnvironment(BaseEnvironment):
         exec_command, sudo_stdin = self._prepare_command(command)
 
         # Modal sandboxes execute commands via the Modal SDK and cannot pipe
-        # subprocess stdin directly the way a local Popen can.  When a sudo
+        # subprocess stdin directly the way a local Popen can. When a sudo
         # password is present, use a shell-level pipe from printf so that the
         # password feeds sudo -S without appearing as an echo argument embedded
         # in the shell string.
@@ -175,7 +237,6 @@ class ModalEnvironment(BaseEnvironment):
         effective_cwd = cwd or self.cwd
         effective_timeout = timeout or self.timeout
 
-        # Run in a background thread so we can poll for interrupts
         result_holder = {"value": None, "error": None}
 
         def _run():
@@ -191,6 +252,7 @@ class ModalEnvironment(BaseEnvironment):
                             merge_output_streams=True,
                         )
                     )
+
                 output = self._worker.run_coroutine(_do_execute())
                 result_holder["value"] = {
                     "output": output.stdout,
@@ -227,7 +289,7 @@ class ModalEnvironment(BaseEnvironment):
 
         if self._persistent:
             try:
-                sandbox = getattr(self._deployment, '_sandbox', None)
+                sandbox = getattr(self._deployment, "_sandbox", None)
                 if sandbox:
                     async def _snapshot():
                         img = await sandbox.snapshot_filesystem.aio()
@@ -239,11 +301,12 @@ class ModalEnvironment(BaseEnvironment):
                         snapshot_id = None
 
                     if snapshot_id:
-                        snapshots = _load_snapshots()
-                        snapshots[self._task_id] = snapshot_id
-                        _save_snapshots(snapshots)
-                        logger.info("Modal: saved filesystem snapshot %s for task %s",
-                                    snapshot_id[:20], self._task_id)
+                        _store_direct_snapshot(self._task_id, snapshot_id)
+                        logger.info(
+                            "Modal: saved filesystem snapshot %s for task %s",
+                            snapshot_id[:20],
+                            self._task_id,
+                        )
             except Exception as e:
                 logger.warning("Modal: filesystem snapshot failed: %s", e)
 

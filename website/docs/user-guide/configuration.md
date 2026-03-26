@@ -695,6 +695,8 @@ terminal:
   persistent_shell: true             # Enabled by default for SSH backend
 ```
 
+For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+
 ### Common Terminal Backend Issues
 
 If terminal commands fail immediately or the terminal tool is reported as disabled, check the following:
@@ -723,8 +725,9 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
   - If either value is missing, Hermes will log a clear error and refuse to use the SSH backend.
 
 - **Modal backend**
-  - You need either a `MODAL_TOKEN_ID` environment variable or a `~/.modal.toml` config file.
-  - If neither is present, the backend check fails and Hermes will report that the Modal backend is not available.
+  - Hermes can use either direct Modal credentials (`MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET`, or `~/.modal.toml`) or a configured managed tool gateway with a Nous user token.
+  - Modal persistence is resumable filesystem state, not durable process continuity. If you need something to stay continuously up, use a deployment-oriented tool instead of the terminal sandbox.
+  - If neither direct credentials nor a managed gateway is present, Hermes will report that the Modal backend is not available.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 

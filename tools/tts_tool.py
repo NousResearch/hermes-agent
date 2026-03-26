@@ -32,11 +32,15 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Callable, Dict, Any, Optional
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
+from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import resolve_openai_audio_api_key
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -74,6 +78,7 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OUTPUT_DIR = str(get_hermes_home() / "audio_cache")
 MAX_TEXT_LENGTH = 4000
 
@@ -233,14 +238,12 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-    if not api_key:
-        raise ValueError("VOICE_TOOLS_OPENAI_KEY not set. Get one at https://platform.openai.com/api-keys")
+    api_key, base_url = _resolve_openai_audio_client_config()
 
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    base_url = oai_config.get("base_url", "https://api.openai.com/v1")
+    base_url = oai_config.get("base_url", base_url)
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -250,15 +253,21 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
-    response = client.audio.speech.create(
-        model=model,
-        voice=voice,
-        input=text,
-        response_format=response_format,
-    )
+    try:
+        response = client.audio.speech.create(
+            model=model,
+            voice=voice,
+            input=text,
+            response_format=response_format,
+            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+        )
 
-    response.stream_to_file(output_path)
-    return output_path
+        response.stream_to_file(output_path)
+        return output_path
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
 
 # ===========================================================================
@@ -539,13 +548,35 @@ def check_tts_requirements() -> bool:
         pass
     try:
         _import_openai_client()
-        if os.getenv("VOICE_TOOLS_OPENAI_KEY"):
+        if _has_openai_audio_backend():
             return True
     except ImportError:
         pass
     if _check_neutts_available():
         return True
     return False
+
+
+def _resolve_openai_audio_client_config() -> tuple[str, str]:
+    """Return direct OpenAI audio config or a managed gateway fallback."""
+    direct_api_key = resolve_openai_audio_api_key()
+    if direct_api_key:
+        return direct_api_key, DEFAULT_OPENAI_BASE_URL
+
+    managed_gateway = resolve_managed_tool_gateway("openai-audio")
+    if managed_gateway is None:
+        raise ValueError(
+            "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set, and the managed OpenAI audio gateway is unavailable"
+        )
+
+    return managed_gateway.nous_user_token, urljoin(
+        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+    )
+
+
+def _has_openai_audio_backend() -> bool:
+    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
+    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 
 # ===========================================================================
@@ -802,7 +833,10 @@ if __name__ == "__main__":
     print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
     print(f"    API Key:  {'set' if os.getenv('ELEVENLABS_API_KEY') else 'not set'}")
     print(f"  OpenAI:     {'installed' if _check(_import_openai_client, 'oai') else 'not installed'}")
-    print(f"    API Key:  {'set' if os.getenv('VOICE_TOOLS_OPENAI_KEY') else 'not set (VOICE_TOOLS_OPENAI_KEY)'}")
+    print(
+        "    API Key:  "
+        f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
+    )
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

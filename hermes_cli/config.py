@@ -142,6 +142,7 @@ DEFAULT_CONFIG = {
     
     "terminal": {
         "backend": "local",
+        "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
@@ -407,7 +408,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
@@ -422,6 +423,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: ["TERMINAL_MODAL_MODE"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -614,6 +616,38 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Firecrawl API URL (leave empty for cloud)",
         "url": None,
         "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "FIRECRAWL_GATEWAY_URL": {
+        "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_DOMAIN": {
+        "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "prompt": "Tool-gateway domain suffix",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_SCHEME": {
+        "description": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)",
+        "prompt": "Tool-gateway URL scheme",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_USER_TOKEN": {
+        "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)",
+        "prompt": "Tool-gateway user token",
+        "url": None,
+        "password": True,
         "category": "tool",
         "advanced": True,
     },
@@ -1808,7 +1842,9 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -1864,6 +1900,7 @@ def set_config_value(key: str, value: str):
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
         "terminal.backend": "TERMINAL_ENV",
+        "terminal.modal_mode": "TERMINAL_MODAL_MODE",
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",

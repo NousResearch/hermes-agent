@@ -1122,6 +1122,9 @@ class AIAgent:
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         
+        # Turn counter (added after reset_session_state was first written — #2635)
+        self._user_turn_count = 0
+
         # Context compressor internal counters (if present)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.last_prompt_tokens = 0
@@ -1129,6 +1132,8 @@ class AIAgent:
             self.context_compressor.last_total_tokens = 0
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
+            # Iterative summary from previous session must not bleed into new one (#2635)
+            self.context_compressor._previous_summary = None
     
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.

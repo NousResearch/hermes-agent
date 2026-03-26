@@ -1812,6 +1812,47 @@ class AIAgent:
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
     
+    @staticmethod
+    def _summarize_api_error(error: Exception) -> str:
+        """Extract a human-readable one-liner from an API error.
+
+        Handles Cloudflare HTML error pages (502, 503, etc.) by pulling the
+        <title> tag instead of dumping raw HTML.  Falls back to a truncated
+        str(error) for everything else.
+        """
+        import re as _re
+        raw = str(error)
+
+        # Cloudflare / proxy HTML pages: grab the <title> for a clean summary
+        if "<!DOCTYPE" in raw or "<html" in raw:
+            m = _re.search(r"<title[^>]*>([^<]+)</title>", raw, _re.IGNORECASE)
+            title = m.group(1).strip() if m else "HTML error page (title not found)"
+            # Also grab Cloudflare Ray ID if present
+            ray = _re.search(r"Cloudflare Ray ID:\s*<strong[^>]*>([^<]+)</strong>", raw)
+            ray_id = ray.group(1).strip() if ray else None
+            status_code = getattr(error, "status_code", None)
+            parts = []
+            if status_code:
+                parts.append(f"HTTP {status_code}")
+            parts.append(title)
+            if ray_id:
+                parts.append(f"Ray {ray_id}")
+            return " — ".join(parts)
+
+        # JSON body errors from OpenAI/Anthropic SDKs
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
+            if msg:
+                status_code = getattr(error, "status_code", None)
+                prefix = f"HTTP {status_code}: " if status_code else ""
+                return f"{prefix}{msg[:300]}"
+
+        # Fallback: truncate the raw string but give more room than 200 chars
+        status_code = getattr(error, "status_code", None)
+        prefix = f"HTTP {status_code}: " if status_code else ""
+        return f"{prefix}{raw[:500]}"
+
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
             return None
@@ -6363,16 +6404,16 @@ class AIAgent:
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
                     
-                    # Enhanced error logging
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
+                    _error_summary = self._summarize_api_error(api_error)
                     logger.warning(
-                        "API call failed (attempt %s/%s) error_type=%s %s error=%s",
+                        "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
                         retry_count,
                         max_retries,
                         error_type,
                         self._client_log_context(),
-                        api_error,
+                        _error_summary,
                     )
 
                     _provider = getattr(self, "provider", "unknown")
@@ -6382,9 +6423,8 @@ class AIAgent:
                     self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}", force=True)
                     self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
-                    cleaned_error = self._clean_error_message(str(api_error))
-                    self._vprint(f"{self.log_prefix}   📝 Error: {cleaned_error}", force=True)
-                    if status_code == 400:
+                    self._vprint(f"{self.log_prefix}   📝 Error: {_error_summary}", force=True)
+                    if status_code and status_code < 500:
                         _err_body = getattr(api_error, "body", None)
                         _err_body_str = str(_err_body)[:300] if _err_body else None
                         if _err_body_str:
@@ -6640,9 +6680,17 @@ class AIAgent:
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
+                        _final_summary = self._summarize_api_error(api_error)
                         self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
-                        logging.error(f"{self.log_prefix}API call failed after {max_retries} retries. Last error: {api_error}")
-                        logging.error(f"{self.log_prefix}Request details - Messages: {len(api_messages)}, Approx tokens: {approx_tokens:,}")
+                        self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
+                        logging.error(
+                            "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
+                            self.log_prefix, max_retries, _final_summary,
+                            _provider, _model, len(api_messages), f"{approx_tokens:,}",
+                        )
+                        self._dump_api_request_debug(
+                            api_kwargs, reason="max_retries_exhausted", error=api_error,
+                        )
                         raise api_error
 
                     wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s

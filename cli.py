@@ -261,6 +261,18 @@ def load_cli_config() -> Dict[str, Any]:
                 elif isinstance(file_config["model"], dict):
                     # Old format: model is a dict with default/base_url
                     defaults["model"].update(file_config["model"])
+
+            # Root-level provider and base_url override model config.
+            # Users may write:
+            #   model: kimi-k2.5:cloud
+            #   provider: custom
+            #   base_url: http://localhost:11434/v1
+            # These root-level keys must be merged into defaults["model"] so
+            # they are picked up by CLI provider resolution.
+            if "provider" in file_config and file_config["provider"]:
+                defaults["model"]["provider"] = file_config["provider"]
+            if "base_url" in file_config and file_config["base_url"]:
+                defaults["model"]["base_url"] = file_config["base_url"]
             
             # Deep merge file_config into defaults.
             # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)

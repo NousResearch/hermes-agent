@@ -9,6 +9,7 @@ import threading
 from typing import Optional
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # to prevent prompt injection via catalog or hub metadata files.
         import pathlib as _pathlib
         _resolved = _pathlib.Path(path).expanduser().resolve()
-        _hermes_home = _pathlib.Path("~/.hermes").expanduser().resolve()
+        _hermes_home = get_hermes_home().resolve()
         _blocked_dirs = [
             _hermes_home / "skills" / ".hub" / "index-cache",
             _hermes_home / "skills" / ".hub",

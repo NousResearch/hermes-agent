@@ -46,7 +46,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/provider` | Show available providers and current provider |
 | `/prompt` | View/set custom system prompt |
 | `/personality` | Set a predefined personality |
-| `/verbose` | Cycle tool progress display: off → new → all → verbose |
+| `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
 | `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
 | `/skin` | Show or change the display skin/theme |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
@@ -125,7 +125,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/verbose`, `/statusbar`, and `/plugins` are **CLI-only** commands.
+- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/statusbar`, and `/plugins` are **CLI-only** commands.
+- `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/status`, `/sethome`, `/update`, `/approve`, and `/deny` are **messaging-only** commands.
 - `/background`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

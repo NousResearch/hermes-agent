@@ -2916,7 +2916,7 @@ class HermesCLI:
                 try:
                     self._session_db.create_session(
                         session_id=self.session_id,
-                        source="cli",
+                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns,
@@ -7163,13 +7163,13 @@ class HermesCLI:
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:
                     self.agent._honcho.shutdown()
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
-                except Exception as e:
+                except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
             _run_cleanup()
             self._print_exit_summary()
@@ -7288,12 +7288,9 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Check config for CLI toolsets, fallback to hermes-cli
-        config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
-        if config_cli_toolsets and isinstance(config_cli_toolsets, list):
-            toolsets_list = config_cli_toolsets
-        else:
-            toolsets_list = ["hermes-cli"]
+        # Use the shared resolver so MCP servers are included at runtime
+        from hermes_cli.tools_config import _get_platform_tools
+        toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
 

@@ -174,8 +174,10 @@ def _build_child_agent(
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
+    parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", None) or DEFAULT_TOOLSETS)
     if toolsets:
-        child_toolsets = _strip_blocked_tools(toolsets)
+        # Intersect with parent — subagent must not gain tools the parent lacks
+        child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
     elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
         child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
     else:

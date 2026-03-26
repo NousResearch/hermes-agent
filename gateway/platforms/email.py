@@ -224,7 +224,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Connect to the IMAP server and start polling for new messages."""
         try:
             # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port)
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -240,7 +240,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port)
+            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.quit()
@@ -289,7 +289,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port)
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
             imap.select("INBOX")
 
@@ -442,7 +442,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port)
+        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         smtp.starttls(context=ssl.create_default_context())
         smtp.login(self._address, self._password)
         smtp.send_message(msg)
@@ -529,7 +529,7 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port)
+        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         smtp.starttls(context=ssl.create_default_context())
         smtp.login(self._address, self._password)
         smtp.send_message(msg)

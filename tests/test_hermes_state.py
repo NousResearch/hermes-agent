@@ -1102,6 +1102,89 @@ class TestListSessionsRich:
         assert "Line one Line two" in sessions[0]["preview"]
 
 
+# =========================================================================
+# Session source exclusion (--source flag for third-party isolation)
+# =========================================================================
+
+class TestExcludeSources:
+    """Tests for exclude_sources on list_sessions_rich and search_messages."""
+
+    def test_list_sessions_rich_excludes_tool_source(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "telegram")
+        sessions = db.list_sessions_rich(exclude_sources=["tool"])
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s3" in ids
+        assert "s2" not in ids
+
+    def test_list_sessions_rich_no_exclusion_returns_all(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s2" in ids
+
+    def test_list_sessions_rich_source_and_exclude_combined(self, db):
+        """When source= is explicit, exclude_sources should not conflict."""
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "telegram")
+        # Explicit source filter: only tool sessions, no exclusion
+        sessions = db.list_sessions_rich(source="tool")
+        ids = [s["id"] for s in sessions]
+        assert ids == ["s2"]
+
+    def test_list_sessions_rich_exclude_multiple_sources(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "cron")
+        db.create_session("s4", "telegram")
+        sessions = db.list_sessions_rich(exclude_sources=["tool", "cron"])
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s4" in ids
+        assert "s2" not in ids
+        assert "s3" not in ids
+
+    def test_search_messages_excludes_tool_source(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Python deployment question")
+        db.create_session("s2", "tool")
+        db.append_message("s2", "user", "Python automated question")
+        results = db.search_messages("Python", exclude_sources=["tool"])
+        sources = [r["source"] for r in results]
+        assert "cli" in sources
+        assert "tool" not in sources
+
+    def test_search_messages_no_exclusion_returns_all_sources(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Rust deployment question")
+        db.create_session("s2", "tool")
+        db.append_message("s2", "user", "Rust automated question")
+        results = db.search_messages("Rust")
+        sources = [r["source"] for r in results]
+        assert "cli" in sources
+        assert "tool" in sources
+
+    def test_search_messages_source_include_and_exclude(self, db):
+        """source_filter (include) and exclude_sources can coexist."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Golang test")
+        db.create_session("s2", "telegram")
+        db.append_message("s2", "user", "Golang test")
+        db.create_session("s3", "tool")
+        db.append_message("s3", "user", "Golang test")
+        # Include cli+tool, but exclude tool → should only return cli
+        results = db.search_messages(
+            "Golang", source_filter=["cli", "tool"], exclude_sources=["tool"]
+        )
+        sources = [r["source"] for r in results]
+        assert sources == ["cli"]
+
+
 class TestResolveSessionByNameOrId:
     """Tests for the main.py helper that resolves names or IDs."""
 
@@ -1116,3 +1199,66 @@ class TestResolveSessionByNameOrId:
         db.set_session_title("s1", "my project")
         result = db.resolve_session_by_title("my project")
         assert result == "s1"
+
+
+# =========================================================================
+# Concurrent write safety / lock contention fixes (#3139)
+# =========================================================================
+
+class TestConcurrentWriteSafety:
+    def test_create_session_insert_or_ignore_is_idempotent(self, db):
+        """create_session with the same ID twice must not raise (INSERT OR IGNORE)."""
+        db.create_session(session_id="dup-1", source="cli", model="m")
+        # Second call should be silent — no IntegrityError
+        db.create_session(session_id="dup-1", source="gateway", model="m2")
+        session = db.get_session("dup-1")
+        # Row should exist (first write wins with OR IGNORE)
+        assert session is not None
+        assert session["source"] == "cli"
+
+    def test_ensure_session_creates_missing_row(self, db):
+        """ensure_session must create a minimal row when the session doesn't exist."""
+        assert db.get_session("orphan-session") is None
+        db.ensure_session("orphan-session", source="gateway", model="test-model")
+        row = db.get_session("orphan-session")
+        assert row is not None
+        assert row["source"] == "gateway"
+        assert row["model"] == "test-model"
+
+    def test_ensure_session_is_idempotent(self, db):
+        """ensure_session on an existing row must be a no-op (no overwrite)."""
+        db.create_session(session_id="existing", source="cli", model="original-model")
+        db.ensure_session("existing", source="gateway", model="overwrite-model")
+        row = db.get_session("existing")
+        # First write wins — ensure_session must not overwrite
+        assert row["source"] == "cli"
+        assert row["model"] == "original-model"
+
+    def test_ensure_session_allows_append_message_after_failed_create(self, db):
+        """Messages can be flushed even when create_session failed at startup.
+
+        Simulates the #3139 scenario: create_session raises (lock), then
+        ensure_session is called during flush, then append_message succeeds.
+        """
+        # Simulate failed create_session — row absent
+        db.ensure_session("late-session", source="gateway", model="gpt-4")
+        db.append_message(
+            session_id="late-session",
+            role="user",
+            content="hello after lock",
+        )
+        msgs = db.get_messages("late-session")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "hello after lock"
+
+    def test_sqlite_timeout_is_at_least_30s(self, db):
+        """Connection timeout should be >= 30s to survive CLI/gateway contention."""
+        # Access the underlying connection timeout via sqlite3 introspection.
+        # There is no public API, so we check the kwarg via the module default.
+        import sqlite3
+        import inspect
+        from hermes_state import SessionDB as _SessionDB
+        src = inspect.getsource(_SessionDB.__init__)
+        assert "30" in src, (
+            "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
+        )

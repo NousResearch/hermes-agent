@@ -83,6 +83,7 @@ The handler receives the argument string (everything after `/greet`) and returns
 | `aliases` | Tuple of alternative names |
 | `cli_only` | Only available in CLI |
 | `gateway_only` | Only available in messaging platforms |
+| `gateway_config_gate` | Config dotpath (e.g. `"display.my_option"`). When set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. |
 
 ## Managing plugins
 

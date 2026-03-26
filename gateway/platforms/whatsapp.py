@@ -140,6 +140,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
+        self._poll_task: Optional[asyncio.Task] = None
     
     async def connect(self) -> bool:
         """
@@ -198,7 +199,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                 self._mark_connected()
                                 self._bridge_process = None  # Not managed by us
-                                asyncio.create_task(self._poll_messages())
+                                self._poll_task = asyncio.create_task(self._poll_messages())
                                 return True
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
@@ -304,7 +305,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
             
             # Start message polling task
-            asyncio.create_task(self._poll_messages())
+            self._poll_task = asyncio.create_task(self._poll_messages())
             
             self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")

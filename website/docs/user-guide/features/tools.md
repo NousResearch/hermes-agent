@@ -109,6 +109,13 @@ modal setup
 hermes config set terminal.backend modal
 ```
 
+Hermes can use Modal in two modes:
+
+- **Direct Modal**: Hermes talks to your Modal account directly.
+- **Managed Modal**: Hermes talks to a gateway that owns the vendor credentials.
+
+In both cases, Modal is best treated as a task sandbox, not a deployment target. Persistent mode preserves filesystem state so later turns can resume your work, but Hermes may still clean up or recreate the live sandbox. Long-running servers and background processes are not guaranteed to survive idle cleanup, session teardown, or Hermes exit.
+
 ### Container Resources
 
 Configure CPU, memory, disk, and persistence for all container backends:

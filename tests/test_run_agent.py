@@ -584,6 +584,11 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
+        monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
+        prompt = agent._build_system_prompt()
+        assert "NOUS SUBSCRIPTION BLOCK" in prompt
+
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):

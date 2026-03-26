@@ -667,6 +667,8 @@ class TelegramAdapter(BasePlatformAdapter):
             except ImportError:
                 _NetErr = OSError  # type: ignore[misc,assignment]
 
+            effective_thread_id = thread_id  # may be cleared on "thread not found"
+
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
@@ -681,9 +683,14 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
-                                message_thread_id=int(thread_id) if thread_id else None,
+                                message_thread_id=int(effective_thread_id) if effective_thread_id else None,
                             )
                         except Exception as md_error:
+                            # Graceful fallback: drop thread_id if forum topic not found
+                            if "thread not found" in str(md_error).lower() and effective_thread_id:
+                                logger.warning("[%s] Message thread not found — retrying without thread_id", self.name)
+                                effective_thread_id = None
+                                continue
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
@@ -693,7 +700,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
-                                    message_thread_id=int(thread_id) if thread_id else None,
+                                    message_thread_id=int(effective_thread_id) if effective_thread_id else None,
                                 )
                             else:
                                 raise

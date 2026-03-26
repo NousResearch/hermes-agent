@@ -72,6 +72,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[AsyncSocketModeHandler] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._socket_mode_task: Optional[asyncio.Task] = None
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -119,7 +120,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
-            asyncio.create_task(self._handler.start_async())
+            self._socket_mode_task = asyncio.create_task(self._handler.start_async())
 
             self._running = True
             logger.info("[Slack] Connected as @%s (Socket Mode)", bot_name)

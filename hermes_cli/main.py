@@ -3514,6 +3514,7 @@ For more help on a command:
     skills_install.add_argument("--category", default="", help="Category folder to install into")
     skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
     skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
+    skills_install.add_argument("--llm-audit", action="store_true", dest="llm_audit", help="Run LLM-based security audit in addition to static regex scan")
 
     skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")
@@ -3529,6 +3530,7 @@ For more help on a command:
 
     skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
     skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
+    skills_audit.add_argument("--llm-audit", action="store_true", dest="llm_audit", help="Run LLM-based security audit in addition to static regex scan")
 
     skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")

@@ -304,7 +304,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
-               console: Optional[Console] = None, skip_confirm: bool = False) -> None:
+               console: Optional[Console] = None, skip_confirm: bool = False,
+               llm_audit: bool = False) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill."""
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -358,6 +359,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Scan
     c.print("[bold]Running security scan...[/]")
     result = scan_skill(q_path, source=identifier)
+    if llm_audit:
+        c.print("[bold]Running LLM security audit...[/]")
+        from tools.skills_guard import llm_audit_skill
+        result = llm_audit_skill(q_path, result)
     c.print(format_scan_report(result))
 
     # Check install policy
@@ -568,7 +573,8 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
 
-def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
+def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
+             llm_audit: bool = False) -> None:
     """Re-run security scan on installed hub skills."""
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
@@ -597,6 +603,10 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
             continue
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
+        if llm_audit:
+            c.print("[dim]Running LLM audit...[/]")
+            from tools.skills_guard import llm_audit_skill
+            result = llm_audit_skill(skill_path, result)
         c.print(format_scan_report(result))
         c.print()
 
@@ -931,7 +941,8 @@ def skills_command(args) -> None:
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
-                   skip_confirm=getattr(args, "yes", False))
+                   skip_confirm=getattr(args, "yes", False),
+                   llm_audit=getattr(args, "llm_audit", False))
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -941,7 +952,8 @@ def skills_command(args) -> None:
     elif action == "update":
         do_update(name=getattr(args, "name", None))
     elif action == "audit":
-        do_audit(name=getattr(args, "name", None))
+        do_audit(name=getattr(args, "name", None),
+                 llm_audit=getattr(args, "llm_audit", False))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "publish":
@@ -1066,11 +1078,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         # --force handles reinstall override
         skip_confirm = any(flag in args for flag in ("--yes", "-y"))
         force = "--force" in args
+        llm_audit = "--llm-audit" in args
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
                 category = args[i + 1]
         do_install(identifier, category=category, force=force,
-                   skip_confirm=skip_confirm, console=c)
+                   skip_confirm=skip_confirm, console=c, llm_audit=llm_audit)
 
     elif action == "inspect":
         if not args:
@@ -1095,8 +1108,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_update(name=name, console=c)
 
     elif action == "audit":
-        name = args[0] if args else None
-        do_audit(name=name, console=c)
+        name = args[0] if args and not args[0].startswith("--") else None
+        llm_audit = "--llm-audit" in args
+        do_audit(name=name, console=c, llm_audit=llm_audit)
 
     elif action == "uninstall":
         if not args:
@@ -1154,12 +1168,12 @@ def _print_skills_help(console: Console) -> None:
         "[bold]Skills Hub Commands:[/]\n\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
-        "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
+        "  [cyan]install[/] <identifier> [--llm-audit]  Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
-        "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]audit[/] [name] [--llm-audit]  Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"

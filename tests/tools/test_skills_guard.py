@@ -1,9 +1,11 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
+import json
 import os
 import stat
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -29,7 +31,9 @@ from tools.skills_guard import (
     should_allow_install,
     format_scan_report,
     content_hash,
+    llm_audit_skill,
     _determine_verdict,
+    _parse_llm_response,
     _resolve_trust_level,
     _check_structure,
     _unicode_char_name,
@@ -507,3 +511,703 @@ class TestSymlinkPrefixConfusionRegression:
         new_escapes = not resolved.is_relative_to(skill_dir_resolved)
         assert old_escapes is False
         assert new_escapes is False
+
+
+# ---------------------------------------------------------------------------
+# _parse_llm_response
+# ---------------------------------------------------------------------------
+
+
+class TestParseLlmResponse:
+    def test_valid_json_safe_verdict(self):
+        text = json.dumps({"verdict": "safe", "findings": []})
+        findings = _parse_llm_response(text, "test-skill")
+        assert findings == []
+
+    def test_valid_json_with_findings(self):
+        text = json.dumps({
+            "verdict": "caution",
+            "findings": [
+                {"description": "exports API key via curl", "severity": "critical"},
+                {"description": "writes to ~/.bashrc", "severity": "medium"},
+            ],
+        })
+        findings = _parse_llm_response(text, "test-skill")
+        assert len(findings) == 2
+        assert findings[0].severity == "critical"
+        assert findings[0].pattern_id == "llm_audit"
+        assert findings[0].category == "llm-detected"
+        assert "exports API key via curl" in findings[0].description
+        assert findings[1].severity == "medium"
+
+    def test_markdown_code_block_is_stripped(self):
+        text = "```json\n" + json.dumps({"verdict": "safe", "findings": [
+            {"description": "suspicious fetch", "severity": "high"},
+        ]}) + "\n```"
+        findings = _parse_llm_response(text, "test-skill")
+        assert len(findings) == 1
+        assert findings[0].severity == "high"
+
+    def test_invalid_json_returns_empty_list(self):
+        findings = _parse_llm_response("not json at all", "test-skill")
+        assert findings == []
+
+    def test_non_dict_json_returns_empty_list(self):
+        findings = _parse_llm_response("[1, 2, 3]", "test-skill")
+        assert findings == []
+
+    def test_unknown_severity_normalised_to_medium(self):
+        text = json.dumps({
+            "verdict": "caution",
+            "findings": [{"description": "something odd", "severity": "extreme"}],
+        })
+        findings = _parse_llm_response(text, "test-skill")
+        assert len(findings) == 1
+        assert findings[0].severity == "medium"
+
+    def test_finding_without_description_is_skipped(self):
+        text = json.dumps({
+            "verdict": "caution",
+            "findings": [{"description": "", "severity": "high"}],
+        })
+        findings = _parse_llm_response(text, "test-skill")
+        assert findings == []
+
+    def test_finding_description_truncated_at_120_chars(self):
+        long_desc = "x" * 200
+        text = json.dumps({
+            "verdict": "caution",
+            "findings": [{"description": long_desc, "severity": "low"}],
+        })
+        findings = _parse_llm_response(text, "test-skill")
+        assert len(findings) == 1
+        assert len(findings[0].match) <= 120
+
+    def test_non_list_findings_value_returns_empty(self):
+        text = json.dumps({"verdict": "safe", "findings": "oops"})
+        findings = _parse_llm_response(text, "test-skill")
+        assert findings == []
+
+    def test_non_dict_finding_items_are_skipped(self):
+        text = json.dumps({
+            "verdict": "caution",
+            "findings": ["string-item", {"description": "real one", "severity": "high"}],
+        })
+        findings = _parse_llm_response(text, "test-skill")
+        assert len(findings) == 1
+        assert "real one" in findings[0].description
+
+
+# ---------------------------------------------------------------------------
+# llm_audit_skill
+# ---------------------------------------------------------------------------
+
+
+def _make_scan_result(verdict: str = "safe", findings=None, skill_name: str = "test-skill") -> ScanResult:
+    return ScanResult(
+        skill_name=skill_name,
+        source="community",
+        trust_level="community",
+        verdict=verdict,
+        findings=findings or [],
+    )
+
+
+class TestLlmAuditSkill:
+    def test_skips_when_static_verdict_already_dangerous(self, tmp_path):
+        """LLM audit is not called when the static scan already says dangerous."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill")
+
+        static = _make_scan_result("dangerous", [
+            Finding("rm_rf", "critical", "destructive", "SKILL.md", 1, "rm -rf /", "boom"),
+        ])
+
+        with patch("agent.auxiliary_client.call_llm") as mock_llm:
+            result = llm_audit_skill(skill_dir, static)
+
+        mock_llm.assert_not_called()
+        assert result is static
+
+    def test_returns_static_result_unchanged_when_no_scannable_content(self, tmp_path):
+        """Skills with only binary files produce no content; LLM call is skipped."""
+        skill_dir = tmp_path / "empty-skill"
+        skill_dir.mkdir()
+        (skill_dir / "data.bin").write_bytes(b"\x00\x01\x02")
+
+        static = _make_scan_result("safe")
+
+        with patch("agent.auxiliary_client.call_llm") as mock_llm:
+            result = llm_audit_skill(skill_dir, static)
+
+        mock_llm.assert_not_called()
+        assert result is static
+
+    def test_returns_static_result_unchanged_when_no_model_configured(self, tmp_path):
+        """If no model is available (config empty, arg not supplied), skip LLM."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nDo some work.")
+
+        static = _make_scan_result("safe")
+
+        with patch("tools.skills_guard._get_configured_model", return_value=""):
+            with patch("agent.auxiliary_client.call_llm") as mock_llm:
+                result = llm_audit_skill(skill_dir, static)
+
+        mock_llm.assert_not_called()
+        assert result is static
+
+    def test_returns_static_result_unchanged_when_llm_call_fails(self, tmp_path):
+        """LLM audit is best-effort — a failed API call must not block install."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nDo some work.")
+
+        static = _make_scan_result("safe")
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("network error")):
+                result = llm_audit_skill(skill_dir, static)
+
+        assert result is static
+
+    def test_merges_llm_findings_into_static_result(self, tmp_path):
+        """LLM findings are appended to the static findings list."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nDo some work.")
+
+        static = _make_scan_result("safe")
+
+        llm_response = json.dumps({
+            "verdict": "caution",
+            "findings": [{"description": "subtle exfil via markdown image", "severity": "high"}],
+        })
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = llm_response
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", return_value=mock_resp):
+                result = llm_audit_skill(skill_dir, static)
+
+        assert len(result.findings) == 1
+        assert result.findings[0].pattern_id == "llm_audit"
+        assert result.findings[0].category == "llm-detected"
+        assert result.verdict == "caution"
+
+    def test_llm_can_raise_verdict_from_safe_to_caution(self, tmp_path):
+        """A high-severity LLM finding upgrades a safe static verdict to caution."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nInnocent instructions.")
+
+        static = _make_scan_result("safe")
+
+        llm_response = json.dumps({
+            "verdict": "caution",
+            "findings": [{"description": "requests sensitive context", "severity": "high"}],
+        })
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = llm_response
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", return_value=mock_resp):
+                result = llm_audit_skill(skill_dir, static)
+
+        assert result.verdict == "caution"
+
+    def test_llm_can_raise_verdict_from_caution_to_dangerous(self, tmp_path):
+        """A critical LLM finding upgrades caution to dangerous."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nInstructions here.")
+
+        static = _make_scan_result("caution", [
+            Finding("sudo_usage", "high", "privilege_escalation", "SKILL.md", 3, "sudo", "uses sudo"),
+        ])
+
+        llm_response = json.dumps({
+            "verdict": "dangerous",
+            "findings": [{"description": "social engineering to bypass checks", "severity": "critical"}],
+        })
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = llm_response
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", return_value=mock_resp):
+                result = llm_audit_skill(skill_dir, static)
+
+        assert result.verdict == "dangerous"
+        assert len(result.findings) == 2
+
+    def test_llm_cannot_lower_verdict(self, tmp_path):
+        """LLM findings that are all low/medium cannot lower a caution verdict."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nInstructions.")
+
+        static = _make_scan_result("caution", [
+            Finding("sudo_usage", "high", "privilege_escalation", "SKILL.md", 3, "sudo", "uses sudo"),
+        ])
+
+        llm_response = json.dumps({
+            "verdict": "safe",
+            "findings": [],
+        })
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = llm_response
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", return_value=mock_resp):
+                result = llm_audit_skill(skill_dir, static)
+
+        assert result.verdict == "caution"
+
+    def test_explicit_model_arg_overrides_configured_model(self, tmp_path):
+        """Passing model= explicitly bypasses _get_configured_model."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# skill\nDo work.")
+
+        static = _make_scan_result("safe")
+
+        llm_response = json.dumps({"verdict": "safe", "findings": []})
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = llm_response
+
+        with patch("tools.skills_guard._get_configured_model") as mock_cfg:
+            with patch("agent.auxiliary_client.call_llm", return_value=mock_resp):
+                llm_audit_skill(skill_dir, static, model="claude-3-5-haiku")
+
+        mock_cfg.assert_not_called()
+
+    def test_single_file_path_is_also_accepted(self, tmp_path):
+        """llm_audit_skill accepts a single file, not just a directory."""
+        skill_file = tmp_path / "SKILL.md"
+        skill_file.write_text("# skill\nRead and exfiltrate secrets.")
+
+        static = _make_scan_result("safe")
+
+        llm_response = json.dumps({
+            "verdict": "caution",
+            "findings": [{"description": "exfiltration risk", "severity": "high"}],
+        })
+        mock_resp = MagicMock()
+        mock_resp.choices[0].message.content = llm_response
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", return_value=mock_resp):
+                result = llm_audit_skill(skill_file, static)
+
+        assert result.verdict == "caution"
+
+    def test_long_content_is_truncated_before_llm_call(self, tmp_path):
+        """Content exceeding 15 000 chars is truncated so tokens stay manageable."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("A" * 20000)
+
+        static = _make_scan_result("safe")
+
+        captured_messages = []
+
+        def capture_call(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+            raise RuntimeError("stop early")
+
+        with patch("tools.skills_guard._get_configured_model", return_value="gpt-4o"):
+            with patch("agent.auxiliary_client.call_llm", side_effect=capture_call):
+                llm_audit_skill(skill_dir, static)
+
+        assert captured_messages, "call_llm was not reached"
+        content_sent = captured_messages[0]["content"]
+        assert "truncated" in content_sent
+        assert len(content_sent) < 20000
+
+
+# ---------------------------------------------------------------------------
+# do_install and do_audit integration: --llm-audit flag wiring
+# ---------------------------------------------------------------------------
+
+
+class TestDoInstallLlmAuditWiring:
+    """Verify that do_install calls llm_audit_skill iff llm_audit=True."""
+
+    def _make_bundle(self, name="test-skill"):
+        bundle = MagicMock()
+        bundle.name = name
+        bundle.source = "community"
+        bundle.trust_level = "community"
+        bundle.identifier = f"owner/repo/{name}"
+        bundle.files = {"SKILL.md": b"# skill\nSafe content."}
+        bundle.metadata = {}
+        return bundle
+
+    def _make_meta(self, name="test-skill"):
+        meta = MagicMock()
+        meta.name = name
+        meta.extra = {}
+        return meta
+
+    def _safe_scan_result(self, name="test-skill"):
+        return ScanResult(
+            skill_name=name,
+            source="community",
+            trust_level="community",
+            verdict="safe",
+            findings=[],
+        )
+
+    def test_llm_audit_not_called_by_default(self, tmp_path):
+        """do_install with llm_audit=False (default) never calls llm_audit_skill."""
+        from hermes_cli.skills_hub import do_install
+        from rich.console import Console
+        import io
+
+        bundle = self._make_bundle()
+        meta = self._make_meta()
+        safe_result = self._safe_scan_result()
+
+        with patch("hermes_cli.skills_hub.shutil"):
+            with patch("tools.skills_hub.ensure_hub_dirs"):
+                with patch("hermes_cli.skills_hub._resolve_source_meta_and_bundle", return_value=(meta, bundle, None)):
+                    with patch("tools.skills_hub.HubLockFile") as MockLock:
+                        MockLock.return_value.get_installed.return_value = None
+                        with patch("tools.skills_hub.quarantine_bundle", return_value=tmp_path / "q"):
+                            with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                                with patch("tools.skills_guard.llm_audit_skill") as mock_llm_audit:
+                                    with patch("tools.skills_hub.install_from_quarantine", return_value=tmp_path / "installed"):
+                                        with patch("tools.skills_hub.SKILLS_DIR", tmp_path):
+                                            with patch("tools.skills_hub.append_audit_log"):
+                                                c = Console(file=io.StringIO())
+                                                do_install("owner/repo/test-skill", console=c, skip_confirm=True)
+
+        mock_llm_audit.assert_not_called()
+
+    def test_llm_audit_called_when_flag_set(self, tmp_path):
+        """do_install with llm_audit=True calls llm_audit_skill after scan_skill."""
+        from hermes_cli.skills_hub import do_install
+        from rich.console import Console
+        import io
+
+        bundle = self._make_bundle()
+        meta = self._make_meta()
+        safe_result = self._safe_scan_result()
+
+        with patch("hermes_cli.skills_hub.shutil"):
+            with patch("tools.skills_hub.ensure_hub_dirs"):
+                with patch("hermes_cli.skills_hub._resolve_source_meta_and_bundle", return_value=(meta, bundle, None)):
+                    with patch("tools.skills_hub.HubLockFile") as MockLock:
+                        MockLock.return_value.get_installed.return_value = None
+                        with patch("tools.skills_hub.quarantine_bundle", return_value=tmp_path / "q"):
+                            with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                                with patch("tools.skills_guard.llm_audit_skill", return_value=safe_result) as mock_llm_audit:
+                                    with patch("tools.skills_hub.install_from_quarantine", return_value=tmp_path / "installed"):
+                                        with patch("tools.skills_hub.SKILLS_DIR", tmp_path):
+                                            with patch("tools.skills_hub.append_audit_log"):
+                                                c = Console(file=io.StringIO())
+                                                do_install("owner/repo/test-skill", console=c, skip_confirm=True, llm_audit=True)
+
+        mock_llm_audit.assert_called_once()
+
+    def test_llm_audit_result_used_for_install_policy(self, tmp_path):
+        """When llm_audit raises verdict to dangerous, install is blocked."""
+        from hermes_cli.skills_hub import do_install
+        from rich.console import Console
+        import io
+
+        bundle = self._make_bundle()
+        meta = self._make_meta()
+        safe_result = self._safe_scan_result()
+        dangerous_result = ScanResult(
+            skill_name="test-skill",
+            source="community",
+            trust_level="community",
+            verdict="dangerous",
+            findings=[Finding("llm_audit", "critical", "llm-detected", "(LLM analysis)", 0,
+                              "exfiltrates API keys", "LLM audit: exfiltrates API keys")],
+        )
+
+        with patch("hermes_cli.skills_hub.shutil"):
+            with patch("tools.skills_hub.ensure_hub_dirs"):
+                with patch("hermes_cli.skills_hub._resolve_source_meta_and_bundle", return_value=(meta, bundle, None)):
+                    with patch("tools.skills_hub.HubLockFile") as MockLock:
+                        MockLock.return_value.get_installed.return_value = None
+                        with patch("tools.skills_hub.quarantine_bundle", return_value=tmp_path / "q"):
+                            with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                                with patch("tools.skills_guard.llm_audit_skill", return_value=dangerous_result):
+                                    with patch("tools.skills_hub.install_from_quarantine") as mock_install:
+                                        with patch("tools.skills_hub.append_audit_log"):
+                                            c = Console(file=io.StringIO())
+                                            do_install("owner/repo/test-skill", console=c,
+                                                       skip_confirm=True, llm_audit=True)
+
+        mock_install.assert_not_called()
+
+
+class TestDoAuditLlmAuditWiring:
+    """Verify that do_audit calls llm_audit_skill iff llm_audit=True."""
+
+    def _installed_entry(self, tmp_path):
+        skill_path = tmp_path / "my-skill"
+        skill_path.mkdir()
+        (skill_path / "SKILL.md").write_text("# skill")
+        return {
+            "name": "my-skill",
+            "source": "community",
+            "identifier": "owner/repo/my-skill",
+            "install_path": "my-skill",
+        }
+
+    def test_llm_audit_not_called_by_default(self, tmp_path):
+        """do_audit without --llm-audit never calls llm_audit_skill."""
+        from hermes_cli.skills_hub import do_audit
+        from rich.console import Console
+        import io
+
+        entry = self._installed_entry(tmp_path)
+        safe_result = ScanResult("my-skill", "community", "community", "safe", [])
+
+        with patch("tools.skills_hub.HubLockFile") as MockLock:
+            MockLock.return_value.list_installed.return_value = [entry]
+            with patch("tools.skills_hub.SKILLS_DIR", tmp_path):
+                with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                    with patch("tools.skills_guard.llm_audit_skill") as mock_llm_audit:
+                        c = Console(file=io.StringIO())
+                        do_audit(console=c)
+
+        mock_llm_audit.assert_not_called()
+
+    def test_llm_audit_called_for_each_skill_when_flag_set(self, tmp_path):
+        """do_audit with llm_audit=True calls llm_audit_skill once per skill."""
+        from hermes_cli.skills_hub import do_audit
+        from rich.console import Console
+        import io
+
+        entry = self._installed_entry(tmp_path)
+        safe_result = ScanResult("my-skill", "community", "community", "safe", [])
+
+        with patch("tools.skills_hub.HubLockFile") as MockLock:
+            MockLock.return_value.list_installed.return_value = [entry]
+            with patch("tools.skills_hub.SKILLS_DIR", tmp_path):
+                with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                    with patch("tools.skills_guard.llm_audit_skill", return_value=safe_result) as mock_llm_audit:
+                        c = Console(file=io.StringIO())
+                        do_audit(console=c, llm_audit=True)
+
+        mock_llm_audit.assert_called_once()
+
+    def test_llm_audit_called_once_per_installed_skill(self, tmp_path):
+        """With multiple installed skills, llm_audit_skill is called for each one."""
+        from hermes_cli.skills_hub import do_audit
+        from rich.console import Console
+        import io
+
+        entries = []
+        for skill_name in ("skill-a", "skill-b", "skill-c"):
+            p = tmp_path / skill_name
+            p.mkdir()
+            (p / "SKILL.md").write_text(f"# {skill_name}")
+            entries.append({
+                "name": skill_name,
+                "source": "community",
+                "identifier": f"owner/repo/{skill_name}",
+                "install_path": skill_name,
+            })
+
+        safe_result = ScanResult("x", "community", "community", "safe", [])
+
+        with patch("tools.skills_hub.HubLockFile") as MockLock:
+            MockLock.return_value.list_installed.return_value = entries
+            with patch("tools.skills_hub.SKILLS_DIR", tmp_path):
+                with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                    with patch("tools.skills_guard.llm_audit_skill", return_value=safe_result) as mock_llm_audit:
+                        c = Console(file=io.StringIO())
+                        do_audit(console=c, llm_audit=True)
+
+        assert mock_llm_audit.call_count == 3
+
+    def test_do_audit_name_filter_limits_llm_audit_to_one_skill(self, tmp_path):
+        """do_audit(name=...) scans only the named skill even with llm_audit=True."""
+        from hermes_cli.skills_hub import do_audit
+        from rich.console import Console
+        import io
+
+        entries = []
+        for skill_name in ("skill-a", "skill-b"):
+            p = tmp_path / skill_name
+            p.mkdir()
+            (p / "SKILL.md").write_text(f"# {skill_name}")
+            entries.append({
+                "name": skill_name,
+                "source": "community",
+                "identifier": f"owner/repo/{skill_name}",
+                "install_path": skill_name,
+            })
+
+        safe_result = ScanResult("x", "community", "community", "safe", [])
+
+        with patch("tools.skills_hub.HubLockFile") as MockLock:
+            MockLock.return_value.list_installed.return_value = entries
+            with patch("tools.skills_hub.SKILLS_DIR", tmp_path):
+                with patch("tools.skills_guard.scan_skill", return_value=safe_result):
+                    with patch("tools.skills_guard.llm_audit_skill", return_value=safe_result) as mock_llm_audit:
+                        c = Console(file=io.StringIO())
+                        do_audit(name="skill-a", console=c, llm_audit=True)
+
+        assert mock_llm_audit.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# CLI arg parser wiring: --llm-audit in main.py
+# ---------------------------------------------------------------------------
+
+
+def _build_skills_parser():
+    """Build a minimal parser mirroring the skills subcommand args from main.py."""
+    import argparse
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="skills_action")
+
+    install_p = sub.add_parser("install")
+    install_p.add_argument("identifier")
+    install_p.add_argument("--category", default="")
+    install_p.add_argument("--force", action="store_true")
+    install_p.add_argument("--yes", "-y", action="store_true")
+    install_p.add_argument("--llm-audit", action="store_true", dest="llm_audit")
+
+    audit_p = sub.add_parser("audit")
+    audit_p.add_argument("name", nargs="?")
+    audit_p.add_argument("--llm-audit", action="store_true", dest="llm_audit")
+
+    return parser
+
+
+class TestCliArgLlmAudit:
+    """Verify --llm-audit is parsed and forwarded correctly by the CLI."""
+
+    def test_install_llm_audit_flag_defaults_false(self):
+        parser = _build_skills_parser()
+        args = parser.parse_args(["install", "owner/repo/skill"])
+        assert args.llm_audit is False
+
+    def test_install_llm_audit_flag_is_true_when_supplied(self):
+        parser = _build_skills_parser()
+        args = parser.parse_args(["install", "owner/repo/skill", "--llm-audit"])
+        assert args.llm_audit is True
+
+    def test_audit_llm_audit_flag_defaults_false(self):
+        parser = _build_skills_parser()
+        args = parser.parse_args(["audit"])
+        assert args.llm_audit is False
+
+    def test_audit_llm_audit_flag_is_true_when_supplied(self):
+        parser = _build_skills_parser()
+        args = parser.parse_args(["audit", "--llm-audit"])
+        assert args.llm_audit is True
+
+    def test_audit_name_and_llm_audit_can_be_combined(self):
+        parser = _build_skills_parser()
+        args = parser.parse_args(["audit", "my-skill", "--llm-audit"])
+        assert args.name == "my-skill"
+        assert args.llm_audit is True
+
+    def test_skills_command_router_passes_llm_audit_to_do_install(self):
+        """skills_command dispatches llm_audit from parsed args into do_install."""
+        from hermes_cli.skills_hub import skills_command
+
+        parser = _build_skills_parser()
+        args = parser.parse_args(["install", "owner/repo/skill", "--llm-audit"])
+
+        with patch("hermes_cli.skills_hub.do_install") as mock_install:
+            skills_command(args)
+
+        mock_install.assert_called_once()
+        _, kwargs = mock_install.call_args
+        assert kwargs.get("llm_audit") is True
+
+    def test_skills_command_router_passes_llm_audit_to_do_audit(self):
+        """skills_command dispatches llm_audit from parsed args into do_audit."""
+        from hermes_cli.skills_hub import skills_command
+
+        parser = _build_skills_parser()
+        args = parser.parse_args(["audit", "--llm-audit"])
+
+        with patch("hermes_cli.skills_hub.do_audit") as mock_audit:
+            skills_command(args)
+
+        mock_audit.assert_called_once()
+        _, kwargs = mock_audit.call_args
+        assert kwargs.get("llm_audit") is True
+
+
+# ---------------------------------------------------------------------------
+# Slash command wiring: /skills install/audit --llm-audit
+# ---------------------------------------------------------------------------
+
+
+class TestSlashCommandLlmAuditWiring:
+    """Verify handle_skills_slash passes llm_audit correctly."""
+
+    def test_install_without_flag_passes_llm_audit_false(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        from rich.console import Console
+        import io
+
+        with patch("hermes_cli.skills_hub.do_install") as mock_install:
+            handle_skills_slash("/skills install owner/repo/skill", console=Console(file=io.StringIO()))
+
+        mock_install.assert_called_once()
+        _, kwargs = mock_install.call_args
+        assert kwargs.get("llm_audit") is False
+
+    def test_install_with_flag_passes_llm_audit_true(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        from rich.console import Console
+        import io
+
+        with patch("hermes_cli.skills_hub.do_install") as mock_install:
+            handle_skills_slash("/skills install owner/repo/skill --llm-audit", console=Console(file=io.StringIO()))
+
+        mock_install.assert_called_once()
+        _, kwargs = mock_install.call_args
+        assert kwargs.get("llm_audit") is True
+
+    def test_audit_without_flag_passes_llm_audit_false(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        from rich.console import Console
+        import io
+
+        with patch("hermes_cli.skills_hub.do_audit") as mock_audit:
+            handle_skills_slash("/skills audit", console=Console(file=io.StringIO()))
+
+        mock_audit.assert_called_once()
+        _, kwargs = mock_audit.call_args
+        assert kwargs.get("llm_audit") is False
+
+    def test_audit_with_flag_passes_llm_audit_true(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        from rich.console import Console
+        import io
+
+        with patch("hermes_cli.skills_hub.do_audit") as mock_audit:
+            handle_skills_slash("/skills audit --llm-audit", console=Console(file=io.StringIO()))
+
+        mock_audit.assert_called_once()
+        _, kwargs = mock_audit.call_args
+        assert kwargs.get("llm_audit") is True
+
+    def test_audit_name_with_flag_parses_correctly(self):
+        from hermes_cli.skills_hub import handle_skills_slash
+        from rich.console import Console
+        import io
+
+        with patch("hermes_cli.skills_hub.do_audit") as mock_audit:
+            handle_skills_slash("/skills audit my-skill --llm-audit", console=Console(file=io.StringIO()))
+
+        mock_audit.assert_called_once()
+        _, kwargs = mock_audit.call_args
+        assert kwargs.get("name") == "my-skill"
+        assert kwargs.get("llm_audit") is True

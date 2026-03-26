@@ -36,6 +36,7 @@ class CommandDef:
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
     gateway_only: bool = False         # only available in gateway/messaging
+    gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
-               "Configuration", cli_only=True),
+               "Configuration", cli_only=True,
+               gateway_config_gate="display.tool_progress_command"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
@@ -205,7 +207,7 @@ def rebuild_lookups() -> None:
     GATEWAY_KNOWN_COMMANDS = frozenset(
         name
         for cmd in COMMAND_REGISTRY
-        if not cmd.cli_only
+        if not cmd.cli_only or cmd.gateway_config_gate
         for name in (cmd.name, *cmd.aliases)
     )
 
@@ -259,20 +261,76 @@ for _cmd in COMMAND_REGISTRY:
 # Gateway helpers
 # ---------------------------------------------------------------------------
 
-# Set of all command names + aliases recognized by the gateway
+# Set of all command names + aliases recognized by the gateway.
+# Includes config-gated commands so the gateway can dispatch them
+# (the handler checks the config gate at runtime).
 GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     name
     for cmd in COMMAND_REGISTRY
-    if not cmd.cli_only
+    if not cmd.cli_only or cmd.gateway_config_gate
     for name in (cmd.name, *cmd.aliases)
 )
 
 
+def _resolve_config_gates() -> set[str]:
+    """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
+
+    Reads ``config.yaml`` and walks the dot-separated key path for each
+    config-gated command.  Returns an empty set on any error so callers
+    degrade gracefully.
+    """
+    gated = [c for c in COMMAND_REGISTRY if c.gateway_config_gate]
+    if not gated:
+        return set()
+    try:
+        import yaml
+        config_path = os.path.join(
+            os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")),
+            "config.yaml",
+        )
+        if os.path.exists(config_path):
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        else:
+            cfg = {}
+    except Exception:
+        return set()
+    result: set[str] = set()
+    for cmd in gated:
+        val: Any = cfg
+        for key in cmd.gateway_config_gate.split("."):
+            if isinstance(val, dict):
+                val = val.get(key)
+            else:
+                val = None
+                break
+        if val:
+            result.add(cmd.name)
+    return result
+
+
+def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
+    """Check if *cmd* should appear in gateway surfaces (help, menus, mappings).
+
+    Unconditionally available when ``cli_only`` is False.  When ``cli_only``
+    is True but ``gateway_config_gate`` is set, the command is available only
+    when the config value is truthy.  Pass *config_overrides* (from
+    ``_resolve_config_gates()``) to avoid re-reading config for every command.
+    """
+    if not cmd.cli_only:
+        return True
+    if cmd.gateway_config_gate:
+        overrides = config_overrides if config_overrides is not None else _resolve_config_gates()
+        return cmd.name in overrides
+    return False
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
+    overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
-        if cmd.cli_only:
+        if not _is_gateway_available(cmd, overrides):
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
@@ -293,9 +351,10 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
     """
+    overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
-        if cmd.cli_only:
+        if not _is_gateway_available(cmd, overrides):
             continue
         tg_name = cmd.name.replace("-", "_")
         result.append((tg_name, cmd.description))
@@ -308,9 +367,10 @@ def slack_subcommand_map() -> dict[str, str]:
     Maps both canonical names and aliases so /hermes bg do stuff works
     the same as /hermes background do stuff.
     """
+    overrides = _resolve_config_gates()
     mapping: dict[str, str] = {}
     for cmd in COMMAND_REGISTRY:
-        if cmd.cli_only:
+        if not _is_gateway_available(cmd, overrides):
             continue
         mapping[cmd.name] = f"/{cmd.name}"
         for alias in cmd.aliases:

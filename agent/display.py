@@ -239,7 +239,6 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        self._last_flush_time = 0.0  # Rate-limit flushes for patch_stdout compat
         # Optional callable to route all output through (e.g. a no-op for silent
         # background agents).  When set, bypasses self._out entirely so that
         # agents with _print_fn overridden remain fully silent.

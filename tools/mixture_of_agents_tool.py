@@ -466,7 +466,7 @@ if __name__ == "__main__":
     
     # Show current configuration
     config = get_moa_configuration()
-    print(f"\n⚙️  Current Configuration:")
+    print("\n⚙️  Current Configuration:")
     print(f"  🤖 Reference models ({len(config['reference_models'])}): {', '.join(config['reference_models'])}")
     print(f"  🧠 Aggregator model: {config['aggregator_model']}")
     print(f"  🌡️  Reference temperature: {config['reference_temperature']}")
@@ -506,7 +506,7 @@ if __name__ == "__main__":
     print(f"  - Optimized temperatures: {REFERENCE_TEMPERATURE} for reference models, {AGGREGATOR_TEMPERATURE} for aggregation")
     print("  - Token-efficient: only returns final aggregated response")
     print("  - Resilient: continues with partial model failures")
-    print(f"  - Configurable: easy to modify models and settings at top of file")
+    print("  - Configurable: easy to modify models and settings at top of file")
     print("  - State-of-the-art results on challenging benchmarks")
     
     print("\nDebug mode:")

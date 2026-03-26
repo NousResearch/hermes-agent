@@ -705,7 +705,7 @@ def run_doctor(args):
         _honcho_cfg_path = resolve_config_path()
 
         if not _honcho_cfg_path.exists():
-            check_warn("Honcho config not found", f"run: hermes honcho setup")
+            check_warn("Honcho config not found", "run: hermes honcho setup")
         elif not hcfg.enabled:
             check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
         elif not hcfg.api_key:

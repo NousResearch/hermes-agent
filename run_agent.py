@@ -524,7 +524,7 @@ class AIAgent:
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or "openrouter" in self._base_url_lower:
+        if self.provider == "openrouter" or self._is_openrouter_url():
             threading.Thread(
                 target=lambda: fetch_model_metadata(),
                 daemon=True,
@@ -574,7 +574,7 @@ class AIAgent:
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
-        is_openrouter = "openrouter" in self._base_url_lower
+        is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages"
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
@@ -694,6 +694,7 @@ class AIAgent:
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex Responses API streaming.
         self._anthropic_client = None
+        self._is_anthropic_oauth = False
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -1177,6 +1178,14 @@ class AIAgent:
         """Return True when a base URL targets OpenAI's native API."""
         url = (base_url or self._base_url_lower).lower()
         return "api.openai.com" in url and "openrouter" not in url
+
+    def _is_openrouter_url(self) -> bool:
+        """Return True when the base URL targets OpenRouter."""
+        return "openrouter" in self._base_url_lower
+
+    def _is_anthropic_url(self) -> bool:
+        """Return True when the base URL targets Anthropic (native or /anthropic proxy path)."""
+        return "api.anthropic.com" in self._base_url_lower or self._base_url_lower.rstrip("/").endswith("/anthropic")
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -1731,7 +1740,7 @@ class AIAgent:
                     while j < len(messages) and messages[j]["role"] == "tool":
                         tool_msg = messages[j]
                         # Format tool response with XML tags
-                        tool_response = f"<tool_response>\n"
+                        tool_response = "<tool_response>\n"
                         
                         # Try to parse tool content as JSON if it looks like JSON
                         tool_content = tool_msg["content"]
@@ -2064,7 +2073,7 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
-            print(f"\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
+            print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the global tool interrupt signal."""
@@ -4257,7 +4266,7 @@ class AIAgent:
                 tools=self.tools,
                 max_tokens=self.max_tokens,
                 reasoning_config=self.reasoning_config,
-                is_oauth=getattr(self, "_is_anthropic_oauth", False),
+                is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
             )
 
@@ -4378,7 +4387,7 @@ class AIAgent:
 
         extra_body = {}
 
-        _is_openrouter = "openrouter" in self._base_url_lower
+        _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
             "models.github.ai" in self._base_url_lower
             or "api.githubcopilot.com" in self._base_url_lower
@@ -4747,7 +4756,7 @@ class AIAgent:
                     tool_calls = assistant_msg.tool_calls
             elif self.api_mode == "anthropic_messages" and not _aux_available:
                 from agent.anthropic_adapter import normalize_anthropic_response as _nar_flush
-                _flush_msg, _ = _nar_flush(response, strip_tool_prefix=getattr(self, '_is_anthropic_oauth', False))
+                _flush_msg, _ = _nar_flush(response, strip_tool_prefix=self._is_anthropic_oauth)
                 if _flush_msg and _flush_msg.tool_calls:
                     tool_calls = _flush_msg.tool_calls
             elif hasattr(response, "choices") and response.choices:
@@ -5548,10 +5557,10 @@ class AIAgent:
                     from agent.anthropic_adapter import build_anthropic_kwargs as _bak, normalize_anthropic_response as _nar
                     _ant_kw = _bak(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
-                                   is_oauth=getattr(self, '_is_anthropic_oauth', False),
+                                   is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _msg, _ = _nar(summary_response, strip_tool_prefix=getattr(self, '_is_anthropic_oauth', False))
+                    _msg, _ = _nar(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_msg.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -5579,11 +5588,11 @@ class AIAgent:
                 elif self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import build_anthropic_kwargs as _bak2, normalize_anthropic_response as _nar2
                     _ant_kw2 = _bak2(model=self.model, messages=api_messages, tools=None,
-                                    is_oauth=getattr(self, '_is_anthropic_oauth', False),
+                                    is_oauth=self._is_anthropic_oauth,
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_msg, _ = _nar2(retry_response, strip_tool_prefix=getattr(self, '_is_anthropic_oauth', False))
+                    _retry_msg, _ = _nar2(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_retry_msg.content or "").strip()
                 else:
                     summary_kwargs = {
@@ -5845,7 +5854,7 @@ class AIAgent:
             if self._interrupt_requested:
                 interrupted = True
                 if not self.quiet_mode:
-                    self._safe_print(f"\n⚡ Breaking out of tool loop due to interrupt...")
+                    self._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
                 break
             
             api_call_count += 1
@@ -6074,7 +6083,7 @@ class AIAgent:
                     if response_invalid:
                         # Stop spinner before printing error messages
                         if thinking_spinner:
-                            thinking_spinner.stop(f"(´;ω;`) oops, retrying...")
+                            thinking_spinner.stop("(´;ω;`) oops, retrying...")
                             thinking_spinner = None
                         if self.thinking_callback:
                             self.thinking_callback("")
@@ -6356,7 +6365,7 @@ class AIAgent:
                 except Exception as api_error:
                     # Stop spinner before printing error messages
                     if thinking_spinner:
-                        thinking_spinner.stop(f"(╥_╥) error, retrying...")
+                        thinking_spinner.stop("(╥_╥) error, retrying...")
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
@@ -6764,7 +6773,7 @@ class AIAgent:
                 elif self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import normalize_anthropic_response
                     assistant_message, finish_reason = normalize_anthropic_response(
-                        response, strip_tool_prefix=getattr(self, "_is_anthropic_oauth", False)
+                        response, strip_tool_prefix=self._is_anthropic_oauth
                     )
                 else:
                     assistant_message = response.choices[0].message
@@ -6952,7 +6961,7 @@ class AIAgent:
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                             else:
-                                content = f"Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
+                                content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
@@ -7547,20 +7556,20 @@ def main(
             toolset = get_toolset_for_tool(tool_name)
             print(f"  📌 {tool_name} (from {toolset})")
         
-        print(f"\n💡 Usage Examples:")
-        print(f"  # Use predefined toolsets")
-        print(f"  python run_agent.py --enabled_toolsets=research --query='search for Python news'")
-        print(f"  python run_agent.py --enabled_toolsets=development --query='debug this code'")
-        print(f"  python run_agent.py --enabled_toolsets=safe --query='analyze without terminal'")
-        print(f"  ")
-        print(f"  # Combine multiple toolsets")
-        print(f"  python run_agent.py --enabled_toolsets=web,vision --query='analyze website'")
-        print(f"  ")
-        print(f"  # Disable toolsets")
-        print(f"  python run_agent.py --disabled_toolsets=terminal --query='no command execution'")
-        print(f"  ")
-        print(f"  # Run with trajectory saving enabled")
-        print(f"  python run_agent.py --save_trajectories --query='your question here'")
+        print("\n💡 Usage Examples:")
+        print("  # Use predefined toolsets")
+        print("  python run_agent.py --enabled_toolsets=research --query='search for Python news'")
+        print("  python run_agent.py --enabled_toolsets=development --query='debug this code'")
+        print("  python run_agent.py --enabled_toolsets=safe --query='analyze without terminal'")
+        print("  ")
+        print("  # Combine multiple toolsets")
+        print("  python run_agent.py --enabled_toolsets=web,vision --query='analyze website'")
+        print("  ")
+        print("  # Disable toolsets")
+        print("  python run_agent.py --disabled_toolsets=terminal --query='no command execution'")
+        print("  ")
+        print("  # Run with trajectory saving enabled")
+        print("  python run_agent.py --save_trajectories --query='your question here'")
         return
     
     # Parse toolset selection arguments
@@ -7576,9 +7585,9 @@ def main(
         print(f"🚫 Disabled toolsets: {disabled_toolsets_list}")
     
     if save_trajectories:
-        print(f"💾 Trajectory saving: ENABLED")
-        print(f"   - Successful conversations → trajectory_samples.jsonl")
-        print(f"   - Failed conversations → failed_trajectories.jsonl")
+        print("💾 Trajectory saving: ENABLED")
+        print("   - Successful conversations → trajectory_samples.jsonl")
+        print("   - Failed conversations → failed_trajectories.jsonl")
     
     # Initialize agent with provided parameters
     try:
@@ -7620,7 +7629,7 @@ def main(
     print(f"💬 Messages: {len(result['messages'])}")
     
     if result['final_response']:
-        print(f"\n🎯 FINAL RESPONSE:")
+        print("\n🎯 FINAL RESPONSE:")
         print("-" * 30)
         print(result['final_response'])
     

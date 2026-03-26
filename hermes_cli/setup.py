@@ -548,9 +548,9 @@ def _prompt_api_key(var: dict):
 
     if value:
         save_env_value(var["name"], value)
-        print_success(f"  ✓ Saved")
+        print_success("  ✓ Saved")
     else:
-        print_warning(f"  Skipped (configure later with 'hermes setup')")
+        print_warning("  Skipped (configure later with 'hermes setup')")
 
 
 def _print_setup_summary(config: dict, hermes_home):
@@ -725,9 +725,9 @@ def _print_setup_summary(config: dict, hermes_home):
         f"   {color('hermes config edit', Colors.GREEN)}    Open config in your editor"
     )
     print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
-    print(f"                          Set a specific value")
+    print("                          Set a specific value")
     print()
-    print(f"   Or edit the files directly:")
+    print("   Or edit the files directly:")
     print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
     print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
     print()
@@ -755,13 +755,13 @@ def _prompt_container_resources(config: dict):
     print_info("  Persistent filesystem keeps files between sessions.")
     print_info("  Set to 'no' for ephemeral sandboxes that reset each time.")
     persist_str = prompt(
-        f"  Persist filesystem across sessions? (yes/no)", persist_label
+        "  Persist filesystem across sessions? (yes/no)", persist_label
     )
     terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
 
     # CPU
     current_cpu = terminal.get("container_cpu", 1)
-    cpu_str = prompt(f"  CPU cores", str(current_cpu))
+    cpu_str = prompt("  CPU cores", str(current_cpu))
     try:
         terminal["container_cpu"] = float(cpu_str)
     except ValueError:
@@ -769,7 +769,7 @@ def _prompt_container_resources(config: dict):
 
     # Memory
     current_mem = terminal.get("container_memory", 5120)
-    mem_str = prompt(f"  Memory in MB (5120 = 5GB)", str(current_mem))
+    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
     try:
         terminal["container_memory"] = int(mem_str)
     except ValueError:
@@ -777,7 +777,7 @@ def _prompt_container_resources(config: dict):
 
     # Disk
     current_disk = terminal.get("container_disk", 51200)
-    disk_str = prompt(f"  Disk in MB (51200 = 50GB)", str(current_disk))
+    disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
     try:
         terminal["container_disk"] = int(disk_str)
     except ValueError:
@@ -3441,9 +3441,9 @@ def _run_quick_setup(config: dict, hermes_home):
                     value = prompt(f"  {var.get('prompt', var['name'])}")
                 if value:
                     save_env_value(var["name"], value)
-                    print_success(f"  ✓ Saved")
+                    print_success("  ✓ Saved")
                 else:
-                    print_warning(f"  Skipped")
+                    print_warning("  Skipped")
                 print()
 
     # Handle missing config fields

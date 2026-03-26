@@ -634,7 +634,7 @@ def check_command_security(command: str) -> dict:
         logger.warning("tirith timed out after %ds", timeout)
         if fail_open:
             return {"action": "allow", "findings": [], "summary": f"tirith timed out ({timeout}s)"}
-        return {"action": "block", "findings": [], "summary": f"tirith timed out (fail-closed)"}
+        return {"action": "block", "findings": [], "summary": "tirith timed out (fail-closed)"}
 
     # Map exit code to action
     exit_code = result.returncode

@@ -217,7 +217,7 @@ class MiniSWERunner:
         # Tool definition
         self.tools = [TERMINAL_TOOL_DEFINITION]
         
-        print(f"🤖 Mini-SWE Runner initialized")
+        print("🤖 Mini-SWE Runner initialized")
         print(f"   Model: {self.model}")
         print(f"   Environment: {self.env_type}")
         if self.env_type != "local":
@@ -233,7 +233,7 @@ class MiniSWERunner:
             cwd=self.cwd,
             timeout=self.command_timeout
         )
-        print(f"✅ Environment ready")
+        print("✅ Environment ready")
     
     def _cleanup_env(self):
         """Cleanup the execution environment."""
@@ -365,7 +365,7 @@ class MiniSWERunner:
                         except (json.JSONDecodeError, AttributeError):
                             pass
                         
-                        tool_response = f"<tool_response>\n"
+                        tool_response = "<tool_response>\n"
                         tool_response += json.dumps({
                             "tool_call_id": tool_msg.get("tool_call_id", ""),
                             "name": msg["tool_calls"][len(tool_responses)]["function"]["name"] \
@@ -505,7 +505,7 @@ Complete the user's task step by step."""
                         
                         # Check for task completion signal
                         if "MINI_SWE_AGENT_FINAL_OUTPUT" in result["output"]:
-                            print(f"   ✅ Task completion signal detected!")
+                            print("   ✅ Task completion signal detected!")
                             completed = True
                         
                         # Add tool response
@@ -530,7 +530,7 @@ Complete the user's task step by step."""
                         "content": final_response
                     })
                     completed = True
-                    print(f"🎉 Agent finished (no more tool calls)")
+                    print("🎉 Agent finished (no more tool calls)")
                     break
             
             if api_call_count >= self.max_iterations:

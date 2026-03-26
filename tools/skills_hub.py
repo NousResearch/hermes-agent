@@ -2021,8 +2021,8 @@ class LobeHubSource(SkillSource):
             "metadata:",
             "  hermes:",
             f"    tags: [{', '.join(str(t) for t in tag_list)}]",
-            f"  lobehub:",
-            f"    source: lobehub",
+            "  lobehub:",
+            "    source: lobehub",
             "---",
         ]
 

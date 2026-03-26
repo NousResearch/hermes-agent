@@ -2885,7 +2885,7 @@ class GatewayRunner:
                 else:
                     preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
                 lines.append(f"• `{name}` — {preview}")
-            lines.append(f"\nUsage: `/personality <name>`")
+            lines.append("\nUsage: `/personality <name>`")
             return "\n".join(lines)
 
         def _resolve_prompt(value):

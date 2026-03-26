@@ -2414,13 +2414,13 @@ class HermesCLI:
                 print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
             else:
                 print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
-            print(f"  A pre-rollback snapshot was saved automatically.")
+            print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
             # matches the restored filesystem state
             if self.conversation_history:
                 self.undo_last()
-                print(f"  Chat turn undone to match restored file state.")
+                print("  Chat turn undone to match restored file state.")
         else:
             print(f"  ❌ {result['error']}")
 
@@ -3067,15 +3067,15 @@ class HermesCLI:
                         print(f"      endpoint: {custom_url}")
                     if is_active:
                         print(f"      model: {self.model} ← current")
-                    print(f"      (use hermes model to change)")
+                    print("      (use hermes model to change)")
                 else:
-                    print(f"      (use hermes model to change)")
+                    print("      (use hermes model to change)")
                 print()
 
         if unauthed:
             names = ", ".join(p["label"] for p in unauthed)
             print(f"  Not configured: {names}")
-            print(f"  Run: hermes setup")
+            print("  Run: hermes setup")
             print()
 
         print("  To change model or provider, use: hermes model")
@@ -3099,9 +3099,9 @@ class HermesCLI:
                 self.system_prompt = new_prompt
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", new_prompt):
-                    print(f"(^_^)b System prompt set (saved to config)")
+                    print("(^_^)b System prompt set (saved to config)")
                 else:
-                    print(f"(^_^) System prompt set (session only)")
+                    print("(^_^) System prompt set (session only)")
                 print(f"  \"{new_prompt[:60]}{'...' if len(new_prompt) > 60 else ''}\"")
         else:
             # Show current prompt
@@ -3642,7 +3642,7 @@ class HermesCLI:
                     elif self._pending_title:
                         _cprint(f"  Title (pending): {self._pending_title}")
                     else:
-                        _cprint(f"  No title set. Usage: /title <your session title>")
+                        _cprint("  No title set. Usage: /title <your session title>")
                 else:
                     _cprint("  Session database not available.")
         elif canonical == "new":
@@ -3701,7 +3701,7 @@ class HermesCLI:
                 plugins = mgr.list_plugins()
                 if not plugins:
                     print("No plugins installed.")
-                    print(f"Drop plugin directories into ~/.hermes/plugins/ to get started.")
+                    print("Drop plugin directories into ~/.hermes/plugins/ to get started.")
                 else:
                     print(f"Plugins ({len(plugins)}):")
                     for p in plugins:
@@ -3894,7 +3894,7 @@ class HermesCLI:
 
         _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
         _cprint(f"  Task ID: {task_id}")
-        _cprint(f"  You can continue chatting — results will appear when done.\n")
+        _cprint("  You can continue chatting — results will appear when done.\n")
 
         turn_route = self._resolve_turn_agent_config(prompt)
 
@@ -4104,7 +4104,7 @@ class HermesCLI:
                         print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
                         print("     You may need to close existing Chrome windows first and retry")
                 else:
-                    print(f"   ⚠ Could not auto-launch Chrome")
+                    print("   ⚠ Could not auto-launch Chrome")
                     # Show manual instructions as fallback
                     sys_name = _plat.system()
                     if sys_name == "Darwin":
@@ -4161,7 +4161,7 @@ class HermesCLI:
         elif sub == "status":
             print()
             if current:
-                print(f"🌐 Browser: connected to live Chrome via CDP")
+                print("🌐 Browser: connected to live Chrome via CDP")
                 print(f"   Endpoint: {current}")
 
                 _port = 9222
@@ -4175,9 +4175,9 @@ class HermesCLI:
                     s.settimeout(1)
                     s.connect(("127.0.0.1", _port))
                     s.close()
-                    print(f"   Status: ✓ reachable")
+                    print("   Status: ✓ reachable")
                 except (OSError, Exception):
-                    print(f"   Status: ⚠ not reachable (Chrome may not be running)")
+                    print("   Status: ⚠ not reachable (Chrome may not be running)")
             elif os.environ.get("BROWSERBASE_API_KEY"):
                 print("🌐 Browser: Browserbase (cloud)")
             else:
@@ -4210,13 +4210,13 @@ class HermesCLI:
             current = get_active_skin_name()
             skins = list_skins()
             print(f"\n  Current skin: {current}")
-            print(f"  Available skins:")
+            print("  Available skins:")
             for s in skins:
                 marker = " ●" if s["name"] == current else "  "
                 source = f" ({s['source']})" if s["source"] == "user" else ""
                 print(f"   {marker} {s['name']}{source} — {s['description']}")
-            print(f"\n  Usage: /skin <name>")
-            print(f"  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
+            print("\n  Usage: /skin <name>")
+            print("  Custom skins: drop a YAML file in ~/.hermes/skins/\n")
             return
 
         new_skin = parts[1].strip().lower()
@@ -4413,7 +4413,7 @@ class HermesCLI:
         )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
-        print(f"  📊 Session Token Usage")
+        print("  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
         print(f"  Input tokens:              {input_tokens:>10,}")
@@ -5549,7 +5549,7 @@ class HermesCLI:
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
-                            print(f"\n⚡ New message detected, interrupting...")
+                            print("\n⚡ New message detected, interrupting...")
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
@@ -5762,7 +5762,7 @@ class HermesCLI:
             else:
                 duration_str = f"{seconds}s"
             
-            print(f"Resume this session with:")
+            print("Resume this session with:")
             print(f"  hermes --resume {self.session_id}")
             print()
             print(f"Session:        {self.session_id}")

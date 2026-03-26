@@ -8,6 +8,7 @@ from tools.session_search_tool import (
     _format_timestamp,
     _format_conversation,
     _truncate_around_matches,
+    _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
 )
@@ -16,6 +17,17 @@ from tools.session_search_tool import (
 # =========================================================================
 # Tool schema guidance
 # =========================================================================
+
+class TestHiddenSessionSources:
+    """Verify the _HIDDEN_SESSION_SOURCES constant used for third-party isolation."""
+
+    def test_tool_source_is_hidden(self):
+        assert "tool" in _HIDDEN_SESSION_SOURCES
+
+    def test_standard_sources_not_hidden(self):
+        for src in ("cli", "telegram", "discord", "slack", "cron"):
+            assert src not in _HIDDEN_SESSION_SOURCES
+
 
 class TestSessionSearchSchema:
     def test_keeps_cross_session_recall_guidance_without_current_session_nudge(self):

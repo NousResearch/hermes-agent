@@ -895,3 +895,26 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
     return total_chars // 4
+
+
+def estimate_request_tokens_rough(
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Rough token estimate for a full chat-completions request.
+
+    Includes the major payload buckets Hermes sends to providers:
+    system prompt, conversation messages, and tool schemas.  With 50+
+    tools enabled, schemas alone can add 20-30K tokens — a significant
+    blind spot when only counting messages.
+    """
+    total_chars = 0
+    if system_prompt:
+        total_chars += len(system_prompt)
+    if messages:
+        total_chars += sum(len(str(msg)) for msg in messages)
+    if tools:
+        total_chars += len(str(tools))
+    return total_chars // 4

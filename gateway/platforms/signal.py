@@ -344,7 +344,9 @@ class SignalAdapter(BasePlatformAdapter):
         """Force SSE reconnection by closing the current response."""
         if self._sse_response and not self._sse_response.is_stream_consumed:
             try:
-                asyncio.create_task(self._sse_response.aclose())
+                task = asyncio.create_task(self._sse_response.aclose())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except Exception:
                 pass
             self._sse_response = None

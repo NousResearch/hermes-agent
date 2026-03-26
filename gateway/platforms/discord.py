@@ -446,6 +446,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._bot_task: Optional[asyncio.Task] = None
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
     
@@ -588,7 +589,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._register_slash_commands()
             
             # Start the bot in background
-            asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)

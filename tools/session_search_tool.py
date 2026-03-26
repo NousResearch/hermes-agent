@@ -358,12 +358,14 @@ def session_search(
             return await asyncio.gather(*coros, return_exceptions=True)
 
         try:
-            asyncio.get_running_loop()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                results = pool.submit(lambda: asyncio.run(_summarize_all())).result(timeout=60)
-        except RuntimeError:
-            # No event loop running, create a new one
-            results = asyncio.run(_summarize_all())
+            # Use _run_async() which properly manages event loops across
+            # CLI, gateway, and worker-thread contexts.  The previous
+            # pattern (asyncio.run() in a ThreadPoolExecutor) created a
+            # disposable event loop that conflicted with cached
+            # AsyncOpenAI/httpx clients bound to a different loop,
+            # causing deadlocks in gateway mode (#2681).
+            from model_tools import _run_async
+            results = _run_async(_summarize_all())
         except concurrent.futures.TimeoutError:
             logging.warning(
                 "Session summarization timed out after 60 seconds",

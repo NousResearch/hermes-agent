@@ -38,6 +38,7 @@ def _make_runner():
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
+    runner._background_tasks = set()
 
     mock_store = MagicMock()
     runner.session_store = mock_store

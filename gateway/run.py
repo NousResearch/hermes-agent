@@ -4865,7 +4865,14 @@ class GatewayRunner:
         # final reply will be threaded under the original message via reply_to.
         # Use event_message_id as fallback so progress messages land in the
         # same thread as the final response instead of going to the DM root.
-        _progress_thread_id = source.thread_id or event_message_id
+        # NOTE: Only use event_message_id fallback for platforms that support
+        # threading by message ID (Slack, Discord).  Telegram uses dedicated
+        # forum topic IDs for message_thread_id — passing a regular message ID
+        # causes "Message thread not found" errors.
+        if source.platform in ("slack", "discord"):
+            _progress_thread_id = source.thread_id or event_message_id
+        else:
+            _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():

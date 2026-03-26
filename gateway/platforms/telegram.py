@@ -667,6 +667,8 @@ class TelegramAdapter(BasePlatformAdapter):
             except ImportError:
                 _NetErr = OSError  # type: ignore[misc,assignment]
 
+            effective_thread_id = int(thread_id) if thread_id else None
+
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
@@ -681,9 +683,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
-                                message_thread_id=int(thread_id) if thread_id else None,
+                                message_thread_id=effective_thread_id,
                             )
                         except Exception as md_error:
+                            # Thread not found — drop thread_id and retry immediately
+                            if "thread not found" in str(md_error).lower():
+                                if effective_thread_id is not None:
+                                    logger.warning("[%s] Thread %s not found, retrying without thread_id", self.name, effective_thread_id)
+                                    effective_thread_id = None
+                                    continue
+                                raise
                             # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
@@ -693,12 +702,18 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
-                                    message_thread_id=int(thread_id) if thread_id else None,
+                                    message_thread_id=effective_thread_id,
                                 )
                             else:
                                 raise
                         break  # success
                     except _NetErr as send_err:
+                        # Thread not found may also surface as a network-layer error
+                        if "thread not found" in str(send_err).lower():
+                            if effective_thread_id is not None:
+                                logger.warning("[%s] Thread %s not found (network layer), retrying without thread_id", self.name, effective_thread_id)
+                                effective_thread_id = None
+                                continue
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
@@ -1810,6 +1825,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
                     if not chat_topic:
                         chat_topic = created_name
+
+            # If no DM topic was resolved, Telegram may have set message_thread_id
+            # to indicate a reply chain (not a real forum topic).  Drop it so
+            # downstream send calls don't fail with "Message thread not found".
+            if not chat_topic:
+                thread_id_str = None
 
         # Build source
         source = self.build_source(

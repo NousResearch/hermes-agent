@@ -572,6 +572,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        exclude_sources: List[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -583,7 +584,18 @@ class SessionDB:
 
         Uses a single query with correlated subqueries instead of N+2 queries.
         """
-        source_clause = "WHERE s.source = ?" if source else ""
+        where_clauses = []
+        params = []
+
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         query = f"""
             SELECT s.*,
                 COALESCE(
@@ -598,11 +610,11 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            {source_clause}
+            {where_sql}
             ORDER BY s.started_at DESC
             LIMIT ? OFFSET ?
         """
-        params = (source, limit, offset) if source else (limit, offset)
+        params.extend([limit, offset])
         with self._lock:
             cursor = self._conn.execute(query, params)
             rows = cursor.fetchall()
@@ -818,6 +830,7 @@ class SessionDB:
         self,
         query: str,
         source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
@@ -849,6 +862,11 @@ class SessionDB:
             source_placeholders = ",".join("?" for _ in source_filter)
             where_clauses.append(f"s.source IN ({source_placeholders})")
             params.extend(source_filter)
+
+        if exclude_sources is not None:
+            exclude_placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({exclude_placeholders})")
+            params.extend(exclude_sources)
 
         if role_filter:
             role_placeholders = ",".join("?" for _ in role_filter)

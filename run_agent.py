@@ -736,9 +736,13 @@ class AIAgent:
 
                     client_kwargs["default_headers"] = copilot_default_headers()
                 elif "api.kimi.com" in effective_base.lower():
-                    client_kwargs["default_headers"] = {
-                        "User-Agent": "KimiCLI/1.3",
-                    }
+                    # Use Kimi CLI OAuth headers if available
+                    from hermes_cli.auth import _get_kimi_cli_headers, _read_kimi_cli_oauth_credentials
+                    kimi_oauth = _read_kimi_cli_oauth_credentials()
+                    if kimi_oauth and api_key.startswith("eyJ"):
+                        client_kwargs["default_headers"] = _get_kimi_cli_headers()
+                    else:
+                        client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client

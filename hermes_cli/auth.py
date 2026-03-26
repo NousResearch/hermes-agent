@@ -225,6 +225,64 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # KIMI_BASE_URL explicitly.
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
+# Kimi CLI OAuth credentials path
+KIMI_CLI_CREDENTIALS_PATH = Path.home() / ".kimi" / "credentials" / "kimi-code.json"
+KIMI_CLI_DEVICE_ID_PATH = Path.home() / ".kimi" / "device_id"
+
+
+def _read_kimi_cli_oauth_credentials() -> Optional[Dict[str, Any]]:
+    """Read Kimi CLI OAuth credentials from ~/.kimi/credentials/kimi-code.json.
+    
+    Returns the credentials dict if found and valid, None otherwise.
+    """
+    try:
+        if not KIMI_CLI_CREDENTIALS_PATH.exists():
+            return None
+        with open(KIMI_CLI_CREDENTIALS_PATH, "r", encoding="utf-8") as f:
+            creds = json.load(f)
+        if not isinstance(creds, dict):
+            return None
+        access_token = creds.get("access_token")
+        if not isinstance(access_token, str) or not access_token.startswith("eyJ"):
+            return None
+        return creds
+    except Exception:
+        return None
+
+
+def _get_kimi_cli_device_id() -> str:
+    """Read Kimi CLI device ID from ~/.kimi/device_id."""
+    try:
+        if KIMI_CLI_DEVICE_ID_PATH.exists():
+            return KIMI_CLI_DEVICE_ID_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _get_kimi_cli_headers() -> Dict[str, str]:
+    """Generate Kimi CLI compatible headers for OAuth authentication.
+    
+    These headers are required when using Kimi CLI OAuth tokens to access
+    the api.kimi.com/coding/v1 endpoint.
+    """
+    import platform as _platform
+    import socket
+    
+    device_name = _platform.node() or socket.gethostname()
+    device_model = "Mac" if _platform.system() == "Darwin" else _platform.system()
+    device_id = _get_kimi_cli_device_id()
+    
+    return {
+        "User-Agent": "KimiCLI/1.23.0",
+        "X-Msh-Platform": "kimi_cli",
+        "X-Msh-Version": "1.23.0",
+        "X-Msh-Device-Name": device_name,
+        "X-Msh-Device-Model": device_model,
+        "X-Msh-Os-Version": _platform.version(),
+        "X-Msh-Device-Id": device_id,
+    }
+
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
     """Return the correct Kimi base URL based on the API key prefix.
@@ -321,6 +379,14 @@ def _resolve_api_key_provider_secret(
         except Exception:
             pass
         return "", ""
+
+    # For Kimi, check for Kimi CLI OAuth credentials first
+    if provider_id == "kimi-coding":
+        kimi_oauth = _read_kimi_cli_oauth_credentials()
+        if kimi_oauth:
+            access_token = kimi_oauth.get("access_token", "")
+            if has_usable_secret(access_token):
+                return access_token, "kimi-cli-oauth"
 
     for env_var in pconfig.api_key_env_vars:
         val = os.getenv(env_var, "").strip()
@@ -1669,7 +1735,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider.
 
-    Returns dict with: provider, api_key, base_url, source.
+    Returns dict with: provider, api_key, base_url, source, and optionally
+    default_headers for providers that require special headers (e.g., Kimi OAuth).
     """
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
@@ -1694,12 +1761,18 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     else:
         base_url = pconfig.inference_base_url
 
-    return {
+    result = {
         "provider": provider_id,
         "api_key": api_key,
         "base_url": base_url.rstrip("/"),
         "source": key_source or "default",
     }
+
+    # Add Kimi CLI OAuth headers if using Kimi CLI OAuth credentials
+    if provider_id == "kimi-coding" and key_source == "kimi-cli-oauth":
+        result["default_headers"] = _get_kimi_cli_headers()
+
+    return result
 
 
 def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:

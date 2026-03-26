@@ -94,7 +94,7 @@ class TestOfferOpenclawMigration:
         fake_mod.Migrator.assert_called_once()
         call_kwargs = fake_mod.Migrator.call_args[1]
         assert call_kwargs["execute"] is True
-        assert call_kwargs["overwrite"] is False
+        assert call_kwargs["overwrite"] is True
         assert call_kwargs["migrate_secrets"] is True
         assert call_kwargs["preset_name"] == "full"
         fake_migrator.migrate.assert_called_once()
@@ -285,3 +285,182 @@ class TestSetupWizardOpenclawIntegration:
             setup_mod.run_setup_wizard(args)
 
         mock_migration.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _get_section_config_summary / _skip_configured_section — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetSectionConfigSummary:
+    """Test the _get_section_config_summary helper."""
+
+    def test_model_returns_none_without_api_key(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary({}, "model")
+        assert result is None
+
+    def test_model_returns_summary_with_api_key(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENROUTER_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": "openai/gpt-4"}, "model"
+            )
+        assert result == "openai/gpt-4"
+
+    def test_model_returns_dict_default_key(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENAI_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary(
+                {"model": {"default": "claude-opus-4", "provider": "anthropic"}},
+                "model",
+            )
+        assert result == "claude-opus-4"
+
+    def test_terminal_always_returns(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary(
+                {"terminal": {"backend": "docker"}}, "terminal"
+            )
+        assert result == "backend: docker"
+
+    def test_agent_always_returns(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary(
+                {"agent": {"max_turns": 120}}, "agent"
+            )
+        assert result == "max turns: 120"
+
+    def test_gateway_returns_none_without_tokens(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert result is None
+
+    def test_gateway_lists_platforms(self):
+        def env_side(key):
+            if key == "TELEGRAM_BOT_TOKEN":
+                return "tok123"
+            if key == "DISCORD_BOT_TOKEN":
+                return "disc456"
+            return ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "gateway")
+        assert "Telegram" in result
+        assert "Discord" in result
+
+    def test_tools_returns_none_without_keys(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._get_section_config_summary({}, "tools")
+        assert result is None
+
+    def test_tools_lists_configured(self):
+        def env_side(key):
+            return "key" if key == "BROWSERBASE_API_KEY" else ""
+
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+            result = setup_mod._get_section_config_summary({}, "tools")
+        assert "Browser" in result
+
+
+class TestSkipConfiguredSection:
+    """Test the _skip_configured_section helper."""
+
+    def test_returns_false_when_not_configured(self):
+        with patch.object(setup_mod, "get_env_value", return_value=""):
+            result = setup_mod._skip_configured_section({}, "model", "Model")
+        assert result is False
+
+    def test_returns_true_when_user_skips(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENROUTER_API_KEY" else ""
+
+        with (
+            patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(setup_mod, "prompt_yes_no", return_value=False),
+        ):
+            result = setup_mod._skip_configured_section(
+                {"model": "openai/gpt-4"}, "model", "Model"
+            )
+        assert result is True
+
+    def test_returns_false_when_user_wants_reconfig(self):
+        def env_side(key):
+            return "sk-xxx" if key == "OPENROUTER_API_KEY" else ""
+
+        with (
+            patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(setup_mod, "prompt_yes_no", return_value=True),
+        ):
+            result = setup_mod._skip_configured_section(
+                {"model": "openai/gpt-4"}, "model", "Model"
+            )
+        assert result is False
+
+
+class TestSetupWizardSkipsConfiguredSections:
+    """After migration, already-configured sections should offer skip."""
+
+    def test_sections_skipped_when_migration_imported_settings(self, tmp_path):
+        """When migration ran and API key exists, model section should be skippable.
+
+        Simulates the real flow: get_env_value returns "" during the is_existing
+        check (before migration), then returns a key after migration imported it.
+        """
+        args = _first_time_args()
+
+        # Track whether migration has "run" — after it does, API key is available
+        migration_done = {"value": False}
+
+        def env_side(key):
+            if migration_done["value"] and key == "OPENROUTER_API_KEY":
+                return "sk-xxx"
+            return ""
+
+        def fake_migration(hermes_home):
+            migration_done["value"] = True
+            return True
+
+        reloaded_config = {"model": "openai/gpt-4"}
+
+        with (
+            patch.object(setup_mod, "ensure_hermes_home"),
+            patch.object(
+                setup_mod, "load_config",
+                side_effect=[{}, reloaded_config],
+            ),
+            patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
+            patch.object(setup_mod, "get_env_value", side_effect=env_side),
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
+            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch("builtins.input", return_value=""),
+            # Migration succeeds and flips the env_side flag
+            patch.object(
+                setup_mod, "_offer_openclaw_migration",
+                side_effect=fake_migration,
+            ),
+            # User says No to all reconfig prompts
+            patch.object(setup_mod, "prompt_yes_no", return_value=False),
+            patch.object(setup_mod, "setup_model_provider") as mock_model,
+            patch.object(setup_mod, "setup_terminal_backend") as mock_terminal,
+            patch.object(setup_mod, "setup_agent_settings") as mock_agent,
+            patch.object(setup_mod, "setup_gateway") as mock_gateway,
+            patch.object(setup_mod, "setup_tools") as mock_tools,
+            patch.object(setup_mod, "save_config"),
+            patch.object(setup_mod, "_print_setup_summary"),
+        ):
+            setup_mod.run_setup_wizard(args)
+
+        # Model has API key → skip offered, user said No → section NOT called
+        mock_model.assert_not_called()
+        # Terminal/agent always have a summary → skip offered, user said No
+        mock_terminal.assert_not_called()
+        mock_agent.assert_not_called()
+        # Gateway has no tokens (env_side returns "" for gateway keys) → section runs
+        mock_gateway.assert_called_once()
+        # Tools have no keys → section runs
+        mock_tools.assert_called_once()

@@ -2969,6 +2969,95 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# Post-Migration Section Skip Logic
+# =============================================================================
+
+
+def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
+    """Return a short summary if a setup section is already configured, else None.
+
+    Used after OpenClaw migration to detect which sections can be skipped.
+    ``get_env_value`` is the module-level import from hermes_cli.config
+    so that test patches on ``setup_mod.get_env_value`` take effect.
+    """
+    if section_key == "model":
+        has_key = bool(
+            get_env_value("OPENROUTER_API_KEY")
+            or get_env_value("OPENAI_API_KEY")
+            or get_env_value("ANTHROPIC_API_KEY")
+        )
+        if not has_key:
+            # Check for OAuth providers
+            try:
+                from hermes_cli.auth import get_active_provider
+                if get_active_provider():
+                    has_key = True
+            except Exception:
+                pass
+        if not has_key:
+            return None
+        model = config.get("model")
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+        if isinstance(model, dict):
+            return str(model.get("default") or model.get("model") or "configured")
+        return "configured"
+
+    elif section_key == "terminal":
+        backend = config.get("terminal", {}).get("backend", "local")
+        return f"backend: {backend}"
+
+    elif section_key == "agent":
+        max_turns = config.get("agent", {}).get("max_turns", 90)
+        return f"max turns: {max_turns}"
+
+    elif section_key == "gateway":
+        platforms = []
+        if get_env_value("TELEGRAM_BOT_TOKEN"):
+            platforms.append("Telegram")
+        if get_env_value("DISCORD_BOT_TOKEN"):
+            platforms.append("Discord")
+        if get_env_value("SLACK_BOT_TOKEN"):
+            platforms.append("Slack")
+        if get_env_value("WHATSAPP_PHONE_NUMBER_ID"):
+            platforms.append("WhatsApp")
+        if get_env_value("SIGNAL_ACCOUNT"):
+            platforms.append("Signal")
+        if platforms:
+            return ", ".join(platforms)
+        return None  # No platforms configured — section must run
+
+    elif section_key == "tools":
+        tools = []
+        if get_env_value("ELEVENLABS_API_KEY"):
+            tools.append("TTS/ElevenLabs")
+        if get_env_value("BROWSERBASE_API_KEY"):
+            tools.append("Browser")
+        if get_env_value("FIRECRAWL_API_KEY"):
+            tools.append("Firecrawl")
+        if tools:
+            return ", ".join(tools)
+        return None
+
+    return None
+
+
+def _skip_configured_section(
+    config: dict, section_key: str, label: str
+) -> bool:
+    """Show an already-configured section summary and offer to skip.
+
+    Returns True if the user chose to skip, False if the section should run.
+    """
+    summary = _get_section_config_summary(config, section_key)
+    if not summary:
+        return False
+    print()
+    print_success(f"  {label}: {summary}")
+    return not prompt_yes_no(f"  Reconfigure {label.lower()}?", default=False)
+
+
+# =============================================================================
 # OpenClaw Migration
 # =============================================================================
 
@@ -3039,7 +3128,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
             target_root=hermes_home.resolve(),
             execute=True,
             workspace_target=None,
-            overwrite=False,
+            overwrite=True,
             migrate_secrets=True,
             output_dir=None,
             selected_options=selected,
@@ -3195,6 +3284,8 @@ def run_setup_wizard(args):
         )
     )
 
+    migration_ran = False
+
     if is_existing:
         # ── Returning User Menu ──
         print()
@@ -3264,7 +3355,8 @@ def run_setup_wizard(args):
             return
 
         # Offer OpenClaw migration before configuration begins
-        if _offer_openclaw_migration(hermes_home):
+        migration_ran = _offer_openclaw_migration(hermes_home)
+        if migration_ran:
             # Reload config in case migration wrote to it
             config = load_config()
 
@@ -3277,20 +3369,31 @@ def run_setup_wizard(args):
     print()
     print_info("You can edit these files directly or use 'hermes config edit'")
 
+    if migration_ran:
+        print()
+        print_info("Settings were imported from OpenClaw.")
+        print_info("Each section below will show what was imported — press Enter to keep,")
+        print_info("or choose to reconfigure if needed.")
+
     # Section 1: Model & Provider
-    setup_model_provider(config)
+    if not (migration_ran and _skip_configured_section(config, "model", "Model & Provider")):
+        setup_model_provider(config)
 
     # Section 2: Terminal Backend
-    setup_terminal_backend(config)
+    if not (migration_ran and _skip_configured_section(config, "terminal", "Terminal Backend")):
+        setup_terminal_backend(config)
 
     # Section 3: Agent Settings
-    setup_agent_settings(config)
+    if not (migration_ran and _skip_configured_section(config, "agent", "Agent Settings")):
+        setup_agent_settings(config)
 
     # Section 4: Messaging Platforms
-    setup_gateway(config)
+    if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
+        setup_gateway(config)
 
     # Section 5: Tools
-    setup_tools(config, first_install=not is_existing)
+    if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
+        setup_tools(config, first_install=not is_existing)
 
     # Save and show summary
     save_config(config)

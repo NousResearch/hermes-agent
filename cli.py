@@ -3003,10 +3003,10 @@ class HermesCLI:
         print(f"  {remaining} message(s) remaining in history.")
     
     def _show_model_and_providers(self):
-        """Unified /model and /provider display.
+        """Show current model + provider and list all authenticated providers.
 
         Shows current model + provider, then lists all authenticated
-        providers with their available models so users can switch easily.
+        providers with their available models.
         """
         from hermes_cli.models import (
             curated_models_for_provider, list_available_providers,
@@ -3055,9 +3055,9 @@ class HermesCLI:
                         print(f"      endpoint: {custom_url}")
                     if is_active:
                         print(f"      model: {self.model} ← current")
-                    print(f"      (use /model custom:<model-name>)")
+                    print(f"      (use hermes model to change)")
                 else:
-                    print(f"      (use /model {p['id']}:<model-name>)")
+                    print(f"      (use hermes model to change)")
                 print()
 
         if unauthed:
@@ -3066,15 +3066,7 @@ class HermesCLI:
             print(f"  Run: hermes setup")
             print()
 
-        print("  Switch model:    /model <model-name>")
-        print("  Switch provider: /model <provider>:<model-name>")
-        if authed and len(authed) > 1:
-            # Show a concrete example with a non-active provider
-            other = next((p for p in authed if p["id"] != current), authed[0])
-            other_models = curated_models_for_provider(other["id"])
-            if other_models:
-                example_model = other_models[0][0]
-                print(f"  Example: /model {other['id']}:{example_model}")
+        print("  To change model or provider, use: hermes model")
 
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
@@ -3643,91 +3635,6 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
-        elif canonical == "model":
-            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
-            parts = cmd_original.split(maxsplit=1)
-            if len(parts) > 1:
-                from hermes_cli.model_switch import switch_model, switch_to_custom_provider
-
-                raw_input = parts[1].strip()
-
-                # Handle bare "/model custom" — switch to custom provider
-                # and auto-detect the model from the endpoint.
-                if raw_input.strip().lower() == "custom":
-                    result = switch_to_custom_provider()
-                    if result.success:
-                        self.model = result.model
-                        self.requested_provider = "custom"
-                        self.provider = "custom"
-                        self.api_key = result.api_key
-                        self.base_url = result.base_url
-                        self.agent = None
-                        save_config_value("model.default", result.model)
-                        save_config_value("model.provider", "custom")
-                        save_config_value("model.base_url", result.base_url)
-                        print(f"(^_^)b Model changed to: {result.model} [provider: Custom]")
-                        print(f"  Endpoint: {result.base_url}")
-                        print(f"  Status: connected (model auto-detected)")
-                    else:
-                        print(f"(>_<) {result.error_message}")
-                    return True
-
-                # Core model-switching pipeline (shared with gateway)
-                current_provider = self.provider or self.requested_provider or "openrouter"
-                result = switch_model(
-                    raw_input,
-                    current_provider,
-                    current_base_url=self.base_url or "",
-                    current_api_key=self.api_key or "",
-                )
-
-                if not result.success:
-                    print(f"(>_<) {result.error_message}")
-                    if "Did you mean" not in result.error_message:
-                        print(f"  Model unchanged: {self.model}")
-                        if "credentials" not in result.error_message.lower():
-                            print("  Tip: Use /model to see available models, /provider to see providers")
-                else:
-                    self.model = result.new_model
-                    self.agent = None  # Force re-init
-
-                    if result.provider_changed:
-                        self.requested_provider = result.target_provider
-                        self.provider = result.target_provider
-                        self.api_key = result.api_key
-                        self.base_url = result.base_url
-
-                    provider_note = f" [provider: {result.provider_label}]" if result.provider_changed else ""
-
-                    if result.persist:
-                        saved_model = save_config_value("model.default", result.new_model)
-                        if result.provider_changed:
-                            save_config_value("model.provider", result.target_provider)
-                            # Persist base_url for custom endpoints; clear
-                            # when switching away from custom (#2562 Phase 2).
-                            if result.base_url and "openrouter.ai" not in (result.base_url or ""):
-                                save_config_value("model.base_url", result.base_url)
-                            else:
-                                save_config_value("model.base_url", None)
-                        if saved_model:
-                            print(f"(^_^)b Model changed to: {result.new_model}{provider_note} (saved to config)")
-                        else:
-                            print(f"(^_^) Model changed to: {result.new_model}{provider_note} (this session only)")
-                    else:
-                        print(f"(^_^) Model changed to: {result.new_model}{provider_note} (this session only)")
-                        if result.warning_message:
-                            print(f"  Reason: {result.warning_message}")
-                        print("  Note: Model will revert on restart. Use a verified model to save to config.")
-
-                    # Show endpoint info for custom providers
-                    if result.is_custom_target:
-                        endpoint = result.base_url or self.base_url or "custom endpoint"
-                        print(f"  Endpoint: {endpoint}")
-                        if not result.provider_changed:
-                            print(f"  Tip: To switch providers, use /model provider:model")
-                            print(f"       e.g. /model openai-codex:gpt-5.2-codex")
-            else:
-                self._show_model_and_providers()
         elif canonical == "provider":
             self._show_model_and_providers()
         elif canonical == "prompt":
@@ -6231,10 +6138,6 @@ class HermesCLI:
                     return
                 # Accept the selected completion
                 buf.apply_completion(completion)
-                # If text now looks like "/model provider:", re-trigger completions
-                text = buf.document.text_before_cursor
-                if text.startswith("/model ") and text.endswith(":"):
-                    buf.start_completion()
             elif buf.suggestion and buf.suggestion.text:
                 # No completion menu, but there's a ghost text auto-suggestion — accept it
                 buf.insert_text(buf.suggestion.text)
@@ -6529,35 +6432,9 @@ class HermesCLI:
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
-        def _get_model_completer_info() -> dict:
-            """Return provider/model info for /model autocomplete."""
-            try:
-                from hermes_cli.models import (
-                    _PROVIDER_LABELS, normalize_provider, provider_model_ids,
-                )
-                current = getattr(cli_ref, "provider", None) or getattr(cli_ref, "requested_provider", "openrouter")
-                current = normalize_provider(current)
-
-                # Provider map: id -> label (only providers with known models)
-                providers = {}
-                for pid, plabel in _PROVIDER_LABELS.items():
-                    providers[pid] = plabel
-
-                def models_for(provider_name: str) -> list[str]:
-                    norm = normalize_provider(provider_name)
-                    return provider_model_ids(norm)
-
-                return {
-                    "current_provider": current,
-                    "providers": providers,
-                    "models_for": models_for,
-                }
-            except Exception:
-                return {}
 
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: _skill_commands,
-            model_completer_provider=_get_model_completer_info,
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),

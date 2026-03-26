@@ -1716,6 +1716,9 @@ class GatewayRunner:
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "verbose":
+            return await self._handle_verbose_command(event)
+
         if canonical == "provider":
             return await self._handle_provider_command(event)
         
@@ -3783,6 +3786,68 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    async def _handle_verbose_command(self, event: MessageEvent) -> str:
+        """Handle /verbose command — cycle tool progress display mode.
+
+        Gated by ``display.tool_progress_command`` in config.yaml (default off).
+        When enabled, cycles the tool progress mode through off → new → all →
+        verbose → off, same as the CLI.
+        """
+        import yaml
+
+        config_path = _hermes_home / "config.yaml"
+
+        # --- check config gate ------------------------------------------------
+        try:
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            gate_enabled = user_config.get("display", {}).get("tool_progress_command", False)
+        except Exception:
+            gate_enabled = False
+
+        if not gate_enabled:
+            return (
+                "The `/verbose` command is not enabled for messaging platforms.\n\n"
+                "Enable it in `config.yaml`:\n```yaml\n"
+                "display:\n  tool_progress_command: true\n```"
+            )
+
+        # --- cycle mode -------------------------------------------------------
+        cycle = ["off", "new", "all", "verbose"]
+        descriptions = {
+            "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
+            "new": "⚙️ Tool progress: **NEW** — shown when tool changes.",
+            "all": "⚙️ Tool progress: **ALL** — every tool call shown.",
+            "verbose": "⚙️ Tool progress: **VERBOSE** — full args and results.",
+        }
+
+        raw_progress = user_config.get("display", {}).get("tool_progress", "all")
+        # YAML 1.1 parses bare "off" as boolean False — normalise back
+        if raw_progress is False:
+            current = "off"
+        elif raw_progress is True:
+            current = "all"
+        else:
+            current = str(raw_progress).lower()
+        if current not in cycle:
+            current = "all"
+        idx = (cycle.index(current) + 1) % len(cycle)
+        new_mode = cycle[idx]
+
+        # Save to config.yaml
+        try:
+            if "display" not in user_config or not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            user_config["display"]["tool_progress"] = new_mode
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+            return f"{descriptions[new_mode]}\n_(saved to config — takes effect on next message)_"
+        except Exception as e:
+            logger.warning("Failed to save tool_progress mode: %s", e)
+            return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""

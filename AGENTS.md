@@ -173,6 +173,7 @@ if canonical == "mycommand":
 - `args_hint` — argument placeholder shown in help (e.g. `"<prompt>"`, `"[name]"`)
 - `cli_only` — only available in the interactive CLI
 - `gateway_only` — only available in messaging platforms
+- `gateway_config_gate` — config dotpath (e.g. `"display.tool_progress_command"`); when set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. `GATEWAY_KNOWN_COMMANDS` always includes config-gated commands so the gateway can dispatch them; help/menus only show them when the gate is open.
 
 **Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
 

@@ -1102,6 +1102,89 @@ class TestListSessionsRich:
         assert "Line one Line two" in sessions[0]["preview"]
 
 
+# =========================================================================
+# Session source exclusion (--source flag for third-party isolation)
+# =========================================================================
+
+class TestExcludeSources:
+    """Tests for exclude_sources on list_sessions_rich and search_messages."""
+
+    def test_list_sessions_rich_excludes_tool_source(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "telegram")
+        sessions = db.list_sessions_rich(exclude_sources=["tool"])
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s3" in ids
+        assert "s2" not in ids
+
+    def test_list_sessions_rich_no_exclusion_returns_all(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s2" in ids
+
+    def test_list_sessions_rich_source_and_exclude_combined(self, db):
+        """When source= is explicit, exclude_sources should not conflict."""
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "telegram")
+        # Explicit source filter: only tool sessions, no exclusion
+        sessions = db.list_sessions_rich(source="tool")
+        ids = [s["id"] for s in sessions]
+        assert ids == ["s2"]
+
+    def test_list_sessions_rich_exclude_multiple_sources(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "tool")
+        db.create_session("s3", "cron")
+        db.create_session("s4", "telegram")
+        sessions = db.list_sessions_rich(exclude_sources=["tool", "cron"])
+        ids = [s["id"] for s in sessions]
+        assert "s1" in ids
+        assert "s4" in ids
+        assert "s2" not in ids
+        assert "s3" not in ids
+
+    def test_search_messages_excludes_tool_source(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Python deployment question")
+        db.create_session("s2", "tool")
+        db.append_message("s2", "user", "Python automated question")
+        results = db.search_messages("Python", exclude_sources=["tool"])
+        sources = [r["source"] for r in results]
+        assert "cli" in sources
+        assert "tool" not in sources
+
+    def test_search_messages_no_exclusion_returns_all_sources(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Rust deployment question")
+        db.create_session("s2", "tool")
+        db.append_message("s2", "user", "Rust automated question")
+        results = db.search_messages("Rust")
+        sources = [r["source"] for r in results]
+        assert "cli" in sources
+        assert "tool" in sources
+
+    def test_search_messages_source_include_and_exclude(self, db):
+        """source_filter (include) and exclude_sources can coexist."""
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Golang test")
+        db.create_session("s2", "telegram")
+        db.append_message("s2", "user", "Golang test")
+        db.create_session("s3", "tool")
+        db.append_message("s3", "user", "Golang test")
+        # Include cli+tool, but exclude tool → should only return cli
+        results = db.search_messages(
+            "Golang", source_filter=["cli", "tool"], exclude_sources=["tool"]
+        )
+        sources = [r["source"] for r in results]
+        assert sources == ["cli"]
+
+
 class TestResolveSessionByNameOrId:
     """Tests for the main.py helper that resolves names or IDs."""
 

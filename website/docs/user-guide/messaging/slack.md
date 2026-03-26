@@ -157,6 +157,7 @@ SLACK_ALLOWED_USERS=U01ABC2DEF3              # Comma-separated Member IDs
 # Optional
 SLACK_HOME_CHANNEL=C01234567890              # Default channel for cron/scheduled messages
 SLACK_HOME_CHANNEL_NAME=general              # Human-readable name for the home channel (optional)
+SLACK_ENABLE_REACTIONS=true                  # Enable 👀→✅ reaction feedback on messages (true/false, default: true)
 ```
 
 Or run the interactive setup:

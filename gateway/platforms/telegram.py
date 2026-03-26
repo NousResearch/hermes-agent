@@ -471,11 +471,14 @@ class TelegramAdapter(BasePlatformAdapter):
             
             try:
                 from telegram.error import NetworkError as _NetErr
+                from telegram.error import BadRequest as _BadRequest
             except ImportError:
                 _NetErr = OSError  # type: ignore[misc,assignment]
+                _BadRequest = OSError  # type: ignore[misc,assignment]
 
             for i, chunk in enumerate(chunks):
                 msg = None
+                _thread_id_fallback = False
                 for _send_attempt in range(3):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
@@ -485,7 +488,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                                message_thread_id=int(thread_id) if thread_id else None,
+                                message_thread_id=int(thread_id) if thread_id and not _thread_id_fallback else None,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -497,7 +500,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                                    message_thread_id=int(thread_id) if thread_id else None,
+                                    message_thread_id=int(thread_id) if thread_id and not _thread_id_fallback else None,
                                 )
                             else:
                                 raise
@@ -508,6 +511,13 @@ class TelegramAdapter(BasePlatformAdapter):
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
                                            self.name, _send_attempt + 1, wait, send_err)
                             await asyncio.sleep(wait)
+                        else:
+                            raise
+                    except _BadRequest as bad_err:
+                        # Handle "Message thread not found" by falling back to sending without thread_id
+                        if "message thread not found" in str(bad_err).lower() and thread_id and not _thread_id_fallback:
+                            logger.warning("[%s] Thread %s not found, falling back to main chat", self.name, thread_id)
+                            _thread_id_fallback = True
                         else:
                             raise
                 message_ids.append(str(msg.message_id))

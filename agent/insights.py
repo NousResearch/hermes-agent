@@ -666,7 +666,7 @@ class InsightsEngine:
                     cost_cell = "     N/A"
                 lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} {cost_cell}")
             if o.get("models_without_pricing"):
-                lines.append(f"  * Cost N/A for custom/self-hosted models")
+                lines.append("  * Cost N/A for custom/self-hosted models")
             lines.append("")
 
         # Platform breakdown

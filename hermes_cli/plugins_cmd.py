@@ -390,7 +390,7 @@ def cmd_list() -> None:
     dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
     if not dirs:
         console.print("[dim]No plugins installed.[/dim]")
-        console.print(f"[dim]Install with:[/dim] hermes plugins install owner/repo")
+        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
         return
 
     table = Table(title="Installed Plugins", show_lines=False)

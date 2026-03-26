@@ -505,7 +505,7 @@ class CheckpointManager:
         # Get the hash of the commit at the cutoff point
         ok, cutoff_hash, _ = _run_git(
             ["rev-list", "--reverse", "HEAD", "--skip=0",
-             f"--max-count=1"],
+             "--max-count=1"],
             shadow_repo, working_dir,
         )
 
@@ -542,7 +542,7 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
 
         lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
 
-    lines.append(f"\n  /rollback <N>             restore to checkpoint N")
-    lines.append(f"  /rollback diff <N>        preview changes since checkpoint N")
-    lines.append(f"  /rollback <N> <file>      restore a single file from checkpoint N")
+    lines.append("\n  /rollback <N>             restore to checkpoint N")
+    lines.append("  /rollback diff <N>        preview changes since checkpoint N")
+    lines.append("  /rollback <N> <file>      restore a single file from checkpoint N")
     return "\n".join(lines)

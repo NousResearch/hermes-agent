@@ -62,3 +62,56 @@ def test_sessions_delete_reports_not_found_when_prefix_is_unknown(monkeypatch, c
 
     output = capsys.readouterr().out
     assert "Session 'missing-prefix' not found." in output
+
+
+def test_sessions_delete_handles_eoferror_on_confirm(monkeypatch, capsys):
+    """sessions delete should not crash when stdin is closed (non-TTY)."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def resolve_session_id(self, session_id):
+            return "20260315_092437_c9a6ff"
+
+        def delete_session(self, session_id):
+            raise AssertionError("delete_session should not be called when cancelled")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys, "argv",
+        ["hermes", "sessions", "delete", "20260315_092437_c9a6"],
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": (_ for _ in ()).throw(EOFError))
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert "Cancelled" in output
+
+
+def test_sessions_prune_handles_eoferror_on_confirm(monkeypatch, capsys):
+    """sessions prune should not crash when stdin is closed (non-TTY)."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    class FakeDB:
+        def prune_sessions(self, **kwargs):
+            raise AssertionError("prune_sessions should not be called when cancelled")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(
+        sys, "argv",
+        ["hermes", "sessions", "prune"],
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": (_ for _ in ()).throw(EOFError))
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert "Cancelled" in output

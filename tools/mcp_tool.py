@@ -94,7 +94,7 @@ try:
     from mcp.client.stdio import stdio_client
     _MCP_AVAILABLE = True
     try:
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.streamable_http import streamablehttp_client, streamable_http_client
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
@@ -748,6 +748,8 @@ class MCPServerTask:
                 "Upgrade the mcp package to get HTTP support."
             )
 
+        import httpx
+
         url = config["url"]
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
@@ -762,13 +764,19 @@ class MCPServerTask:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-        _http_kwargs: dict = {
-            "headers": headers,
-            "timeout": float(connect_timeout),
+
+        # Build httpx client with auth headers (new non-deprecated API)
+        http_kwargs: dict = {
+            "follow_redirects": True,
+            "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
         }
+        if headers:
+            http_kwargs["headers"] = headers
         if _oauth_auth is not None:
-            _http_kwargs["auth"] = _oauth_auth
-        async with streamablehttp_client(url, **_http_kwargs) as (
+            http_kwargs["auth"] = _oauth_auth
+
+        http_client = httpx.AsyncClient(**http_kwargs)
+        async with streamable_http_client(url, http_client=http_client) as (
             read_stream, write_stream, _get_session_id,
         ):
             async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:

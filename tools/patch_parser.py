@@ -419,6 +419,23 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
                 
                 if error:
                     return False, f"Could not apply hunk: {error}"
+        else:
+            # Addition-only hunk (no context or removed lines).
+            # Insert at the location indicated by the context hint, or at end of file.
+            insert_text = '\n'.join(replace_lines)
+            if hunk.context_hint:
+                hint_pos = new_content.find(hunk.context_hint)
+                if hint_pos != -1:
+                    # Insert after the line containing the context hint
+                    eol = new_content.find('\n', hint_pos)
+                    if eol != -1:
+                        new_content = new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:]
+                    else:
+                        new_content = new_content + '\n' + insert_text
+                else:
+                    new_content = new_content.rstrip('\n') + '\n' + insert_text + '\n'
+            else:
+                new_content = new_content.rstrip('\n') + '\n' + insert_text + '\n'
     
     # Write new content
     write_result = file_ops.write_file(op.file_path, new_content)

@@ -416,7 +416,7 @@ Create a markdown summary that captures all key information in a well-organized,
             if model:
                 call_kwargs["model"] = model
             response = await async_call_llm(**call_kwargs)
-            return response.choices[0].message.content.strip()
+            return (response.choices[0].message.content or "").strip()
         except RuntimeError:
             logger.warning("No auxiliary model available for web content processing")
             return None
@@ -535,7 +535,7 @@ Create a single, unified markdown summary."""
         if model:
             call_kwargs["model"] = model
         response = await async_call_llm(**call_kwargs)
-        final_summary = response.choices[0].message.content.strip()
+        final_summary = (response.choices[0].message.content or "").strip()
         
         # Enforce hard cap
         if len(final_summary) > max_output_size:

@@ -143,7 +143,7 @@ async def _run_reference_model_safe(
             
             response = await _get_openrouter_client().chat.completions.create(**api_params)
             
-            content = response.choices[0].message.content.strip()
+            content = (response.choices[0].message.content or "").strip()
             logger.info("%s responded (%s characters)", model, len(content))
             return model, content, True
             
@@ -211,7 +211,7 @@ async def _run_aggregator_model(
 
     response = await _get_openrouter_client().chat.completions.create(**api_params)
 
-    content = response.choices[0].message.content.strip()
+    content = (response.choices[0].message.content or "").strip()
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
 

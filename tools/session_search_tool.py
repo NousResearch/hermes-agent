@@ -161,7 +161,7 @@ async def _summarize_session(
                 temperature=0.1,
                 max_tokens=MAX_SUMMARY_TOKENS,
             )
-            return response.choices[0].message.content.strip()
+            return (response.choices[0].message.content or "").strip()
         except RuntimeError:
             logging.warning("No auxiliary model available for session summarization")
             return None

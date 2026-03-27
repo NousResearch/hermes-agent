@@ -960,7 +960,7 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
             temperature=0,
             max_tokens=1000,
         )
-        llm_text = response.choices[0].message.content.strip()
+        llm_text = (response.choices[0].message.content or "").strip()
     except Exception:
         # LLM audit is best-effort — don't block install if the call fails
         return static_result

@@ -347,7 +347,7 @@ async def vision_analyze_tool(
         response = await async_call_llm(**call_kwargs)
         
         # Extract the analysis
-        analysis = response.choices[0].message.content.strip()
+        analysis = (response.choices[0].message.content or "").strip()
         analysis_length = len(analysis)
         
         logger.info("Image analysis completed (%s characters)", analysis_length)

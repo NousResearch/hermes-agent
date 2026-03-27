@@ -1,4 +1,5 @@
 """Tests for Signal messenger platform adapter."""
+import base64
 import json
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -145,6 +146,10 @@ class TestSignalHelpers:
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 100) == ".mp4"
 
+    def test_guess_extension_m4a(self):
+        from gateway.platforms.signal import _guess_extension
+        assert _guess_extension(b"\x00\x00\x00\x1cftypM4A " + b"\x00" * 100) == ".m4a"
+
     def test_guess_extension_unknown(self):
         from gateway.platforms.signal import _guess_extension
         assert _guess_extension(b"\x00\x01\x02\x03" * 10) == ".bin"
@@ -161,6 +166,15 @@ class TestSignalHelpers:
         assert _is_audio_ext(".mp3") is True
         assert _is_audio_ext(".ogg") is True
         assert _is_audio_ext(".png") is False
+
+    def test_resolve_signal_attachment_path_prefers_existing_local_file(self, tmp_path):
+        from gateway.platforms.signal import _resolve_signal_attachment_path
+
+        attachment = tmp_path / "voice-note.m4a"
+        attachment.write_bytes(b"audio")
+
+        resolved = _resolve_signal_attachment_path({"path": str(attachment)})
+        assert resolved == str(attachment)
 
     def test_check_requirements(self, monkeypatch):
         from gateway.platforms.signal import check_signal_requirements
@@ -222,6 +236,57 @@ class TestSignalSessionSource:
         assert restored.user_id_alt == "uuid:abc"
         assert restored.chat_id_alt == "xyz"
         assert restored.platform == Platform.SIGNAL
+
+
+class TestSignalAttachmentRpc:
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_openclaw_style_rpc_params_for_dm(self, monkeypatch):
+        from gateway.platforms.signal import SignalAdapter
+
+        config = PlatformConfig(enabled=True)
+        config.extra = {"http_url": "http://localhost:8080", "account": "+15550001111"}
+        adapter = SignalAdapter(config)
+
+        recorded = {}
+
+        async def fake_rpc(method, params, rpc_id=None):
+            recorded["method"] = method
+            recorded["params"] = params
+            return {"data": base64.b64encode(b"OggS" + b"\x00" * 32).decode()}
+
+        monkeypatch.setattr(adapter, "_rpc", fake_rpc)
+
+        path, ext = await adapter._fetch_attachment("att-123", sender="+15551234567")
+
+        assert recorded["method"] == "getAttachment"
+        assert recorded["params"]["account"] == "+15550001111"
+        assert recorded["params"]["id"] == "att-123"
+        assert recorded["params"]["recipient"] == "+15551234567"
+        assert "attachmentId" not in recorded["params"]
+        assert path is not None
+        assert ext == ".ogg"
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_group_id_for_groups(self, monkeypatch):
+        from gateway.platforms.signal import SignalAdapter
+
+        config = PlatformConfig(enabled=True)
+        config.extra = {"http_url": "http://localhost:8080", "account": "+15550001111"}
+        adapter = SignalAdapter(config)
+
+        recorded = {}
+
+        async def fake_rpc(method, params, rpc_id=None):
+            recorded["params"] = params
+            return {"data": base64.b64encode(b"ID3" + b"\x00" * 32).decode()}
+
+        monkeypatch.setattr(adapter, "_rpc", fake_rpc)
+
+        await adapter._fetch_attachment("att-456", group_id="group-789")
+
+        assert recorded["params"]["id"] == "att-456"
+        assert recorded["params"]["groupId"] == "group-789"
+        assert "recipient" not in recorded["params"]
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +356,6 @@ class TestSignalAuthorization:
 
 class TestSignalSendMessage:
     def test_signal_in_platform_map(self):
-        """Signal should be in the send_message tool's platform map."""
-        from tools.send_message_tool import send_message_tool
-        # Just verify the import works and Signal is a valid platform
+        """Signal should remain a valid outbound platform."""
         from gateway.config import Platform
         assert Platform.SIGNAL.value == "signal"

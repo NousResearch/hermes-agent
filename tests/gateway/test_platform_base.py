@@ -1,8 +1,16 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
+import json
 import os
+from pathlib import Path
+import sys
+import types
 from unittest.mock import patch
 
+import pytest
+
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
@@ -280,6 +288,76 @@ class TestExtractMedia:
         assert media == [("/tmp/my image.png", False)]
         assert "Here" in cleaned
         assert "After" in cleaned
+
+
+class DummySignalAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True), Platform.SIGNAL)
+        self.sent = []
+        self.voice_sent = []
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return type("R", (), {"success": True, "message_id": "m1"})()
+
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, metadata=None, **kwargs):
+        self.voice_sent.append({
+            "chat_id": chat_id,
+            "audio_path": audio_path,
+            "caption": caption,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return type("R", (), {"success": True, "message_id": "v1"})()
+
+    async def send_typing(self, chat_id, metadata=None):
+        return None
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+class TestSignalSingleMessageVoiceReplies:
+    @pytest.mark.asyncio
+    async def test_signal_voice_reply_sends_audio_with_caption_and_skips_followup_text(self, tmp_path, monkeypatch):
+        adapter = DummySignalAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result="Reply in one message"))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_bytes(b"voice-bytes")
+
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=type("S", (), {"chat_id": "+15551234567", "thread_id": None})(),
+            message_id="orig-1",
+        )
+
+        fake_tools_pkg = types.ModuleType("tools")
+        fake_tools_pkg.__path__ = []
+        fake_tts_module = types.ModuleType("tools.tts_tool")
+        fake_tts_module.check_tts_requirements = lambda: True
+        fake_tts_module.text_to_speech_tool = lambda text: json.dumps({"file_path": str(tts_path)})
+        monkeypatch.setitem(sys.modules, "tools", fake_tools_pkg)
+        monkeypatch.setitem(sys.modules, "tools.tts_tool", fake_tts_module)
+
+        await adapter._process_message_background(event, "session-key")
+
+        assert len(adapter.voice_sent) == 1
+        assert adapter.voice_sent[0]["caption"] == "Reply in one message"
+        assert adapter.sent == []
+        assert not Path(tts_path).exists()
 
 
 # ---------------------------------------------------------------------------

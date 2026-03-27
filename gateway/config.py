@@ -601,6 +601,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.TELEGRAM] = PlatformConfig()
         config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
     
+    telegram_fallback_ips = os.getenv("TELEGRAM_FALLBACK_IPS", "")
+    if telegram_fallback_ips:
+        if Platform.TELEGRAM not in config.platforms:
+            config.platforms[Platform.TELEGRAM] = PlatformConfig()
+        config.platforms[Platform.TELEGRAM].extra["fallback_ips"] = [
+            ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
+        ]
+
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(

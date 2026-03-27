@@ -762,14 +762,16 @@ class SessionStore:
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
-                entry.input_tokens += input_tokens
-                entry.output_tokens += output_tokens
-                entry.cache_read_tokens += cache_read_tokens
-                entry.cache_write_tokens += cache_write_tokens
+                # Direct assignment — the gateway receives cumulative totals
+                # from the cached agent, not per-call deltas.
+                entry.input_tokens = input_tokens
+                entry.output_tokens = output_tokens
+                entry.cache_read_tokens = cache_read_tokens
+                entry.cache_write_tokens = cache_write_tokens
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 if estimated_cost_usd is not None:
-                    entry.estimated_cost_usd += estimated_cost_usd
+                    entry.estimated_cost_usd = estimated_cost_usd
                 if cost_status:
                     entry.cost_status = cost_status
                 entry.total_tokens = (
@@ -795,6 +797,7 @@ class SessionStore:
                     billing_provider=provider,
                     billing_base_url=base_url,
                     model=model,
+                    absolute=True,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)

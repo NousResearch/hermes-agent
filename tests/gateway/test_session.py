@@ -858,4 +858,5 @@ class TestLastPromptTokens:
             billing_provider=None,
             billing_base_url=None,
             model="openai/gpt-5.4",
+            absolute=True,
         )

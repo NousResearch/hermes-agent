@@ -74,14 +74,17 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily"):
+    if configured in ("parallel", "firecrawl", "tavily", "webclaw"):
         return configured
 
     # Fallback for manual / legacy config — use whichever key is present.
     has_firecrawl = _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")
     has_parallel = _has_env("PARALLEL_API_KEY")
     has_tavily = _has_env("TAVILY_API_KEY")
+    has_webclaw = _has_env("WEBCLAW_API_KEY") or _webclaw_cli_available()
 
+    if has_webclaw and not has_firecrawl and not has_parallel and not has_tavily:
+        return "webclaw"
     if has_tavily and not has_firecrawl and not has_parallel:
         return "tavily"
     if has_parallel and not has_firecrawl:
@@ -240,6 +243,120 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "error": "extraction failed",
             "metadata": {"sourceURL": url_str},
         })
+    return documents
+
+
+# ─── webclaw Backend ──────────────────────────────────────────────────────────
+# webclaw is a Rust-based web content extractor with TLS fingerprinting.
+# Two modes: local CLI (no API key, binary on PATH) or cloud API (WEBCLAW_API_KEY).
+# Local mode calls the `webclaw` binary as a subprocess.
+# Cloud mode calls api.webclaw.io for JS rendering and anti-bot bypass.
+# GitHub: https://github.com/0xMassi/webclaw
+
+import shutil
+import subprocess
+
+_webclaw_bin: Optional[str] = None
+
+def _webclaw_cli_available() -> bool:
+    """Check if the webclaw CLI binary is on PATH."""
+    global _webclaw_bin
+    if _webclaw_bin is None:
+        _webclaw_bin = shutil.which("webclaw") or ""
+    return bool(_webclaw_bin)
+
+def _webclaw_extract_local(url: str, fmt: str = "markdown") -> Optional[str]:
+    """Extract content using the local webclaw CLI binary."""
+    binary = shutil.which("webclaw")
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, url, "-f", fmt],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("webclaw CLI failed for %s: %s", url, e)
+    return None
+
+async def _webclaw_extract_api(url: str, fmt: str = "markdown") -> Optional[str]:
+    """Extract content using the webclaw cloud API."""
+    api_key = os.getenv("WEBCLAW_API_KEY")
+    if not api_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.webclaw.io/v1/scrape",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"url": url, "formats": [fmt]},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get(fmt) or data.get("markdown") or ""
+    except Exception as e:
+        logger.debug("webclaw API failed for %s: %s", url, e)
+    return None
+
+async def _webclaw_search_api(query: str, limit: int = 5) -> Optional[dict]:
+    """Search the web using the webclaw cloud API."""
+    api_key = os.getenv("WEBCLAW_API_KEY")
+    if not api_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.webclaw.io/v1/search",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"query": query, "num_results": limit},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("results", [])
+                return {
+                    "success": True,
+                    "data": {
+                        "web": [
+                            {
+                                "title": r.get("title", ""),
+                                "url": r.get("url", ""),
+                                "description": r.get("snippet", r.get("description", "")),
+                            }
+                            for r in results[:limit]
+                        ]
+                    },
+                }
+    except Exception as e:
+        logger.debug("webclaw search API failed: %s", e)
+    return None
+
+def _webclaw_search(query: str, limit: int = 5) -> dict:
+    """Search using webclaw. Requires WEBCLAW_API_KEY (search is a cloud feature)."""
+    result = asyncio.get_event_loop().run_until_complete(_webclaw_search_api(query, limit))
+    if result:
+        return result
+    return {"success": False, "error": "webclaw search requires WEBCLAW_API_KEY"}
+
+async def _webclaw_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using webclaw. Tries local CLI first, then cloud API."""
+    documents = []
+    for url in urls:
+        content = _webclaw_extract_local(url)
+        if not content:
+            content = await _webclaw_extract_api(url)
+        if content:
+            documents.append({
+                "markdown": content,
+                "metadata": {"sourceURL": url},
+            })
+        else:
+            documents.append({
+                "markdown": "",
+                "error": "extraction failed",
+                "metadata": {"sourceURL": url},
+            })
     return documents
 
 
@@ -727,6 +844,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "webclaw":
+            logger.info("webclaw search: '%s' (limit: %d)", query, limit)
+            response_data = _webclaw_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "tavily":
             logger.info("Tavily search: '%s' (limit: %d)", query, limit)
             raw = _tavily_request("search", {
@@ -880,7 +1007,10 @@ async def web_extract_tool(
         else:
             backend = _get_backend()
 
-            if backend == "parallel":
+            if backend == "webclaw":
+                logger.info("webclaw extract: %d URL(s)", len(safe_urls))
+                results = await _webclaw_extract(safe_urls)
+            elif backend == "parallel":
                 results = await _parallel_extract(safe_urls)
             elif backend == "tavily":
                 logger.info("Tavily extract: %d URL(s)", len(safe_urls))
@@ -1186,6 +1316,15 @@ async def web_crawl_tool(
     
     try:
         backend = _get_backend()
+
+        # webclaw: crawl not supported via web_crawl_tool, use web_extract_tool
+        # for individual pages or the webclaw MCP server for full crawling.
+        if backend == "webclaw":
+            return json.dumps({
+                "error": "webclaw crawl is available via the webclaw MCP server (hermes mcp add webclaw). "
+                         "Use web_extract_tool for individual pages.",
+                "success": False,
+            }, ensure_ascii=False)
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1552,12 +1691,15 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check if any web backend API key is available (Parallel, Firecrawl, or Tavily)."""
+    """Check if any web backend is available (Parallel, Firecrawl, Tavily, or webclaw).
+    webclaw is unique: it works locally without any API key if the binary is installed."""
     return bool(
         os.getenv("PARALLEL_API_KEY")
         or os.getenv("FIRECRAWL_API_KEY")
         or os.getenv("FIRECRAWL_API_URL")
         or os.getenv("TAVILY_API_KEY")
+        or os.getenv("WEBCLAW_API_KEY")
+        or _webclaw_cli_available()
     )
 
 
@@ -1593,7 +1735,10 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "parallel":
+        if backend == "webclaw":
+            mode = "local CLI" if _webclaw_cli_available() else "cloud API"
+            print(f"   Using webclaw ({mode}) (https://github.com/0xMassi/webclaw)")
+        elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
@@ -1601,7 +1746,7 @@ if __name__ == "__main__":
             print("   Using Firecrawl API (https://firecrawl.dev)")
     else:
         print("❌ No web search backend configured")
-        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
+        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, or install webclaw CLI")
 
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")
@@ -1711,7 +1856,7 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_web_api_key,
-    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY", "WEBCLAW_API_KEY"],
     emoji="🔍",
 )
 registry.register(
@@ -1721,7 +1866,7 @@ registry.register(
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
     check_fn=check_web_api_key,
-    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY", "WEBCLAW_API_KEY"],
     is_async=True,
     emoji="📄",
 )

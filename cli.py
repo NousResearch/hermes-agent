@@ -778,10 +778,35 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — matches Rich Panel gold
+_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — default fallback
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
+
+
+def _hex_to_ansi(color_hex: str, *, bold: bool = False, fallback: str = "") -> str:
+    """Convert #RRGGBB to truecolor ANSI escape sequence."""
+    try:
+        c = (color_hex or "").strip()
+        if not c.startswith("#") or len(c) != 7:
+            return fallback
+        r = int(c[1:3], 16)
+        g = int(c[3:5], 16)
+        b = int(c[5:7], 16)
+        prefix = "1;" if bold else ""
+        return f"\033[{prefix}38;2;{r};{g};{b}m"
+    except Exception:
+        return fallback
+
+
+def _stream_border_ansi() -> str:
+    """Return ANSI color for streamed response box borders from active skin."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        border_hex = get_active_skin().get_color("response_border", "#FFD700")
+    except Exception:
+        border_hex = "#FFD700"
+    return _hex_to_ansi(border_hex, bold=True, fallback=_GOLD)
 
 def _accent_hex() -> str:
     """Return the active skin accent color for legacy CLI output lines."""
@@ -1782,16 +1807,11 @@ class HermesCLI:
                 _text_hex = "#FFF8DC"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
-            try:
-                _r = int(_text_hex[1:3], 16)
-                _g = int(_text_hex[3:5], 16)
-                _b = int(_text_hex[5:7], 16)
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
+            self._stream_text_ansi = _hex_to_ansi(_text_hex)
+            self._stream_border_ansi = _stream_border_ansi()
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n{self._stream_border_ansi}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -1814,7 +1834,8 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            _border = getattr(self, "_stream_border_ansi", _stream_border_ansi())
+            _cprint(f"{_border}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -1823,6 +1844,7 @@ class HermesCLI:
         self._stream_box_opened = False
         self._reasoning_stream_started = False
         self._stream_text_ansi = ""
+        self._stream_border_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._reasoning_box_opened = False
@@ -5592,9 +5614,15 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        try:
+                            from hermes_cli.skin_engine import get_active_skin
+                            _skin = get_active_skin()
+                            label = _skin.get_branding("response_label", " ⚕ Hermes ")
+                        except Exception:
+                            label = " ⚕ Hermes "
+                        border = _stream_border_ansi()
                         fill = w - 2 - len(label)
-                        _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        _cprint(f"\n{border}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -5805,7 +5833,8 @@ class HermesCLI:
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
-                    _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+                    _border = _stream_border_ansi()
+                    _cprint(f"\n{_border}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.

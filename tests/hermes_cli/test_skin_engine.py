@@ -270,6 +270,13 @@ class TestCliBrandingHelpers:
             "prompt",
             "prompt-working",
             "hint",
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
             "input-rule",
             "image-badge",
             "completion-menu",
@@ -308,6 +315,16 @@ class TestCliBrandingHelpers:
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
+        assert overrides["status-bar"] == f"bg:#1a1a2e {skin.get_color('banner_text')}"
+        assert overrides["status-bar-strong"] == f"bg:#1a1a2e {skin.get_color('banner_title')} bold"
+        assert overrides["status-bar-dim"] == f"bg:#1a1a2e {skin.get_color('banner_dim')}"
+        assert overrides["status-bar-good"] == "bg:#1a1a2e #8FBC8F bold"
+        assert overrides["status-bar-warn"] == "bg:#1a1a2e #FFD700 bold"
+        assert overrides["status-bar-bad"] == "bg:#1a1a2e #FF8C00 bold"
+        assert overrides["status-bar-critical"] == "bg:#1a1a2e #FF6B6B bold"
+        assert overrides["completion-menu"] == f"bg:#1a1a2e {skin.get_color('banner_text')}"
+        assert overrides["completion-menu.completion.current"] == f"bg:#333355 {skin.get_color('banner_title')}"
+        assert overrides["completion-menu.meta.completion.current"] == f"bg:#333355 {skin.get_color('ui_label')}"
         assert overrides["input-rule"] == skin.get_color("input_rule")
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"

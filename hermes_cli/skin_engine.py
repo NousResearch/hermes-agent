@@ -697,6 +697,15 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
         "hint": f"{dim} italic",
+        # Status bar colors are now derived from skin colors for consistency.
+        "status-bar": f"bg:#1a1a2e {text}",
+        "status-bar-strong": f"bg:#1a1a2e {title} bold",
+        "status-bar-dim": f"bg:#1a1a2e {dim}",
+        # Keep usage-threshold colors universal for quick readability.
+        "status-bar-good": "bg:#1a1a2e #8FBC8F bold",
+        "status-bar-warn": "bg:#1a1a2e #FFD700 bold",
+        "status-bar-bad": "bg:#1a1a2e #FF8C00 bold",
+        "status-bar-critical": "bg:#1a1a2e #FF6B6B bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
         "completion-menu": f"bg:#1a1a2e {text}",

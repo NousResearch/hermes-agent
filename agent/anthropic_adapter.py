@@ -35,6 +35,54 @@ ADAPTIVE_EFFORT_MAP = {
     "minimal": "low",
 }
 
+# ── Max output token limits per Anthropic model ───────────────────────
+# Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
+# max_tokens as a mandatory field.  Previously we hardcoded 16384, which
+# starves thinking-enabled models (thinking tokens count toward the limit).
+_ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.6
+    "claude-opus-4-6":   128_000,
+    "claude-sonnet-4-6":  64_000,
+    # Claude 4.5
+    "claude-opus-4-5":    64_000,
+    "claude-sonnet-4-5":  64_000,
+    "claude-haiku-4-5":   64_000,
+    # Claude 4
+    "claude-opus-4":      32_000,
+    "claude-sonnet-4":    64_000,
+    # Claude 3.7
+    "claude-3-7-sonnet": 128_000,
+    # Claude 3.5
+    "claude-3-5-sonnet":   8_192,
+    "claude-3-5-haiku":    8_192,
+    # Claude 3
+    "claude-3-opus":       4_096,
+    "claude-3-sonnet":     4_096,
+    "claude-3-haiku":      4_096,
+}
+
+# For any model not in the table, assume the highest current limit.
+# Future Anthropic models are unlikely to have *less* output capacity.
+_ANTHROPIC_DEFAULT_OUTPUT_LIMIT = 128_000
+
+
+def _get_anthropic_max_output(model: str) -> int:
+    """Look up the max output token limit for an Anthropic model.
+
+    Uses substring matching against _ANTHROPIC_OUTPUT_LIMITS so date-stamped
+    model IDs (claude-sonnet-4-5-20250929) and variant suffixes (:1m, :fast)
+    resolve correctly.  Longest-prefix match wins to avoid e.g. "claude-3-5"
+    matching before "claude-3-5-sonnet".
+    """
+    m = model.lower()
+    best_key = ""
+    best_val = _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
+    for key, val in _ANTHROPIC_OUTPUT_LIMITS.items():
+        if key in m and len(key) > len(best_key):
+            best_key = key
+            best_val = val
+    return best_val
+
 
 def _supports_adaptive_thinking(model: str) -> bool:
     """Return True for Claude 4.6 models that support adaptive thinking."""
@@ -818,8 +866,14 @@ def build_anthropic_kwargs(
     tool_choice: Optional[str] = None,
     is_oauth: bool = False,
     preserve_dots: bool = False,
+    context_length: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
+
+    When *max_tokens* is None, the model's native output limit is used
+    (e.g. 128K for Opus 4.6, 64K for Sonnet 4.6).  If *context_length*
+    is provided, the effective limit is clamped so it doesn't exceed
+    the context window.
 
     When *is_oauth* is True, applies Claude Code compatibility transforms:
     system prompt prefix, tool name prefixing, and prompt sanitization.
@@ -831,7 +885,12 @@ def build_anthropic_kwargs(
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
-    effective_max_tokens = max_tokens or 16384
+    effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
+
+    # Clamp to context window if the user set a lower context_length
+    # (e.g. custom endpoint with limited capacity).
+    if context_length and effective_max_tokens > context_length:
+        effective_max_tokens = max(context_length - 1, 1)
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:

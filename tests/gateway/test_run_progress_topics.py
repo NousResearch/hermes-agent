@@ -76,7 +76,7 @@ def _make_runner(adapter):
     GatewayRunner = gateway_run.GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {adapter.platform: adapter}
     runner._voice_mode = {}
     runner._prefill_messages = []
     runner._ephemeral_system_prompt = ""

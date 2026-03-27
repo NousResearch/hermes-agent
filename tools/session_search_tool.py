@@ -384,21 +384,34 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, _, _), result in zip(tasks, results):
-            if isinstance(result, Exception):
+        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
+            when_str = _format_timestamp(match_info.get("session_started"))
+            source_str = match_info.get("source", "unknown")
+            model_str = match_info.get("model")
+            
+            if isinstance(result, Exception) or not result:
                 logging.warning(
-                    "Failed to summarize session %s: %s",
+                    "Summarization failed or returned empty for session %s. Using raw fallback preview.",
                     session_id,
-                    result,
-                    exc_info=True,
+                    exc_info=isinstance(result, Exception)
                 )
-                continue
-            if result:
+                # Fallback: Instead of dropping the result completely (which causes false negatives),
+                # return a raw preview from the conversation text.
+                preview_text = conversation_text[:500] + "\n...[truncated]" if conversation_text else "No preview available."
+                
                 summaries.append({
                     "session_id": session_id,
-                    "when": _format_timestamp(match_info.get("session_started")),
-                    "source": match_info.get("source", "unknown"),
-                    "model": match_info.get("model"),
+                    "when": when_str,
+                    "source": source_str,
+                    "model": model_str,
+                    "summary": f"[Summarization Failed] Raw match preview:\n{preview_text}",
+                })
+            else:
+                summaries.append({
+                    "session_id": session_id,
+                    "when": when_str,
+                    "source": source_str,
+                    "model": model_str,
                     "summary": result,
                 })
 

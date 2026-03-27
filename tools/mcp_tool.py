@@ -797,7 +797,7 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
-        self._auth_type = config.get("auth", "").lower().strip()
+        self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
         sampling_config = config.get("sampling", {})

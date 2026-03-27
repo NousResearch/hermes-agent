@@ -123,7 +123,7 @@ class CompressionConfig:
         # Summarization
         if 'summarization' in data:
             config.summarization_model = data['summarization'].get('model', config.summarization_model)
-            config.base_url = data['summarization'].get('base_url', config.base_url)
+            config.base_url = data['summarization'].get('base_url') or config.base_url
             config.api_key_env = data['summarization'].get('api_key_env', config.api_key_env)
             config.temperature = data['summarization'].get('temperature', config.temperature)
             config.max_retries = data['summarization'].get('max_retries', config.max_retries)
@@ -386,7 +386,7 @@ class TrajectoryCompressor:
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
-        url = self.config.base_url.lower()
+        url = (self.config.base_url or "").lower()
         if "openrouter" in url:
             return "openrouter"
         if "nousresearch.com" in url:

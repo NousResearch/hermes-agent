@@ -801,6 +801,48 @@ class TestConvertMessages:
         assert all(not (b.get("type") == "text" and b.get("text") == "") for b in assistant_blocks)
         assert any(b.get("type") == "tool_use" for b in assistant_blocks)
 
+    def test_empty_user_message_string_gets_placeholder(self):
+        """Empty user message strings should get '(empty message)' placeholder.
+
+        Anthropic rejects requests with empty user message content.
+        Regression test for #3143 — Discord @mention-only messages.
+        """
+        messages = [
+            {"role": "user", "content": ""},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "(empty message)"
+
+    def test_whitespace_only_user_message_gets_placeholder(self):
+        """Whitespace-only user messages should also get placeholder."""
+        messages = [
+            {"role": "user", "content": "   \n\t  "},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["content"] == "(empty message)"
+
+    def test_empty_user_message_list_gets_placeholder(self):
+        """Empty content list for user messages should get placeholder block."""
+        messages = [
+            {"role": "user", "content": []},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["role"] == "user"
+        assert isinstance(result[0]["content"], list)
+        assert len(result[0]["content"]) == 1
+        assert result[0]["content"][0] == {"type": "text", "text": "(empty message)"}
+
+    def test_user_message_with_empty_text_blocks_gets_placeholder(self):
+        """User message with only empty text blocks should get placeholder."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": ""}, {"type": "text", "text": "  "}]},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["role"] == "user"
+        assert isinstance(result[0]["content"], list)
+        assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+
 
 # ---------------------------------------------------------------------------
 # Build kwargs

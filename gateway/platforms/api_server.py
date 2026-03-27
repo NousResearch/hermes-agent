@@ -570,7 +570,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task,
     ) -> "web.StreamResponse":
-        """Write real streaming SSE from agent's stream_delta_callback queue."""
+        """Write real streaming SSE from agent's stream_delta_callback queue.
+
+        If the client disconnects mid-stream (network drop, browser tab close),
+        the agent task is cancelled so it stops consuming API tokens and memory.
+        """
         import queue as _q
 
         response = web.StreamResponse(
@@ -579,69 +583,80 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
-        # Role chunk
-        role_chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-        }
-        await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
-
-        # Stream content chunks as they arrive from the agent
-        loop = asyncio.get_event_loop()
-        while True:
-            try:
-                delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
-            except _q.Empty:
-                if agent_task.done():
-                    # Drain any remaining items
-                    while True:
-                        try:
-                            delta = stream_q.get_nowait()
-                            if delta is None:
-                                break
-                            content_chunk = {
-                                "id": completion_id, "object": "chat.completion.chunk",
-                                "created": created, "model": model,
-                                "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-                            }
-                            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
-                        except _q.Empty:
-                            break
-                    break
-                continue
-
-            if delta is None:  # End of stream sentinel
-                break
-
-            content_chunk = {
+        try:
+            # Role chunk
+            role_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
 
-        # Get usage from completed agent
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        try:
-            result, agent_usage = await agent_task
-            usage = agent_usage or usage
-        except Exception:
-            pass
+            # Stream content chunks as they arrive from the agent
+            loop = asyncio.get_event_loop()
+            while True:
+                try:
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                except _q.Empty:
+                    if agent_task.done():
+                        # Drain any remaining items
+                        while True:
+                            try:
+                                delta = stream_q.get_nowait()
+                                if delta is None:
+                                    break
+                                content_chunk = {
+                                    "id": completion_id, "object": "chat.completion.chunk",
+                                    "created": created, "model": model,
+                                    "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                                }
+                                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                            except _q.Empty:
+                                break
+                        break
+                    continue
 
-        # Finish chunk
-        finish_chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
-        }
-        await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
-        await response.write(b"data: [DONE]\n\n")
+                if delta is None:  # End of stream sentinel
+                    break
+
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+
+            # Get usage from completed agent
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            try:
+                result, agent_usage = await agent_task
+                usage = agent_usage or usage
+            except Exception:
+                pass
+
+            # Finish chunk
+            finish_chunk = {
+                "id": completion_id, "object": "chat.completion.chunk",
+                "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": usage.get("input_tokens", 0),
+                    "completion_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(b"data: [DONE]\n\n")
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            # Client disconnected mid-stream — cancel the orphaned agent task
+            # so it stops consuming API tokens and memory.
+            if not agent_task.done():
+                agent_task.cancel()
+                try:
+                    await agent_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                logger.info("SSE client disconnected; cancelled agent task %s", completion_id)
 
         return response
 

@@ -212,6 +212,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("KILOCODE_API_KEY",),
         base_url_env_var="KILOCODE_BASE_URL",
     ),
+    "google": ProviderConfig(
+        id="google",
+        name="Google Gemini",
+        auth_type="api_key",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        base_url_env_var="GOOGLE_BASE_URL",
+    ),
 }
 
 
@@ -687,6 +695,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "gemini": "google", "google-gemini": "google",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

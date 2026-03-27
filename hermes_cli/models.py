@@ -200,6 +200,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3.5-flash",
         "qwen-vl-max",
     ],
+    "google": [
+        "gemini-3-flash",
+        "gemini-3-flash-preview",
+        "gemini-3-pro",
+        "gemini-3-pro-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-pro",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -219,6 +229,7 @@ _PROVIDER_LABELS = {
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
+    "google": "Google Gemini",
     "custom": "Custom endpoint",
 }
 
@@ -254,6 +265,8 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "gemini": "google",
+    "google-gemini": "google",
 }
 
 
@@ -289,7 +302,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "deepseek", "google", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

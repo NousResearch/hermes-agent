@@ -630,7 +630,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Available providers: openrouter, nous, anthropic, zai, kimi-coding, minimax, minimax-cn, deepseek, google, and others."
         ) from exc
 
     api_key = runtime.get("api_key", "")

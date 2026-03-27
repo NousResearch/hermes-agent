@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway, Google, etc)."""
 
 import os
 import sys
@@ -44,6 +44,7 @@ class TestProviderRegistry:
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
+        ("google", "Google Gemini", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -184,6 +185,15 @@ class TestResolveProvider:
     def test_alias_kilo_gateway(self):
         assert resolve_provider("kilo-gateway") == "kilocode"
 
+    def test_explicit_google(self):
+        assert resolve_provider("google") == "google"
+
+    def test_alias_gemini(self):
+        assert resolve_provider("gemini") == "google"
+
+    def test_alias_google_gemini(self):
+        assert resolve_provider("google-gemini") == "google"
+
     def test_alias_case_insensitive(self):
         assert resolve_provider("GLM") == "zai"
         assert resolve_provider("Z-AI") == "zai"
@@ -234,7 +244,13 @@ class TestResolveProvider:
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
         assert resolve_provider("auto") == "kilocode"
+    def test_auto_detects_google_api_key(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-google-api-key")
+        assert resolve_provider("auto") == "google"
 
+    def test_auto_detects_gemini_api_key(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-api-key")
+        assert resolve_provider("auto") == "google"
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -427,6 +443,27 @@ class TestResolveApiKeyProviderCredentials:
         monkeypatch.setenv("KILOCODE_BASE_URL", "https://custom.kilo.example/v1")
         creds = resolve_api_key_provider_credentials("kilocode")
         assert creds["base_url"] == "https://custom.kilo.example/v1"
+
+    def test_resolve_google_with_api_key(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-secret-key")
+        creds = resolve_api_key_provider_credentials("google")
+        assert creds["provider"] == "google"
+        assert creds["api_key"] == "google-secret-key"
+        assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+        assert creds["source"] == "GOOGLE_API_KEY"
+
+    def test_resolve_google_with_gemini_api_key(self, monkeypatch):
+        """GEMINI_API_KEY should work as fallback when GOOGLE_API_KEY not set."""
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret-key")
+        creds = resolve_api_key_provider_credentials("google")
+        assert creds["api_key"] == "gemini-secret-key"
+        assert creds["source"] == "GEMINI_API_KEY"
+
+    def test_resolve_google_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+        monkeypatch.setenv("GOOGLE_BASE_URL", "https://custom.google.example/v1")
+        creds = resolve_api_key_provider_credentials("google")
+        assert creds["base_url"] == "https://custom.google.example/v1"
 
     def test_resolve_with_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-key")

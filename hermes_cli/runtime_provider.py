@@ -389,7 +389,7 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN, Google, etc)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)

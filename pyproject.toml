@@ -55,7 +55,7 @@ honcho = ["honcho-ai>=2.0.1,<3"]
 mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
-acp = ["agent-client-protocol>=0.8.1,<1.0"]
+acp = ["agent-client-protocol>=0.8.1,<0.9"]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",

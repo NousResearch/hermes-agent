@@ -124,7 +124,10 @@ class SessionDB:
         self._conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
-            timeout=10.0,
+            # 30s gives the WAL writer (CLI or gateway) time to finish a batch
+            # flush before the concurrent reader/writer gives up.  10s was too
+            # short when the CLI is doing frequent memory flushes.
+            timeout=30.0,
         )
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -255,7 +258,7 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         with self._lock:
             self._conn.execute(
-                """INSERT INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
                    system_prompt, parent_session_id, started_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
@@ -278,6 +281,15 @@ class SessionDB:
             self._conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
                 (time.time(), end_reason, session_id),
+            )
+            self._conn.commit()
+
+    def reopen_session(self, session_id: str) -> None:
+        """Clear ended_at/end_reason so a session can be resumed."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                (session_id,),
             )
             self._conn.commit()
 
@@ -307,11 +319,39 @@ class SessionDB:
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        absolute: bool = False,
     ) -> None:
-        """Increment token counters and backfill model if not already set."""
-        with self._lock:
-            self._conn.execute(
-                """UPDATE sessions SET
+        """Update token counters and backfill model if not already set.
+
+        When *absolute* is False (default), values are **incremented** — use
+        this for per-API-call deltas (CLI path).
+
+        When *absolute* is True, values are **set directly** — use this when
+        the caller already holds cumulative totals (gateway path, where the
+        cached agent accumulates across messages).
+        """
+        if absolute:
+            sql = """UPDATE sessions SET
+                   input_tokens = ?,
+                   output_tokens = ?,
+                   cache_read_tokens = ?,
+                   cache_write_tokens = ?,
+                   reasoning_tokens = ?,
+                   estimated_cost_usd = COALESCE(?, 0),
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
+                   model = COALESCE(model, ?)
+                   WHERE id = ?"""
+        else:
+            sql = """UPDATE sessions SET
                    input_tokens = input_tokens + ?,
                    output_tokens = output_tokens + ?,
                    cache_read_tokens = cache_read_tokens + ?,
@@ -321,6 +361,96 @@ class SessionDB:
                    actual_cost_usd = CASE
                        WHEN ? IS NULL THEN actual_cost_usd
                        ELSE COALESCE(actual_cost_usd, 0) + ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
+                   model = COALESCE(model, ?)
+                   WHERE id = ?"""
+        with self._lock:
+            self._conn.execute(
+                sql,
+                (
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    reasoning_tokens,
+                    estimated_cost_usd,
+                    actual_cost_usd,
+                    actual_cost_usd,
+                    cost_status,
+                    cost_source,
+                    pricing_version,
+                    billing_provider,
+                    billing_base_url,
+                    billing_mode,
+                    model,
+                    session_id,
+                ),
+            )
+            self._conn.commit()
+
+    def ensure_session(
+        self,
+        session_id: str,
+        source: str = "unknown",
+        model: str = None,
+    ) -> None:
+        """Ensure a session row exists, creating it with minimal metadata if absent.
+
+        Used by _flush_messages_to_session_db to recover from a failed
+        create_session() call (e.g. transient SQLite lock at agent startup).
+        INSERT OR IGNORE is safe to call even when the row already exists.
+        """
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO sessions
+                   (id, source, model, started_at)
+                   VALUES (?, ?, ?, ?)""",
+                (session_id, source, model, time.time()),
+            )
+            self._conn.commit()
+
+    def set_token_counts(
+        self,
+        session_id: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+        actual_cost_usd: Optional[float] = None,
+        cost_status: Optional[str] = None,
+        cost_source: Optional[str] = None,
+        pricing_version: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        billing_mode: Optional[str] = None,
+    ) -> None:
+        """Set token counters to absolute values (not increment).
+
+        Use this when the caller provides cumulative totals from a completed
+        conversation run (e.g. the gateway, where the cached agent's
+        session_prompt_tokens already reflects the running total).
+        """
+        with self._lock:
+            self._conn.execute(
+                """UPDATE sessions SET
+                   input_tokens = ?,
+                   output_tokens = ?,
+                   cache_read_tokens = ?,
+                   cache_write_tokens = ?,
+                   reasoning_tokens = ?,
+                   estimated_cost_usd = ?,
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE ?
                    END,
                    cost_status = COALESCE(?, cost_status),
                    cost_source = COALESCE(?, cost_source),
@@ -548,6 +678,7 @@ class SessionDB:
     def list_sessions_rich(
         self,
         source: str = None,
+        exclude_sources: List[str] = None,
         limit: int = 20,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -559,7 +690,18 @@ class SessionDB:
 
         Uses a single query with correlated subqueries instead of N+2 queries.
         """
-        source_clause = "WHERE s.source = ?" if source else ""
+        where_clauses = []
+        params = []
+
+        if source:
+            where_clauses.append("s.source = ?")
+            params.append(source)
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         query = f"""
             SELECT s.*,
                 COALESCE(
@@ -574,11 +716,11 @@ class SessionDB:
                     s.started_at
                 ) AS last_active
             FROM sessions s
-            {source_clause}
+            {where_sql}
             ORDER BY s.started_at DESC
             LIMIT ? OFFSET ?
         """
-        params = (source, limit, offset) if source else (limit, offset)
+        params.extend([limit, offset])
         with self._lock:
             cursor = self._conn.execute(query, params)
             rows = cursor.fetchall()
@@ -794,6 +936,7 @@ class SessionDB:
         self,
         query: str,
         source_filter: List[str] = None,
+        exclude_sources: List[str] = None,
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
@@ -825,6 +968,11 @@ class SessionDB:
             source_placeholders = ",".join("?" for _ in source_filter)
             where_clauses.append(f"s.source IN ({source_placeholders})")
             params.extend(source_filter)
+
+        if exclude_sources is not None:
+            exclude_placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"s.source NOT IN ({exclude_placeholders})")
+            params.extend(exclude_sources)
 
         if role_filter:
             role_placeholders = ",".join("?" for _ in role_filter)
@@ -862,9 +1010,11 @@ class SessionDB:
                 return []
             matches = [dict(row) for row in cursor.fetchall()]
 
-            # Add surrounding context (1 message before + after each match)
-            for match in matches:
-                try:
+        # Add surrounding context (1 message before + after each match).
+        # Done outside the lock so we don't hold it across N sequential queries.
+        for match in matches:
+            try:
+                with self._lock:
                     ctx_cursor = self._conn.execute(
                         """SELECT role, content FROM messages
                            WHERE session_id = ? AND id >= ? - 1 AND id <= ? + 1
@@ -875,9 +1025,9 @@ class SessionDB:
                         {"role": r["role"], "content": (r["content"] or "")[:200]}
                         for r in ctx_cursor.fetchall()
                     ]
-                    match["context"] = context_msgs
-                except Exception:
-                    match["context"] = []
+                match["context"] = context_msgs
+            except Exception:
+                match["context"] = []
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:

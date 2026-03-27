@@ -446,6 +446,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._bot_task: Optional[asyncio.Task] = None
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
     
@@ -588,7 +589,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._register_slash_commands()
             
             # Start the bot in background
-            asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
@@ -2094,6 +2095,11 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = message.content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
+        # Defense-in-depth: prevent empty user messages from entering session
+        # (can happen when user sends @mention-only with no other text)
+        if not event_text or not event_text.strip():
+            event_text = "(The user sent a message with no text content)"
 
         event = MessageEvent(
             text=event_text,

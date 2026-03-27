@@ -55,6 +55,13 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("anthropics/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
 
+    def test_skills_sh_wrapped_trusted_repos(self):
+        assert _resolve_trust_level("skills-sh/openai/skills/skill-creator") == "trusted"
+        assert _resolve_trust_level("skills-sh/anthropics/skills/frontend-design") == "trusted"
+
+    def test_common_skills_sh_prefix_typo_still_maps_to_trusted_repo(self):
+        assert _resolve_trust_level("skils-sh/anthropics/skills/frontend-design") == "trusted"
+
     def test_community_default(self):
         assert _resolve_trust_level("random-user/my-skill") == "community"
         assert _resolve_trust_level("") == "community"

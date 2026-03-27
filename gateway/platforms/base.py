@@ -8,6 +8,7 @@ and implement the required methods.
 import asyncio
 import logging
 import os
+import random
 import re
 import uuid
 from abc import ABC, abstractmethod
@@ -71,31 +72,51 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg") -> str:
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
     """
     Download an image from a URL and save it to the local cache.
 
-    Uses httpx for async download with a reasonable timeout.
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
 
     Args:
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
+        retries: Number of retry attempts on transient failures.
 
     Returns:
         Absolute path to the cached image file as a string.
     """
+    import asyncio
     import httpx
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
 
+    last_exc = None
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                "Accept": "image/*,*/*;q=0.8",
-            },
-        )
-        response.raise_for_status()
-        return cache_image_from_bytes(response.content, ext)
+        for attempt in range(retries + 1):
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                        "Accept": "image/*,*/*;q=0.8",
+                    },
+                )
+                response.raise_for_status()
+                return cache_image_from_bytes(response.content, ext)
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                    raise
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    _log.debug("Media cache retry %d/%d for %s (%.1fs): %s",
+                               attempt + 1, retries, url[:80], wait, exc)
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+    raise last_exc
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -329,6 +350,24 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    retryable: bool = False  # True for transient errors (network, timeout) — base will retry automatically
+
+
+# Error substrings that indicate a transient network failure worth retrying
+_RETRYABLE_ERROR_PATTERNS = (
+    "connecterror",
+    "connectionerror",
+    "connectionreset",
+    "connectionrefused",
+    "timeout",
+    "timed out",
+    "network",
+    "broken pipe",
+    "remotedisconnected",
+    "eoferror",
+    "readtimeout",
+    "writetimeout",
+)
 
 
 # Type for message handlers
@@ -833,6 +872,91 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
     
+    @staticmethod
+    def _is_retryable_error(error: Optional[str]) -> bool:
+        """Return True if the error string looks like a transient network failure."""
+        if not error:
+            return False
+        lowered = error.lower()
+        return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> "SendResult":
+        """
+        Send a message with automatic retry for transient network errors.
+
+        On permanent failures (e.g. formatting / permission errors) falls back
+        to a plain-text version before giving up. If all attempts fail due to
+        network errors, sends the user a brief delivery-failure notice so they
+        know to retry rather than waiting indefinitely.
+        """
+
+        result = await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+        if result.success:
+            return result
+
+        error_str = result.error or ""
+        is_network = result.retryable or self._is_retryable_error(error_str)
+
+        if is_network:
+            # Retry with exponential backoff for transient errors
+            for attempt in range(1, max_retries + 1):
+                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                logger.warning(
+                    "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
+                    self.name, attempt, max_retries, delay, error_str,
+                )
+                await asyncio.sleep(delay)
+                result = await self.send(
+                    chat_id=chat_id,
+                    content=content,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                if result.success:
+                    logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                error_str = result.error or ""
+                if not (result.retryable or self._is_retryable_error(error_str)):
+                    break  # error switched to non-transient — fall through to plain-text fallback
+            else:
+                # All retries exhausted (loop completed without break) — notify user
+                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                notice = (
+                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
+                    "Please try again \u2014 your request was processed but the response could not be sent."
+                )
+                try:
+                    await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+                except Exception as notify_err:
+                    logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
+                return result
+
+        # Non-network / post-retry formatting failure: try plain text as fallback
+        logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
+        fallback_result = await self.send(
+            chat_id=chat_id,
+            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if not fallback_result.success:
+            logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+        return fallback_result
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -982,25 +1106,12 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    result = await self.send(
+                    result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=event.message_id,
                         metadata=_thread_metadata,
                     )
-
-                    # Log send failures (don't raise - user already saw tool progress)
-                    if not result.success:
-                        print(f"[{self.name}] Failed to send response: {result.error}")
-                        # Try sending without markdown as fallback
-                        fallback_result = await self.send(
-                            chat_id=event.source.chat_id,
-                            content=f"(Response formatting failed, plain text:)\n\n{text_content[:3500]}",
-                            reply_to=event.message_id,
-                            metadata=_thread_metadata,
-                        )
-                        if not fallback_result.success:
-                            print(f"[{self.name}] Fallback send also failed: {fallback_result.error}")
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()

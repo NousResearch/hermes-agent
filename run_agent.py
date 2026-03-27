@@ -486,6 +486,7 @@ class AIAgent:
         # instead of going directly to stdout where patch_stdout's StdoutProxy
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
+        self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
@@ -883,7 +884,7 @@ class AIAgent:
             try:
                 self._session_db.create_session(
                     session_id=self.session_id,
-                    source=self.platform or "cli",
+                    source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
                     model_config={
                         "max_iterations": self.max_iterations,
@@ -893,8 +894,15 @@ class AIAgent:
                     user_id=None,
                 )
             except Exception as e:
-                logger.warning("Session DB create_session failed — messages will NOT be indexed: %s", e)
-                self._session_db = None  # prevent silent data loss on every subsequent flush
+                # Transient SQLite lock contention (e.g. CLI and gateway writing
+                # concurrently) must NOT permanently disable session_search for
+                # this agent.  Keep _session_db alive — subsequent message
+                # flushes and session_search calls will still work once the
+                # lock clears.  The session row may be missing from the index
+                # for this run, but that is recoverable (flushes upsert rows).
+                logger.warning(
+                    "Session DB create_session failed (session_search still available): %s", e
+                )
         
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
@@ -1518,6 +1526,12 @@ class AIAgent:
                 if actions:
                     summary = " · ".join(dict.fromkeys(actions))
                     self._safe_print(f"  💾 {summary}")
+                    _bg_cb = self.background_review_callback
+                    if _bg_cb:
+                        try:
+                            _bg_cb(f"💾 {summary}")
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logger.debug("Background memory/skill review failed: %s", e)
@@ -1578,6 +1592,14 @@ class AIAgent:
             return
         self._apply_persist_user_message_override(messages)
         try:
+            # If create_session() failed at startup (e.g. transient lock), the
+            # session row may not exist yet.  ensure_session() uses INSERT OR
+            # IGNORE so it is a no-op when the row is already there.
+            self._session_db.ensure_session(
+                self.session_id,
+                source=self.platform or "cli",
+                model=self.model,
+            )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:
@@ -2033,6 +2055,23 @@ class AIAgent:
                     msg["content"] = self._clean_session_content(msg["content"])
                 cleaned.append(msg)
 
+            # Guard: never overwrite a larger session log with fewer messages.
+            # This protects against data loss when --resume loads a session whose
+            # messages weren't fully written to SQLite — the resumed agent starts
+            # with partial history and would otherwise clobber the full JSON log.
+            if self.session_log_file.exists():
+                try:
+                    existing = json.loads(self.session_log_file.read_text(encoding="utf-8"))
+                    existing_count = existing.get("message_count", len(existing.get("messages", [])))
+                    if existing_count > len(cleaned):
+                        logging.debug(
+                            "Skipping session log overwrite: existing has %d messages, current has %d",
+                            existing_count, len(cleaned),
+                        )
+                        return
+                except Exception:
+                    pass  # corrupted existing file — allow the overwrite
+
             entry = {
                 "session_id": self.session_id,
                 "model": self.model,
@@ -2259,7 +2298,7 @@ class AIAgent:
                 return
             try:
                 manager.flush_all()
-            except Exception as exc:
+            except (Exception, KeyboardInterrupt) as exc:
                 logger.debug("Honcho flush on exit failed (non-fatal): %s", exc)
 
         atexit.register(_flush_honcho_on_exit)
@@ -4112,6 +4151,25 @@ class AIAgent:
                 or is_native_anthropic
             )
 
+            # Update context compressor limits for the fallback model.
+            # Without this, compression decisions use the primary model's
+            # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
+            # causing oversized sessions to overflow the fallback.
+            if hasattr(self, 'context_compressor') and self.context_compressor:
+                from agent.model_metadata import get_model_context_length
+                fb_context_length = get_model_context_length(
+                    self.model, base_url=self.base_url,
+                    api_key=self.api_key, provider=self.provider,
+                )
+                self.context_compressor.model = self.model
+                self.context_compressor.base_url = self.base_url
+                self.context_compressor.api_key = self.api_key
+                self.context_compressor.provider = self.provider
+                self.context_compressor.context_length = fb_context_length
+                self.context_compressor.threshold_tokens = int(
+                    fb_context_length * self.context_compressor.threshold_percent
+                )
+
             self._emit_status(
                 f"🔄 Primary model failed — switching to fallback: "
                 f"{fb_model} via {fb_provider}"
@@ -4844,7 +4902,7 @@ class AIAgent:
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 self._session_db.create_session(
                     session_id=self.session_id,
-                    source=self.platform or "cli",
+                    source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
                     parent_session_id=old_session_id,
                 )
@@ -5065,7 +5123,7 @@ class AIAgent:
         spinner = None
         if self.quiet_mode and not self.tool_progress_callback:
             face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots')
+            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
             spinner.start()
 
         try:
@@ -5106,7 +5164,7 @@ class AIAgent:
             # Print cute message per tool
             if self.quiet_mode:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
-                print(f"  {cute_msg}")
+                self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
@@ -5291,7 +5349,7 @@ class AIAgent:
                 spinner = None
                 if self.quiet_mode and not self.tool_progress_callback:
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
+                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
                 self._delegate_spinner = spinner
                 _delegate_result = None
@@ -5321,7 +5379,7 @@ class AIAgent:
                     preview = _build_tool_preview(function_name, function_args) or function_name
                     if len(preview) > 30:
                         preview = preview[:27] + "..."
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
                 _spinner_result = None
                 try:
@@ -6004,7 +6062,7 @@ class AIAgent:
                     # Raw KawaiiSpinner only when no streaming consumers
                     # (would conflict with streamed token output)
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._print_fn)
                     thinking_spinner.start()
             
             # Log request details if verbose

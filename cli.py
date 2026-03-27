@@ -205,6 +205,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_display": "full",
             "show_reasoning": False,
             "streaming": True,
+            "busy_input_mode": "interrupt",
 
             "skin": "default",
         },
@@ -1035,13 +1036,18 @@ class HermesCLI:
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
-        self.tool_progress_mode = CLI_CONFIG["display"].get("tool_progress", "all")
+        # YAML 1.1 parses bare `off` as boolean False — normalise to string.
+        _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
+        self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
+        _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
+        self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1329,7 +1335,12 @@ class HermesCLI:
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         try:
             snapshot = self._get_status_bar_snapshot()
-            width = width or shutil.get_terminal_size((80, 24)).columns
+            if width is None:
+                try:
+                    from prompt_toolkit.application import get_app
+                    width = get_app().output.get_size().columns
+                except Exception:
+                    width = shutil.get_terminal_size((80, 24)).columns
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
@@ -1359,7 +1370,16 @@ class HermesCLI:
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
-            width = shutil.get_terminal_size((80, 24)).columns
+            # Use prompt_toolkit's own terminal width when running inside the
+            # TUI — shutil.get_terminal_size() can return stale or fallback
+            # values (especially on SSH) that differ from what prompt_toolkit
+            # actually renders, causing the fragments to overflow to a second
+            # line and produce duplicated status bar rows over long sessions.
+            try:
+                from prompt_toolkit.application import get_app
+                width = get_app().output.get_size().columns
+            except Exception:
+                width = shutil.get_terminal_size((80, 24)).columns
             duration_label = snapshot["duration"]
 
             if width < 52:
@@ -2916,7 +2936,7 @@ class HermesCLI:
                 try:
                     self._session_db.create_session(
                         session_id=self.session_id,
-                        source="cli",
+                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns,
@@ -2928,6 +2948,82 @@ class HermesCLI:
 
         if not silent:
             print("(^_^)v New session started!")
+
+    def _handle_resume_command(self, cmd_original: str) -> None:
+        """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        parts = cmd_original.split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+
+        if not target:
+            _cprint("  Usage: /resume <session_id_or_title>")
+            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+            return
+
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        # Resolve title or ID
+        from hermes_cli.main import _resolve_session_by_name_or_id
+        resolved = _resolve_session_by_name_or_id(target)
+        target_id = resolved or target
+
+        session_meta = self._session_db.get_session(target_id)
+        if not session_meta:
+            _cprint(f"  Session not found: {target}")
+            _cprint("  Use /history or `hermes sessions list` to see available sessions.")
+            return
+
+        if target_id == self.session_id:
+            _cprint("  Already on that session.")
+            return
+
+        # End current session
+        try:
+            self._session_db.end_session(self.session_id, "resumed_other")
+        except Exception:
+            pass
+
+        # Switch to the target session
+        self.session_id = target_id
+        self._resumed = True
+        self._pending_title = None
+
+        # Load conversation history
+        restored = self._session_db.get_messages_as_conversation(target_id)
+        self.conversation_history = restored or []
+
+        # Re-open the target session so it's not marked as ended
+        try:
+            self._session_db.reopen_session(target_id)
+        except Exception:
+            pass
+
+        # Sync the agent if already initialised
+        if self.agent:
+            self.agent.session_id = target_id
+            self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = len(self.conversation_history)
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from tools.todo_tool import TodoStore
+                    self.agent._todo_store = TodoStore()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+        title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
+        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        if self.conversation_history:
+            _cprint(
+                f"  ↻ Resumed session {target_id}{title_part}"
+                f" ({msg_count} user message{'s' if msg_count != 1 else ''},"
+                f" {len(self.conversation_history)} total)"
+            )
+        else:
+            _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
     def reset_conversation(self):
         """Reset the conversation by starting a new session."""
@@ -3647,6 +3743,8 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
+        elif canonical == "resume":
+            self._handle_resume_command(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
         elif canonical == "prompt":
@@ -3722,17 +3820,17 @@ class HermesCLI:
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
-            if not self._agent_running:
-                _cprint("  /queue only works while Hermes is busy. Just type your message normally.")
+            # Extract prompt after "/queue " or "/q "
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                _cprint("  Usage: /queue <prompt>")
             else:
-                # Extract prompt after "/queue " or "/q "
-                parts = cmd_original.split(None, 1)
-                payload = parts[1].strip() if len(parts) > 1 else ""
-                if not payload:
-                    _cprint("  Usage: /queue <prompt>")
-                else:
-                    self._pending_input.put(payload)
+                self._pending_input.put(payload)
+                if self._agent_running:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                else:
+                    _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -6112,16 +6210,22 @@ class HermesCLI:
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and text.startswith("/")):
-                    self._interrupt_queue.put(payload)
-                    # Debug: log to file when message enters interrupt queue
-                    try:
-                        _dbg = _hermes_home / "interrupt_debug.log"
-                        with open(_dbg, "a") as _f:
-                            import time as _t
-                            _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
-                                     f"agent_running={self._agent_running}\n")
-                    except Exception:
-                        pass
+                    if self.busy_input_mode == "queue":
+                        # Queue for the next turn instead of interrupting
+                        self._pending_input.put(payload)
+                        preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                    else:
+                        self._interrupt_queue.put(payload)
+                        # Debug: log to file when message enters interrupt queue
+                        try:
+                            _dbg = _hermes_home / "interrupt_debug.log"
+                            with open(_dbg, "a") as _f:
+                                import time as _t
+                                _f.write(f"{_t.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
+                                         f"agent_running={self._agent_running}\n")
+                        except Exception:
+                            pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -6894,6 +6998,15 @@ class HermesCLI:
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
                 height=1,
+                # Prevent fragments that overflow the terminal width from
+                # wrapping onto a second line, which causes the status bar to
+                # appear duplicated (one full + one partial row) during long
+                # sessions, especially on SSH where shutil.get_terminal_size
+                # may return stale values.  _get_status_bar_fragments now reads
+                # width from prompt_toolkit's own output object, so fragments
+                # will always fit; wrap_lines=False is the belt-and-suspenders
+                # guard against any future width mismatch.
+                wrap_lines=False,
             ),
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
@@ -7163,13 +7276,13 @@ class HermesCLI:
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:
                     self.agent._honcho.shutdown()
-                except Exception:
+                except (Exception, KeyboardInterrupt):
                     pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
-                except Exception as e:
+                except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
             _run_cleanup()
             self._print_exit_summary()
@@ -7288,12 +7401,9 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Check config for CLI toolsets, fallback to hermes-cli
-        config_cli_toolsets = CLI_CONFIG.get("platform_toolsets", {}).get("cli")
-        if config_cli_toolsets and isinstance(config_cli_toolsets, list):
-            toolsets_list = config_cli_toolsets
-        else:
-            toolsets_list = ["hermes-cli"]
+        # Use the shared resolver so MCP servers are included at runtime
+        from hermes_cli.tools_config import _get_platform_tools
+        toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
 

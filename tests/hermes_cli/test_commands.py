@@ -134,11 +134,18 @@ class TestDerivedDicts:
 # ---------------------------------------------------------------------------
 
 class TestGatewayKnownCommands:
-    def test_excludes_cli_only(self):
+    def test_excludes_cli_only_without_config_gate(self):
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
                     f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
+
+    def test_includes_config_gated_cli_only(self):
+        """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
+        for cmd in COMMAND_REGISTRY:
+            if cmd.gateway_config_gate:
+                assert cmd.name in GATEWAY_KNOWN_COMMANDS, \
+                    f"config-gated command '{cmd.name}' should be in GATEWAY_KNOWN_COMMANDS"
 
     def test_includes_gateway_commands(self):
         for cmd in COMMAND_REGISTRY:
@@ -160,11 +167,11 @@ class TestGatewayHelpLines:
         lines = gateway_help_lines()
         assert len(lines) > 10
 
-    def test_excludes_cli_only_commands(self):
+    def test_excludes_cli_only_commands_without_config_gate(self):
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 assert f"`/{cmd.name}" not in joined, \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
@@ -188,10 +195,10 @@ class TestTelegramBotCommands:
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
 
-    def test_excludes_cli_only(self):
+    def test_excludes_cli_only_without_config_gate(self):
         names = {name for name, _ in telegram_bot_commands()}
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
@@ -211,11 +218,82 @@ class TestSlackSubcommandMap:
         assert "bg" in mapping
         assert "reset" in mapping
 
-    def test_excludes_cli_only(self):
+    def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+
+# ---------------------------------------------------------------------------
+# Config-gated gateway commands
+# ---------------------------------------------------------------------------
+
+class TestGatewayConfigGate:
+    """Tests for the gateway_config_gate mechanism on CommandDef."""
+
+    def test_verbose_has_config_gate(self):
+        cmd = resolve_command("verbose")
+        assert cmd is not None
+        assert cmd.cli_only is True
+        assert cmd.gateway_config_gate == "display.tool_progress_command"
+
+    def test_verbose_in_gateway_known_commands(self):
+        """Config-gated commands are always recognized by the gateway."""
+        assert "verbose" in GATEWAY_KNOWN_COMMANDS
+
+    def test_config_gate_excluded_from_help_when_off(self, tmp_path, monkeypatch):
+        """When the config gate is falsy, the command should not appear in help."""
+        # Write a config with the gate off (default)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/verbose" not in joined
+
+    def test_config_gate_included_in_help_when_on(self, tmp_path, monkeypatch):
+        """When the config gate is truthy, the command should appear in help."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/verbose" in joined
+
+    def test_config_gate_excluded_from_telegram_when_off(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "verbose" not in names
+
+    def test_config_gate_included_in_telegram_when_on(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "verbose" in names
+
+    def test_config_gate_excluded_from_slack_when_off(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        mapping = slack_subcommand_map()
+        assert "verbose" not in mapping
+
+    def test_config_gate_included_in_slack_when_on(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        mapping = slack_subcommand_map()
+        assert "verbose" in mapping
 
 
 # ---------------------------------------------------------------------------

@@ -185,3 +185,71 @@ class TestApplyUpdate:
             '    result = 1\n'
             '    return result + 1'
         )
+
+
+class TestAdditionOnlyHunks:
+    """Regression tests for #3081 — addition-only hunks were silently dropped."""
+
+    def test_addition_only_hunk_with_context_hint(self):
+        """A hunk with only + lines should insert at the context hint location."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ def main @@
++def helper():
++    return 42
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        assert len(ops[0].hunks) == 1
+
+        hunk = ops[0].hunks[0]
+        # All lines should be additions
+        assert all(l.prefix == '+' for l in hunk.lines)
+
+        # Apply to a file that contains the context hint
+        class FakeFileOps:
+            written = None
+            def read_file(self, path, **kw):
+                return SimpleNamespace(
+                    content="def main():\n    pass\n",
+                    error=None,
+                )
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True
+        assert "def helper():" in file_ops.written
+        assert "return 42" in file_ops.written
+
+    def test_addition_only_hunk_without_context_hint(self):
+        """A hunk with only + lines and no context hint appends at end of file."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
++def new_func():
++    return True
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            written = None
+            def read_file(self, path, **kw):
+                return SimpleNamespace(
+                    content="existing = True\n",
+                    error=None,
+                )
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True
+        assert file_ops.written.endswith("def new_func():\n    return True\n")
+        assert "existing = True" in file_ops.written

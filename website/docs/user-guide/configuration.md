@@ -1163,6 +1163,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 ```yaml
 display:
   tool_progress: all      # off | new | all | verbose
+  tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   theme_mode: auto        # auto | light | dark — color scheme for skin-aware rendering
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
@@ -1193,6 +1194,8 @@ This works with any skin — built-in or custom. Skin authors can provide `color
 | `new` | Tool indicator only when the tool changes |
 | `all` | Every tool call with a short preview (default) |
 | `verbose` | Full args, results, and debug logs |
+
+In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
 ## Privacy
 

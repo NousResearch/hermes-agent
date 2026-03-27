@@ -264,11 +264,13 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
+        "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
     },
 
     # Privacy settings

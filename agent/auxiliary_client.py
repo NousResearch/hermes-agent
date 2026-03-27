@@ -1216,6 +1216,39 @@ _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 
 
+def neuter_async_httpx_del() -> None:
+    """Monkey-patch ``AsyncHttpxClientWrapper.__del__`` to be a no-op.
+
+    The OpenAI SDK's ``AsyncHttpxClientWrapper.__del__`` schedules
+    ``self.aclose()`` via ``asyncio.get_running_loop().create_task()``.
+    When an ``AsyncOpenAI`` client is garbage-collected while
+    prompt_toolkit's event loop is running (the common CLI idle state),
+    the ``aclose()`` task runs on prompt_toolkit's loop but the
+    underlying TCP transport is bound to a *different* loop (the worker
+    thread's loop that the client was originally created on).  If that
+    loop is closed or its thread is dead, the transport's
+    ``self._loop.call_soon()`` raises ``RuntimeError("Event loop is
+    closed")``, which prompt_toolkit surfaces as "Unhandled exception
+    in event loop ... Press ENTER to continue...".
+
+    Neutering ``__del__`` is safe because:
+    - Cached clients are explicitly cleaned via ``_force_close_async_httpx``
+      on stale-loop detection and ``shutdown_cached_clients`` on exit.
+    - Uncached clients' TCP connections are cleaned up by the OS when the
+      process exits.
+    - The OpenAI SDK itself marks this as a TODO (``# TODO(someday):
+      support non asyncio runtimes here``).
+
+    Call this once at CLI startup, before any ``AsyncOpenAI`` clients are
+    created.
+    """
+    try:
+        from openai._base_client import AsyncHttpxClientWrapper
+        AsyncHttpxClientWrapper.__del__ = lambda self: None  # type: ignore[assignment]
+    except (ImportError, AttributeError):
+        pass  # Graceful degradation if the SDK changes its internals
+
+
 def _force_close_async_httpx(client: Any) -> None:
     """Mark the httpx AsyncClient inside an AsyncOpenAI client as closed.
 
@@ -1261,6 +1294,25 @@ def shutdown_cached_clients() -> None:
             except Exception:
                 pass
         _client_cache.clear()
+
+
+def cleanup_stale_async_clients() -> None:
+    """Force-close cached async clients whose event loop is closed.
+
+    Call this after each agent turn to proactively clean up stale clients
+    before GC can trigger ``AsyncHttpxClientWrapper.__del__`` on them.
+    This is defense-in-depth — the primary fix is ``neuter_async_httpx_del``
+    which disables ``__del__`` entirely.
+    """
+    with _client_cache_lock:
+        stale_keys = []
+        for key, entry in _client_cache.items():
+            client, _default, cached_loop = entry
+            if cached_loop is not None and cached_loop.is_closed():
+                _force_close_async_httpx(client)
+                stale_keys.append(key)
+        for key in stale_keys:
+            del _client_cache[key]
 
 
 def _get_cached_client(

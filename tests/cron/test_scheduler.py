@@ -687,3 +687,41 @@ class TestBuildJobPromptMissingSkill:
             result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
         assert "Real skill content." in result
         assert "go" in result
+
+
+class TestTickAdvanceBeforeRun:
+    """Verify that tick() calls advance_next_run before run_job for crash safety."""
+
+    def test_advance_called_before_run_job(self, tmp_path):
+        """advance_next_run must be called before run_job to prevent crash-loop re-fires."""
+        call_order = []
+
+        def fake_advance(job_id):
+            call_order.append(("advance", job_id))
+            return True
+
+        def fake_run_job(job):
+            call_order.append(("run", job["id"]))
+            return True, "output", "response", None
+
+        fake_job = {
+            "id": "test-advance",
+            "name": "test",
+            "prompt": "hello",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "15 6 * * *"},
+        }
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[fake_job]), \
+             patch("cron.scheduler.advance_next_run", side_effect=fake_advance) as adv_mock, \
+             patch("cron.scheduler.run_job", side_effect=fake_run_job), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._deliver_result"):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 1
+        adv_mock.assert_called_once_with("test-advance")
+        # advance must happen before run
+        assert call_order == [("advance", "test-advance"), ("run", "test-advance")]

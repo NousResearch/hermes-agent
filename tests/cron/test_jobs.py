@@ -20,6 +20,7 @@ from cron.jobs import (
     resume_job,
     remove_job,
     mark_job_run,
+    advance_next_run,
     get_due_jobs,
     save_job_output,
 )
@@ -337,6 +338,90 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
+
+
+class TestAdvanceNextRun:
+    """Tests for advance_next_run() — crash-safety for recurring jobs."""
+
+    def test_advances_interval_job(self, tmp_cron_dir):
+        """Interval jobs should have next_run_at bumped to the next future occurrence."""
+        job = create_job(prompt="Recurring check", schedule="every 1h")
+        # Force next_run_at to 5 minutes ago (i.e. the job is due)
+        jobs = load_jobs()
+        old_next = (datetime.now() - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = old_next
+        save_jobs(jobs)
+
+        result = advance_next_run(job["id"])
+        assert result is True
+
+        updated = get_job(job["id"])
+        from cron.jobs import _ensure_aware, _hermes_now
+        new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
+        assert new_next_dt > _hermes_now(), "next_run_at should be in the future after advance"
+
+    def test_advances_cron_job(self, tmp_cron_dir):
+        """Cron-expression jobs should have next_run_at bumped to the next occurrence."""
+        pytest.importorskip("croniter")
+        job = create_job(prompt="Daily wakeup", schedule="15 6 * * *")
+        # Force next_run_at to 30 minutes ago
+        jobs = load_jobs()
+        old_next = (datetime.now() - timedelta(minutes=30)).isoformat()
+        jobs[0]["next_run_at"] = old_next
+        save_jobs(jobs)
+
+        result = advance_next_run(job["id"])
+        assert result is True
+
+        updated = get_job(job["id"])
+        from cron.jobs import _ensure_aware, _hermes_now
+        new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
+        assert new_next_dt > _hermes_now(), "next_run_at should be in the future after advance"
+
+    def test_skips_oneshot_job(self, tmp_cron_dir):
+        """One-shot jobs should NOT be advanced — they need to retry on restart."""
+        job = create_job(prompt="Run once", schedule="30m")
+        original_next = get_job(job["id"])["next_run_at"]
+
+        result = advance_next_run(job["id"])
+        assert result is False
+
+        updated = get_job(job["id"])
+        assert updated["next_run_at"] == original_next, "one-shot next_run_at should be unchanged"
+
+    def test_nonexistent_job_returns_false(self, tmp_cron_dir):
+        result = advance_next_run("nonexistent-id")
+        assert result is False
+
+    def test_already_future_stays_future(self, tmp_cron_dir):
+        """If next_run_at is already in the future, advance keeps it in the future (no harm)."""
+        job = create_job(prompt="Future job", schedule="every 1h")
+        # next_run_at is already set to ~1h from now by create_job
+        advance_next_run(job["id"])
+        # Regardless of return value, the job should still be in the future
+        updated = get_job(job["id"])
+        from cron.jobs import _ensure_aware, _hermes_now
+        new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
+        assert new_next_dt > _hermes_now(), "next_run_at should remain in the future"
+
+    def test_crash_safety_scenario(self, tmp_cron_dir):
+        """Simulate the crash-loop scenario: after advance, the job should NOT be due."""
+        job = create_job(prompt="Crash test", schedule="every 1h")
+        # Force next_run_at to 5 minutes ago (job is due)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+
+        # Job should be due before advance
+        due_before = get_due_jobs()
+        assert len(due_before) == 1
+
+        # Advance (simulating what tick() does before run_job)
+        advance_next_run(job["id"])
+
+        # Now the job should NOT be due (simulates restart after crash)
+        due_after = get_due_jobs()
+        assert len(due_after) == 0, "Job should not be due after advance_next_run"
 
 
 class TestGetDueJobs:

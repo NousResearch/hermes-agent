@@ -319,11 +319,39 @@ class SessionDB:
         billing_provider: Optional[str] = None,
         billing_base_url: Optional[str] = None,
         billing_mode: Optional[str] = None,
+        absolute: bool = False,
     ) -> None:
-        """Increment token counters and backfill model if not already set."""
-        with self._lock:
-            self._conn.execute(
-                """UPDATE sessions SET
+        """Update token counters and backfill model if not already set.
+
+        When *absolute* is False (default), values are **incremented** — use
+        this for per-API-call deltas (CLI path).
+
+        When *absolute* is True, values are **set directly** — use this when
+        the caller already holds cumulative totals (gateway path, where the
+        cached agent accumulates across messages).
+        """
+        if absolute:
+            sql = """UPDATE sessions SET
+                   input_tokens = ?,
+                   output_tokens = ?,
+                   cache_read_tokens = ?,
+                   cache_write_tokens = ?,
+                   reasoning_tokens = ?,
+                   estimated_cost_usd = COALESCE(?, 0),
+                   actual_cost_usd = CASE
+                       WHEN ? IS NULL THEN actual_cost_usd
+                       ELSE ?
+                   END,
+                   cost_status = COALESCE(?, cost_status),
+                   cost_source = COALESCE(?, cost_source),
+                   pricing_version = COALESCE(?, pricing_version),
+                   billing_provider = COALESCE(billing_provider, ?),
+                   billing_base_url = COALESCE(billing_base_url, ?),
+                   billing_mode = COALESCE(billing_mode, ?),
+                   model = COALESCE(model, ?)
+                   WHERE id = ?"""
+        else:
+            sql = """UPDATE sessions SET
                    input_tokens = input_tokens + ?,
                    output_tokens = output_tokens + ?,
                    cache_read_tokens = cache_read_tokens + ?,
@@ -341,7 +369,10 @@ class SessionDB:
                    billing_base_url = COALESCE(billing_base_url, ?),
                    billing_mode = COALESCE(billing_mode, ?),
                    model = COALESCE(model, ?)
-                   WHERE id = ?""",
+                   WHERE id = ?"""
+        with self._lock:
+            self._conn.execute(
+                sql,
                 (
                     input_tokens,
                     output_tokens,

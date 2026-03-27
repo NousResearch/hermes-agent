@@ -8,7 +8,7 @@
 model:
   # Default model to use (can be overridden with --model flag)
   default: "anthropic/claude-opus-4.6"
-  
+
   # Inference provider selection:
   #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
   #   "nous-api"   - Use Nous Portal via API key (requires: NOUS_API_KEY)
@@ -20,7 +20,7 @@ model:
   #   "minimax-cn" - Use MiniMax China endpoint (requires: MINIMAX_CN_API_KEY)
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
-  
+
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
@@ -244,11 +244,11 @@ compression:
   # Enable automatic context compression (default: true)
   # Set to false if you prefer to manage context manually or want errors on overflow
   enabled: true
-  
+
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later
   threshold: 0.50
-  
+
   # Fraction of the threshold to preserve as recent tail (default: 0.20 = 20%)
   # e.g. 20% of 50% threshold = 10% of total context kept as recent messages.
   # Summary output is separately capped at 12K tokens (Gemini output limit).
@@ -265,7 +265,7 @@ compression:
   # IMPORTANT: it receives the full middle section of the conversation, so it
   # MUST support a context length at least as large as your main model's.
   summary_model: "google/gemini-3-flash-preview"
-  
+
   # Provider for the summary model (default: "auto")
   # Options: "auto", "openrouter", "nous", "main"
   # summary_provider: "auto"
@@ -326,10 +326,10 @@ compression:
 memory:
   # Agent's personal notes: environment facts, conventions, things learned
   memory_enabled: true
-  
+
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
-  
+
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
@@ -409,15 +409,15 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
-  
+
   # Enable verbose logging
   verbose: false
-  
+
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
-  
+
   # Predefined personalities (use with /personality command)
   personalities:
     helpful: "You are a helpful, friendly AI assistant."
@@ -685,6 +685,7 @@ display:
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
+  #   log:     Logs tool calls to a dedicated log file
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 

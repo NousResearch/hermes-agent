@@ -1137,7 +1137,13 @@ def resolve_vision_provider_client(
         return "custom", client, final_model
 
     if requested == "auto":
-        for candidate in get_available_vision_backends():
+        ordered = list(_VISION_AUTO_PROVIDER_ORDER)
+        preferred = _preferred_main_vision_provider()
+        if preferred in ordered:
+            ordered.remove(preferred)
+            ordered.insert(0, preferred)
+
+        for candidate in ordered:
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)

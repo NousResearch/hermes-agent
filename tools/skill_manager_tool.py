@@ -547,6 +547,13 @@ def skill_manage(
     else:
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
+    if result.get("success"):
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+
     return json.dumps(result, ensure_ascii=False)
 
 

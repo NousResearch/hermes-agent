@@ -54,7 +54,7 @@ class TestScanSkillCommands:
         """macOS-only skills should not register slash commands on Linux."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "linux"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
@@ -67,7 +67,7 @@ class TestScanSkillCommands:
         """macOS-only skills should register slash commands on macOS."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "darwin"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
@@ -78,7 +78,7 @@ class TestScanSkillCommands:
         """Skills without platforms field should register on any platform."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "win32"
             _make_skill(tmp_path, "generic-tool")

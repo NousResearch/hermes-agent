@@ -231,7 +231,7 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
-    def __init__(self, message: str = "", spinner_type: str = 'dots'):
+    def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
         self.running = False
@@ -239,12 +239,26 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
+        # Optional callable to route all output through (e.g. a no-op for silent
+        # background agents).  When set, bypasses self._out entirely so that
+        # agents with _print_fn overridden remain fully silent.
+        self._print_fn = print_fn
         # Capture stdout NOW, before any redirect_stdout(devnull) from
         # child agents can replace sys.stdout with a black hole.
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to the stdout captured at spinner creation time."""
+        """Write to the stdout captured at spinner creation time.
+
+        If a print_fn was supplied at construction, all output is routed through
+        it instead — allowing callers to silence the spinner with a no-op lambda.
+        """
+        if self._print_fn is not None:
+            try:
+                self._print_fn(text)
+            except Exception:
+                pass
+            return
         try:
             self._out.write(text + end)
             if flush:

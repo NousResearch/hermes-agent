@@ -5,7 +5,9 @@ responds with tool calls only or reasoning-only output (e.g. DeepSeek-R1,
 Qwen-QwQ via OpenRouter with ``reasoning.enabled = True``).  Calling
 ``.strip()`` on ``None`` raises ``AttributeError``.
 
-These tests verify that every call site handles ``content is None`` safely.
+These tests verify that every call site handles ``content is None`` safely,
+and that ``extract_content_or_reasoning()`` falls back to structured
+reasoning fields when content is empty.
 """
 
 import asyncio
@@ -14,12 +16,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.auxiliary_client import extract_content_or_reasoning
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _make_response(content):
-    """Build a minimal OpenAI-compatible ChatCompletion response stub."""
-    message = types.SimpleNamespace(content=content, tool_calls=None)
+def _make_response(content, **msg_attrs):
+    """Build a minimal OpenAI-compatible ChatCompletion response stub.
+
+    Extra keyword args are set as attributes on the message object
+    (e.g. reasoning="...", reasoning_content="...", reasoning_details=[...]).
+    """
+    message = types.SimpleNamespace(content=content, tool_calls=None, **msg_attrs)
     choice = types.SimpleNamespace(message=message)
     return types.SimpleNamespace(choices=[choice])
 
@@ -216,3 +224,71 @@ class TestSourceLinesAreGuarded:
             "tools/session_search_tool.py still has unguarded "
             ".content.strip() — apply `(... or \"\").strip()` guard"
         )
+
+
+# ── extract_content_or_reasoning() ────────────────────────────────────────
+
+class TestExtractContentOrReasoning:
+    """agent/auxiliary_client.py — extract_content_or_reasoning()"""
+
+    def test_normal_content_returned(self):
+        response = _make_response("  Hello world  ")
+        assert extract_content_or_reasoning(response) == "Hello world"
+
+    def test_none_content_returns_empty(self):
+        response = _make_response(None)
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_empty_string_returns_empty(self):
+        response = _make_response("")
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_think_blocks_stripped_with_remaining_content(self):
+        response = _make_response("<think>internal reasoning</think>The answer is 42.")
+        assert extract_content_or_reasoning(response) == "The answer is 42."
+
+    def test_think_only_content_falls_back_to_reasoning_field(self):
+        """When content is only think blocks, fall back to structured reasoning."""
+        response = _make_response(
+            "<think>some reasoning</think>",
+            reasoning="The actual reasoning output",
+        )
+        assert extract_content_or_reasoning(response) == "The actual reasoning output"
+
+    def test_none_content_with_reasoning_field(self):
+        """DeepSeek-R1 pattern: content=None, reasoning='...'"""
+        response = _make_response(None, reasoning="Step 1: analyze the problem...")
+        assert extract_content_or_reasoning(response) == "Step 1: analyze the problem..."
+
+    def test_none_content_with_reasoning_content_field(self):
+        """Moonshot/Novita pattern: content=None, reasoning_content='...'"""
+        response = _make_response(None, reasoning_content="Let me think about this...")
+        assert extract_content_or_reasoning(response) == "Let me think about this..."
+
+    def test_none_content_with_reasoning_details(self):
+        """OpenRouter unified format: reasoning_details=[{summary: ...}]"""
+        response = _make_response(None, reasoning_details=[
+            {"type": "reasoning.summary", "summary": "The key insight is..."},
+        ])
+        assert extract_content_or_reasoning(response) == "The key insight is..."
+
+    def test_reasoning_fields_not_duplicated(self):
+        """When reasoning and reasoning_content have the same value, don't duplicate."""
+        response = _make_response(None, reasoning="same text", reasoning_content="same text")
+        assert extract_content_or_reasoning(response) == "same text"
+
+    def test_multiple_reasoning_sources_combined(self):
+        """Different reasoning sources are joined with double newline."""
+        response = _make_response(
+            None,
+            reasoning="First part",
+            reasoning_content="Second part",
+        )
+        result = extract_content_or_reasoning(response)
+        assert "First part" in result
+        assert "Second part" in result
+
+    def test_content_preferred_over_reasoning(self):
+        """When both content and reasoning exist, content wins."""
+        response = _make_response("Actual answer", reasoning="Internal reasoning")
+        assert extract_content_or_reasoning(response) == "Actual answer"

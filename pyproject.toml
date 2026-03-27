@@ -23,6 +23,7 @@ dependencies = [
   "requests>=2.33.0,<3",  # CVE-2026-25645
   "jinja2>=3.1.5,<4",
   "pydantic>=2.12.5,<3",
+  "google-genai>=0.2.2,<1",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
   "prompt_toolkit>=3.0.52,<4",
   # Tools
@@ -34,6 +35,7 @@ dependencies = [
   "faster-whisper>=1.0.0,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  "google-genai>=1.68.0",
 ]
 
 [project.optional-dependencies]

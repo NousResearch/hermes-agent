@@ -1630,6 +1630,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_provider(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/provider")
 
+        @tree.command(name="geminiflash", description="Emergency switch to Gemini 2.5 Flash")
+        async def slash_geminiflash(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/geminiflash")
+
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -1669,6 +1673,12 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(scope="Optional: 'all' to deny all pending commands")
         async def slash_deny(interaction: discord.Interaction, scope: str = ""):
             await self._run_simple_slash(interaction, f"/deny {scope}".strip())
+
+        @tree.command(name="history", description="Load recent channel messages into Hermes context so it can see what was said")
+        @discord.app_commands.describe(limit="Number of recent messages to load (default: 30, max: 100)")
+        async def slash_history(interaction: discord.Interaction, limit: int = 30):
+            await interaction.response.defer(ephemeral=True)
+            await self._handle_history_slash(interaction, min(max(limit, 1), 100))
 
         @tree.command(name="thread", description="Create a new thread and start a Hermes session in it")
         @discord.app_commands.describe(
@@ -1781,6 +1791,53 @@ class DiscordAdapter(BasePlatformAdapter):
             source=source,
             raw_message=interaction,
         )
+
+    # ------------------------------------------------------------------
+    # History command helper
+    # ------------------------------------------------------------------
+
+    async def _handle_history_slash(self, interaction: discord.Interaction, limit: int = 30) -> None:
+        """Fetch recent channel messages and inject them into Hermes context."""
+        channel = interaction.channel
+        if channel is None:
+            await interaction.followup.send("Could not access channel.", ephemeral=True)
+            return
+
+        try:
+            messages = []
+            async for msg in channel.history(limit=limit + 1, oldest_first=False):
+                # Skip the /history command invocation itself
+                if msg.interaction and msg.interaction.name == "history":
+                    continue
+                messages.append(msg)
+
+            messages.reverse()  # oldest first
+
+            if not messages:
+                await interaction.followup.send("No messages found in this channel.", ephemeral=True)
+                return
+
+            lines = []
+            for msg in messages:
+                author = msg.author.display_name
+                content = msg.content or "(attachment/embed)"
+                ts = msg.created_at.strftime("%H:%M")
+                lines.append(f"[{ts}] {author}: {content}")
+
+            history_text = "\n".join(lines)
+            summary = f"Here are the last {len(messages)} messages from this channel (oldest first):\n\n{history_text}"
+
+            # Inject as a user message so Hermes gets the context
+            event = self._build_slash_event(interaction, summary)
+            event.message_type = MessageType.TEXT
+            await interaction.followup.send(
+                f"✅ Loaded {len(messages)} messages into context.", ephemeral=True
+            )
+            await self.handle_message(event)
+
+        except Exception as e:
+            logger.warning("[%s] /history failed: %s", self.name, e)
+            await interaction.followup.send(f"Failed to load history: {e}", ephemeral=True)
 
     # ------------------------------------------------------------------
     # Thread creation helpers

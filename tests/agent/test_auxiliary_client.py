@@ -11,6 +11,7 @@ from agent.auxiliary_client import (
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
+    resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
     _read_codex_access_token,
@@ -637,6 +638,30 @@ class TestVisionClientFallback:
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
+
+    def test_selected_codex_provider_short_circuits_vision_auto(self, monkeypatch):
+        def fake_load_config():
+            return {"model": {"provider": "openai-codex", "default": "gpt-5.2-codex"}}
+
+        codex_client = MagicMock()
+        with (
+            patch("hermes_cli.config.load_config", fake_load_config),
+            patch("agent.auxiliary_client._try_codex", return_value=(codex_client, "gpt-5.2-codex")) as mock_codex,
+            patch("agent.auxiliary_client._try_openrouter") as mock_openrouter,
+            patch("agent.auxiliary_client._try_nous") as mock_nous,
+            patch("agent.auxiliary_client._try_anthropic") as mock_anthropic,
+            patch("agent.auxiliary_client._try_custom_endpoint") as mock_custom,
+        ):
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "openai-codex"
+        assert client is codex_client
+        assert model == "gpt-5.2-codex"
+        mock_codex.assert_called_once()
+        mock_openrouter.assert_not_called()
+        mock_nous.assert_not_called()
+        mock_anthropic.assert_not_called()
+        mock_custom.assert_not_called()
 
     def test_vision_auto_includes_codex(self, codex_auth_dir):
         """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""

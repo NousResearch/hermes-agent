@@ -584,6 +584,38 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
+        tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
+        toolset_map = {
+            "web_search": "web",
+            "skills_list": "skills",
+            "skill_view": "skills",
+            "skill_manage": "skills",
+        }
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch(
+                "run_agent.check_toolset_requirements",
+                side_effect=AssertionError("should not re-check toolset requirements"),
+            ),
+            patch("run_agent.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
+            patch("run_agent.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            prompt = agent._build_system_prompt()
+
+        assert "SKILLS_PROMPT" in prompt
+        assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
+        assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
+
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):

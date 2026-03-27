@@ -59,6 +59,7 @@ _OAUTH_ONLY_BETAS = [
 # The version must stay reasonably current — Anthropic rejects OAuth requests
 # when the spoofed user-agent version is too far behind the actual release.
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+_claude_code_version_cache: Optional[str] = None
 
 
 def _detect_claude_code_version() -> str:
@@ -86,9 +87,16 @@ def _detect_claude_code_version() -> str:
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
-_CLAUDE_CODE_VERSION = _detect_claude_code_version()
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
+
+
+def _get_claude_code_version() -> str:
+    """Lazily detect the installed Claude Code version when OAuth headers need it."""
+    global _claude_code_version_cache
+    if _claude_code_version_cache is None:
+        _claude_code_version_cache = _detect_claude_code_version()
+    return _claude_code_version_cache
 
 
 def _is_oauth_token(key: str) -> bool:
@@ -132,7 +140,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
         }
     else:
@@ -241,7 +249,7 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+        "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
     }
 
     for endpoint in token_endpoints:

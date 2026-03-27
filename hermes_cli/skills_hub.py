@@ -417,6 +417,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
+    # Invalidate the skills prompt cache so the new skill appears immediately
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
@@ -623,6 +630,11 @@ def do_uninstall(name: str, console: Optional[Console] = None,
     success, msg = uninstall_skill(name)
     if success:
         c.print(f"[bold green]{msg}[/]\n")
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
     else:
         c.print(f"[bold red]Error:[/] {msg}\n")
 

@@ -785,7 +785,7 @@ class SessionStore:
 
         if self._db and db_session_id:
             try:
-                self._db.update_token_counts(
+                self._db.set_token_counts(
                     db_session_id,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,

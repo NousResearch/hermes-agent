@@ -846,7 +846,7 @@ class TestLastPromptTokens:
 
         store.update_session("k1", model="openai/gpt-5.4")
 
-        store._db.update_token_counts.assert_called_once_with(
+        store._db.set_token_counts.assert_called_once_with(
             "s1",
             input_tokens=0,
             output_tokens=0,

@@ -795,6 +795,7 @@ def cmd_model(args):
         "ai-gateway": "AI Gateway",
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
+        "huggingface": "Hugging Face",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -821,6 +822,7 @@ def cmd_model(args):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope (Qwen models, Anthropic-compatible)"),
+        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -893,7 +895,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1501,6 +1503,27 @@ _PROVIDER_MODELS = {
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
+    ],
+    # Curated model list sourced from https://models.dev (huggingface provider)
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "Qwen/Qwen3-Coder-Next",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "Qwen/Qwen3-Next-80B-A3B-Thinking",
+        "deepseek-ai/DeepSeek-R1-0528",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2-Instruct",
+        "moonshotai/Kimi-K2-Instruct-0905",
+        "moonshotai/Kimi-K2.5",
+        "moonshotai/Kimi-K2-Thinking",
+        "MiniMaxAI/MiniMax-M2.5",
+        "MiniMaxAI/MiniMax-M2.1",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "zai-org/GLM-5",
+        "zai-org/GLM-4.7",
+        "zai-org/GLM-4.7-Flash",
     ],
 }
 
@@ -3122,7 +3145,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

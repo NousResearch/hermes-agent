@@ -217,6 +217,28 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3.5-flash",
         "qwen-vl-max",
     ],
+    # Curated model list for Hugging Face Inference Providers
+    # sourced from https://models.dev (huggingface provider)
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",
+        "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "Qwen/Qwen3-Coder-Next",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "Qwen/Qwen3-Next-80B-A3B-Thinking",
+        "deepseek-ai/DeepSeek-R1-0528",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2-Instruct",
+        "moonshotai/Kimi-K2-Instruct-0905",
+        "moonshotai/Kimi-K2.5",
+        "moonshotai/Kimi-K2-Thinking",
+        "MiniMaxAI/MiniMax-M2.5",
+        "MiniMaxAI/MiniMax-M2.1",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "zai-org/GLM-5",
+        "zai-org/GLM-4.7",
+        "zai-org/GLM-4.7-Flash",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -236,6 +258,7 @@ _PROVIDER_LABELS = {
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
+    "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
 
@@ -271,6 +294,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "hf": "huggingface",
+    "hugging-face": "huggingface",
+    "huggingface-hub": "huggingface",
 }
 
 
@@ -304,7 +330,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

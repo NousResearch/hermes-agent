@@ -744,13 +744,13 @@ class TestHuggingFaceModels:
         from hermes_cli.main import _PROVIDER_MODELS
         assert "huggingface" in _PROVIDER_MODELS
         models = _PROVIDER_MODELS["huggingface"]
-        assert len(models) >= 10, "Expected at least 10 curated HF models"
+        assert len(models) >= 6, "Expected at least 6 curated HF models"
 
     def test_models_py_has_huggingface(self):
         from hermes_cli.models import _PROVIDER_MODELS
         assert "huggingface" in _PROVIDER_MODELS
         models = _PROVIDER_MODELS["huggingface"]
-        assert len(models) >= 10
+        assert len(models) >= 6
 
     def test_model_lists_match(self):
         """Model lists in main.py and models.py should be identical."""

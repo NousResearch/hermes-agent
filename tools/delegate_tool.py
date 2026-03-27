@@ -24,6 +24,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+# Import remote agent module
+try:
+    from tools.remote_agent import get_remote_agents, call_remote_agent, refresh_remote_agents_config
+    REMOTE_AGENTS_AVAILABLE = True
+except ImportError:
+    REMOTE_AGENTS_AVAILABLE = False
+    logger.debug("Remote agents module not available")
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
@@ -397,25 +405,103 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+def _delegate_to_remote(
+    agent_name: str,
+    goal: str,
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+) -> str:
+    """
+    Delegate task to a remote Hermes agent.
+    
+    Args:
+        agent_name: Name of the remote agent from config
+        goal: The task/goal to accomplish
+        context: Additional context for the task
+        toolsets: Toolsets to enable (optional)
+        
+    Returns:
+        JSON string with the result or error
+    """
+    if not REMOTE_AGENTS_AVAILABLE:
+        return json.dumps({
+            "error": "Remote agents not available. Check that tools/remote_agent.py is installed."
+        })
+    
+    remote_agents = get_remote_agents()
+    
+    if agent_name not in remote_agents:
+        available = ", ".join(remote_agents.keys()) or "none"
+        return json.dumps({
+            "error": f"Unknown remote agent: '{agent_name}'. Available agents: {available}"
+        })
+    
+    agent_config = remote_agents.get(agent_name)
+    endpoint = agent_config.get("endpoint")
+    if not endpoint:
+        return json.dumps({
+            "error": f"Remote agent '{agent_name}' has no endpoint configured"
+        })
+    
+    logger.info(f"Delegating to remote agent '{agent_name}' at {endpoint}")
+    
+    # Call the remote agent
+    result = call_remote_agent(
+        agent_name=agent_name,
+        goal=goal,
+        context=context,
+        toolsets=toolsets,
+        stream=False,
+    )
+    
+    if "error" in result:
+        return json.dumps({
+            "error": f"Remote agent '{agent_name}' failed: {result['error']}"
+        })
+    
+    return json.dumps({
+        "success": True,
+        "agent": agent_name,
+        "type": "remote",
+        "result": result.get("content", ""),
+    })
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    agent: Optional[str] = None,  # Remote agent name
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
-    Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+    Supports three modes:
+      - Single local: provide goal (+ optional context, toolsets)
+      - Batch local:  provide tasks array [{goal, context, toolsets}, ...]
+      - Remote:       provide agent parameter to delegate to remote Hermes
 
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
         return json.dumps({"error": "delegate_task requires a parent agent context."})
+
+    # Check for remote agent delegation first
+    if agent and isinstance(agent, str) and agent.strip():
+        # Remote agent mode
+        if goal is None:
+            return json.dumps({
+                "error": "Remote agent mode requires a 'goal' parameter."
+            })
+        return _delegate_to_remote(
+            agent_name=agent.strip(),
+            goal=goal,
+            context=context,
+            toolsets=toolsets,
+        )
 
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
@@ -687,18 +773,24 @@ DELEGATE_TASK_SCHEMA = {
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
-        "All run concurrently and results are returned together.\n\n"
+        "THREE MODES:\n"
+        "1. Single local task: provide 'goal' (+ optional context, toolsets)\n"
+        "2. Batch local (parallel): provide 'tasks' array with up to 3 items. "
+        "All run concurrently and results are returned together.\n"
+        "3. Remote agent: provide 'agent' parameter to delegate to a remote "
+        "Hermes instance configured in ~/.hermes/config.yaml under remote_agents.\n"
+        "\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
+        "- Parallel independent workstreams (research A and B simultaneously)\n"
+        "- Specialized remote agents for specific domains (coding, research, etc.)\n"
+        "\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
+        "- Tasks needing user interaction -> subagents cannot use clarify\n"
+        "\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
@@ -735,6 +827,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Common patterns: ['terminal', 'file'] for code work, "
                     "['web'] for research, ['terminal', 'file', 'web'] for "
                     "full-stack tasks."
+                ),
+            },
+            "agent": {
+                "type": "string",
+                "description": (
+                    "Optional: Name of a remote agent to delegate to. If specified, "
+                    "the task is sent to the remote Hermes instance configured in "
+                    "~/.hermes/config.yaml under remote_agents. The remote agent runs "
+                    "independently and returns a summary. Use this for specialized "
+                    "agents or to scale across multiple Hermes instances."
                 ),
             },
             "tasks": {
@@ -785,6 +887,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        agent=args.get("agent"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

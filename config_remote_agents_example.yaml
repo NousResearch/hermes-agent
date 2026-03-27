@@ -1,0 +1,50 @@
+# Remote Agents Configuration Example
+# Add this to your ~/.hermes/config.yaml
+
+remote_agents:
+  # Coding agent - specialized for code generation and debugging
+  coding:
+    endpoint: "http://coding-agent:8080/v1"
+    api_key: "${CODING_AGENT_KEY}"
+    model: "qwen3.5"
+    timeout: 300
+    description: "Specialized coding agent for code generation and debugging"
+
+  # Research agent - for web research and analysis
+  research:
+    endpoint: "http://research-agent:8080/v1"
+    api_key: "${RESEARCH_AGENT_KEY}"
+    model: "gpt-5"
+    timeout: 600
+    description: "Research and analysis agent with web access"
+
+  # Fast/cheap agent - for simple tasks using a cheaper model
+  fast:
+    endpoint: "http://fast-agent:8080/v1"
+    api_key: "${FAST_AGENT_KEY}"
+    model: "gemma-2b"
+    timeout: 60
+    description: "Fast, cheap agent for simple tasks"
+
+# Usage examples:
+# 
+# 1. Delegate to coding agent:
+#    delegate_task(
+#      goal="Build a REST API for user management",
+#      context="Use FastAPI with PostgreSQL",
+#      agent="coding",
+#      toolsets=["terminal", "file"]
+#    )
+#
+# 2. Delegate to research agent:
+#    delegate_task(
+#      goal="Research the latest LLM architectures",
+#      agent="research",
+#      toolsets=["web"]
+#    )
+#
+# 3. Simple task to fast agent:
+#    delegate_task(
+#      goal="Explain what a transformer is",
+#      agent="fast"
+#    )

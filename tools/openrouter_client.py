@@ -20,10 +20,14 @@ def get_async_client():
     """
     global _client
     if _client is None:
-        from agent.auxiliary_client import resolve_provider_client
+        from agent.auxiliary_client import resolve_provider_client, _track_async_client
         client, _model = resolve_provider_client("openrouter", async_mode=True)
         if client is None:
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        # resolve_provider_client tracks AsyncOpenAI clients created via
+        # _to_async_client, but register explicitly here too in case the
+        # client bypassed that path (e.g. a non-OpenAI async adapter).
+        _track_async_client(client)
         _client = client
     return _client
 

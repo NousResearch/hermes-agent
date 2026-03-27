@@ -502,6 +502,9 @@ def _run_cleanup():
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
     # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
+    # shutdown_cached_clients() also calls _force_close_all_async_clients()
+    # which covers clients created via resolve_provider_client that bypass
+    # _client_cache (e.g. openrouter_client._client).
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
@@ -6973,6 +6976,33 @@ class HermesCLI:
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
+
+        # Defense-in-depth: suppress "RuntimeError: Event loop is closed" that
+        # originates from AsyncHttpxClientWrapper.__del__ scheduling aclose()
+        # on prompt_toolkit's loop when a stale async client is GC'd mid-session.
+        # Without this, prompt_toolkit's default exception handler prints the
+        # traceback and halts with "Press ENTER to continue...".
+        _pt_loop = asyncio.get_event_loop()
+        _original_exc_handler = _pt_loop.get_exception_handler()
+
+        def _safe_exc_handler(loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+                # Harmless GC cleanup failure from a stale httpx/openai/anthropic
+                # async client whose transport references a closed tool loop.
+                # The OS will drop the connections; no action needed.
+                import logging as _logging
+                _logging.debug(
+                    "Suppressed 'Event loop is closed' from async client GC: %s",
+                    context.get("message", ""),
+                )
+                return
+            if _original_exc_handler is not None:
+                _original_exc_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        _pt_loop.set_exception_handler(_safe_exc_handler)
 
         def spinner_loop():
             import time as _time

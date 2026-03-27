@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from agent.auxiliary_client import async_call_llm
+from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -346,8 +346,15 @@ async def vision_analyze_tool(
             call_kwargs["model"] = model
         response = await async_call_llm(**call_kwargs)
         
-        # Extract the analysis
-        analysis = response.choices[0].message.content.strip()
+        # Extract the analysis — fall back to reasoning if content is empty
+        analysis = extract_content_or_reasoning(response)
+
+        # Retry once on empty content (reasoning-only response)
+        if not analysis:
+            logger.warning("Vision LLM returned empty content, retrying once")
+            response = await async_call_llm(**call_kwargs)
+            analysis = extract_content_or_reasoning(response)
+
         analysis_length = len(analysis)
         
         logger.info("Image analysis completed (%s characters)", analysis_length)

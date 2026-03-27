@@ -2055,6 +2055,23 @@ class AIAgent:
                     msg["content"] = self._clean_session_content(msg["content"])
                 cleaned.append(msg)
 
+            # Guard: never overwrite a larger session log with fewer messages.
+            # This protects against data loss when --resume loads a session whose
+            # messages weren't fully written to SQLite — the resumed agent starts
+            # with partial history and would otherwise clobber the full JSON log.
+            if self.session_log_file.exists():
+                try:
+                    existing = json.loads(self.session_log_file.read_text(encoding="utf-8"))
+                    existing_count = existing.get("message_count", len(existing.get("messages", [])))
+                    if existing_count > len(cleaned):
+                        logging.debug(
+                            "Skipping session log overwrite: existing has %d messages, current has %d",
+                            existing_count, len(cleaned),
+                        )
+                        return
+                except Exception:
+                    pass  # corrupted existing file — allow the overwrite
+
             entry = {
                 "session_id": self.session_id,
                 "model": self.model,

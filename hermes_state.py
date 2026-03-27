@@ -284,6 +284,15 @@ class SessionDB:
             )
             self._conn.commit()
 
+    def reopen_session(self, session_id: str) -> None:
+        """Clear ended_at/end_reason so a session can be resumed."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                (session_id,),
+            )
+            self._conn.commit()
+
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
         with self._lock:

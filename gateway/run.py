@@ -1982,6 +1982,12 @@ class GatewayRunner:
                             f"Use /resume to browse and restore a previous session.\n"
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
+                        try:
+                            session_info = self._format_session_info()
+                            if session_info:
+                                notice = f"{notice}\n\n{session_info}"
+                        except Exception:
+                            pass
                         await adapter.send(
                             source.chat_id, notice,
                             metadata=getattr(event, 'metadata', None),
@@ -2749,6 +2755,85 @@ class GatewayRunner:
             # Clear session env
             self._clear_session_env()
     
+    def _format_session_info(self) -> str:
+        """Resolve current model config and return a formatted info block.
+
+        Surfaces model, provider, context length, and endpoint so gateway
+        users can immediately see if context detection went wrong (e.g.
+        local models falling to the 128K default).
+        """
+        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+
+        model = _resolve_gateway_model()
+        config_context_length = None
+        provider = None
+        base_url = None
+        api_key = None
+
+        try:
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                import yaml as _info_yaml
+                with open(cfg_path, encoding="utf-8") as f:
+                    data = _info_yaml.safe_load(f) or {}
+                model_cfg = data.get("model", {})
+                if isinstance(model_cfg, dict):
+                    raw_ctx = model_cfg.get("context_length")
+                    if raw_ctx is not None:
+                        try:
+                            config_context_length = int(raw_ctx)
+                        except (TypeError, ValueError):
+                            pass
+                    provider = model_cfg.get("provider") or None
+                    base_url = model_cfg.get("base_url") or None
+        except Exception:
+            pass
+
+        # Resolve runtime credentials for probing
+        try:
+            runtime = _resolve_runtime_agent_kwargs()
+            provider = provider or runtime.get("provider")
+            base_url = base_url or runtime.get("base_url")
+            api_key = runtime.get("api_key")
+        except Exception:
+            pass
+
+        context_length = get_model_context_length(
+            model,
+            base_url=base_url or "",
+            api_key=api_key or "",
+            config_context_length=config_context_length,
+            provider=provider or "",
+        )
+
+        # Format context source hint
+        if config_context_length is not None:
+            ctx_source = "config"
+        elif context_length == DEFAULT_FALLBACK_CONTEXT:
+            ctx_source = "default — set model.context_length in config to override"
+        else:
+            ctx_source = "detected"
+
+        # Format context length for display
+        if context_length >= 1_000_000:
+            ctx_display = f"{context_length / 1_000_000:.1f}M"
+        elif context_length >= 1_000:
+            ctx_display = f"{context_length // 1_000}K"
+        else:
+            ctx_display = str(context_length)
+
+        lines = [
+            f"◆ Model: `{model}`",
+            f"◆ Provider: {provider or 'openrouter'}",
+            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+        ]
+
+        # Show endpoint for local/custom setups
+        if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
+            lines.append(f"◆ Endpoint: {base_url}")
+
+        return "\n".join(lines)
+
     async def _handle_reset_command(self, event: MessageEvent) -> str:
         """Handle /new or /reset command."""
         source = event.source
@@ -2789,12 +2874,22 @@ class GatewayRunner:
             "session_key": session_key,
         })
         
+        # Resolve session config info to surface to the user
+        try:
+            session_info = self._format_session_info()
+        except Exception:
+            session_info = ""
+
         if new_entry:
-            return "✨ Session reset! I've started fresh with no memory of our previous conversation."
+            header = "✨ Session reset! Starting fresh."
         else:
             # No existing session, just create one
             self.session_store.get_or_create_session(source, force_new=True)
-            return "✨ New session started!"
+            header = "✨ New session started!"
+
+        if session_info:
+            return f"{header}\n\n{session_info}"
+        return header
     
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

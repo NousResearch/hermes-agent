@@ -1372,19 +1372,11 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
-    @pytest.mark.parametrize(
-        ("first_content", "second_content", "expected_final"),
-        [
-            ("Part 1 ", "Part 2", "Part 1 Part 2"),
-            ("<think>internal reasoning</think>", "Recovered final answer", "Recovered final answer"),
-        ],
-    )
-    def test_length_finish_reason_requests_continuation(
-        self, agent, first_content, second_content, expected_final
-    ):
+    def test_length_finish_reason_requests_continuation(self, agent):
+        """Normal truncation (partial real content) triggers continuation."""
         self._setup_agent(agent)
-        first = _mock_response(content=first_content, finish_reason="length")
-        second = _mock_response(content=second_content, finish_reason="stop")
+        first = _mock_response(content="Part 1 ", finish_reason="length")
+        second = _mock_response(content="Part 2", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [first, second]
 
         with (
@@ -1396,11 +1388,57 @@ class TestRunConversation:
 
         assert result["completed"] is True
         assert result["api_calls"] == 2
-        assert result["final_response"] == expected_final
+        assert result["final_response"] == "Part 1 Part 2"
 
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+
+    def test_length_thinking_exhausted_skips_continuation(self, agent):
+        """When finish_reason='length' but content is only thinking, skip retries."""
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content="<think>internal reasoning</think>",
+            finish_reason="length",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Should return immediately — no continuation, only 1 API call
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        # Should have a user-friendly response (not None)
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+        assert "/thinkon" in result["final_response"]
+
+    def test_length_empty_content_detected_as_thinking_exhausted(self, agent):
+        """When finish_reason='length' and content is None/empty, detect exhaustion."""
+        self._setup_agent(agent)
+        resp = _mock_response(content=None, finish_reason="length")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        # User-friendly message is returned
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
 
 
 class TestRetryExhaustion:

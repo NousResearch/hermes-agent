@@ -6340,6 +6340,62 @@ class AIAgent:
                     if finish_reason == "length":
                         self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
 
+                        # ── Detect thinking-budget exhaustion ──────────────
+                        # When the model spends ALL output tokens on reasoning
+                        # and has none left for the response, continuation
+                        # retries are pointless.  Detect this early and give a
+                        # targeted error instead of wasting 3 API calls.
+                        _trunc_content = None
+                        if self.api_mode == "chat_completions":
+                            _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
+                            _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
+                        elif self.api_mode == "anthropic_messages":
+                            # Anthropic response.content is a list of blocks
+                            _text_parts = []
+                            for _blk in getattr(response, "content", []):
+                                if getattr(_blk, "type", None) == "text":
+                                    _text_parts.append(getattr(_blk, "text", ""))
+                            _trunc_content = "\n".join(_text_parts) if _text_parts else None
+
+                        _thinking_exhausted = (
+                            _trunc_content is not None
+                            and not self._has_content_after_think_block(_trunc_content)
+                        ) or _trunc_content is None
+
+                        if _thinking_exhausted:
+                            _exhaust_error = (
+                                "Model used all output tokens on reasoning with none left "
+                                "for the response. Try lowering reasoning effort or "
+                                "increasing max_tokens."
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}💭 Reasoning exhausted the output token budget — "
+                                f"no visible response was produced.",
+                                force=True,
+                            )
+                            # Return a user-friendly message as the response so
+                            # CLI (response box) and gateway (chat message) both
+                            # display it naturally instead of a suppressed error.
+                            _exhaust_response = (
+                                "⚠️ **Thinking Budget Exhausted**\n\n"
+                                "The model used all its output tokens on reasoning "
+                                "and had none left for the actual response.\n\n"
+                                "To fix this:\n"
+                                "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
+                                "→ Increase the output token limit: "
+                                "set `model.max_tokens` in config.yaml"
+                            )
+                            self._cleanup_task_resources(effective_task_id)
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": _exhaust_response,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": _exhaust_error,
+                            }
+
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:

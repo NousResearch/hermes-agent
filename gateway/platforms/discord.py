@@ -517,10 +517,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 
-                # Sync slash commands with Discord
+                # Sync slash commands with Discord (guild-specific for instant sync)
                 try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    import discord as _discord
+                    guild_obj = _discord.Object(id=1485870804657766502)
+                    adapter_self._client.tree.copy_global_to(guild=guild_obj)
+                    synced = await adapter_self._client.tree.sync(guild=guild_obj)
+                    logger.warning("[%s] Synced %d slash command(s) to guild %s", adapter_self.name, len(synced), guild_obj.id)
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()

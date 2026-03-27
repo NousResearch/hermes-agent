@@ -3924,12 +3924,13 @@ class GatewayRunner:
             )
 
         # --- cycle mode -------------------------------------------------------
-        cycle = ["off", "new", "all", "verbose"]
+        cycle = ["off", "new", "all", "verbose", "log"]
         descriptions = {
             "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
             "new": "⚙️ Tool progress: **NEW** — shown when tool changes.",
             "all": "⚙️ Tool progress: **ALL** — every tool call shown.",
             "verbose": "⚙️ Tool progress: **VERBOSE** — full args and results.",
+            "log": "⚙️ Tool progress: **LOG** — silent in chat; writing to tool_calls.log.",
         }
 
         raw_progress = user_config.get("display", {}).get("tool_progress", "all")
@@ -4920,7 +4921,13 @@ class GatewayRunner:
             or "all"
         )
         tool_progress_enabled = progress_mode != "off"
-        
+
+        # log mode is separate — it writes to a file instead of the chat
+        log_mode_enabled = progress_mode == "log"
+
+        # Queue for tool-call log file writes (only used when progress_mode == "log")
+        log_queue = queue.Queue() if log_mode_enabled else None
+
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
         last_tool = [None]  # Mutable container for tracking in closure
@@ -4931,7 +4938,17 @@ class GatewayRunner:
             """Callback invoked by agent when a tool is called."""
             if not progress_queue:
                 return
-            
+
+            # "log" mode: write to file without sending chat messages
+            if progress_mode == "log":
+                if log_queue:
+                    import datetime
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    preview_str = f'"{preview}"' if preview else ""
+                    log_line = f"{timestamp}  {tool_name}: {preview_str}".rstrip()
+                    log_queue.put(log_line)
+                return
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
@@ -5066,7 +5083,47 @@ class GatewayRunner:
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
-        
+
+        async def write_tool_log():
+            """Drains log_queue and writes timestamped tool-call lines to tool_calls.log."""
+            if not log_queue:
+                return
+
+            log_dir = _hermes_home / 'logs'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_dir / 'tool_calls.log',
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+            )
+            from agent.redact import RedactingFormatter
+            file_handler.setFormatter(RedactingFormatter('%(message)s'))
+            tool_logger = logging.getLogger("hermes.tool_calls")
+            tool_logger.setLevel(logging.INFO)
+            tool_logger.addHandler(file_handler)
+
+            try:
+                while True:
+                    try:
+                        line = log_queue.get_nowait()
+                        tool_logger.info("%s", line)
+                    except queue.Empty:
+                        await asyncio.sleep(0.3)
+                    except asyncio.CancelledError:
+                        while not log_queue.empty():
+                            try:
+                                line = log_queue.get_nowait()
+                                tool_logger.info("%s", line)
+                            except queue.Empty:
+                                break
+                        return
+                    except Exception as e:
+                        logger.error("write_tool_log error: %s", e)
+                        await asyncio.sleep(1)
+            finally:
+                tool_logger.removeHandler(file_handler)
+                file_handler.close()
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
@@ -5453,6 +5510,11 @@ class GatewayRunner:
         if tool_progress_enabled:
             progress_task = asyncio.create_task(send_progress_messages())
 
+        # Start tool-call log writer if log mode is enabled
+        log_task = None
+        if log_mode_enabled:
+            log_task = asyncio.create_task(write_tool_log())
+
         # Start stream consumer task — polls for consumer creation since it
         # happens inside run_sync (thread pool) after the agent is constructed.
         stream_task = None
@@ -5602,6 +5664,8 @@ class GatewayRunner:
             # Stop progress sender and interrupt monitor
             if progress_task:
                 progress_task.cancel()
+            if log_task:
+                log_task.cancel()
             interrupt_monitor.cancel()
 
             # Wait for stream consumer to finish its final edit
@@ -5621,7 +5685,7 @@ class GatewayRunner:
                 del self._running_agents[session_key]
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, log_task, interrupt_monitor, tracking_task]:
                 if task:
                     try:
                         await task

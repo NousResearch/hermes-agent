@@ -752,11 +752,38 @@ def systemd_status(deep: bool = False, system: bool = False):
 # Launchd (macOS)
 # =============================================================================
 
+def _get_sane_path() -> str:
+    """Build a PATH for the launchd plist that includes the user's current PATH.
+
+    launchd services get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) which
+    typically excludes Homebrew (/opt/homebrew/bin), nvm, cargo, etc.  We snapshot
+    the PATH that was active when the user ran ``hermes gateway start`` so that
+    subprocesses spawned by the gateway (e.g. the WhatsApp Node.js bridge) can
+    find the same binaries the user has in their interactive shell.
+
+    Duplicate and empty entries are stripped and the standard system directories
+    are appended as a fallback so nothing breaks even if the snapshot is odd.
+    """
+    import os
+    current = os.environ.get("PATH", "")
+    # Ensure the standard system dirs are always present
+    system_dirs = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    seen: set[str] = set()
+    parts: list[str] = []
+    for d in current.split(":") + system_dirs:
+        d = d.strip()
+        if d and d not in seen:
+            seen.add(d)
+            parts.append(d)
+    return ":".join(parts)
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    sane_path = _get_sane_path()
     
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -774,6 +801,12 @@ def generate_launchd_plist() -> str:
         <string>run</string>
         <string>--replace</string>
     </array>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{sane_path}</string>
+    </dict>
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>

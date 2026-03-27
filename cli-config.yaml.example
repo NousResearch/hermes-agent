@@ -688,6 +688,12 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # What Enter does when Hermes is already busy in the CLI.
+  #   interrupt: Interrupt the current run and redirect Hermes (default)
+  #   queue:     Queue your message for the next turn
+  # Ctrl+C always interrupts regardless of this setting.
+  busy_input_mode: interrupt
+
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, check_interval=...) from Telegram/Discord/etc.

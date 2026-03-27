@@ -6157,10 +6157,18 @@ class HermesCLI:
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
 
-        # Ensure tirith security scanner is available (downloads if needed)
+        # Ensure tirith security scanner is available (downloads if needed).
+        # Warn the user if tirith is enabled in config but not available,
+        # so they know command security scanning is degraded.
         try:
             from tools.tirith_security import ensure_installed
-            ensure_installed(log_failures=False)
+            tirith_path = ensure_installed(log_failures=False)
+            if tirith_path is None:
+                security_cfg = self.config.get("security", {}) or {}
+                tirith_enabled = security_cfg.get("tirith_enabled", True)
+                if tirith_enabled:
+                    _cprint(f"  {_DIM}⚠ tirith security scanner enabled but not available "
+                            f"— command scanning will use pattern matching only{_RST}")
         except Exception:
             pass  # Non-fatal — fail-open at scan time if unavailable
         

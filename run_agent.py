@@ -486,6 +486,7 @@ class AIAgent:
         # instead of going directly to stdout where patch_stdout's StdoutProxy
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
+        self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
@@ -1525,6 +1526,12 @@ class AIAgent:
                 if actions:
                     summary = " · ".join(dict.fromkeys(actions))
                     self._safe_print(f"  💾 {summary}")
+                    _bg_cb = self.background_review_callback
+                    if _bg_cb:
+                        try:
+                            _bg_cb(f"💾 {summary}")
+                        except Exception:
+                            pass
 
             except Exception as e:
                 logger.debug("Background memory/skill review failed: %s", e)

@@ -9,6 +9,8 @@ to avoid cold-start network latency.
 """
 
 import json
+import os
+import tempfile
 import logging
 import os
 import time
@@ -64,12 +66,29 @@ def _load_disk_cache() -> Dict[str, Any]:
 
 
 def _save_disk_cache(data: Dict[str, Any]) -> None:
-    """Save models.dev data to disk cache."""
+    """Save models.dev data to disk cache atomically."""
     try:
         cache_path = _get_cache_path()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, separators=(",", ":"))
+        # Write atomically to prevent a corrupted cache if the process
+        # is killed mid-write (which would break all model metadata lookups).
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(cache_path.parent),
+            prefix=f".{cache_path.stem}_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, separators=(",", ":"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, cache_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 

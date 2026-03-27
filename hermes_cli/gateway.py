@@ -434,6 +434,23 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
+
+    # Include common user-local binary directories so MCP servers launched
+    # by the systemd service can find tools like uvx, cargo, go, etc.
+    # The shell PATH is available at install time but not in the service unit.
+    home = Path.home()
+    user_local_paths = [
+        str(home / ".local" / "bin"),    # uv, uvx, pip-installed CLIs
+        str(home / ".cargo" / "bin"),    # Rust/cargo tools
+        str(home / "go" / "bin"),        # Go tools
+        str(home / ".npm-global" / "bin"),  # npm global packages
+        "/opt/homebrew/bin",             # macOS Homebrew (Apple Silicon)
+        "/usr/local/homebrew/bin",       # macOS Homebrew (Intel)
+    ]
+    for p in user_local_paths:
+        if p not in path_entries and Path(p).exists():
+            path_entries.append(p)
+
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
     sane_path = ":".join(path_entries)
 

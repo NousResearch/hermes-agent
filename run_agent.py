@@ -5087,7 +5087,7 @@ class AIAgent:
         spinner = None
         if self.quiet_mode and not self.tool_progress_callback:
             face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots')
+            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
             spinner.start()
 
         try:
@@ -5128,7 +5128,7 @@ class AIAgent:
             # Print cute message per tool
             if self.quiet_mode:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
-                print(f"  {cute_msg}")
+                self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
@@ -5313,7 +5313,7 @@ class AIAgent:
                 spinner = None
                 if self.quiet_mode and not self.tool_progress_callback:
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots')
+                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
                 self._delegate_spinner = spinner
                 _delegate_result = None
@@ -5343,7 +5343,7 @@ class AIAgent:
                     preview = _build_tool_preview(function_name, function_args) or function_name
                     if len(preview) > 30:
                         preview = preview[:27] + "..."
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots')
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
                 _spinner_result = None
                 try:
@@ -6026,7 +6026,7 @@ class AIAgent:
                     # Raw KawaiiSpinner only when no streaming consumers
                     # (would conflict with streamed token output)
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type)
+                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._print_fn)
                     thinking_spinner.start()
             
             # Log request details if verbose

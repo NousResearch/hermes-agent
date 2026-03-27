@@ -68,6 +68,65 @@ class TestCmdUpdateBranchFallback:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_checks_out_main_before_pulling_when_branch_not_on_remote(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="fix/stoicneko", verify_ok=False, commit_count="3"
+        )
+
+        cmd_update(mock_args)
+
+        commands = [c.args[0] for c in mock_run.call_args_list]
+
+        checkout_cmds = [
+            i for i, cmd in enumerate(commands) if cmd[-2:] == ["checkout", "main"]
+        ]
+        pull_cmds = [i for i, cmd in enumerate(commands) if "pull" in cmd]
+
+        assert len(checkout_cmds) == 1
+        assert len(pull_cmds) == 1
+        assert checkout_cmds[0] < pull_cmds[0]
+
+    @patch("shutil.which", return_value=None)
+    @patch("hermes_cli.main._restore_stashed_changes")
+    @patch("hermes_cli.main._stash_local_changes_if_needed", return_value="stash123")
+    @patch("subprocess.run")
+    def test_update_restores_stash_when_checkout_fails(
+        self,
+        mock_run,
+        _mock_stash,
+        mock_restore,
+        _mock_which,
+        mock_args,
+        capsys,
+    ):
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="fix/stoicneko\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+            if cmd[-2:] == ["checkout", "main"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        with pytest.raises(SystemExit, match="1"):
+            cmd_update(mock_args)
+
+        mock_restore.assert_called_once_with(
+            ["git"],
+            PROJECT_ROOT,
+            "stash123",
+            prompt_user=False,
+        )
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_uses_current_branch_when_on_remote(
         self, mock_run, _mock_which, mock_args, capsys
     ):

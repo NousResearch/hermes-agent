@@ -2721,7 +2721,8 @@ def cmd_update(args):
             text=True,
             check=True
         )
-        branch = result.stdout.strip()
+        current_branch = result.stdout.strip()
+        branch = current_branch
 
         # Fall back to main if the current branch doesn't exist on the remote
         verify = subprocess.run(
@@ -2751,8 +2752,12 @@ def cmd_update(args):
         auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
         prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
 
-        print("→ Pulling updates...")
         try:
+            if current_branch != branch:
+                print(f"→ Current branch '{current_branch}' is local-only; switching to '{branch}' for update...")
+                subprocess.run(git_cmd + ["checkout", branch], cwd=PROJECT_ROOT, check=True)
+
+            print("→ Pulling updates...")
             subprocess.run(git_cmd + ["pull", "--ff-only", "origin", branch], cwd=PROJECT_ROOT, check=True)
         finally:
             if auto_stash_ref is not None:

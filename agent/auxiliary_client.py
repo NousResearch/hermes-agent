@@ -693,7 +693,13 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     is_oauth = _is_oauth_token(token)
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
-    real_client = build_anthropic_client(token, base_url)
+    try:
+        real_client = build_anthropic_client(token, base_url)
+    except ImportError:
+        # The anthropic_adapter module imports fine but the SDK itself is
+        # missing — build_anthropic_client raises ImportError at call time
+        # when _anthropic_sdk is None.  Treat as unavailable.
+        return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 

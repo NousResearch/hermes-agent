@@ -73,7 +73,7 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = _load_web_config().get("backend", "").lower().strip()
+    configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured in ("parallel", "firecrawl", "tavily"):
         return configured
 

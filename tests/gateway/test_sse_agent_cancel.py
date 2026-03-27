@@ -1,8 +1,9 @@
 """Tests for SSE client disconnect → agent task cancellation.
 
 When a streaming /v1/chat/completions client disconnects mid-stream
-(network drop, browser tab close), the agent task must be cancelled
-so it stops consuming API tokens and memory.
+(network drop, browser tab close), the agent is interrupted via
+agent.interrupt() so it stops making LLM API calls, and the asyncio
+task wrapper is cancelled.
 """
 
 import asyncio
@@ -193,5 +194,87 @@ class TestSSEAgentCancelOnDisconnect:
             # Task was already done — should not be cancelled
             assert agent_task.done()
             assert not agent_task.cancelled()
+
+        asyncio.run(run())
+
+    def test_agent_interrupt_called_on_disconnect(self):
+        """When the client disconnects, agent.interrupt() must be called
+        so the agent thread stops making LLM API calls."""
+        adapter = _make_adapter()
+
+        stream_q = queue.Queue()
+        stream_q.put("hello ")
+
+        agent_done = asyncio.Event()
+
+        async def fake_agent():
+            await agent_done.wait()
+            return {"final_response": "done"}, {}
+
+        # Mock agent with an interrupt method
+        mock_agent = MagicMock()
+        mock_agent.interrupt = MagicMock()
+
+        async def run():
+            from aiohttp import web
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            agent_ref = [mock_agent]
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            call_count = 0
+
+            async def write_side_effect(data):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    raise ConnectionResetError("client disconnected")
+
+            mock_response.write = AsyncMock(side_effect=write_side_effect)
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse",
+                       return_value=mock_response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-int", "gpt-4", 1234567890,
+                    stream_q, agent_task, agent_ref,
+                )
+
+            # agent.interrupt() must have been called
+            mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
+            # Clean up
+            agent_done.set()
+
+        asyncio.run(run())
+
+    def test_agent_ref_none_still_cancels_task(self):
+        """When agent_ref is not provided (None), the task is still cancelled
+        on disconnect — just without the interrupt() call."""
+        adapter = _make_adapter()
+
+        stream_q = queue.Queue()
+
+        async def fake_agent():
+            await asyncio.sleep(999)
+            return {}, {}
+
+        async def run():
+            from aiohttp import web
+
+            agent_task = asyncio.ensure_future(fake_agent())
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            mock_response.write = AsyncMock(side_effect=BrokenPipeError("gone"))
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse",
+                       return_value=mock_response):
+                # No agent_ref passed — should still handle disconnect cleanly
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-noref", "gpt-4", 1234567890,
+                    stream_q, agent_task,
+                )
+
+            assert agent_task.cancelled() or agent_task.done()
 
         asyncio.run(run())

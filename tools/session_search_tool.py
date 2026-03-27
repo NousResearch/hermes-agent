@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional, Union
 
-from agent.auxiliary_client import async_call_llm
+from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
@@ -161,7 +161,15 @@ async def _summarize_session(
                 temperature=0.1,
                 max_tokens=MAX_SUMMARY_TOKENS,
             )
-            return response.choices[0].message.content.strip()
+            content = extract_content_or_reasoning(response)
+            if content:
+                return content
+            # Reasoning-only / empty — let the retry loop handle it
+            logging.warning("Session search LLM returned empty content (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+            return content
         except RuntimeError:
             logging.warning("No auxiliary model available for session summarization")
             return None

@@ -149,13 +149,18 @@ def _extract_attachments(
 
     for part in msg.walk():
         disposition = str(part.get("Content-Disposition", ""))
-        if skip_attachments and ("attachment" in disposition or "inline" in disposition):
+        if skip_attachments and (
+            "attachment" in disposition or "inline" in disposition
+        ):
             continue
         if "attachment" not in disposition and "inline" not in disposition:
             continue
         # Skip text/plain and text/html body parts
         content_type = part.get_content_type()
-        if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
+        if (
+            content_type in ("text/plain", "text/html")
+            and "attachment" not in disposition
+        ):
             continue
 
         filename = part.get_filename()
@@ -172,20 +177,24 @@ def _extract_attachments(
         ext = Path(filename).suffix.lower()
         if ext in _IMAGE_EXTS:
             cached_path = cache_image_from_bytes(payload, ext)
-            attachments.append({
-                "path": cached_path,
-                "filename": filename,
-                "type": "image",
-                "media_type": content_type,
-            })
+            attachments.append(
+                {
+                    "path": cached_path,
+                    "filename": filename,
+                    "type": "image",
+                    "media_type": content_type,
+                }
+            )
         else:
             cached_path = cache_document_from_bytes(payload, filename)
-            attachments.append({
-                "path": cached_path,
-                "filename": filename,
-                "type": "document",
-                "media_type": content_type,
-            })
+            attachments.append(
+                {
+                    "path": cached_path,
+                    "filename": filename,
+                    "type": "document",
+                    "media_type": content_type,
+                }
+            )
 
     return attachments
 
@@ -233,7 +242,10 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in data[0].split():
                     self._seen_uids.add(uid)
             imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            logger.info(
+                "[Email] IMAP connection test passed. %d existing messages skipped.",
+                len(self._seen_uids),
+            )
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
             return False
@@ -312,6 +324,35 @@ class EmailAdapter(BasePlatformAdapter):
 
                 sender_raw = msg.get("From", "")
                 sender_addr = _extract_email_address(sender_raw)
+
+                # Automated email detection (Issue #3453)
+                auto_submitted = msg.get("Auto-Submitted", "").lower()
+                if auto_submitted and auto_submitted != "no":
+                    logger.info(
+                        "[Email] Skipping auto-submitted email from %s", sender_addr
+                    )
+                    continue
+
+                if msg.get("X-Auto-Response-Suppress"):
+                    logger.info(
+                        "[Email] Skipping automated email (X-Auto-Response-Suppress) from %s",
+                        sender_addr,
+                    )
+                    continue
+
+                precedence = msg.get("Precedence", "").lower()
+                if precedence in ("bulk", "junk", "list"):
+                    logger.info(
+                        "[Email] Skipping automated email (Precedence: %s) from %s",
+                        precedence,
+                        sender_addr,
+                    )
+                    continue
+
+                if "noreply" in sender_addr:
+                    logger.info("[Email] Skipping noreply sender: %s", sender_addr)
+                    continue
+
                 sender_name = _decode_header_value(sender_raw)
                 # Remove email from name if present
                 if "<" in sender_name:
@@ -321,19 +362,23 @@ class EmailAdapter(BasePlatformAdapter):
                 message_id = msg.get("Message-ID", "")
                 in_reply_to = msg.get("In-Reply-To", "")
                 body = _extract_text_body(msg)
-                attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
+                attachments = _extract_attachments(
+                    msg, skip_attachments=self._skip_attachments
+                )
 
-                results.append({
-                    "uid": uid,
-                    "sender_addr": sender_addr,
-                    "sender_name": sender_name,
-                    "subject": subject,
-                    "message_id": message_id,
-                    "in_reply_to": in_reply_to,
-                    "body": body,
-                    "attachments": attachments,
-                    "date": msg.get("Date", ""),
-                })
+                results.append(
+                    {
+                        "uid": uid,
+                        "sender_addr": sender_addr,
+                        "sender_name": sender_name,
+                        "subject": subject,
+                        "message_id": message_id,
+                        "in_reply_to": in_reply_to,
+                        "body": body,
+                        "attachments": attachments,
+                        "date": msg.get("Date", ""),
+                    }
+                )
 
             imap.logout()
         except Exception as e:
@@ -451,7 +496,9 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def send_typing(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Email has no typing indicator — no-op."""
 
     async def send_image(

@@ -30,35 +30,48 @@ class TestPlatformEnum(unittest.TestCase):
 
     def test_email_in_platform_enum(self):
         from gateway.config import Platform
+
         self.assertEqual(Platform.EMAIL.value, "email")
 
 
 class TestConfigEnvOverrides(unittest.TestCase):
     """Verify email config is loaded from environment variables."""
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-    }, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        },
+        clear=False,
+    )
     def test_email_config_loaded_from_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
         config = GatewayConfig()
         _apply_env_overrides(config)
         self.assertIn(Platform.EMAIL, config.platforms)
         self.assertTrue(config.platforms[Platform.EMAIL].enabled)
-        self.assertEqual(config.platforms[Platform.EMAIL].extra["address"], "hermes@test.com")
+        self.assertEqual(
+            config.platforms[Platform.EMAIL].extra["address"], "hermes@test.com"
+        )
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-        "EMAIL_HOME_ADDRESS": "user@test.com",
-    }, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_HOME_ADDRESS": "user@test.com",
+        },
+        clear=False,
+    )
     def test_email_home_channel_loaded(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
         config = GatewayConfig()
         _apply_env_overrides(config)
         home = config.platforms[Platform.EMAIL].home_channel
@@ -68,18 +81,24 @@ class TestConfigEnvOverrides(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_email_not_loaded_without_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
         config = GatewayConfig()
         _apply_env_overrides(config)
         self.assertNotIn(Platform.EMAIL, config.platforms)
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_IMAP_HOST": "imap.test.com",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-    }, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        },
+        clear=False,
+    )
     def test_email_in_connected_platforms(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
         config = GatewayConfig()
         _apply_env_overrides(config)
         connected = config.get_connected_platforms()
@@ -89,26 +108,37 @@ class TestConfigEnvOverrides(unittest.TestCase):
 class TestCheckRequirements(unittest.TestCase):
     """Verify check_email_requirements function."""
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "a@b.com",
-        "EMAIL_PASSWORD": "pw",
-        "EMAIL_IMAP_HOST": "imap.b.com",
-        "EMAIL_SMTP_HOST": "smtp.b.com",
-    }, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "a@b.com",
+            "EMAIL_PASSWORD": "pw",
+            "EMAIL_IMAP_HOST": "imap.b.com",
+            "EMAIL_SMTP_HOST": "smtp.b.com",
+        },
+        clear=False,
+    )
     def test_requirements_met(self):
         from gateway.platforms.email import check_email_requirements
+
         self.assertTrue(check_email_requirements())
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "a@b.com",
-    }, clear=True)
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "a@b.com",
+        },
+        clear=True,
+    )
     def test_requirements_not_met(self):
         from gateway.platforms.email import check_email_requirements
+
         self.assertFalse(check_email_requirements())
 
     @patch.dict(os.environ, {}, clear=True)
     def test_requirements_empty_env(self):
         from gateway.platforms.email import check_email_requirements
+
         self.assertFalse(check_email_requirements())
 
 
@@ -117,10 +147,12 @@ class TestHelperFunctions(unittest.TestCase):
 
     def test_decode_header_plain(self):
         from gateway.platforms.email import _decode_header_value
+
         self.assertEqual(_decode_header_value("Hello World"), "Hello World")
 
     def test_decode_header_encoded(self):
         from gateway.platforms.email import _decode_header_value
+
         # RFC 2047 encoded subject
         encoded = "=?utf-8?B?TWVyaGFiYQ==?="  # "Merhaba" in base64
         result = _decode_header_value(encoded)
@@ -128,27 +160,24 @@ class TestHelperFunctions(unittest.TestCase):
 
     def test_extract_email_address_with_name(self):
         from gateway.platforms.email import _extract_email_address
+
         self.assertEqual(
-            _extract_email_address("John Doe <john@example.com>"),
-            "john@example.com"
+            _extract_email_address("John Doe <john@example.com>"), "john@example.com"
         )
 
     def test_extract_email_address_bare(self):
         from gateway.platforms.email import _extract_email_address
-        self.assertEqual(
-            _extract_email_address("john@example.com"),
-            "john@example.com"
-        )
+
+        self.assertEqual(_extract_email_address("john@example.com"), "john@example.com")
 
     def test_extract_email_address_uppercase(self):
         from gateway.platforms.email import _extract_email_address
-        self.assertEqual(
-            _extract_email_address("John@Example.COM"),
-            "john@example.com"
-        )
+
+        self.assertEqual(_extract_email_address("John@Example.COM"), "john@example.com")
 
     def test_strip_html_basic(self):
         from gateway.platforms.email import _strip_html
+
         html = "<p>Hello <b>world</b></p>"
         result = _strip_html(html)
         self.assertIn("Hello", result)
@@ -158,6 +187,7 @@ class TestHelperFunctions(unittest.TestCase):
 
     def test_strip_html_br_tags(self):
         from gateway.platforms.email import _strip_html
+
         html = "Line 1<br>Line 2<br/>Line 3"
         result = _strip_html(html)
         self.assertIn("Line 1", result)
@@ -165,6 +195,7 @@ class TestHelperFunctions(unittest.TestCase):
 
     def test_strip_html_entities(self):
         from gateway.platforms.email import _strip_html
+
         html = "a &amp; b &lt; c &gt; d"
         result = _strip_html(html)
         self.assertIn("a & b", result)
@@ -175,12 +206,14 @@ class TestExtractTextBody(unittest.TestCase):
 
     def test_plain_text_body(self):
         from gateway.platforms.email import _extract_text_body
+
         msg = MIMEText("Hello, this is a test.", "plain", "utf-8")
         result = _extract_text_body(msg)
         self.assertEqual(result, "Hello, this is a test.")
 
     def test_html_body_fallback(self):
         from gateway.platforms.email import _extract_text_body
+
         msg = MIMEText("<p>Hello from HTML</p>", "html", "utf-8")
         result = _extract_text_body(msg)
         self.assertIn("Hello from HTML", result)
@@ -188,6 +221,7 @@ class TestExtractTextBody(unittest.TestCase):
 
     def test_multipart_prefers_plain(self):
         from gateway.platforms.email import _extract_text_body
+
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText("<p>HTML version</p>", "html", "utf-8"))
         msg.attach(MIMEText("Plain version", "plain", "utf-8"))
@@ -196,6 +230,7 @@ class TestExtractTextBody(unittest.TestCase):
 
     def test_multipart_html_only(self):
         from gateway.platforms.email import _extract_text_body
+
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText("<p>Only HTML</p>", "html", "utf-8"))
         result = _extract_text_body(msg)
@@ -203,6 +238,7 @@ class TestExtractTextBody(unittest.TestCase):
 
     def test_empty_body(self):
         from gateway.platforms.email import _extract_text_body
+
         msg = MIMEText("", "plain", "utf-8")
         result = _extract_text_body(msg)
         self.assertEqual(result, "")
@@ -213,6 +249,7 @@ class TestExtractAttachments(unittest.TestCase):
 
     def test_no_attachments(self):
         from gateway.platforms.email import _extract_attachments
+
         msg = MIMEText("No attachments here.", "plain", "utf-8")
         result = _extract_attachments(msg)
         self.assertEqual(result, [])
@@ -220,6 +257,7 @@ class TestExtractAttachments(unittest.TestCase):
     @patch("gateway.platforms.email.cache_document_from_bytes")
     def test_document_attachment(self, mock_cache):
         from gateway.platforms.email import _extract_attachments
+
         mock_cache.return_value = "/tmp/cached_doc.pdf"
 
         msg = MIMEMultipart()
@@ -240,6 +278,7 @@ class TestExtractAttachments(unittest.TestCase):
     @patch("gateway.platforms.email.cache_image_from_bytes")
     def test_image_attachment(self, mock_cache):
         from gateway.platforms.email import _extract_attachments
+
         mock_cache.return_value = "/tmp/cached_img.jpg"
 
         msg = MIMEMultipart()
@@ -264,6 +303,7 @@ class TestAuthorizationMaps(unittest.TestCase):
         """Email adapter creation branch should exist."""
         import gateway.run
         import inspect
+
         source = inspect.getsource(gateway.run.GatewayRunner._create_adapter)
         self.assertIn("Platform.EMAIL", source)
 
@@ -271,6 +311,7 @@ class TestAuthorizationMaps(unittest.TestCase):
         """EMAIL_ALLOWED_USERS should be in platform_env_map."""
         import gateway.run
         import inspect
+
         source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
         self.assertIn("EMAIL_ALLOWED_USERS", source)
 
@@ -278,6 +319,7 @@ class TestAuthorizationMaps(unittest.TestCase):
         """EMAIL_ALLOW_ALL_USERS should be in platform_allow_all_map."""
         import gateway.run
         import inspect
+
         source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
         self.assertIn("EMAIL_ALLOW_ALL_USERS", source)
 
@@ -288,12 +330,14 @@ class TestSendMessageToolRouting(unittest.TestCase):
     def test_email_in_platform_map(self):
         import tools.send_message_tool as smt
         import inspect
+
         source = inspect.getsource(smt._handle_send)
         self.assertIn('"email"', source)
 
     def test_send_to_platform_has_email_branch(self):
         import tools.send_message_tool as smt
         import inspect
+
         source = inspect.getsource(smt._send_to_platform)
         self.assertIn("Platform.EMAIL", source)
 
@@ -304,6 +348,7 @@ class TestCronDelivery(unittest.TestCase):
     def test_email_in_cron_platform_map(self):
         import cron.scheduler
         import inspect
+
         source = inspect.getsource(cron.scheduler)
         self.assertIn('"email"', source)
 
@@ -313,10 +358,12 @@ class TestToolset(unittest.TestCase):
 
     def test_email_toolset_exists(self):
         from toolsets import TOOLSETS
+
         self.assertIn("hermes-email", TOOLSETS)
 
     def test_email_in_gateway_toolset(self):
         from toolsets import TOOLSETS
+
         includes = TOOLSETS["hermes-gateway"]["includes"]
         self.assertIn("hermes-email", includes)
 
@@ -326,6 +373,7 @@ class TestPlatformHints(unittest.TestCase):
 
     def test_email_in_platform_hints(self):
         from agent.prompt_builder import PLATFORM_HINTS
+
         self.assertIn("email", PLATFORM_HINTS)
         self.assertIn("email", PLATFORM_HINTS["email"].lower())
 
@@ -336,6 +384,7 @@ class TestChannelDirectory(unittest.TestCase):
     def test_email_in_session_discovery(self):
         import gateway.channel_directory
         import inspect
+
         source = inspect.getsource(gateway.channel_directory.build_channel_directory)
         self.assertIn('"email"', source)
 
@@ -345,11 +394,13 @@ class TestGatewaySetup(unittest.TestCase):
 
     def test_email_in_platforms_list(self):
         from hermes_cli.gateway import _PLATFORMS
+
         keys = [p["key"] for p in _PLATFORMS]
         self.assertIn("email", keys)
 
     def test_email_has_setup_vars(self):
         from hermes_cli.gateway import _PLATFORMS
+
         email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
         var_names = [v["name"] for v in email_platform["vars"]]
         self.assertIn("EMAIL_ADDRESS", var_names)
@@ -376,22 +427,28 @@ class TestDispatchMessage(unittest.TestCase):
     def _make_adapter(self):
         """Create an EmailAdapter with mocked env vars."""
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_IMAP_PORT": "993",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-            "EMAIL_SMTP_PORT": "587",
-            "EMAIL_POLL_INTERVAL": "15",
-        }):
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_IMAP_PORT": "993",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+                "EMAIL_SMTP_PORT": "587",
+                "EMAIL_POLL_INTERVAL": "15",
+            },
+        ):
             from gateway.platforms.email import EmailAdapter
+
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_self_message_filtered(self):
         """Messages from the agent's own address should be skipped."""
         import asyncio
+
         adapter = self._make_adapter()
         adapter._message_handler = MagicMock()
 
@@ -413,6 +470,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_subject_included_in_text(self):
         """Subject should be prepended to body for non-reply emails."""
         import asyncio
+
         adapter = self._make_adapter()
         captured_events = []
 
@@ -449,6 +507,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_reply_subject_not_duplicated(self):
         """Re: subjects should not be prepended to body."""
         import asyncio
+
         adapter = self._make_adapter()
         captured_events = []
 
@@ -477,6 +536,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_empty_body_handled(self):
         """Email with no body should dispatch '(empty email)'."""
         import asyncio
+
         adapter = self._make_adapter()
         captured_events = []
 
@@ -505,6 +565,7 @@ class TestDispatchMessage(unittest.TestCase):
         """Email with image attachment should set message type to PHOTO."""
         import asyncio
         from gateway.platforms.base import MessageType
+
         adapter = self._make_adapter()
         captured_events = []
 
@@ -521,7 +582,14 @@ class TestDispatchMessage(unittest.TestCase):
             "message_id": "<msg5@test.com>",
             "in_reply_to": "",
             "body": "Check this photo",
-            "attachments": [{"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"}],
+            "attachments": [
+                {
+                    "path": "/tmp/img.jpg",
+                    "filename": "img.jpg",
+                    "type": "image",
+                    "media_type": "image/jpeg",
+                }
+            ],
             "date": "",
         }
 
@@ -533,6 +601,7 @@ class TestDispatchMessage(unittest.TestCase):
     def test_source_built_correctly(self):
         """Session source should have correct chat_id and user info."""
         import asyncio
+
         adapter = self._make_adapter()
         captured_events = []
 
@@ -566,19 +635,25 @@ class TestThreadContext(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-        }):
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            },
+        ):
             from gateway.platforms.email import EmailAdapter
+
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_thread_context_stored_after_dispatch(self):
         """After dispatching a message, thread context should be stored."""
         import asyncio
+
         adapter = self._make_adapter()
 
         async def noop_handle(event):
@@ -661,28 +736,32 @@ class TestSendMethods(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-        }):
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            },
+        ):
             from gateway.platforms.email import EmailAdapter
+
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_send_calls_smtp(self):
         """send() should use SMTP to deliver email."""
         import asyncio
+
         adapter = self._make_adapter()
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            result = asyncio.run(
-                adapter.send("user@test.com", "Hello from Hermes!")
-            )
+            result = asyncio.run(adapter.send("user@test.com", "Hello from Hermes!"))
 
             self.assertTrue(result.success)
             mock_server.starttls.assert_called_once()
@@ -693,14 +772,13 @@ class TestSendMethods(unittest.TestCase):
     def test_send_failure_returns_error(self):
         """SMTP failure should return SendResult with error."""
         import asyncio
+
         adapter = self._make_adapter()
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_smtp.side_effect = Exception("Connection refused")
 
-            result = asyncio.run(
-                adapter.send("user@test.com", "Hello")
-            )
+            result = asyncio.run(adapter.send("user@test.com", "Hello"))
 
             self.assertFalse(result.success)
             self.assertIn("Connection refused", result.error)
@@ -709,6 +787,7 @@ class TestSendMethods(unittest.TestCase):
         """send_image should include image URL in email body."""
         import asyncio
         from unittest.mock import AsyncMock
+
         adapter = self._make_adapter()
 
         adapter.send = AsyncMock(return_value=SendResult(success=True))
@@ -726,6 +805,7 @@ class TestSendMethods(unittest.TestCase):
         """send_document should send email with file attachment."""
         import asyncio
         import tempfile
+
         adapter = self._make_adapter()
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
@@ -747,8 +827,7 @@ class TestSendMethods(unittest.TestCase):
                 # Should be multipart with attachment
                 parts = list(sent_msg.walk())
                 has_attachment = any(
-                    "attachment" in str(p.get("Content-Disposition", ""))
-                    for p in parts
+                    "attachment" in str(p.get("Content-Disposition", "")) for p in parts
                 )
                 self.assertTrue(has_attachment)
         finally:
@@ -757,6 +836,7 @@ class TestSendMethods(unittest.TestCase):
     def test_send_typing_is_noop(self):
         """send_typing should do nothing for email."""
         import asyncio
+
         adapter = self._make_adapter()
         # Should not raise
         asyncio.run(adapter.send_typing("user@test.com"))
@@ -764,12 +844,14 @@ class TestSendMethods(unittest.TestCase):
     def test_get_chat_info(self):
         """get_chat_info should return email address as chat info."""
         import asyncio
-        adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Test", "message_id": "<m@t>"}
 
-        info = asyncio.run(
-            adapter.get_chat_info("user@test.com")
-        )
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Test",
+            "message_id": "<m@t>",
+        }
+
+        info = asyncio.run(adapter.get_chat_info("user@test.com"))
 
         self.assertEqual(info["name"], "user@test.com")
         self.assertEqual(info["type"], "dm")
@@ -781,26 +863,34 @@ class TestConnectDisconnect(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-        }):
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            },
+        ):
             from gateway.platforms.email import EmailAdapter
+
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_connect_success(self):
         """Successful IMAP + SMTP connection returns True."""
         import asyncio
+
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
         mock_imap.uid.return_value = ("OK", [b"1 2 3"])
 
-        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
-             patch("smtplib.SMTP") as mock_smtp:
+        with (
+            patch("imaplib.IMAP4_SSL", return_value=mock_imap),
+            patch("smtplib.SMTP") as mock_smtp,
+        ):
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
@@ -818,6 +908,7 @@ class TestConnectDisconnect(unittest.TestCase):
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
         import asyncio
+
         adapter = self._make_adapter()
 
         with patch("imaplib.IMAP4_SSL", side_effect=Exception("IMAP down")):
@@ -828,19 +919,23 @@ class TestConnectDisconnect(unittest.TestCase):
     def test_connect_smtp_failure(self):
         """SMTP connection failure returns False."""
         import asyncio
+
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
         mock_imap.uid.return_value = ("OK", [b""])
 
-        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
-             patch("smtplib.SMTP", side_effect=Exception("SMTP down")):
+        with (
+            patch("imaplib.IMAP4_SSL", return_value=mock_imap),
+            patch("smtplib.SMTP", side_effect=Exception("SMTP down")),
+        ):
             result = asyncio.run(adapter.connect())
             self.assertFalse(result)
 
     def test_disconnect_cancels_poll(self):
         """disconnect() should cancel the polling task."""
         import asyncio
+
         adapter = self._make_adapter()
         adapter._running = True
 
@@ -859,13 +954,18 @@ class TestFetchNewMessages(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-        }):
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            },
+        ):
             from gateway.platforms.email import EmailAdapter
+
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -952,20 +1052,26 @@ class TestPollLoop(unittest.TestCase):
 
     def _make_adapter(self):
         from gateway.config import PlatformConfig
-        with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com",
-            "EMAIL_PASSWORD": "secret",
-            "EMAIL_IMAP_HOST": "imap.test.com",
-            "EMAIL_SMTP_HOST": "smtp.test.com",
-            "EMAIL_POLL_INTERVAL": "1",
-        }):
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+                "EMAIL_POLL_INTERVAL": "1",
+            },
+        ):
             from gateway.platforms.email import EmailAdapter
+
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def test_check_inbox_dispatches_messages(self):
         """_check_inbox should fetch and dispatch new messages."""
         import asyncio
+
         adapter = self._make_adapter()
         dispatched = []
 
@@ -997,15 +1103,120 @@ class TestPollLoop(unittest.TestCase):
         self.assertEqual(dispatched[0]["subject"], "Inbox Test")
 
 
+class TestEmailFilters(unittest.TestCase):
+    """Test automated email filtering logic."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "hermes@test.com",
+                "EMAIL_PASSWORD": "secret",
+                "EMAIL_IMAP_HOST": "imap.test.com",
+                "EMAIL_SMTP_HOST": "smtp.test.com",
+            },
+        ):
+            from gateway.platforms.email import EmailAdapter
+
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_noreply_sender_filtered(self):
+        """Emails from noreply@ addresses should be filtered."""
+        adapter = self._make_adapter()
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "noreply@example.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg1@test.com>"
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = lambda cmd, *args: (
+            ("OK", [b"1"])
+            if cmd == "search"
+            else ("OK", [(b"1", raw_email.as_bytes())])
+            if cmd == "fetch"
+            else ("NO", [])
+        )
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+        self.assertEqual(len(results), 0)
+
+    def test_auto_submitted_header_filtered(self):
+        """Emails with Auto-Submitted header should be filtered."""
+        adapter = self._make_adapter()
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@example.com"
+        raw_email["Auto-Submitted"] = "auto-generated"
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = lambda cmd, *args: (
+            ("OK", [b"2"])
+            if cmd == "search"
+            else ("OK", [(b"2", raw_email.as_bytes())])
+            if cmd == "fetch"
+            else ("NO", [])
+        )
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+        self.assertEqual(len(results), 0)
+
+    def test_x_auto_response_suppress_header_filtered(self):
+        """Emails with X-Auto-Response-Suppress header should be filtered."""
+        adapter = self._make_adapter()
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@example.com"
+        raw_email["X-Auto-Response-Suppress"] = "All"
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = lambda cmd, *args: (
+            ("OK", [b"3"])
+            if cmd == "search"
+            else ("OK", [(b"3", raw_email.as_bytes())])
+            if cmd == "fetch"
+            else ("NO", [])
+        )
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+        self.assertEqual(len(results), 0)
+
+    def test_precedence_bulk_header_filtered(self):
+        """Emails with Precedence: bulk header should be filtered."""
+        adapter = self._make_adapter()
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@example.com"
+        raw_email["Precedence"] = "bulk"
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = lambda cmd, *args: (
+            ("OK", [b"4"])
+            if cmd == "search"
+            else ("OK", [(b"4", raw_email.as_bytes())])
+            if cmd == "fetch"
+            else ("NO", [])
+        )
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+        self.assertEqual(len(results), 0)
+
+
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-        "EMAIL_SMTP_PORT": "587",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+        },
+    )
     def test_send_email_tool_success(self):
         """_send_email should use verified STARTTLS when sending."""
         import asyncio
@@ -1017,7 +1228,11 @@ class TestSendEmailStandalone(unittest.TestCase):
             mock_smtp.return_value = mock_server
 
             result = asyncio.run(
-                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.test.com"}, "user@test.com", "Hello")
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.test.com"},
+                    "user@test.com",
+                    "Hello",
+                )
             )
 
             self.assertTrue(result["success"])
@@ -1025,11 +1240,14 @@ class TestSendEmailStandalone(unittest.TestCase):
             _, kwargs = mock_server.starttls.call_args
             self.assertIsInstance(kwargs["context"], ssl.SSLContext)
 
-    @patch.dict(os.environ, {
-        "EMAIL_ADDRESS": "hermes@test.com",
-        "EMAIL_PASSWORD": "secret",
-        "EMAIL_SMTP_HOST": "smtp.test.com",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        },
+    )
     def test_send_email_tool_failure(self):
         """SMTP failure should return error dict."""
         import asyncio
@@ -1037,7 +1255,11 @@ class TestSendEmailStandalone(unittest.TestCase):
 
         with patch("smtplib.SMTP", side_effect=Exception("SMTP error")):
             result = asyncio.run(
-                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.test.com"}, "user@test.com", "Hello")
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.test.com"},
+                    "user@test.com",
+                    "Hello",
+                )
             )
 
             self.assertIn("error", result)
@@ -1049,9 +1271,7 @@ class TestSendEmailStandalone(unittest.TestCase):
         import asyncio
         from tools.send_message_tool import _send_email
 
-        result = asyncio.run(
-            _send_email({}, "user@test.com", "Hello")
-        )
+        result = asyncio.run(_send_email({}, "user@test.com", "Hello"))
 
         self.assertIn("error", result)
         self.assertIn("not configured", result["error"])

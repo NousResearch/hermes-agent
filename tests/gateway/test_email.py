@@ -1057,5 +1057,186 @@ class TestSendEmailStandalone(unittest.TestCase):
         self.assertIn("not configured", result["error"])
 
 
+class TestIsAutomatedSender(unittest.TestCase):
+    """Unit tests for the _is_automated_sender() helper."""
+
+    def _check(self, addr, headers=None):
+        from gateway.platforms.email import _is_automated_sender
+        return _is_automated_sender(addr, headers or {})
+
+    # ── Address-based detection ──────────────────────────────────────────────
+
+    def test_noreply_exact(self):
+        self.assertTrue(self._check("noreply@example.com"))
+
+    def test_no_reply_hyphen(self):
+        self.assertTrue(self._check("no-reply@service.io"))
+
+    def test_no_reply_underscore(self):
+        self.assertTrue(self._check("no_reply@service.io"))
+
+    def test_donotreply(self):
+        self.assertTrue(self._check("donotreply@company.com"))
+
+    def test_mailer_daemon(self):
+        self.assertTrue(self._check("mailer-daemon@mailhost.net"))
+
+    def test_postmaster(self):
+        self.assertTrue(self._check("postmaster@example.org"))
+
+    def test_bounce_exact(self):
+        self.assertTrue(self._check("bounce@mail.example.com"))
+
+    def test_bounce_subaddress(self):
+        """bounce+hash123@ pattern used by many ESPs."""
+        self.assertTrue(self._check("bounce+abc123@em.example.com"))
+
+    def test_regular_user_not_filtered(self):
+        self.assertFalse(self._check("alice@example.com"))
+
+    def test_admin_not_filtered(self):
+        self.assertFalse(self._check("admin@example.com"))
+
+    # ── Header-based detection ───────────────────────────────────────────────
+
+    def test_precedence_bulk(self):
+        self.assertTrue(self._check("news@example.com", {"precedence": "bulk"}))
+
+    def test_precedence_list(self):
+        self.assertTrue(self._check("list@example.com", {"precedence": "list"}))
+
+    def test_precedence_junk(self):
+        self.assertTrue(self._check("junk@example.com", {"precedence": "junk"}))
+
+    def test_precedence_normal_not_filtered(self):
+        self.assertFalse(self._check("user@example.com", {"precedence": "normal"}))
+
+    def test_auto_submitted_auto_generated(self):
+        self.assertTrue(self._check(
+            "alerts@system.com",
+            {"auto_submitted": "auto-generated"},
+        ))
+
+    def test_auto_submitted_auto_replied(self):
+        self.assertTrue(self._check(
+            "vacation@example.com",
+            {"auto_submitted": "auto-replied"},
+        ))
+
+    def test_auto_submitted_no_passes(self):
+        """auto-submitted: no means a real human wrote it."""
+        self.assertFalse(self._check(
+            "user@example.com",
+            {"auto_submitted": "no"},
+        ))
+
+    def test_list_unsubscribe_present(self):
+        self.assertTrue(self._check(
+            "newsletter@company.com",
+            {"list_unsubscribe": "<mailto:unsub@company.com>"},
+        ))
+
+    def test_x_auto_response_suppress(self):
+        """Exchange / O365 suppress header should block auto-reply."""
+        self.assertTrue(self._check(
+            "alerts@corp.com",
+            {"x_auto_response_suppress": "All"},
+        ))
+
+    def test_empty_headers_regular_user(self):
+        self.assertFalse(self._check("bob@example.com", {
+            "precedence": "",
+            "auto_submitted": "",
+            "list_unsubscribe": "",
+            "x_auto_response_suppress": "",
+        }))
+
+
+class TestDispatchAutomatedFiltering(unittest.TestCase):
+    """Integration tests: _dispatch_message() must skip automated senders."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def _msg(self, sender, **extra_headers):
+        base = {
+            "uid": b"99",
+            "sender_addr": sender,
+            "sender_name": "Bot",
+            "subject": "Test",
+            "message_id": "<bot@test.com>",
+            "in_reply_to": "",
+            "body": "automated content",
+            "attachments": [],
+            "date": "",
+            "precedence": "",
+            "auto_submitted": "",
+            "list_unsubscribe": "",
+            "x_auto_response_suppress": "",
+        }
+        base.update(extra_headers)
+        return base
+
+    def test_noreply_address_not_dispatched(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        asyncio.run(adapter._dispatch_message(self._msg("noreply@service.com")))
+        adapter.handle_message.assert_not_called()
+
+    def test_precedence_bulk_not_dispatched(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        asyncio.run(adapter._dispatch_message(
+            self._msg("news@example.com", precedence="bulk")
+        ))
+        adapter.handle_message.assert_not_called()
+
+    def test_auto_submitted_not_dispatched(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        asyncio.run(adapter._dispatch_message(
+            self._msg("alerts@system.com", auto_submitted="auto-generated")
+        ))
+        adapter.handle_message.assert_not_called()
+
+    def test_list_unsubscribe_not_dispatched(self):
+        import asyncio
+        adapter = self._make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        asyncio.run(adapter._dispatch_message(
+            self._msg("news@company.com", list_unsubscribe="<mailto:unsub@company.com>")
+        ))
+        adapter.handle_message.assert_not_called()
+
+    def test_regular_sender_still_dispatched(self):
+        import asyncio
+        adapter = self._make_adapter()
+        captured = []
+
+        async def capture(event):
+            captured.append(event)
+
+        adapter.handle_message = capture
+
+        asyncio.run(adapter._dispatch_message(self._msg("alice@example.com")))
+        self.assertEqual(len(captured), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,6 +51,47 @@ MAX_MESSAGE_LENGTH = 50_000
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+# Local-part patterns that indicate automated/noreply senders.
+# Checked as exact match or as the base before a '+' subaddress.
+_NOREPLY_LOCAL_PARTS = frozenset({
+    "noreply", "no-reply", "no_reply",
+    "donotreply", "do-not-reply", "do_not_reply",
+    "mailer-daemon", "mailer_daemon",
+    "postmaster", "bounce", "bounces", "daemon",
+})
+
+
+def _is_automated_sender(sender_addr: str, headers: Dict[str, str]) -> bool:
+    """Return True if this email is from an automated/noreply sender.
+
+    Checks both the sender address local-part and common RFC headers used by
+    mailing lists, bulk mailers, and auto-responders.
+    """
+    local = sender_addr.lower().split("@")[0] if "@" in sender_addr else sender_addr.lower()
+    # Strip subaddress (e.g. bounce+hash123 → bounce)
+    base_local = local.split("+")[0]
+    if base_local in _NOREPLY_LOCAL_PARTS or local in _NOREPLY_LOCAL_PARTS:
+        return True
+
+    # Precedence: bulk / list / junk  (RFC 2076)
+    if headers.get("precedence", "").lower().strip() in ("bulk", "list", "junk"):
+        return True
+
+    # Auto-Submitted: anything other than "no" means automated  (RFC 3834)
+    auto_submitted = headers.get("auto_submitted", "").lower().strip()
+    if auto_submitted and auto_submitted != "no":
+        return True
+
+    # List-Unsubscribe presence means mailing-list / bulk mail  (RFC 2369)
+    if headers.get("list_unsubscribe", "").strip():
+        return True
+
+    # X-Auto-Response-Suppress is set by Exchange/O365 to block auto-replies
+    if headers.get("x_auto_response_suppress", "").strip():
+        return True
+
+    return False
+
 
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
@@ -334,6 +375,11 @@ class EmailAdapter(BasePlatformAdapter):
                     "body": body,
                     "attachments": attachments,
                     "date": msg.get("Date", ""),
+                    # Automation-detection headers
+                    "precedence": msg.get("Precedence", ""),
+                    "auto_submitted": msg.get("Auto-Submitted", ""),
+                    "list_unsubscribe": msg.get("List-Unsubscribe", ""),
+                    "x_auto_response_suppress": msg.get("X-Auto-Response-Suppress", ""),
                 })
 
             imap.logout()
@@ -347,6 +393,17 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Skip self-messages
         if sender_addr == self._address.lower():
+            return
+
+        # Skip automated senders (noreply addresses, bulk mail, auto-responders)
+        automation_headers = {
+            "precedence": msg_data.get("precedence", ""),
+            "auto_submitted": msg_data.get("auto_submitted", ""),
+            "list_unsubscribe": msg_data.get("list_unsubscribe", ""),
+            "x_auto_response_suppress": msg_data.get("x_auto_response_suppress", ""),
+        }
+        if _is_automated_sender(sender_addr, automation_headers):
+            logger.info("[Email] Skipping automated sender: %s", sender_addr)
             return
 
         subject = msg_data["subject"]

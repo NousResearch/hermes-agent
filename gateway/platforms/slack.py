@@ -819,33 +819,65 @@ class SlackAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False) -> str:
-        """Download a Slack file using the bot token for auth."""
+        """Download a Slack file using the bot token for auth, with retry."""
+        import asyncio
         import httpx
 
         bot_token = self.config.token
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {bot_token}"},
-            )
-            response.raise_for_status()
+        last_exc = None
 
-        if audio:
-            from gateway.platforms.base import cache_audio_from_bytes
-            return cache_audio_from_bytes(response.content, ext)
-        else:
-            from gateway.platforms.base import cache_image_from_bytes
-            return cache_image_from_bytes(response.content, ext)
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {bot_token}"},
+                    )
+                    response.raise_for_status()
+
+                    if audio:
+                        from gateway.platforms.base import cache_audio_from_bytes
+                        return cache_audio_from_bytes(response.content, ext)
+                    else:
+                        from gateway.platforms.base import cache_image_from_bytes
+                        return cache_image_from_bytes(response.content, ext)
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                    last_exc = exc
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                        raise
+                    if attempt < 2:
+                        logger.debug("Slack file download retry %d/2 for %s: %s",
+                                     attempt + 1, url[:80], exc)
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise
+        raise last_exc
 
     async def _download_slack_file_bytes(self, url: str) -> bytes:
-        """Download a Slack file and return raw bytes."""
+        """Download a Slack file and return raw bytes, with retry."""
+        import asyncio
         import httpx
 
         bot_token = self.config.token
+        last_exc = None
+
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {bot_token}"},
-            )
-            response.raise_for_status()
-        return response.content
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {bot_token}"},
+                    )
+                    response.raise_for_status()
+                    return response.content
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                    last_exc = exc
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                        raise
+                    if attempt < 2:
+                        logger.debug("Slack file download retry %d/2 for %s: %s",
+                                     attempt + 1, url[:80], exc)
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise
+        raise last_exc

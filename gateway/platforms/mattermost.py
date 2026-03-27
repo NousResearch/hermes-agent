@@ -407,18 +407,38 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
+        import asyncio
         import aiohttp
-        try:
-            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status >= 400:
-                    # Fall back to sending the URL as text.
-                    return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
-                file_data = await resp.read()
-                ct = resp.content_type or "application/octet-stream"
-                # Derive filename from URL.
-                fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
-        except Exception as exc:
-            logger.warning("Mattermost: failed to download %s: %s", url, exc)
+
+        last_exc = None
+        file_data = None
+        ct = "application/octet-stream"
+        fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
+
+        for attempt in range(3):
+            try:
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status >= 500 or resp.status == 429:
+                        if attempt < 2:
+                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                                         attempt + 1, url[:80], resp.status)
+                            await asyncio.sleep(1.5 * (attempt + 1))
+                            continue
+                    if resp.status >= 400:
+                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                    file_data = await resp.read()
+                    ct = resp.content_type or "application/octet-stream"
+                    break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
+                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+
+        if file_data is None:
+            logger.warning("Mattermost: download returned no data for %s", url)
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         file_id = await self._upload_file(chat_id, file_data, fname, ct)

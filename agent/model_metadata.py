@@ -115,23 +115,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
-    "Qwen/Qwen3-235B-A22B-Thinking-2507": 131072,
-    "Qwen/Qwen3-Coder-480B-A35B-Instruct": 131072,
-    "Qwen/Qwen3-Coder-Next": 131072,
-    "Qwen/Qwen3-Next-80B-A3B-Instruct": 131072,
-    "Qwen/Qwen3-Next-80B-A3B-Thinking": 131072,
-    "deepseek-ai/DeepSeek-R1-0528": 65536,
+    "Qwen/Qwen3.5-35B-A3B": 131072,
     "deepseek-ai/DeepSeek-V3.2": 65536,
-    "moonshotai/Kimi-K2-Instruct": 262144,
-    "moonshotai/Kimi-K2-Instruct-0905": 262144,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
     "MiniMaxAI/MiniMax-M2.5": 204800,
-    "MiniMaxAI/MiniMax-M2.1": 204800,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "zai-org/GLM-5": 202752,
-    "zai-org/GLM-4.7": 202752,
-    "zai-org/GLM-4.7-Flash": 202752,
 }
 
 _CONTEXT_LENGTH_KEYS = (

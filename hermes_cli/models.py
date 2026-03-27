@@ -217,27 +217,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3.5-flash",
         "qwen-vl-max",
     ],
-    # Curated model list for Hugging Face Inference Providers
-    # sourced from https://models.dev (huggingface provider)
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507",
-        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        "Qwen/Qwen3-Coder-Next",
-        "Qwen/Qwen3-Next-80B-A3B-Instruct",
-        "Qwen/Qwen3-Next-80B-A3B-Thinking",
-        "deepseek-ai/DeepSeek-R1-0528",
+        "Qwen/Qwen3.5-35B-A3B",
         "deepseek-ai/DeepSeek-V3.2",
-        "moonshotai/Kimi-K2-Instruct",
-        "moonshotai/Kimi-K2-Instruct-0905",
         "moonshotai/Kimi-K2.5",
-        "moonshotai/Kimi-K2-Thinking",
         "MiniMaxAI/MiniMax-M2.5",
-        "MiniMaxAI/MiniMax-M2.1",
-        "XiaomiMiMo/MiMo-V2-Flash",
         "zai-org/GLM-5",
-        "zai-org/GLM-4.7",
-        "zai-org/GLM-4.7-Flash",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "moonshotai/Kimi-K2-Thinking",
     ],
 }
 

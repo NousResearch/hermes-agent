@@ -1504,26 +1504,17 @@ _PROVIDER_MODELS = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
-    # Curated model list sourced from https://models.dev (huggingface provider)
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
+    # Format: HF model ID → OpenRouter equivalent noted in comment
     "huggingface": [
-        "Qwen/Qwen3.5-397B-A17B",
-        "Qwen/Qwen3-235B-A22B-Thinking-2507",
-        "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-        "Qwen/Qwen3-Coder-Next",
-        "Qwen/Qwen3-Next-80B-A3B-Instruct",
-        "Qwen/Qwen3-Next-80B-A3B-Thinking",
-        "deepseek-ai/DeepSeek-R1-0528",
-        "deepseek-ai/DeepSeek-V3.2",
-        "moonshotai/Kimi-K2-Instruct",
-        "moonshotai/Kimi-K2-Instruct-0905",
-        "moonshotai/Kimi-K2.5",
-        "moonshotai/Kimi-K2-Thinking",
-        "MiniMaxAI/MiniMax-M2.5",
-        "MiniMaxAI/MiniMax-M2.1",
-        "XiaomiMiMo/MiMo-V2-Flash",
-        "zai-org/GLM-5",
-        "zai-org/GLM-4.7",
-        "zai-org/GLM-4.7-Flash",
+        "Qwen/Qwen3.5-397B-A17B",                  # ↔ qwen/qwen3.5-plus
+        "Qwen/Qwen3.5-35B-A3B",                     # ↔ qwen/qwen3.5-35b-a3b
+        "deepseek-ai/DeepSeek-V3.2",                # ↔ deepseek/deepseek-chat
+        "moonshotai/Kimi-K2.5",                      # ↔ moonshotai/kimi-k2.5
+        "MiniMaxAI/MiniMax-M2.5",                    # ↔ minimax/minimax-m2.5
+        "zai-org/GLM-5",                             # ↔ z-ai/glm-5
+        "XiaomiMiMo/MiMo-V2-Flash",                 # ↔ xiaomi/mimo-v2-pro
+        "moonshotai/Kimi-K2-Thinking",               # ↔ moonshotai/kimi-k2-thinking
     ],
 }
 
@@ -2054,19 +2045,25 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection — try live /models endpoint first, fall back to defaults
-    from hermes_cli.models import fetch_api_models
-    api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-    live_models = fetch_api_models(api_key_for_probe, effective_base)
+    # Model selection — try live /models endpoint first, fall back to defaults.
+    # Providers with large live catalogs (100+ models) use a curated list instead
+    # so users see familiar model names rather than an overwhelming dump.
+    curated = _PROVIDER_MODELS.get(provider_id, [])
+    if curated and len(curated) >= 8:
+        # Curated list is substantial — use it directly, skip live probe
+        live_models = None
+    else:
+        from hermes_cli.models import fetch_api_models
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
 
     if live_models:
         model_list = live_models
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        model_list = curated
         if model_list:
-            print("  ⚠ Could not auto-detect models from API — showing defaults.")
-            print("    Use \"Enter custom model name\" if you don't see your model.")
+            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
         # else: no defaults either, will fall through to raw input
 
     if model_list:

@@ -668,16 +668,17 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
 
 
 
-def _find_agent_browser() -> str:
+def _find_agent_browser() -> List[str]:
     """
-    Find the agent-browser CLI executable.
-    
+    Find the agent-browser CLI executable argv.
+
     Checks in order: current PATH, Homebrew/common bin dirs, Hermes-managed
     node, local node_modules/.bin/, npx fallback.
-    
+
     Returns:
-        Path to agent-browser executable
-        
+        Command argv prefix suitable for subprocess.Popen, e.g.
+        ["/opt/homebrew/bin/agent-browser"] or ["/opt/homebrew/bin/npx", "agent-browser"]
+
     Raises:
         FileNotFoundError: If agent-browser is not installed
     """
@@ -685,7 +686,7 @@ def _find_agent_browser() -> str:
     # Check if it's in PATH (global install)
     which_result = shutil.which("agent-browser")
     if which_result:
-        return which_result
+        return [which_result]
 
     # Build an extended search PATH including Homebrew and Hermes-managed dirs.
     # This covers macOS where the process PATH may not include Homebrew paths.
@@ -700,30 +701,101 @@ def _find_agent_browser() -> str:
     if os.path.isdir(hermes_node_bin):
         extra_dirs.append(hermes_node_bin)
 
-    if extra_dirs:
-        extended_path = os.pathsep.join(extra_dirs)
+    extended_path = os.pathsep.join(extra_dirs) if extra_dirs else None
+    if extended_path:
         which_result = shutil.which("agent-browser", path=extended_path)
         if which_result:
-            return which_result
+            return [which_result]
 
     # Check local node_modules/.bin/ (npm install in repo root)
     repo_root = Path(__file__).parent.parent
     local_bin = repo_root / "node_modules" / ".bin" / "agent-browser"
     if local_bin.exists():
-        return str(local_bin)
-    
-    # Check common npx locations (also search extended dirs)
+        return [str(local_bin)]
+
+    # Last resort: npx if available. Return explicit npx path instead of the
+    # shell-style string "npx agent-browser" so subprocess doesn't depend on a
+    # brittle PATH lookup for "npx"/"node".
     npx_path = shutil.which("npx")
-    if not npx_path and extra_dirs:
-        npx_path = shutil.which("npx", path=os.pathsep.join(extra_dirs))
+    if not npx_path and extended_path:
+        npx_path = shutil.which("npx", path=extended_path)
     if npx_path:
-        return "npx agent-browser"
-    
+        return [npx_path, "agent-browser"]
+
     raise FileNotFoundError(
         "agent-browser CLI not found. Install it with: npm install -g agent-browser\n"
         "Or run 'npm install' in the repo root to install locally.\n"
         "Or ensure npx is available in your PATH."
     )
+
+
+def _which_in_path(executable: str, path_value: str) -> Optional[str]:
+    """Resolve an executable against a specific PATH value."""
+    if not executable:
+        return None
+    try:
+        return shutil.which(executable, path=path_value)
+    except Exception:
+        return None
+
+
+def _build_browser_env() -> Dict[str, str]:
+    """Build subprocess env for agent-browser with a hardened PATH.
+
+    The browser tool often runs under launchd/systemd-like environments with a
+    minimal PATH. On macOS Homebrew installs, `node`/`npx` may live only in
+    /opt/homebrew/bin or versioned opt dirs. We prepend those explicitly and, if
+    needed, pin NODE/NPX absolute paths so child scripts don't rely on ambient
+    lookup.
+    """
+    browser_env = {**os.environ}
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_node_bin = str(hermes_home / "node" / "bin")
+
+    existing_path = browser_env.get("PATH", "")
+    path_parts = [p for p in existing_path.split(":") if p]
+    candidate_dirs = (
+        [hermes_node_bin]
+        + _discover_homebrew_node_dirs()
+        + [p for p in _SANE_PATH.split(":") if p]
+    )
+
+    for part in reversed(candidate_dirs):
+        if os.path.isdir(part) and part not in path_parts:
+            path_parts.insert(0, part)
+
+    browser_env["PATH"] = ":".join(path_parts)
+
+    resolved_node = _which_in_path("node", browser_env["PATH"])
+    if resolved_node:
+        browser_env.setdefault("NODE", resolved_node)
+
+    resolved_npx = _which_in_path("npx", browser_env["PATH"])
+    if resolved_npx:
+        browser_env.setdefault("NPX", resolved_npx)
+
+    return browser_env
+
+
+def _browser_doctor() -> Dict[str, Any]:
+    """Return lightweight runtime diagnostics for browser subprocess issues."""
+    env = _build_browser_env()
+    path_value = env.get("PATH", "")
+    return {
+        "path": path_value,
+        "node": _which_in_path("node", path_value),
+        "npx": _which_in_path("npx", path_value),
+        "agent_browser": _which_in_path("agent-browser", path_value),
+        "homebrew_node_dirs": _discover_homebrew_node_dirs(),
+    }
+
+
+def browser_doctor(task_id: Optional[str] = None) -> str:
+    """Debug helper for browser runtime availability issues."""
+    return json.dumps({"success": True, "data": _browser_doctor()}, ensure_ascii=False)
+
+
 
 
 def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
@@ -801,7 +873,7 @@ def _run_browser_command(
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
 
-    cmd_parts = browser_cmd.split() + backend_args + [
+    cmd_parts = browser_cmd + backend_args + [
         "--json",
         command
     ] + args
@@ -818,26 +890,7 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
         
-        browser_env = {**os.environ}
-
-        # Ensure PATH includes Hermes-managed Node first, Homebrew versioned
-        # node dirs (for macOS ``brew install node@24``), then standard system dirs.
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        hermes_node_bin = str(hermes_home / "node" / "bin")
-
-        existing_path = browser_env.get("PATH", "")
-        path_parts = [p for p in existing_path.split(":") if p]
-        candidate_dirs = (
-            [hermes_node_bin]
-            + _discover_homebrew_node_dirs()
-            + [p for p in _SANE_PATH.split(":") if p]
-        )
-
-        for part in reversed(candidate_dirs):
-            if os.path.isdir(part) and part not in path_parts:
-                path_parts.insert(0, part)
-
-        browser_env["PATH"] = ":".join(path_parts)
+        browser_env = _build_browser_env()
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
         
         # Use temp files for stdout/stderr instead of pipes.

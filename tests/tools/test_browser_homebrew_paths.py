@@ -82,7 +82,7 @@ class TestFindAgentBrowser:
     def test_finds_in_current_path(self):
         """Should return result from shutil.which if available on current PATH."""
         with patch("shutil.which", return_value="/usr/local/bin/agent-browser"):
-            assert _find_agent_browser() == "/usr/local/bin/agent-browser"
+            assert _find_agent_browser() == ["/usr/local/bin/agent-browser"]
 
     def test_finds_in_homebrew_bin(self):
         """Should search Homebrew dirs when not found on current PATH."""
@@ -98,7 +98,7 @@ class TestFindAgentBrowser:
                  return_value=[],
              ):
             result = _find_agent_browser()
-            assert result == "/opt/homebrew/bin/agent-browser"
+            assert result == ["/opt/homebrew/bin/agent-browser"]
 
     def test_finds_npx_in_homebrew(self):
         """Should find npx in Homebrew paths as a fallback."""
@@ -127,7 +127,7 @@ class TestFindAgentBrowser:
                  return_value=[],
              ):
             result = _find_agent_browser()
-            assert result == "npx agent-browser"
+            assert result == ["/opt/homebrew/bin/npx", "agent-browser"]
 
     def test_raises_when_not_found(self):
         """Should raise FileNotFoundError when nothing works."""
@@ -193,7 +193,7 @@ class TestRunBrowserCommandPathConstruction:
                 return True  # _SANE_PATH dirs
             return real_isdir(p)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+        with patch("tools.browser_tool._find_agent_browser", return_value=["/usr/local/bin/agent-browser"]), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
@@ -241,7 +241,7 @@ class TestRunBrowserCommandPathConstruction:
                 return True
             return real_isdir(p)
 
-        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+        with patch("tools.browser_tool._find_agent_browser", return_value=["/usr/local/bin/agent-browser"]), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \

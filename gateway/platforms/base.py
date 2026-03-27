@@ -65,7 +65,7 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
         Absolute path to the cached image file as a string.
     """
     cache_dir = get_image_cache_dir()
-    filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
+    filename = f"img_{uuid.uuid4().hex}{ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
@@ -147,7 +147,7 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
         Absolute path to the cached audio file as a string.
     """
     cache_dir = get_audio_cache_dir()
-    filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
+    filename = f"audio_{uuid.uuid4().hex}{ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
@@ -226,7 +226,7 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     safe_name = safe_name.replace("\x00", "").strip()
     if not safe_name or safe_name in (".", ".."):
         safe_name = "document"
-    cached_name = f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
+    cached_name = f"doc_{uuid.uuid4().hex}_{safe_name}"
     filepath = cache_dir / cached_name
     # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):

@@ -339,6 +339,9 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
     # Try to get password from: env var -> session cache -> interactive prompt
     sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
 
+    if os.getenv("SUDO_PASSWORD"):
+        logger.warning("SUDO_PASSWORD is set — this is insecure. Consider passwordless sudo.")
+
     if not sudo_password:
         # No password configured - check if we're in interactive mode
         if os.getenv("HERMES_INTERACTIVE"):

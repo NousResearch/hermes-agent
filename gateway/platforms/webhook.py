@@ -50,7 +50,7 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 
@@ -105,6 +105,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
+            if secret == _INSECURE_NO_AUTH:
+                logger.warning("Route '%s' uses INSECURE_NO_AUTH — HMAC validation disabled. Do not use in production.", name)
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -201,6 +203,7 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         # ── Rate limiting ────────────────────────────────────────
+        # SECURITY: fixed-window rate limit — vulnerable to burst at window boundary. Consider sliding window.
         now = time.time()
         window = self._rate_counts.setdefault(route_name, [])
         window[:] = [t for t in window if now - t < 60]

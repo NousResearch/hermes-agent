@@ -99,6 +99,7 @@ class SessionResetPolicy:
     - "none": Never auto-reset (context managed only by compression)
     """
     mode: str = "both"  # "daily", "idle", "both", or "none"
+    # SECURITY: at_hour uses local time — consider adding explicit timezone field
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
     notify: bool = True  # Send a notification to the user when auto-reset occurs

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Project-specific pre-commit hook
+# Runs AFTER the global ~/.githooks/pre-commit checks pass.
+# Add project-specific test and lint commands here.
+#
+# Return 0 to allow the commit, non-zero to block it.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# ── Uncomment and customize for your stack ───────────────────────────────────
+
+# Python
+# cd "$REPO_ROOT" && python3 -m pytest tests/ -q
+
+# Node
+# cd "$REPO_ROOT" && npm test
+
+# Rust
+# cd "$REPO_ROOT" && cargo test --quiet
+
+# Go
+# cd "$REPO_ROOT" && go test ./... -count=1
+
+# Shell lint
+# shellcheck "$REPO_ROOT"/**/*.sh
+
+# ─────────────────────────────────────────────────────────────────────────────
+exit 0

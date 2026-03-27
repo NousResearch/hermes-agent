@@ -758,6 +758,34 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    @property
+    def supports_draft_streaming(self) -> bool:
+        return bool(self._bot and hasattr(self._bot, "send_message_draft"))
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Update a Telegram native streaming draft when supported."""
+        if not self._bot or not hasattr(self._bot, "send_message_draft"):
+            return False
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            await self._bot.send_message_draft(
+                chat_id=int(chat_id),
+                draft_id=int(draft_id),
+                text=content,
+                parse_mode=None,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+            return True
+        except Exception as e:
+            logger.warning("[%s] Failed to update Telegram message draft: %s", self.name, e)
+            return False
+
     async def edit_message(
         self,
         chat_id: str,

@@ -5168,15 +5168,19 @@ class GatewayRunner:
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
                         _consumer_cfg = StreamConsumerConfig(
+                            transport=_scfg.transport,
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_scfg.cursor,
                         )
+                        _stream_metadata = {"chat_type": source.chat_type}
+                        if _progress_thread_id:
+                            _stream_metadata["thread_id"] = _progress_thread_id
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_stream_metadata,
                         )
                         _stream_delta_cb = _stream_consumer.on_delta
                         stream_consumer_holder[0] = _stream_consumer

@@ -538,6 +538,25 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    @property
+    def supports_draft_streaming(self) -> bool:
+        """Whether the adapter supports a native draft/preview streaming API."""
+        return False
+
+    async def send_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Update a native draft/preview stream.
+
+        Platforms without native draft streaming should return False so the
+        caller can fall back to edit-based streaming.
+        """
+        return False
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.

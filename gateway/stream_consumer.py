@@ -31,6 +31,7 @@ _DONE = object()
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
+    transport: str = "auto"
     edit_interval: float = 0.3
     buffer_threshold: int = 40
     cursor: str = " ▉"
@@ -69,6 +70,31 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._draft_id: Optional[int] = None
+        self._transport = self._resolve_transport()
+
+    def _resolve_transport(self) -> str:
+        requested = (self.cfg.transport or "auto").lower()
+        chat_type = (self.metadata or {}).get("chat_type")
+        draft_supported = bool(
+            chat_type == "dm"
+            and getattr(self.adapter, "supports_draft_streaming", False)
+        )
+
+        if requested == "off":
+            return "off"
+        if requested == "draft":
+            if draft_supported:
+                logger.info("Gateway stream consumer using native draft transport")
+                return "draft"
+            logger.info("Gateway draft transport requested but unavailable; falling back to edit transport")
+            return "edit"
+        if requested == "auto":
+            chosen = "draft" if draft_supported else "edit"
+            logger.info("Gateway stream consumer using %s transport", chosen)
+            return chosen
+        logger.info("Gateway stream consumer using edit transport")
+        return "edit"
 
     @property
     def already_sent(self) -> bool:
@@ -135,26 +161,66 @@ class GatewayStreamConsumer:
                     if not got_done:
                         display_text += self.cfg.cursor
 
-                    await self._send_or_edit(display_text)
+                    await self._send_progress(display_text)
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor
-                    if self._accumulated and self._message_id:
-                        await self._send_or_edit(self._accumulated)
+                    # Final flush without cursor. In draft mode this updates the
+                    # preview one last time; the normal send path still delivers
+                    # the final message because already_sent remains False.
+                    if self._accumulated:
+                        await self._send_progress(self._accumulated)
                     return
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
-            # Best-effort final edit on cancellation
-            if self._accumulated and self._message_id:
+            # Best-effort final flush on cancellation
+            if self._accumulated:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    await self._send_progress(self._accumulated)
                 except Exception:
                     pass
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
+
+    async def _send_progress(self, text: str) -> None:
+        """Deliver a streaming update using draft transport or edit fallback."""
+        if text == self._last_sent_text:
+            return
+
+        if self._transport == "draft":
+            if await self._send_draft(text):
+                return
+
+        await self._send_or_edit(text)
+
+    async def _send_draft(self, text: str) -> bool:
+        """Send a native draft update when supported by the adapter."""
+        if self._draft_id is None:
+            # Telegram requires a non-zero draft ID. Use the monotonic clock to
+            # generate a stable session-local identifier without extra imports.
+            self._draft_id = max(1, int(time.monotonic() * 1_000_000))
+
+        try:
+            ok = await self.adapter.send_draft(
+                chat_id=self.chat_id,
+                draft_id=self._draft_id,
+                content=text,
+                metadata=self.metadata,
+            )
+        except Exception as e:
+            logger.warning("Draft streaming failed; falling back to edit transport: %s", e)
+            ok = False
+
+        if ok:
+            self._last_sent_text = text
+            return True
+
+        logger.info("Draft streaming unavailable or failed; switching to edit transport for this response")
+        self._transport = "edit"
+        self._draft_id = None
+        return False
 
     async def _send_or_edit(self, text: str) -> None:
         """Send or edit the streaming message."""

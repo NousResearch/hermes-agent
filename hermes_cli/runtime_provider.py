@@ -63,8 +63,8 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        default = cfg.get("default", "").strip()
-        base_url = cfg.get("base_url", "").strip()
+        default = (cfg.get("default") or "").strip()
+        base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
         is_fallback = not default or default == "anthropic/claude-opus-4.6"
         if is_local and is_fallback and base_url:

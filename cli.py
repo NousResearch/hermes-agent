@@ -1083,7 +1083,7 @@ class HermesCLI:
         self.model = model or _config_model or _FALLBACK_MODEL
         # Auto-detect model from local server if still on fallback
         if self.model == _FALLBACK_MODEL:
-            _base_url = _model_config.get("base_url", "") if isinstance(_model_config, dict) else ""
+            _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
             if "localhost" in _base_url or "127.0.0.1" in _base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
                 _detected = _auto_detect_local_model(_base_url)

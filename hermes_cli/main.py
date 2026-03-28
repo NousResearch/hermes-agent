@@ -832,8 +832,8 @@ def cmd_model(args):
         for entry in custom_providers_cfg:
             if not isinstance(entry, dict):
                 continue
-            name = entry.get("name", "").strip()
-            base_url = entry.get("base_url", "").strip()
+            name = (entry.get("name") or "").strip()
+            base_url = (entry.get("base_url") or "").strip()
             if not name or not base_url:
                 continue
             # Generate a stable key from the name

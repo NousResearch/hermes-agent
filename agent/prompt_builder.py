@@ -169,6 +169,25 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+TOOL_USE_ENFORCEMENT_GUIDANCE = (
+    "# Tool-use enforcement\n"
+    "You MUST use your tools to take action — do not describe what you would do "
+    "or plan to do without actually doing it. When you say you will perform an "
+    "action (e.g. 'I will run the tests', 'Let me check the file', 'I will create "
+    "the project'), you MUST immediately make the corresponding tool call in the same "
+    "response. Never end your turn with a promise of future action — execute it now.\n"
+    "Keep working until the task is actually complete. Do not stop with a summary of "
+    "what you plan to do next time. If you have tools available that can accomplish "
+    "the task, use them instead of telling the user what you would do.\n"
+    "Every response should either (a) contain tool calls that make progress, or "
+    "(b) deliver a final result to the user. Responses that only describe intentions "
+    "without acting are not acceptable."
+)
+
+# Model name substrings that trigger tool-use enforcement guidance.
+# Add new patterns here when a model family needs explicit steering.
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex")
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on a text messaging communication platform, WhatsApp. "

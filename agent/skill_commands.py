@@ -8,6 +8,7 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 import json
 import logging
 import re
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -148,6 +149,60 @@ def _build_skill_message(
     return "\n".join(parts)
 
 
+def _normalize_native_launcher(frontmatter: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract optional Hermes native-launch metadata from SKILL frontmatter."""
+    metadata = frontmatter.get("metadata")
+    hermes_meta = metadata.get("hermes") if isinstance(metadata, dict) else None
+    native = None
+    if isinstance(hermes_meta, dict):
+        native = hermes_meta.get("native_launcher") or hermes_meta.get("native_app")
+    if not isinstance(native, dict):
+        return None
+
+    executable = str(native.get("executable") or "").strip()
+    if not executable:
+        return None
+
+    def _normalize_shellish_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                return [str(item) for item in shlex.split(value) if str(item).strip()]
+            except ValueError:
+                return [value]
+        if isinstance(value, (list, tuple)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return [str(value).strip()]
+
+    terminal = str(native.get("terminal") or ("tmux" if native.get("separate_terminal") else "system")).strip().lower()
+    if terminal not in {"tmux", "system"}:
+        terminal = "system"
+
+    setup_command = str(native.get("setup_command") or "").strip() or None
+    setup_sentinel = str(native.get("setup_sentinel") or executable).strip() or executable
+    default_args = _normalize_shellish_list(native.get("default_args"))
+    interactive_subcommands = _normalize_shellish_list(native.get("interactive_subcommands"))
+    global_options_with_values = _normalize_shellish_list(native.get("global_options_with_values"))
+    global_flag_options = _normalize_shellish_list(native.get("global_flag_options"))
+    default_subcommand = str(native.get("default_subcommand") or "").strip() or None
+    terminal_name = str(native.get("terminal_name") or frontmatter.get("name") or "skill").strip()
+
+    return {
+        "executable": executable,
+        "setup_command": setup_command,
+        "setup_sentinel": setup_sentinel,
+        "terminal": terminal,
+        "terminal_name": terminal_name,
+        "hold_on_failure": bool(native.get("hold_on_failure", True)),
+        "default_args": default_args,
+        "default_subcommand": default_subcommand,
+        "interactive_subcommands": interactive_subcommands,
+        "global_options_with_values": global_options_with_values,
+        "global_flag_options": global_flag_options,
+    }
+
+
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Scan ~/.hermes/skills/ and return a mapping of /command -> skill info.
 
@@ -187,6 +242,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     "description": description or f"Invoke the {name} skill",
                     "skill_md_path": str(skill_md),
                     "skill_dir": str(skill_md.parent),
+                    "native_launcher": _normalize_native_launcher(frontmatter),
                 }
             except Exception:
                 continue

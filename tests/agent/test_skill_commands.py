@@ -100,6 +100,36 @@ class TestScanSkillCommands:
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
 
+    def test_parses_native_launcher_metadata(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "native-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    native_launcher:\n"
+                    "      executable: .venv/bin/native-skill\n"
+                    "      setup_command: python3 scripts/install_runtime.py\n"
+                    "      terminal: tmux\n"
+                    "      default_subcommand: app\n"
+                    "      interactive_subcommands: [app, host, join]\n"
+                    "      global_options_with_values: [--data-dir]\n"
+                    "      global_flag_options: [--help, -h]\n"
+                ),
+            )
+            result = scan_skill_commands()
+
+        launcher = result["/native-skill"]["native_launcher"]
+        assert launcher is not None
+        assert launcher["executable"] == ".venv/bin/native-skill"
+        assert launcher["setup_command"] == "python3 scripts/install_runtime.py"
+        assert launcher["terminal"] == "tmux"
+        assert launcher["default_subcommand"] == "app"
+        assert launcher["interactive_subcommands"] == ["app", "host", "join"]
+        assert launcher["global_options_with_values"] == ["--data-dir"]
+        assert launcher["global_flag_options"] == ["--help", "-h"]
+
 
 class TestBuildPreloadedSkillsPrompt:
     def test_builds_prompt_for_multiple_named_skills(self, tmp_path):

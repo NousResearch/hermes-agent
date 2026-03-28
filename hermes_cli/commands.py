@@ -106,6 +106,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
+    CommandDef("hermes-network", "Launch the installed Hermes Network skill with auto-bootstrap and its own dedicated chat space",
+               "Tools & Skills", cli_only=True),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),

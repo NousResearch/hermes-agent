@@ -3898,12 +3898,15 @@ class HermesCLI:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
+                skill_info = _skill_commands[base_cmd]
+                if self._maybe_launch_native_skill(base_cmd, skill_info, cmd_original):
+                    return True
                 user_instruction = cmd_original[len(base_cmd):].strip()
                 msg = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
                 if msg:
-                    skill_name = _skill_commands[base_cmd]["name"]
+                    skill_name = skill_info["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
@@ -3978,6 +3981,118 @@ class HermesCLI:
         else:
             self.console.print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
+    def _maybe_launch_native_skill(self, cmd_key: str, skill_info: dict, cmd_original: str) -> bool:
+        native = skill_info.get("native_launcher")
+        if not isinstance(native, dict):
+            return False
+        self._launch_native_skill(cmd_key, skill_info, cmd_original)
+        return True
+
+    def _effective_native_skill_subcommand(self, tokens: list[str], native: dict) -> str | None:
+        options_with_values = {str(item) for item in native.get("global_options_with_values") or []}
+        flag_options = {str(item) for item in native.get("global_flag_options") or []}
+        skip_next = False
+        saw_flag = False
+        for token in tokens:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in flag_options:
+                saw_flag = True
+                break
+            if token in options_with_values:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            return token
+        if saw_flag:
+            return None
+        default_subcommand = str(native.get("default_subcommand") or "").strip()
+        return default_subcommand or None
+
+    def _build_native_skill_shell(self, skill_dir: Path, native: dict, tokens: list[str]) -> str:
+        import shlex
+
+        executable_rel = str(native.get("executable") or "").strip()
+        setup_sentinel = str(native.get("setup_sentinel") or executable_rel).strip() or executable_rel
+        setup_command = str(native.get("setup_command") or "").strip()
+        argv = [executable_rel, *tokens]
+
+        lines = [f"cd {shlex.quote(str(skill_dir))}"]
+        if setup_command:
+            lines.append(
+                "if [ ! -x "
+                + shlex.quote(setup_sentinel)
+                + " ]; then printf '%s\\n' 'Bootstrapping native skill runtime...'; "
+                + setup_command
+                + "; fi"
+            )
+        lines.append(
+            "if [ ! -x "
+            + shlex.quote(executable_rel)
+            + " ]; then printf '%s\\n' 'Native skill executable is still missing after setup.'; exit 1; fi"
+        )
+        lines.append("exec " + " ".join(shlex.quote(part) for part in argv))
+        return " && ".join(lines)
+
+    def _launch_native_skill(self, cmd_key: str, skill_info: dict, cmd_original: str) -> None:
+        """Launch an installed native skill declared via SKILL.md metadata."""
+        import shlex
+        import subprocess
+
+        skill_name = str(skill_info.get("name") or cmd_key.lstrip("/"))
+        native = skill_info.get("native_launcher") or {}
+        skill_dir_value = skill_info.get("skill_dir")
+        skill_dir = Path(str(skill_dir_value)).expanduser() if skill_dir_value else None
+        if skill_dir is None or not skill_dir.exists():
+            self.console.print(f"[bold red]{skill_name} is not installed correctly.[/]")
+            self.console.print("[dim]Expected an installed skill directory with SKILL.md metadata.[/]")
+            return
+
+        arg_text = cmd_original[len(cmd_key):].strip()
+        try:
+            tokens = shlex.split(arg_text) if arg_text else list(native.get("default_args") or [])
+        except ValueError as exc:
+            self.console.print(f"[bold red]Could not parse {cmd_key} arguments: {exc}[/]")
+            return
+
+        effective_subcommand = self._effective_native_skill_subcommand(tokens, native)
+        inner_command = self._build_native_skill_shell(skill_dir, native, tokens)
+
+        interactive_subcommands = {str(item) for item in native.get("interactive_subcommands") or []}
+        terminal_mode = str(native.get("terminal") or "system").strip().lower()
+        use_tmux = terminal_mode == "tmux" and (
+            not interactive_subcommands or effective_subcommand in interactive_subcommands
+        )
+
+        tmux_executable = shutil.which("tmux")
+        if use_tmux and tmux_executable:
+            tmux_name = str(native.get("terminal_name") or skill_name).strip().lower().replace(" ", "-") or "skill"
+            tmux_wrapped_command = f"bash -lc {shlex.quote(inner_command)}"
+            tmux_command = [tmux_executable]
+            if os.environ.get("TMUX"):
+                tmux_command += ["new-window", "-n", tmux_name, tmux_wrapped_command]
+            else:
+                tmux_command += ["new-session", "-A", "-s", tmux_name, tmux_wrapped_command]
+            try:
+                subprocess.run(tmux_command, check=False)
+            except Exception as exc:
+                self.console.print(f"[bold red]Failed to launch {skill_name} in tmux: {exc}[/]")
+            return
+
+        if use_tmux:
+            try:
+                subprocess.run(inner_command, shell=True, check=False)
+            except Exception as exc:
+                self.console.print(f"[bold red]Failed to launch {skill_name}: {exc}[/]")
+            return
+
+        try:
+            subprocess.run(["bash", "-lc", inner_command], check=False)
+        except Exception as exc:
+            self.console.print(f"[bold red]Failed to launch {skill_name}: {exc}[/]")
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 

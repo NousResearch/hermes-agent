@@ -3061,11 +3061,20 @@ class GatewayRunner:
                 if config_path.exists():
                     with open(config_path, encoding="utf-8") as f:
                         user_config = yaml.safe_load(f) or {}
-                if "model" not in user_config or not isinstance(user_config["model"], dict):
+                existing_model = user_config.get("model", {})
+                if isinstance(existing_model, str):
+                    # Preserve bare-string model as default when upgrading to dict
+                    user_config["model"] = {"default": existing_model}
+                elif not isinstance(existing_model, dict):
                     user_config["model"] = {}
+                # Preserve existing api_key reference (e.g. env var placeholder)
+                # — never write resolved runtime keys into config.yaml
+                preserved_api_key = user_config["model"].get("api_key")
                 user_config["model"]["default"] = cust_result.model
                 user_config["model"]["provider"] = "custom"
                 user_config["model"]["base_url"] = cust_result.base_url
+                if preserved_api_key is not None:
+                    user_config["model"]["api_key"] = preserved_api_key
                 with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:
@@ -3111,8 +3120,14 @@ class GatewayRunner:
                 if config_path.exists():
                     with open(config_path, encoding="utf-8") as f:
                         user_config = yaml.safe_load(f) or {}
-                if "model" not in user_config or not isinstance(user_config["model"], dict):
+                existing_model = user_config.get("model", {})
+                if isinstance(existing_model, str):
+                    user_config["model"] = {"default": existing_model}
+                elif not isinstance(existing_model, dict):
                     user_config["model"] = {}
+                # Preserve existing api_key reference — never overwrite with
+                # resolved runtime keys (#3360 review feedback)
+                preserved_api_key = user_config["model"].get("api_key")
                 user_config["model"]["default"] = result.new_model
                 if result.provider_changed:
                     user_config["model"]["provider"] = result.target_provider
@@ -3122,6 +3137,8 @@ class GatewayRunner:
                         user_config["model"]["base_url"] = result.base_url
                     else:
                         user_config["model"].pop("base_url", None)
+                if preserved_api_key is not None:
+                    user_config["model"]["api_key"] = preserved_api_key
                 with open(config_path, 'w', encoding="utf-8") as f:
                     yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
             except Exception as e:

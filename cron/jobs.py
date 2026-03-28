@@ -327,7 +327,20 @@ def load_jobs() -> List[Dict[str, Any]]:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
-    except (json.JSONDecodeError, IOError):
+    except json.JSONDecodeError:
+        # Retry with strict=False to handle bare control chars in string values
+        try:
+            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+                data = json.loads(f.read(), strict=False)
+                jobs = data.get("jobs", [])
+                if jobs:
+                    # Auto-repair: rewrite with proper escaping
+                    save_jobs(jobs)
+                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+                return jobs
+        except Exception:
+            return []
+    except IOError:
         return []
 
 

@@ -24,6 +24,9 @@ PLATFORMS = {
     "whatsapp": "📱 WhatsApp",
     "signal":   "📡 Signal",
     "email":    "📧 Email",
+    "mattermost": "💬 Mattermost",
+    "matrix":   "💬 Matrix",
+    "dingtalk": "💬 DingTalk",
 }
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────

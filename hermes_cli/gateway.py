@@ -812,7 +812,27 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
-    
+    # Build a sane PATH for the launchd plist.  launchd provides only a
+    # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
+    # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
+    # the systemd unit), then capture the user's full shell PATH so every
+    # user-installed tool (node, ffmpeg, …) is reachable.
+    detected_venv = _detect_venv_dir()
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
+    # so it's explicitly in PATH even if the user's shell PATH changes later.
+    priority_dirs = [venv_bin, node_bin]
+    resolved_node = shutil.which("node")
+    if resolved_node:
+        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        if resolved_node_dir not in priority_dirs:
+            priority_dirs.append(resolved_node_dir)
+    sane_path = ":".join(
+        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
+    )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -835,6 +855,10 @@ def generate_launchd_plist() -> str:
     
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>{sane_path}</string>
+        <key>VIRTUAL_ENV</key>
+        <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>

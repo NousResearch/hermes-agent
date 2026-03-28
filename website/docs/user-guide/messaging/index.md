@@ -289,11 +289,26 @@ If you run multiple Hermes installations on the same machine (with different `HE
 ### macOS (launchd)
 
 ```bash
-hermes gateway install
-launchctl start ai.hermes.gateway
-launchctl stop ai.hermes.gateway
-tail -f ~/.hermes/logs/gateway.log
+hermes gateway install               # Install as launchd agent
+hermes gateway start                 # Start the service
+hermes gateway stop                  # Stop the service
+hermes gateway status                # Check status
+tail -f ~/.hermes/logs/gateway.log   # View logs
 ```
+
+The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. It includes three environment variables:
+
+- **PATH** — your full shell PATH at install time, with the venv `bin/` and `node_modules/.bin` prepended. This ensures user-installed tools (Node.js, ffmpeg, etc.) are available to gateway subprocesses like the WhatsApp bridge.
+- **VIRTUAL_ENV** — points to the Python virtualenv so tools can resolve packages correctly.
+- **HERMES_HOME** — scopes the gateway to your Hermes installation.
+
+:::tip PATH changes after install
+launchd plists are static — if you install new tools (e.g. a new Node.js version via nvm, or ffmpeg via Homebrew) after setting up the gateway, run `hermes gateway install` again to capture the updated PATH. The gateway will detect the stale plist and reload automatically.
+:::
+
+:::info Multiple installations
+Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. The default `~/.hermes` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
+:::
 
 ## Platform-Specific Toolsets
 

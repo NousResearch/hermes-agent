@@ -113,7 +113,9 @@ class HookRegistry:
 
                 print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 
-            except Exception as e:
+            except SystemExit:
+                raise
+            except BaseException as e:
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
     async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:

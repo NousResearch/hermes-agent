@@ -333,7 +333,10 @@ class MessageEvent:
             return None
         # Split on space and get first word, strip the /
         parts = self.text.split(maxsplit=1)
-        return parts[0][1:].lower() if parts else None
+        raw = parts[0][1:].lower() if parts else None
+        if raw and "@" in raw:
+            raw = raw.split("@", 1)[0]
+        return raw
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""

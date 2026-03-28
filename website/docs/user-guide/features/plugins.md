@@ -52,10 +52,10 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 |------|-----------|
 | `pre_tool_call` | Before any tool executes |
 | `post_tool_call` | After any tool returns |
-| `pre_llm_call` | Before LLM API request *(planned)* |
-| `post_llm_call` | After LLM API response *(planned)* |
-| `on_session_start` | Session begins *(planned)* |
-| `on_session_end` | Session ends *(planned)* |
+| `pre_llm_call` | Once per turn, before the LLM loop — can return `{"context": "..."}` to inject into the system prompt |
+| `post_llm_call` | Once per turn, after the LLM loop completes |
+| `on_session_start` | New session created (first turn only) |
+| `on_session_end` | End of every `run_conversation` call |
 
 ## Slash commands
 

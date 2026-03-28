@@ -134,3 +134,6 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+
+[tool.uv]
+exclude-newer = "7 days"

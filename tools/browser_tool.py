@@ -1523,8 +1523,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     effective_task_id = task_id or "default"
     
     # Save screenshot to persistent location so it can be shared with users
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    screenshots_dir = hermes_home / "browser_screenshots"
+    from hermes_constants import get_hermes_dir
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     
     try:

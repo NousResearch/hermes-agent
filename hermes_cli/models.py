@@ -208,14 +208,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
+    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
+    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
+    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
+    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.5-plus",
-        "qwen3-max",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        "qwen-plus-latest",
-        "qwen3.5-flash",
-        "qwen-vl-max",
+        # Third-party models available on coding-intl
+        "glm-5",
+        "glm-4.7",
+        "kimi-k2.5",
+        "MiniMax-M2.5",
     ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [

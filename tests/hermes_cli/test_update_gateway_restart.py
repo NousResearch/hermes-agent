@@ -240,6 +240,33 @@ class TestLaunchdPlistRefresh:
         assert any("unload" in s for s in cmd_strs)
         assert any("start" in s for s in cmd_strs)
 
+    def test_launchd_start_recreates_missing_plist_and_loads_service(self, tmp_path, monkeypatch):
+        """launchd_start self-heals when the plist file is missing entirely."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        assert not plist_path.exists()
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        # Should have created the plist
+        assert plist_path.exists()
+        assert "--replace" in plist_path.read_text()
+
+        cmd_strs = [" ".join(c) for c in calls]
+        # Should load the new plist, then start
+        assert any("load" in s for s in cmd_strs)
+        assert any("start" in s for s in cmd_strs)
+        # Should NOT call unload (nothing to unload)
+        assert not any("unload" in s for s in cmd_strs)
+
 
 class TestCmdUpdateLaunchdRestart:
     """cmd_update correctly detects and handles launchd on macOS."""

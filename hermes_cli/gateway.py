@@ -948,13 +948,24 @@ def launchd_uninstall():
     print("✓ Service uninstalled")
 
 def launchd_start():
-    refresh_launchd_plist_if_needed()
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+
+    # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
+    if not plist_path.exists():
+        print("↻ launchd plist missing; regenerating service definition")
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+        subprocess.run(["launchctl", "start", label], check=True)
+        print("✓ Service started")
+        return
+
+    refresh_launchd_plist_if_needed()
     try:
         subprocess.run(["launchctl", "start", label], check=True)
     except subprocess.CalledProcessError as e:
-        if e.returncode != 3 or not plist_path.exists():
+        if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(["launchctl", "load", str(plist_path)], check=True)

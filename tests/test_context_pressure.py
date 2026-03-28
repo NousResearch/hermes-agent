@@ -69,10 +69,12 @@ class TestFormatContextPressure:
         assert isinstance(result, str)
 
     def test_over_100_percent_capped(self):
-        """Progress > 1.0 should not break the bar."""
+        """Progress > 1.0 should cap both bar and percentage text at 100%."""
         line = format_context_pressure(1.05, 100_000, 0.50)
         assert "▰" in line
         assert line.count("▰") == 20
+        assert "100%" in line
+        assert "105%" not in line
 
 
 class TestFormatContextPressureGateway:
@@ -99,6 +101,13 @@ class TestFormatContextPressureGateway:
     def test_has_progress_bar(self):
         msg = format_context_pressure_gateway(0.80, 0.50)
         assert "▰" in msg
+
+    def test_over_100_percent_capped(self):
+        """Progress > 1.0 should cap percentage text at 100%."""
+        msg = format_context_pressure_gateway(1.09, 0.50)
+        assert "100% to compaction" in msg
+        assert "109%" not in msg
+        assert msg.count("▰") == 20
 
 
 # ---------------------------------------------------------------------------

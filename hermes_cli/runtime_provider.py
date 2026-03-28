@@ -63,6 +63,11 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
+        # Accept "model" as an alias for "default" so both config spellings work:
+        #   model: { default: my-model }  (documented)
+        #   model: { model: my-model }    (intuitive but previously silently ignored)
+        if not cfg.get("default") and cfg.get("model"):
+            cfg["default"] = cfg["model"]
         default = cfg.get("default", "").strip()
         base_url = cfg.get("base_url", "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
@@ -82,7 +87,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
     if configured_mode:
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
+    model_name = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
     if not model_name:
         return "chat_completions"
 

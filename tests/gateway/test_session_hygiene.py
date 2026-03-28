@@ -304,8 +304,12 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     class FakeCompressAgent:
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._print_fn = None
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            # Simulate real _compress_context: create a new session_id
+            self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
 
     fake_run_agent = types.ModuleType("run_agent")

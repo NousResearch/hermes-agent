@@ -1,0 +1,86 @@
+name: Windows Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: windows-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          uv venv .venv --python 3.11
+          .venv\Scripts\activate
+          uv pip install -e ".[all,dev,windows]"
+
+      - name: Run Windows compatibility tests
+        shell: pwsh
+        run: |
+          .venv\Scripts\activate
+          python -m pytest tests/tools/test_windows_compat.py tests/tools/test_clipboard.py -v --tb=short -p no:xdist
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Verify critical imports on Windows
+        shell: pwsh
+        run: |
+          .venv\Scripts\activate
+          python -c "from tools.memory_tool import MemoryStore; print('OK: memory_tool')"
+          python -c "from hermes_cli.clipboard import save_clipboard_image, get_clipboard_text; print('OK: clipboard')"
+          python -c "from tools.code_execution_tool import SANDBOX_AVAILABLE; print(f'OK: code_execution (sandbox={SANDBOX_AVAILABLE})')"
+          python -c "from agent.display import write_tty; print('OK: display')"
+          python -c "from hermes_cli.config import _secure_file, get_env_value; print('OK: config')"
+          python -c "from tools.shell_quote import shell_quote; print(f'OK: shell_quote({shell_quote(\"hello world\")})')"
+
+      - name: Compile-check all modified files
+        shell: pwsh
+        run: |
+          .venv\Scripts\activate
+          python -c @"
+          import py_compile, sys
+          files = [
+              'tools/memory_tool.py',
+              'hermes_cli/gateway.py',
+              'hermes_cli/config.py',
+              'hermes_cli/status.py',
+              'hermes_cli/clipboard.py',
+              'gateway/status.py',
+              'tools/environments/local.py',
+              'tools/environments/persistent_shell.py',
+              'tools/code_execution_tool.py',
+              'tools/shell_quote.py',
+              'tools/transcription_tools.py',
+              'agent/display.py',
+              'cli.py',
+          ]
+          failed = False
+          for f in files:
+              try:
+                  py_compile.compile(f, doraise=True)
+                  print(f'OK: {f}')
+              except Exception as e:
+                  print(f'FAIL: {f} -> {e}')
+                  failed = True
+          if failed:
+              sys.exit(1)
+          "@

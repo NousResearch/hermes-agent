@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 Works on Linux, macOS, and WSL2. The installer handles everything — Python, Node.js, dependencies, and the `hermes` command. No prerequisites except git.
 
-> **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
+> **Windows 10/11:** Native Windows is supported! See [WINDOWS.md](WINDOWS.md) for install instructions and platform notes. WSL2 also works with the installer above.
 
 After installation:
 

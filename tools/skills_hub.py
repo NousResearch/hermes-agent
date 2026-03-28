@@ -251,6 +251,7 @@ class GitHubSource(SkillSource):
         {"repo": "openai/skills", "path": "skills/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
+        {"repo": "garrytan/gstack", "path": ""},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -395,7 +396,8 @@ class GitHubSource(SkillSource):
             if dir_name.startswith(".") or dir_name.startswith("_"):
                 continue
 
-            skill_identifier = f"{repo}/{path.rstrip('/')}/{dir_name}"
+            prefix = path.rstrip("/")
+            skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
             meta = self.inspect(skill_identifier)
             if meta:
                 skills.append(meta)

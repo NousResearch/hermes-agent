@@ -3188,6 +3188,62 @@ class HermesCLI:
 
         print("  To change model or provider, use: hermes model")
 
+    def _handle_models_command(self, cmd: str):
+        """Handle /models [provider] — list available models.
+
+        Usage:
+            /models          — list models for current provider
+            /models openai   — list models for OpenAI
+            /models anthropic — list models for Anthropic
+        """
+        from hermes_cli.models import (
+            curated_models_for_provider, normalize_provider, _PROVIDER_LABELS,
+        )
+        from hermes_cli.auth import resolve_provider as _resolve_provider
+
+        parts = cmd.split(maxsplit=1)
+        requested_provider = parts[1].strip() if len(parts) > 1 else None
+
+        # Determine target provider
+        if requested_provider:
+            target = normalize_provider(requested_provider)
+            if not target:
+                target = requested_provider  # Pass through for custom:xyz
+        else:
+            # Use current provider
+            raw_provider = normalize_provider(self.provider)
+            if raw_provider == "auto":
+                try:
+                    target = _resolve_provider(
+                        self.requested_provider,
+                        explicit_api_key=self._explicit_api_key,
+                        explicit_base_url=self._explicit_base_url,
+                    )
+                except Exception:
+                    target = "openrouter"
+            else:
+                target = raw_provider
+
+        label = _PROVIDER_LABELS.get(target, target)
+        print(f"\n  Models for {label}:")
+
+        curated = curated_models_for_provider(target)
+        if curated:
+            for mid, desc in curated:
+                marker = " ← current" if mid == self.model else ""
+                desc_suffix = f" ({desc})" if desc else ""
+                print(f"    {mid}{desc_suffix}{marker}")
+        else:
+            # Show current model if no curated list
+            if target == "custom" or target.startswith("custom:"):
+                print(f"    {self.model} ← current")
+                print("    (custom provider — model list not available)")
+            else:
+                print("    (no model catalog available)")
+
+        print()
+        print("  To switch: hermes model")
+
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
         parts = cmd.split(maxsplit=1)
@@ -3759,6 +3815,8 @@ class HermesCLI:
             self._handle_resume_command(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
+        elif canonical == "models":
+            self._handle_models_command(cmd_original)
         elif canonical == "prompt":
             # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)

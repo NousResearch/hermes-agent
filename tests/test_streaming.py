@@ -362,9 +362,11 @@ class TestStreamingCallbacks:
 
         # Text before tool call IS fired (we don't know yet it will have tools)
         assert "thinking..." in deltas
-        # Text after tool call is NOT fired
-        assert " more text" not in deltas
-        # But content is still accumulated in the response
+        # Text after tool call IS still routed to stream_delta_callback so that
+        # reasoning tag extraction can fire (PR #3566).  Display-level suppression
+        # of non-reasoning text happens in the CLI's _stream_delta, not here.
+        assert " more text" in deltas
+        # Content is still accumulated in the response
         assert response.choices[0].message.content == "thinking... more text"
 
 

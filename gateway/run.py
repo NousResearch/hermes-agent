@@ -745,10 +745,22 @@ class GatewayRunner:
                 logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
             await self.stop()
         elif not self.adapters and self._failed_platforms:
-            logger.warning(
-                "No connected messaging platforms remain, but %d platform(s) queued for reconnection",
-                len(self._failed_platforms),
-            )
+            # All platforms are down and queued for background reconnection.
+            # If the error is retryable, exit with failure so systemd Restart=on-failure
+            # can restart the process. Otherwise stay alive and keep retrying in background.
+            if adapter.fatal_error_retryable:
+                self._exit_reason = adapter.fatal_error_message or "All messaging platforms failed with retryable errors"
+                self._exit_with_failure = True
+                logger.error(
+                    "All messaging platforms failed with retryable errors. "
+                    "Shutting down gateway for service restart (systemd will retry)."
+                )
+                await self.stop()
+            else:
+                logger.warning(
+                    "No connected messaging platforms remain, but %d platform(s) queued for reconnection",
+                    len(self._failed_platforms),
+                )
 
     def _request_clean_exit(self, reason: str) -> None:
         self._exit_cleanly = True

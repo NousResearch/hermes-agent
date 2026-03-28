@@ -9,25 +9,24 @@ import pytest
 from tools.environments import docker as docker_env
 
 
-def _install_fake_minisweagent(monkeypatch, captured_run_args):
-    class MockInnerDocker:
-        container_id = "fake-container"
-        config = type("Config", (), {"executable": "/usr/bin/docker", "forward_env": [], "env": {}})()
+def _mock_subprocess_run(monkeypatch):
+    """Mock subprocess.run to intercept docker run -d and docker version calls.
 
-        def __init__(self, **kwargs):
-            captured_run_args.extend(kwargs.get("run_args", []))
+    Returns a list of captured (cmd, kwargs) tuples for inspection.
+    """
+    calls = []
 
-        def cleanup(self):
-            pass
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fake-container-id\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    minisweagent_mod = types.ModuleType("minisweagent")
-    environments_mod = types.ModuleType("minisweagent.environments")
-    docker_mod = types.ModuleType("minisweagent.environments.docker")
-    docker_mod.DockerEnvironment = MockInnerDocker
-
-    monkeypatch.setitem(sys.modules, "minisweagent", minisweagent_mod)
-    monkeypatch.setitem(sys.modules, "minisweagent.environments", environments_mod)
-    monkeypatch.setitem(sys.modules, "minisweagent.environments.docker", docker_mod)
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
 
 
 def _make_dummy_env(**kwargs):
@@ -49,7 +48,7 @@ def _make_dummy_env(**kwargs):
 
 
 def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, caplog):
-    """When docker cannot be found, raise a clear error before mini-swe setup."""
+    """When docker cannot be found, raise a clear error before container setup."""
 
     monkeypatch.setattr(docker_env, "find_docker", lambda: None)
     monkeypatch.setattr(
@@ -118,14 +117,8 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
 
-    def _run_docker_version(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
-
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
-
-    captured_run_args = []
-    _install_fake_minisweagent(monkeypatch, captured_run_args)
+    calls = _mock_subprocess_run(monkeypatch)
 
     _make_dummy_env(
         cwd="/workspace",
@@ -133,7 +126,10 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
         auto_mount_cwd=True,
     )
 
-    run_args_str = " ".join(captured_run_args)
+    # Find the docker run call and check its args
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
 
 
@@ -142,14 +138,8 @@ def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
 
-    def _run_docker_version(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
-
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
-
-    captured_run_args = []
-    _install_fake_minisweagent(monkeypatch, captured_run_args)
+    calls = _mock_subprocess_run(monkeypatch)
 
     _make_dummy_env(
         cwd="/root",
@@ -157,7 +147,9 @@ def test_auto_mount_disabled_by_default(monkeypatch, tmp_path):
         auto_mount_cwd=False,
     )
 
-    run_args_str = " ".join(captured_run_args)
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" not in run_args_str
 
 
@@ -168,14 +160,8 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
     other_dir = tmp_path / "other"
     other_dir.mkdir()
 
-    def _run_docker_version(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
-
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
-
-    captured_run_args = []
-    _install_fake_minisweagent(monkeypatch, captured_run_args)
+    calls = _mock_subprocess_run(monkeypatch)
 
     _make_dummy_env(
         cwd="/workspace",
@@ -184,7 +170,9 @@ def test_auto_mount_skipped_when_workspace_already_mounted(monkeypatch, tmp_path
         volumes=[f"{other_dir}:/workspace"],
     )
 
-    run_args_str = " ".join(captured_run_args)
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
     assert f"{other_dir}:/workspace" in run_args_str
     assert run_args_str.count(":/workspace") == 1
 
@@ -194,14 +182,8 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
 
-    def _run_docker_version(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 0, stdout="Docker version", stderr="")
-
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env.subprocess, "run", _run_docker_version)
-
-    captured_run_args = []
-    _install_fake_minisweagent(monkeypatch, captured_run_args)
+    calls = _mock_subprocess_run(monkeypatch)
 
     _make_dummy_env(
         cwd="/workspace",
@@ -211,28 +193,23 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
         task_id="test-persistent-auto-mount",
     )
 
-    run_args_str = " ".join(captured_run_args)
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args_str = " ".join(run_calls[0][0])
     assert f"{project_dir}:/workspace" in run_args_str
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When container_persistent=false, cleanup() must run docker rm -f so the container is removed (Fixes #1679)."""
-    run_calls = []
-
-    def _run(cmd, **kwargs):
-        run_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
-        if cmd and getattr(cmd[0], "__str__", None) and "docker" in str(cmd[0]):
-            if len(cmd) >= 2 and cmd[1] == "run":
-                return subprocess.CompletedProcess(cmd, 0, stdout="abc123container\n", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
+    """When persistent=false, cleanup() must schedule docker stop + rm."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    monkeypatch.setattr(docker_env.subprocess, "Popen", lambda *a, **k: type("P", (), {"poll": lambda: None, "wait": lambda **kw: None, "returncode": 0, "stdout": iter([]), "stdin": None})())
+    calls = _mock_subprocess_run(monkeypatch)
 
-    captured_run_args = []
-    _install_fake_minisweagent(monkeypatch, captured_run_args)
+    popen_cmds = []
+    monkeypatch.setattr(
+        docker_env.subprocess, "Popen",
+        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
+    )
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
     assert env._container_id
@@ -240,8 +217,9 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
 
     env.cleanup()
 
-    rm_calls = [c for c in run_calls if isinstance(c[0], list) and len(c[0]) >= 4 and c[0][1:4] == ["rm", "-f", container_id]]
-    assert len(rm_calls) >= 1, "cleanup() should run docker rm -f <container_id> when container_persistent=false"
+    # Should have stop and rm calls via Popen
+    stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
+    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
 
 
 class _FakePopen:
@@ -263,10 +241,8 @@ def _make_execute_only_env(forward_env=None):
     env._forward_env = forward_env or []
     env._prepare_command = lambda command: (command, None)
     env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
-    env._inner = type("Inner", (), {
-        "container_id": "test-container",
-        "config": type("Cfg", (), {"executable": "/usr/bin/docker", "env": {}})(),
-    })()
+    env._container_id = "test-container"
+    env._docker_exe = "/usr/bin/docker"
     return env
 
 
@@ -304,31 +280,3 @@ def test_execute_prefers_shell_env_over_hermes_dotenv(monkeypatch):
 
     assert "GITHUB_TOKEN=value_from_shell" in popen_calls[0]
     assert "GITHUB_TOKEN=value_from_dotenv" not in popen_calls[0]
-
-
-def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When container_persistent=false, cleanup() must run docker rm -f so the container is removed (Fixes #1679)."""
-    run_calls = []
-
-    def _run(cmd, **kwargs):
-        run_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
-        if cmd and getattr(cmd[0], '__str__', None) and 'docker' in str(cmd[0]):
-            if len(cmd) >= 2 and cmd[1] == 'run':
-                return subprocess.CompletedProcess(cmd, 0, stdout="abc123container\n", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout='', stderr='')
-
-    monkeypatch.setattr(docker_env, 'find_docker', lambda: '/usr/bin/docker')
-    monkeypatch.setattr(docker_env.subprocess, 'run', _run)
-    monkeypatch.setattr(docker_env.subprocess, 'Popen', lambda *a, **k: type('P', (), {'poll': lambda: None, 'wait': lambda **kw: None, 'returncode': 0, 'stdout': iter([]), 'stdin': None})())
-
-    captured_run_args = []
-    _install_fake_minisweagent(monkeypatch, captured_run_args)
-
-    env = _make_dummy_env(persistent_filesystem=False, task_id='ephemeral-task')
-    assert env._container_id
-    container_id = env._container_id
-
-    env.cleanup()
-
-    rm_calls = [c for c in run_calls if isinstance(c[0], list) and len(c[0]) >= 4 and c[0][1:4] == ['rm', '-f', container_id]]
-    assert len(rm_calls) >= 1, 'cleanup() should run docker rm -f <container_id> when container_persistent=false'

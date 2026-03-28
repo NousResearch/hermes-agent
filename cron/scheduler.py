@@ -24,8 +24,8 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-from datetime import datetime
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Optional
 
 from hermes_time import now as _hermes_now
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -43,7 +43,7 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 SILENT_MARKER = "[SILENT]"
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = get_hermes_home()
 
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
@@ -80,11 +80,16 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         }
 
     if ":" in deliver:
-        platform_name, chat_id = deliver.split(":", 1)
+        platform_name, rest = deliver.split(":", 1)
+        # Check for thread_id suffix (e.g. "telegram:-1003724596514:17")
+        if ":" in rest:
+            chat_id, thread_id = rest.split(":", 1)
+        else:
+            chat_id, thread_id = rest, None
         return {
             "platform": platform_name,
             "chat_id": chat_id,
-            "thread_id": None,
+            "thread_id": thread_id,
         }
 
     platform_name = deliver
@@ -136,6 +141,10 @@ def _deliver_result(job: dict, content: str) -> None:
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "matrix": Platform.MATRIX,
+        "mattermost": Platform.MATTERMOST,
+        "homeassistant": Platform.HOMEASSISTANT,
+        "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -155,15 +164,29 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
+    # Wrap the content so the user knows this is a cron delivery and that
+    # the interactive agent has no visibility into it.
+    task_name = job.get("name", job["id"])
+    wrapped = (
+        f"Cronjob Response: {task_name}\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"Note: The agent cannot see this message, and therefore cannot respond to it."
+    )
+
     # Run the async send in a fresh event loop (safe from any thread)
+    coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id)
     try:
-        result = asyncio.run(_send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
+        result = asyncio.run(coro)
     except RuntimeError:
-        # asyncio.run() fails if there's already a running loop in this thread;
-        # spin up a new thread to avoid that.
+        # asyncio.run() checks for a running loop before awaiting the coroutine;
+        # when it raises, the original coro was never started — close it to
+        # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
+        # fresh thread that has no running loop.
+        coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, content, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -173,12 +196,6 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
     else:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
-        # Mirror the delivered content into the target's gateway session
-        try:
-            from gateway.mirror import mirror_to_session
-            mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
-        except Exception as e:
-            logger.warning("Job '%s': mirror_to_session failed: %s", job["id"], e)
 
 
 def _build_job_prompt(job: dict) -> str:
@@ -207,11 +224,14 @@ def _build_job_prompt(job: dict) -> str:
     from tools.skills_tool import skill_view
 
     parts = []
+    skipped: list[str] = []
     for skill_name in skill_names:
         loaded = json.loads(skill_view(skill_name))
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            raise RuntimeError(error)
+            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
+            skipped.append(skill_name)
+            continue
 
         content = str(loaded.get("content") or "").strip()
         if parts:
@@ -223,6 +243,15 @@ def _build_job_prompt(job: dict) -> str:
                 content,
             ]
         )
+
+    if skipped:
+        notice = (
+            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"and were skipped: {', '.join(skipped)}. "
+            f"Start your response with a brief notice so the user is aware, e.g.: "
+            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+        )
+        parts.insert(0, notice)
 
     if prompt:
         parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
@@ -251,6 +280,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_name = job["name"]
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
+    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -298,16 +328,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
         # Reasoning config from env or config.yaml
-        reasoning_config = None
+        from hermes_constants import parse_reasoning_effort
         effort = os.getenv("HERMES_REASONING_EFFORT", "")
         if not effort:
             effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        if effort and effort.lower() != "none":
-            valid = ("xhigh", "high", "medium", "low", "minimal")
-            if effort.lower() in valid:
-                reasoning_config = {"enabled": True, "effort": effort.lower()}
-        elif effort.lower() == "none":
-            reasoning_config = {"enabled": False}
+        reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None
@@ -379,18 +404,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
-            disabled_toolsets=["cronjob"],
+            disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             platform="cron",
-            session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+            session_id=_cron_session_id,
             session_db=_session_db,
         )
         
         result = agent.run_conversation(prompt)
         
-        final_response = result.get("final_response", "")
-        if not final_response:
-            final_response = "(No response generated)"
+        final_response = result.get("final_response", "") or ""
+        # Use a separate variable for log display; keep final_response clean
+        # for delivery logic (empty response = no delivery).
+        logged_response = final_response if final_response else "(No response generated)"
         
         output = f"""# Cron Job: {job_name}
 
@@ -404,7 +430,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 ## Response
 
-{final_response}
+{logged_response}
 """
         
         logger.info("Job '%s' completed successfully", job_name)
@@ -447,8 +473,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ.pop(key, None)
         if _session_db:
             try:
+                _session_db.end_session(_cron_session_id, "cron_complete")
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            try:
                 _session_db.close()
-            except Exception as e:
+            except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
@@ -494,6 +524,12 @@ def tick(verbose: bool = True) -> int:
         executed = 0
         for job in due_jobs:
             try:
+                # For recurring jobs (cron/interval), advance next_run_at to the
+                # next future occurrence BEFORE execution.  This way, if the
+                # process crashes mid-run, the job won't re-fire on restart.
+                # One-shot jobs are left alone so they can retry on restart.
+                advance_next_run(job["id"])
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)

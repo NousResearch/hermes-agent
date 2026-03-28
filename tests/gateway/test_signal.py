@@ -229,6 +229,10 @@ class TestSignalSessionSource:
 # ---------------------------------------------------------------------------
 
 class TestSignalPhoneRedaction:
+    @pytest.fixture(autouse=True)
+    def _ensure_redaction_enabled(self, monkeypatch):
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+
     def test_us_number(self):
         from agent.redact import redact_sensitive_text
         result = redact_sensitive_text("Call +15551234567 now")

@@ -42,17 +42,33 @@ API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your 
 
 ### Can I use it offline / with local models?
 
-Yes. Point Hermes at any local OpenAI-compatible server:
+Yes. Run `hermes model`, select **Custom endpoint**, and enter your server's URL:
 
 ```bash
-hermes config set OPENAI_BASE_URL http://localhost:11434/v1  # Ollama
-hermes config set OPENAI_API_KEY ollama                       # Any non-empty value
-hermes config set HERMES_MODEL llama3.1
+hermes model
+# Select: Custom endpoint (enter URL manually)
+# API base URL: http://localhost:11434/v1
+# API key: ollama
+# Model name: qwen3.5:27b
+# Context length: 32768   ← set this to match your server's actual context window
 ```
 
-You can also save the endpoint interactively with `hermes model`. Hermes persists that custom endpoint in `config.yaml`, and auxiliary tasks configured with provider `main` follow the same saved endpoint.
+Or configure it directly in `config.yaml`:
+
+```yaml
+model:
+  default: qwen3.5:27b
+  provider: custom
+  base_url: http://localhost:11434/v1
+```
+
+Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
+
+:::tip Ollama users
+If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 16384`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
+:::
 
 ### How much does it cost?
 
@@ -77,7 +93,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 from hermes.agent import AIAgent
 
 agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
-response = await agent.chat("Explain quantum computing briefly")
+response = agent.chat("Explain quantum computing briefly")
 ```
 
 See the [Python Library guide](../user-guide/features/code-execution.md) for full API usage.
@@ -159,8 +175,8 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 **Solution:**
 ```bash
-# Check which keys are set
-hermes config get OPENROUTER_API_KEY
+# Check your configuration
+hermes config show
 
 # Re-configure your provider
 hermes model
@@ -180,7 +196,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 **Solution:**
 ```bash
 # List available models for your provider
-hermes models
+hermes model
 
 # Set a valid model
 hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
@@ -200,7 +216,7 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 
 #### Context length exceeded
 
-**Cause:** The conversation has grown too long for the model's context window.
+**Cause:** The conversation has grown too long for the model's context window, or Hermes detected the wrong context length for your model.
 
 **Solution:**
 ```bash
@@ -213,6 +229,32 @@ hermes chat
 # Use a model with a larger context window
 hermes chat --model openrouter/google/gemini-2.0-flash-001
 ```
+
+If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
+
+Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
+
+To fix context detection, set it explicitly:
+
+```yaml
+# In ~/.hermes/config.yaml
+model:
+  default: your-model-name
+  context_length: 131072  # your model's actual context window
+```
+
+Or for custom endpoints, add it per-model:
+
+```yaml
+custom_providers:
+  - name: "My Server"
+    base_url: "http://localhost:11434/v1"
+    models:
+      qwen3.5:27b:
+        context_length: 32768
+```
+
+See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for how auto-detection works and all override options.
 
 ---
 
@@ -273,7 +315,7 @@ hermes gateway status
 hermes gateway start
 
 # Check logs for errors
-hermes gateway logs
+cat ~/.hermes/logs/gateway.log | tail -50
 ```
 
 #### Messages not delivering
@@ -282,7 +324,7 @@ hermes gateway logs
 
 **Solution:**
 - Verify your bot token is valid with `hermes gateway setup`
-- Check gateway logs: `hermes gateway logs`
+- Check gateway logs: `cat ~/.hermes/logs/gateway.log | tail -50`
 - For webhook-based platforms (Slack, WhatsApp), ensure your server is publicly accessible
 
 #### Allowlist confusion — who can talk to the bot?
@@ -306,7 +348,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install messaging dependencies
-pip install hermes-agent[telegram]   # or [discord], [slack], [whatsapp]
+pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
 
 # Check for port conflicts
 lsof -i :8080
@@ -338,8 +380,8 @@ hermes config show
 # Compress the conversation to reduce tokens
 /compress
 
-# Check session token count
-/stats
+# Check session token usage
+/usage
 ```
 
 :::tip

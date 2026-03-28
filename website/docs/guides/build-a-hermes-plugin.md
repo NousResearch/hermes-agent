@@ -29,12 +29,14 @@ Create `plugin.yaml`:
 name: calculator
 version: 1.0.0
 description: Math calculator — evaluate expressions and convert units
-provides:
-  tools: true
-  hooks: true
+provides_tools:
+  - calculate
+  - unit_convert
+provides_hooks:
+  - post_tool_call
 ```
 
-This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." That's all the manifest needs.
+This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
 
 Optional fields you could add:
 ```yaml
@@ -232,6 +234,7 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
+- `ctx.register_command()` — _planned but not yet implemented_
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 ## Step 6: Test it

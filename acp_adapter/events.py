@@ -10,7 +10,7 @@ thread while the event loop lives on the main thread).
 import asyncio
 import json
 import logging
-from collections import defaultdict, deque
+from collections import deque
 from typing import Any, Callable, Deque, Dict
 
 import acp

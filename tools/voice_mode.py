@@ -19,7 +19,6 @@ import tempfile
 import threading
 import time
 import wave
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -81,8 +80,15 @@ def detect_audio_environment() -> dict:
                 warnings.append("No audio input/output devices detected")
         except Exception:
             warnings.append("Audio subsystem error (PortAudio cannot query devices)")
-    except (ImportError, OSError):
+    except ImportError:
         warnings.append("Audio libraries not installed (pip install sounddevice numpy)")
+    except OSError:
+        warnings.append(
+            "PortAudio system library not found -- install it first:\n"
+            "  Linux:  sudo apt-get install libportaudio2\n"
+            "  macOS:  brew install portaudio\n"
+            "Then retry /voice on."
+        )
 
     return {
         "available": len(warnings) == 0,
@@ -703,7 +709,7 @@ def check_voice_requirements() -> Dict[str, Any]:
         ``missing_packages``, and ``details``.
     """
     # Determine STT provider availability
-    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled, _HAS_FASTER_WHISPER
+    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)

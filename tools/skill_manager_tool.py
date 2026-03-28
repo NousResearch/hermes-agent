@@ -39,6 +39,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,15 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     try:
         result = scan_skill(skill_dir, source="agent-created")
         allowed, reason = should_allow_install(result)
-        if not allowed:
+        if allowed is False:
             report = format_scan_report(result)
             return f"Security scan blocked this skill ({reason}):\n{report}"
+        if allowed is None:
+            # "ask" — allow but include the warning so the user sees the findings
+            report = format_scan_report(result)
+            logger.warning("Agent-created skill has security findings: %s", reason)
+            # Don't block — return None to allow, but log the warning
+            return None
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
@@ -70,7 +77,7 @@ import yaml
 
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
 MAX_NAME_LENGTH = 64
@@ -539,6 +546,13 @@ def skill_manage(
 
     else:
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+
+    if result.get("success"):
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
 
     return json.dumps(result, ensure_ascii=False)
 

@@ -106,7 +106,8 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
         cli_mod.main(skills="missing-skill", list_tools=True)
 
 
-def test_show_banner_prints_preloaded_skills_once_before_banner():
+def test_show_banner_does_not_print_skills():
+    """show_banner() no longer prints the activated skills line — it moved to run()."""
     cli_obj = _make_real_cli(compact=False)
     cli_obj.preloaded_skills = ["hermes-agent-dev", "github-auth"]
     cli_obj.console = MagicMock()
@@ -115,7 +116,6 @@ def test_show_banner_prints_preloaded_skills_once_before_banner():
         "shutil.get_terminal_size", return_value=os.terminal_size((120, 40))
     ):
         cli_obj.show_banner()
-        cli_obj.show_banner()
 
     print_calls = [
         call.args[0]
@@ -123,8 +123,5 @@ def test_show_banner_prints_preloaded_skills_once_before_banner():
         if call.args and isinstance(call.args[0], str)
     ]
     startup_lines = [line for line in print_calls if "Activated skills:" in line]
-
-    assert len(startup_lines) == 1
-    assert "Activated skills:" in startup_lines[0]
-    assert "hermes-agent-dev, github-auth" in startup_lines[0]
-    assert mock_banner.call_count == 2
+    assert len(startup_lines) == 0
+    assert mock_banner.call_count == 1

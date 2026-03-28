@@ -1,7 +1,9 @@
 """Honcho client initialization and configuration.
 
-Reads the global ~/.honcho/config.json when available, falling back
-to environment variables.
+Resolution order for config file:
+  1. $HERMES_HOME/honcho.json  (instance-local, enables isolated Hermes instances)
+  2. ~/.honcho/config.json     (global, shared across all Honcho-enabled apps)
+  3. Environment variables     (HONCHO_API_KEY, HONCHO_ENVIRONMENT)
 
 Resolution order for host-specific settings:
   1. Explicit host block fields (always win)
@@ -16,6 +18,8 @@ import os
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from hermes_constants import get_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,6 +29,19 @@ logger = logging.getLogger(__name__)
 
 GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
+
+
+def resolve_config_path() -> Path:
+    """Return the active Honcho config path.
+
+    Checks $HERMES_HOME/honcho.json first (instance-local), then falls back
+    to ~/.honcho/config.json (global).  Returns the global path if neither
+    exists (for first-time setup writes).
+    """
+    local_path = get_hermes_home() / "honcho.json"
+    if local_path.exists():
+        return local_path
+    return GLOBAL_CONFIG_PATH
 
 
 _RECALL_MODE_ALIASES = {"auto": "hybrid"}
@@ -107,21 +124,27 @@ class HonchoClientConfig:
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
     # Session resolution
-    session_strategy: str = "per-session"
+    session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     # Raw global config for anything else consumers need
     raw: dict[str, Any] = field(default_factory=dict)
+    # True when Honcho was explicitly configured for this host (hosts.hermes
+    # block exists or enabled was set explicitly), vs auto-enabled from a
+    # stray HONCHO_API_KEY env var.
+    explicitly_configured: bool = False
 
     @classmethod
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         api_key = os.environ.get("HONCHO_API_KEY")
+        base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         return cls(
             workspace_id=workspace_id,
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
-            enabled=bool(api_key),
+            base_url=base_url,
+            enabled=bool(api_key or base_url),
         )
 
     @classmethod
@@ -130,11 +153,11 @@ class HonchoClientConfig:
         host: str = HOST,
         config_path: Path | None = None,
     ) -> HonchoClientConfig:
-        """Create config from ~/.honcho/config.json.
+        """Create config from the resolved Honcho config path.
 
-        Falls back to environment variables if the file doesn't exist.
+        Resolution: $HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars.
         """
-        path = config_path or GLOBAL_CONFIG_PATH
+        path = config_path or resolve_config_path()
         if not path.exists():
             logger.debug("No global Honcho config at %s, falling back to env", path)
             return cls.from_env()
@@ -146,6 +169,9 @@ class HonchoClientConfig:
             return cls.from_env()
 
         host_block = (raw.get("hosts") or {}).get(host, {})
+        # A hosts.hermes block or explicit enabled flag means the user
+        # intentionally configured Honcho for this host.
+        _explicitly_configured = bool(host_block) or raw.get("enabled") is True
 
         # Explicit host block fields win, then flat/global, then defaults
         workspace = (
@@ -171,8 +197,14 @@ class HonchoClientConfig:
             or raw.get("environment", "production")
         )
 
-        # Auto-enable when API key is present (unless explicitly disabled)
-        # Host-level enabled wins, then root-level, then auto-enable if key exists.
+        base_url = (
+            raw.get("baseUrl")
+            or os.environ.get("HONCHO_BASE_URL", "").strip()
+            or None
+        )
+
+        # Auto-enable when API key or base_url is present (unless explicitly disabled)
+        # Host-level enabled wins, then root-level, then auto-enable if key/url exists.
         host_enabled = host_block.get("enabled")
         root_enabled = raw.get("enabled")
         if host_enabled is not None:
@@ -180,8 +212,8 @@ class HonchoClientConfig:
         elif root_enabled is not None:
             enabled = root_enabled
         else:
-            # Not explicitly set anywhere -> auto-enable if API key exists
-            enabled = bool(api_key)
+            # Not explicitly set anywhere -> auto-enable if API key or base_url exists
+            enabled = bool(api_key or base_url)
 
         # write_frequency: accept int or string
         raw_wf = (
@@ -201,7 +233,7 @@ class HonchoClientConfig:
         # sessionStrategy / sessionPeerPrefix: host first, root fallback
         session_strategy = (
             host_block.get("sessionStrategy")
-            or raw.get("sessionStrategy", "per-session")
+            or raw.get("sessionStrategy", "per-directory")
         )
         host_prefix = host_block.get("sessionPeerPrefix")
         session_peer_prefix = (
@@ -214,6 +246,7 @@ class HonchoClientConfig:
             workspace_id=workspace,
             api_key=api_key,
             environment=environment,
+            base_url=base_url,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
             linked_hosts=linked_hosts,
@@ -244,6 +277,7 @@ class HonchoClientConfig:
             session_peer_prefix=session_peer_prefix,
             sessions=raw.get("sessions", {}),
             raw=raw,
+            explicitly_configured=_explicitly_configured,
         )
 
     @staticmethod
@@ -309,7 +343,7 @@ class HonchoClientConfig:
                 return f"{self.peer_name}-{base}"
             return base
 
-        # per-directory: one Honcho session per working directory
+        # per-directory: one Honcho session per working directory (default)
         if self.session_strategy in ("per-directory", "per-session"):
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:
@@ -348,11 +382,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     if config is None:
         config = HonchoClientConfig.from_global_config()
 
-    if not config.api_key:
+    if not config.api_key and not config.base_url:
         raise ValueError(
             "Honcho API key not found. "
             "Get your API key at https://app.honcho.dev, "
-            "then run 'hermes honcho setup' or set HONCHO_API_KEY."
+            "then run 'hermes honcho setup' or set HONCHO_API_KEY. "
+            "For local instances, set HONCHO_BASE_URL instead."
         )
 
     try:

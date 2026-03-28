@@ -267,7 +267,7 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="local")
 
-    assert resolved["provider"] == "openrouter"
+    assert resolved["provider"] == "custom"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["base_url"] == "http://1.2.3.4:1234/v1"
     assert resolved["api_key"] == "local-provider-key"
@@ -479,8 +479,8 @@ def test_api_key_provider_explicit_api_mode_config(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
-def test_api_key_provider_default_url_stays_chat_completions(monkeypatch):
-    """API-key providers with default /v1 URL should stay on chat_completions."""
+def test_minimax_default_url_uses_anthropic_messages(monkeypatch):
+    """MiniMax with default /anthropic URL should auto-detect anthropic_messages mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
@@ -489,8 +489,77 @@ def test_api_key_provider_default_url_stays_chat_completions(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
     assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_minimax_stale_v1_url_auto_corrected(monkeypatch):
+    """MiniMax with stale /v1 base URL should be auto-corrected to /anthropic."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
+def test_minimax_cn_stale_v1_url_auto_corrected(monkeypatch):
+    """MiniMax-CN with stale /v1 base URL should be auto-corrected to /anthropic."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-cn")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-minimax-cn-key")
+    monkeypatch.setenv("MINIMAX_CN_BASE_URL", "https://api.minimaxi.com/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-cn")
+
+    assert resolved["provider"] == "minimax-cn"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+
+
+def test_minimax_explicit_api_mode_respected(monkeypatch):
+    """Explicit api_mode config should override MiniMax auto-detection."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"api_mode": "chat_completions"})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://api.minimax.io/v1"
+
+
+def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
+    """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba")
+
+    assert resolved["provider"] == "alibaba"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
+
+
+def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch):
+    """Alibaba with /apps/anthropic URL override should auto-detect anthropic_messages mode."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic")
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba")
+
+    assert resolved["provider"] == "alibaba"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):
@@ -510,3 +579,81 @@ def test_named_custom_provider_anthropic_api_mode(monkeypatch):
 
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
+
+
+# ------------------------------------------------------------------
+# fix #2562 — resolve_provider("custom") must not remap to "openrouter"
+# ------------------------------------------------------------------
+
+
+def test_resolve_provider_custom_returns_custom():
+    """resolve_provider('custom') must return 'custom', not 'openrouter'."""
+    from hermes_cli.auth import resolve_provider
+    assert resolve_provider("custom") == "custom"
+
+
+def test_resolve_provider_openrouter_unchanged():
+    """resolve_provider('openrouter') must still return 'openrouter'."""
+    from hermes_cli.auth import resolve_provider
+    assert resolve_provider("openrouter") == "openrouter"
+
+
+def test_custom_provider_runtime_preserves_provider_name(monkeypatch):
+    """resolve_runtime_provider with provider='custom' must return provider='custom'."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:8080/v1",
+                "api_key": "test-key-123",
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom", (
+        f"Expected provider='custom', got provider='{resolved['provider']}'"
+    )
+    assert resolved["base_url"] == "http://localhost:8080/v1"
+    assert resolved["api_key"] == "test-key-123"
+
+
+def test_custom_provider_no_key_gets_placeholder(monkeypatch):
+    """Local server with no API key should get 'no-key-required' placeholder."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:8080/v1",
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "no-key-required"
+    assert resolved["base_url"] == "http://localhost:8080/v1"
+
+
+def test_openrouter_provider_not_affected_by_custom_fix(monkeypatch):
+    """Fixing custom must not change openrouter behavior."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    monkeypatch.setattr(rp, "load_config", lambda: {})
+
+    resolved = rp.resolve_runtime_provider(requested="openrouter")
+    assert resolved["provider"] == "openrouter"

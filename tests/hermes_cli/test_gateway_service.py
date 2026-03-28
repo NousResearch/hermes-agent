@@ -282,6 +282,78 @@ class TestGatewaySystemServiceRouting:
         assert run_calls == []
 
 
+class TestDetectVenvDir:
+    """Tests for _detect_venv_dir() virtualenv detection."""
+
+    def test_detects_active_virtualenv_via_sys_prefix(self, tmp_path, monkeypatch):
+        venv_path = tmp_path / "my-custom-venv"
+        venv_path.mkdir()
+        monkeypatch.setattr("sys.prefix", str(venv_path))
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == venv_path
+
+    def test_falls_back_to_dot_venv_directory(self, tmp_path, monkeypatch):
+        # Not inside a virtualenv
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        dot_venv = tmp_path / ".venv"
+        dot_venv.mkdir()
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == dot_venv
+
+    def test_falls_back_to_venv_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        venv = tmp_path / "venv"
+        venv.mkdir()
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == venv
+
+    def test_prefers_dot_venv_over_venv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / "venv").mkdir()
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == tmp_path / ".venv"
+
+    def test_returns_none_when_no_virtualenv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        result = gateway_cli._detect_venv_dir()
+        assert result is None
+
+
+class TestGeneratedUnitUsesDetectedVenv:
+    def test_systemd_unit_uses_dot_venv_when_detected(self, tmp_path, monkeypatch):
+        dot_venv = tmp_path / ".venv"
+        dot_venv.mkdir()
+        (dot_venv / "bin").mkdir()
+
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: dot_venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(dot_venv / "bin" / "python"))
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"VIRTUAL_ENV={dot_venv}" in unit
+        assert f"{dot_venv}/bin" in unit
+        # Must NOT contain a hardcoded /venv/ path
+        assert "/venv/" not in unit or "/.venv/" in unit
+
+
 class TestEnsureUserSystemdEnv:
     """Tests for _ensure_user_systemd_env() D-Bus session bus auto-detection."""
 
@@ -290,21 +362,17 @@ class TestEnsureUserSystemdEnv:
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
         monkeypatch.setattr(os, "getuid", lambda: 42)
 
-        # Patch Path so /run/user/42 resolves to our tmp dir (which exists)
-        from pathlib import Path as RealPath
-
-        class FakePath(type(RealPath())):
-            def __new__(cls, *args):
-                p = str(args[0]) if args else ""
-                if p == "/run/user/42":
-                    return RealPath.__new__(cls, str(tmp_path))
-                return RealPath.__new__(cls, *args)
-
-        monkeypatch.setattr(gateway_cli, "Path", FakePath)
+        # Patch Path.exists so /run/user/42 appears to exist.
+        # Using a FakePath subclass breaks on Python 3.12+ where
+        # PosixPath.__new__ ignores the redirected path argument.
+        _orig_exists = gateway_cli.Path.exists
+        monkeypatch.setattr(
+            gateway_cli.Path, "exists",
+            lambda self: True if str(self) == "/run/user/42" else _orig_exists(self),
+        )
 
         gateway_cli._ensure_user_systemd_env()
 
-        # Function sets the canonical string, not the fake path
         assert os.environ.get("XDG_RUNTIME_DIR") == "/run/user/42"
 
     def test_sets_dbus_address_when_bus_socket_exists(self, tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ from agent.auxiliary_client import (
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
+    resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
     _read_codex_access_token,
@@ -112,6 +113,338 @@ class TestReadCodexAccessToken:
         assert result is None
 
 
+    def test_expired_jwt_returns_none(self, tmp_path, monkeypatch):
+        """Expired JWT tokens should be skipped so auto chain continues."""
+        import base64
+        import time as _time
+
+        # Build a JWT with exp in the past
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        expired_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
+        assert result is None, "Expired JWT should return None"
+
+    def test_valid_jwt_returns_token(self, tmp_path, monkeypatch):
+        """Non-expired JWT tokens should be returned."""
+        import base64
+        import time as _time
+
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"exp": int(_time.time()) + 3600}).encode()
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        valid_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": valid_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
+        assert result == valid_jwt
+
+    def test_non_jwt_token_passes_through(self, tmp_path, monkeypatch):
+        """Non-JWT tokens (no dots) should be returned as-is."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "plain-token-no-jwt", "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
+        assert result == "plain-token-no-jwt"
+
+
+class TestAnthropicOAuthFlag:
+    """Test that OAuth tokens get is_oauth=True in auxiliary Anthropic client."""
+
+    def test_oauth_token_sets_flag(self, monkeypatch):
+        """OAuth tokens (sk-ant-oat01-*) should create client with is_oauth=True."""
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-token")
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            client, model = _try_anthropic()
+            assert client is not None
+            assert isinstance(client, AnthropicAuxiliaryClient)
+            # The adapter inside should have is_oauth=True
+            adapter = client.chat.completions
+            assert adapter._is_oauth is True
+
+    def test_api_key_no_oauth_flag(self, monkeypatch):
+        """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            client, model = _try_anthropic()
+            assert client is not None
+            assert isinstance(client, AnthropicAuxiliaryClient)
+            adapter = client.chat.completions
+            assert adapter._is_oauth is False
+
+
+class TestExpiredCodexFallback:
+    """Test that expired Codex tokens don't block the auto chain."""
+
+    def test_expired_codex_falls_through_to_next(self, tmp_path, monkeypatch):
+        """When Codex token is expired, auto chain should skip it and try next provider."""
+        import base64
+        import time as _time
+
+        # Expired Codex JWT
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        expired_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Set up Anthropic as fallback
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _resolve_auto, AnthropicAuxiliaryClient
+            client, model = _resolve_auto()
+            # Should NOT be Codex, should be Anthropic (or another available provider)
+            assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
+
+
+    def test_expired_codex_openrouter_wins(self, tmp_path, monkeypatch):
+        """With expired Codex + OpenRouter key, OpenRouter should win (1st in chain)."""
+        import base64
+        import time as _time
+
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        expired_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _resolve_auto
+            client, model = _resolve_auto()
+            assert client is not None
+            # OpenRouter is 1st in chain, should win
+            mock_openai.assert_called()
+
+    def test_expired_codex_custom_endpoint_wins(self, tmp_path, monkeypatch):
+        """With expired Codex + custom endpoint (Ollama), custom should win (3rd in chain)."""
+        import base64
+        import time as _time
+
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        expired_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Simulate Ollama or custom endpoint
+        with patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("http://localhost:11434/v1", "sk-dummy")):
+            with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                from agent.auxiliary_client import _resolve_auto
+                client, model = _resolve_auto()
+                assert client is not None
+
+
+    def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
+        """OAuth-style tokens should get is_oauth=True (token is not sk-ant-api-*)."""
+        # Mock resolve_anthropic_token to return an OAuth-style token
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            client, model = _try_anthropic()
+            assert client is not None, "Should resolve token"
+            adapter = client.chat.completions
+            assert adapter._is_oauth is True, "Non-sk-ant-api token should set is_oauth=True"
+
+    def test_jwt_missing_exp_passes_through(self, tmp_path, monkeypatch):
+        """JWT with valid JSON but no exp claim should pass through."""
+        import base64
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+        payload_data = json.dumps({"sub": "user123"}).encode()  # no exp
+        payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
+        no_exp_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": no_exp_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
+        assert result == no_exp_jwt, "JWT without exp should pass through"
+
+    def test_jwt_invalid_json_payload_passes_through(self, tmp_path, monkeypatch):
+        """JWT with valid base64 but invalid JSON payload should pass through."""
+        import base64
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256"}').rstrip(b"=").decode()
+        payload = base64.urlsafe_b64encode(b"not-json-content").rstrip(b"=").decode()
+        bad_jwt = f"{header}.{payload}.fakesig"
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": bad_jwt, "refresh_token": "r"},
+                },
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        result = _read_codex_access_token()
+        assert result == bad_jwt, "JWT with invalid JSON payload should pass through"
+
+    def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
+        """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
+            client, model = _try_anthropic()
+            assert client is not None
+            adapter = client.chat.completions
+            assert adapter._is_oauth is True
+
+
+class TestExplicitProviderRouting:
+    """Test explicit provider selection bypasses auto chain correctly."""
+
+    def test_explicit_anthropic_oauth(self, monkeypatch):
+        """provider='anthropic' + OAuth token should work with is_oauth=True."""
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-explicit-test")
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            client, model = resolve_provider_client("anthropic")
+            assert client is not None
+            # Verify OAuth flag propagated
+            adapter = client.chat.completions
+            assert adapter._is_oauth is True
+
+    def test_explicit_anthropic_api_key(self, monkeypatch):
+        """provider='anthropic' + regular API key should work with is_oauth=False."""
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api-regular-key"), \
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+            mock_build.return_value = MagicMock()
+            client, model = resolve_provider_client("anthropic")
+            assert client is not None
+            adapter = client.chat.completions
+            assert adapter._is_oauth is False
+
+    def test_explicit_openrouter(self, monkeypatch):
+        """provider='openrouter' should use OPENROUTER_API_KEY."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-explicit")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("openrouter")
+            assert client is not None
+
+    def test_explicit_kimi(self, monkeypatch):
+        """provider='kimi-coding' should use KIMI_API_KEY."""
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("kimi-coding")
+            assert client is not None
+
+    def test_explicit_minimax(self, monkeypatch):
+        """provider='minimax' should use MINIMAX_API_KEY."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("minimax")
+            assert client is not None
+
+    def test_explicit_deepseek(self, monkeypatch):
+        """provider='deepseek' should use DEEPSEEK_API_KEY."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("deepseek")
+            assert client is not None
+
+    def test_explicit_zai(self, monkeypatch):
+        """provider='zai' should use GLM_API_KEY."""
+        monkeypatch.setenv("GLM_API_KEY", "zai-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("zai")
+            assert client is not None
+
+    def test_explicit_unknown_returns_none(self, monkeypatch):
+        """Unknown provider should return None."""
+        client, model = resolve_provider_client("nonexistent-provider")
+        assert client is None
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -129,7 +462,7 @@ class TestGetTextAuxiliaryClient:
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_nous.return_value = {"access_token": "nous-tok"}
             client, model = get_text_auxiliary_client()
-        assert model == "gemini-3-flash"
+        assert model == "google/gemini-3-flash-preview"
 
     def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
         monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
@@ -306,6 +639,30 @@ class TestVisionClientFallback:
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
 
+    def test_selected_codex_provider_short_circuits_vision_auto(self, monkeypatch):
+        def fake_load_config():
+            return {"model": {"provider": "openai-codex", "default": "gpt-5.2-codex"}}
+
+        codex_client = MagicMock()
+        with (
+            patch("hermes_cli.config.load_config", fake_load_config),
+            patch("agent.auxiliary_client._try_codex", return_value=(codex_client, "gpt-5.2-codex")) as mock_codex,
+            patch("agent.auxiliary_client._try_openrouter") as mock_openrouter,
+            patch("agent.auxiliary_client._try_nous") as mock_nous,
+            patch("agent.auxiliary_client._try_anthropic") as mock_anthropic,
+            patch("agent.auxiliary_client._try_custom_endpoint") as mock_custom,
+        ):
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "openai-codex"
+        assert client is codex_client
+        assert model == "gpt-5.2-codex"
+        mock_codex.assert_called_once()
+        mock_openrouter.assert_not_called()
+        mock_nous.assert_not_called()
+        mock_anthropic.assert_not_called()
+        mock_custom.assert_not_called()
+
     def test_vision_auto_includes_codex(self, codex_auth_dir):
         """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
@@ -361,7 +718,7 @@ class TestVisionClientFallback:
              patch("agent.auxiliary_client.OpenAI"):
             mock_nous.return_value = {"access_token": "nous-tok"}
             client, model = get_vision_auxiliary_client()
-        assert model == "gemini-3-flash"
+        assert model == "google/gemini-3-flash-preview"
         assert client is not None
 
     def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
@@ -457,7 +814,7 @@ class TestResolveForcedProvider:
              patch("agent.auxiliary_client.OpenAI"):
             mock_nous.return_value = {"access_token": "nous-tok"}
             client, model = _resolve_forced_provider("nous")
-        assert model == "gemini-3-flash"
+        assert model == "google/gemini-3-flash-preview"
         assert client is not None
 
     def test_forced_nous_not_configured(self, monkeypatch):

@@ -10,22 +10,30 @@ import os
 import sys
 from pathlib import Path
 
-GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
+from honcho_integration.client import resolve_config_path, GLOBAL_CONFIG_PATH
+
 HOST = "hermes"
 
 
+def _config_path() -> Path:
+    """Return the active Honcho config path (instance-local or global)."""
+    return resolve_config_path()
+
+
 def _read_config() -> dict:
-    if GLOBAL_CONFIG_PATH.exists():
+    path = _config_path()
+    if path.exists():
         try:
-            return json.loads(GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {}
 
 
-def _write_config(cfg: dict) -> None:
-    GLOBAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GLOBAL_CONFIG_PATH.write_text(
+def _write_config(cfg: dict, path: Path | None = None) -> None:
+    path = path or _config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
@@ -87,9 +95,14 @@ def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
     cfg = _read_config()
 
+    active_path = _config_path()
     print("\nHoncho memory setup\n" + "─" * 40)
     print("  Honcho gives Hermes persistent cross-session memory.")
-    print("  Config is shared with other hosts at ~/.honcho/config.json\n")
+    if active_path != GLOBAL_CONFIG_PATH:
+        print(f"  Instance config: {active_path}")
+    else:
+        print("  Config is shared with other hosts at ~/.honcho/config.json")
+    print()
 
     if not _ensure_sdk_installed():
         return
@@ -128,7 +141,7 @@ def cmd_setup(args) -> None:
 
     # Memory mode
     current_mode = hermes_host.get("memoryMode") or cfg.get("memoryMode", "hybrid")
-    print(f"\n  Memory mode options:")
+    print("\n  Memory mode options:")
     print("    hybrid  — write to both Honcho and local MEMORY.md (default)")
     print("    honcho  — Honcho only, skip MEMORY.md writes")
     new_mode = _prompt("Memory mode", default=current_mode)
@@ -139,7 +152,7 @@ def cmd_setup(args) -> None:
 
     # Write frequency
     current_wf = str(hermes_host.get("writeFrequency") or cfg.get("writeFrequency", "async"))
-    print(f"\n  Write frequency options:")
+    print("\n  Write frequency options:")
     print("    async   — background thread, no token cost (recommended)")
     print("    turn    — sync write after every turn")
     print("    session — batch write at session end only")
@@ -153,7 +166,7 @@ def cmd_setup(args) -> None:
     # Recall mode
     _raw_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
     current_recall = "hybrid" if _raw_recall not in ("hybrid", "context", "tools") else _raw_recall
-    print(f"\n  Recall mode options:")
+    print("\n  Recall mode options:")
     print("    hybrid  — auto-injected context + Honcho tools available (default)")
     print("    context — auto-injected context only, Honcho tools hidden")
     print("    tools   — Honcho tools only, no auto-injected context")
@@ -162,10 +175,10 @@ def cmd_setup(args) -> None:
         hermes_host["recallMode"] = new_recall
 
     # Session strategy
-    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
-    print(f"\n  Session strategy options:")
-    print("    per-session   — new Honcho session each run, named by Hermes session ID (default)")
-    print("    per-directory — one session per working directory")
+    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-directory")
+    print("\n  Session strategy options:")
+    print("    per-directory — one session per working directory (default)")
+    print("    per-session   — new Honcho session each run, named by Hermes session ID")
     print("    per-repo      — one session per git repository (uses repo root name)")
     print("    global        — single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
@@ -176,7 +189,7 @@ def cmd_setup(args) -> None:
     hermes_host.setdefault("saveMessages", True)
 
     _write_config(cfg)
-    print(f"\n  Config written to {GLOBAL_CONFIG_PATH}")
+    print(f"\n  Config written to {active_path}")
 
     # Test connection
     print("  Testing connection... ", end="", flush=True)
@@ -190,7 +203,7 @@ def cmd_setup(args) -> None:
         print(f"FAILED\n  Error: {e}")
         return
 
-    print(f"\n  Honcho is ready.")
+    print("\n  Honcho is ready.")
     print(f"  Session:   {hcfg.resolve_session_name()}")
     print(f"  Workspace: {hcfg.workspace_id}")
     print(f"  Peer:      {hcfg.peer_name}")
@@ -200,17 +213,17 @@ def cmd_setup(args) -> None:
         _mode_str = f"{hcfg.memory_mode}  (peers: {overrides})"
     print(f"  Mode:      {_mode_str}")
     print(f"  Frequency: {hcfg.write_frequency}")
-    print(f"\n  Honcho tools available in chat:")
-    print(f"    honcho_context  — ask Honcho a question about you (LLM-synthesized)")
-    print(f"    honcho_search       — semantic search over your history (no LLM)")
-    print(f"    honcho_profile      — your peer card, key facts (no LLM)")
-    print(f"    honcho_conclude     — persist a user fact to Honcho memory (no LLM)")
-    print(f"\n  Other commands:")
-    print(f"    hermes honcho status     — show full config")
-    print(f"    hermes honcho mode       — show or change memory mode")
-    print(f"    hermes honcho tokens     — show or set token budgets")
-    print(f"    hermes honcho identity   — seed or show AI peer identity")
-    print(f"    hermes honcho map <name> — map this directory to a session name\n")
+    print("\n  Honcho tools available in chat:")
+    print("    honcho_context  — ask Honcho a question about you (LLM-synthesized)")
+    print("    honcho_search       — semantic search over your history (no LLM)")
+    print("    honcho_profile      — your peer card, key facts (no LLM)")
+    print("    honcho_conclude     — persist a user fact to Honcho memory (no LLM)")
+    print("\n  Other commands:")
+    print("    hermes honcho status     — show full config")
+    print("    hermes honcho mode       — show or change memory mode")
+    print("    hermes honcho tokens     — show or set token budgets")
+    print("    hermes honcho identity   — seed or show AI peer identity")
+    print("    hermes honcho map <name> — map this directory to a session name\n")
 
 
 def cmd_status(args) -> None:
@@ -223,8 +236,10 @@ def cmd_status(args) -> None:
 
     cfg = _read_config()
 
+    active_path = _config_path()
+
     if not cfg:
-        print("  No Honcho config found at ~/.honcho/config.json")
+        print(f"  No Honcho config found at {active_path}")
         print("  Run 'hermes honcho setup' to configure.\n")
         return
 
@@ -238,19 +253,19 @@ def cmd_status(args) -> None:
     api_key = hcfg.api_key or ""
     masked = f"...{api_key[-8:]}" if len(api_key) > 8 else ("set" if api_key else "not set")
 
-    print(f"\nHoncho status\n" + "─" * 40)
+    print("\nHoncho status\n" + "─" * 40)
     print(f"  Enabled:        {hcfg.enabled}")
     print(f"  API key:        {masked}")
     print(f"  Workspace:      {hcfg.workspace_id}")
     print(f"  Host:           {hcfg.host}")
-    print(f"  Config path:    {GLOBAL_CONFIG_PATH}")
+    print(f"  Config path:    {active_path}")
     print(f"  AI peer:        {hcfg.ai_peer}")
     print(f"  User peer:      {hcfg.peer_name or 'not set'}")
     print(f"  Session key:    {hcfg.resolve_session_name()}")
     print(f"  Recall mode:    {hcfg.recall_mode}")
     print(f"  Memory mode:    {hcfg.memory_mode}")
     if hcfg.peer_memory_modes:
-        print(f"  Per-peer modes:")
+        print("  Per-peer modes:")
         for peer, mode in hcfg.peer_memory_modes.items():
             print(f"    {peer}: {mode}")
     print(f"  Write freq:     {hcfg.write_frequency}")
@@ -275,7 +290,7 @@ def cmd_sessions(args) -> None:
     if not sessions:
         print("  No session mappings configured.\n")
         print("  Add one with: hermes honcho map <session-name>")
-        print("  Or edit ~/.honcho/config.json directly.\n")
+        print(f"  Or edit {_config_path()} directly.\n")
         return
 
     cwd = os.getcwd()
@@ -330,12 +345,12 @@ def cmd_peer(args) -> None:
         ai = hermes.get('aiPeer') or cfg.get('aiPeer') or HOST
         lvl = hermes.get("dialecticReasoningLevel") or cfg.get("dialecticReasoningLevel") or "low"
         max_chars = hermes.get("dialecticMaxChars") or cfg.get("dialecticMaxChars") or 600
-        print(f"\nHoncho peers\n" + "─" * 40)
+        print("\nHoncho peers\n" + "─" * 40)
         print(f"  User peer:   {user}")
-        print(f"    Your identity in Honcho. Messages you send build this peer's card.")
+        print("    Your identity in Honcho. Messages you send build this peer's card.")
         print(f"  AI peer:     {ai}")
-        print(f"    Hermes' identity in Honcho. Seed with 'hermes honcho identity <file>'.")
-        print(f"    Dialectic calls ask this peer questions to warm session context.")
+        print("    Hermes' identity in Honcho. Seed with 'hermes honcho identity <file>'.")
+        print("    Dialectic calls ask this peer questions to warm session context.")
         print()
         print(f"  Dialectic reasoning:  {lvl}  ({', '.join(REASONING_LEVELS)})")
         print(f"  Dialectic cap:        {max_chars} chars\n")
@@ -361,7 +376,7 @@ def cmd_peer(args) -> None:
 
     if changed:
         _write_config(cfg)
-        print(f"  Saved to {GLOBAL_CONFIG_PATH}\n")
+        print(f"  Saved to {_config_path()}\n")
 
 
 def cmd_mode(args) -> None:
@@ -379,11 +394,11 @@ def cmd_mode(args) -> None:
             or cfg.get("memoryMode")
             or "hybrid"
         )
-        print(f"\nHoncho memory mode\n" + "─" * 40)
+        print("\nHoncho memory mode\n" + "─" * 40)
         for m, desc in MODES.items():
             marker = " ←" if m == current else ""
             print(f"  {m:<8}  {desc}{marker}")
-        print(f"\n  Set with: hermes honcho mode [hybrid|honcho]\n")
+        print("\n  Set with: hermes honcho mode [hybrid|honcho]\n")
         return
 
     if mode_arg not in MODES:
@@ -408,18 +423,18 @@ def cmd_tokens(args) -> None:
         ctx_tokens = hermes.get("contextTokens") or cfg.get("contextTokens") or "(Honcho default)"
         d_chars = hermes.get("dialecticMaxChars") or cfg.get("dialecticMaxChars") or 600
         d_level = hermes.get("dialecticReasoningLevel") or cfg.get("dialecticReasoningLevel") or "low"
-        print(f"\nHoncho budgets\n" + "─" * 40)
+        print("\nHoncho budgets\n" + "─" * 40)
         print()
         print(f"  Context     {ctx_tokens} tokens")
-        print(f"    Raw memory retrieval. Honcho returns stored facts/history about")
-        print(f"    the user and session, injected directly into the system prompt.")
+        print("    Raw memory retrieval. Honcho returns stored facts/history about")
+        print("    the user and session, injected directly into the system prompt.")
         print()
         print(f"  Dialectic   {d_chars} chars, reasoning: {d_level}")
-        print(f"    AI-to-AI inference. Hermes asks Honcho's AI peer a question")
-        print(f"    (e.g. \"what were we working on?\") and Honcho runs its own model")
-        print(f"    to synthesize an answer. Used for first-turn session continuity.")
-        print(f"    Level controls how much reasoning Honcho spends on the answer.")
-        print(f"\n  Set with: hermes honcho tokens [--context N] [--dialectic N]\n")
+        print("    AI-to-AI inference. Hermes asks Honcho's AI peer a question")
+        print("    (e.g. \"what were we working on?\") and Honcho runs its own model")
+        print("    to synthesize an answer. Used for first-turn session continuity.")
+        print("    Level controls how much reasoning Honcho spends on the answer.")
+        print("\n  Set with: hermes honcho tokens [--context N] [--dialectic N]\n")
         return
 
     changed = False
@@ -434,7 +449,7 @@ def cmd_tokens(args) -> None:
 
     if changed:
         _write_config(cfg)
-        print(f"  Saved to {GLOBAL_CONFIG_PATH}\n")
+        print(f"  Saved to {_config_path()}\n")
 
 
 def cmd_identity(args) -> None:
@@ -508,7 +523,7 @@ def cmd_identity(args) -> None:
         print(f"  Seeded AI peer identity from {p.name} into session '{session_key}'")
         print(f"  Honcho will incorporate this into {hcfg.ai_peer}'s representation over time.\n")
     else:
-        print(f"  Failed to seed identity. Check logs for details.\n")
+        print("  Failed to seed identity. Check logs for details.\n")
 
 
 def cmd_migrate(args) -> None:
@@ -608,7 +623,7 @@ def cmd_migrate(args) -> None:
         print()
         print("  If you want to migrate them now without starting a session:")
         for f in user_files:
-            print(f"    hermes honcho migrate  — this step handles it interactively")
+            print("    hermes honcho migrate  — this step handles it interactively")
         if has_key:
             answer = _prompt("  Upload user memory files to Honcho now?", default="y")
             if answer.lower() in ("y", "yes"):

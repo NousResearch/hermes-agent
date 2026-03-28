@@ -10,7 +10,6 @@ The [TOOL_CALLS] token is the bot_token used by Mistral models.
 """
 
 import json
-import re
 import uuid
 from typing import List, Optional
 
@@ -42,9 +41,6 @@ class MistralToolCallParser(ToolCallParser):
     # The [TOOL_CALLS] token -- may appear as different strings depending on tokenizer
     BOT_TOKEN = "[TOOL_CALLS]"
 
-    # Fallback regex for pre-v11 format when JSON parsing fails
-    TOOL_CALL_REGEX = re.compile(r"\[?\s*(\{.*?\})\s*\]?", re.DOTALL)
-
     def parse(self, text: str) -> ParseResult:
         if self.BOT_TOKEN not in text:
             return text, None
@@ -70,6 +66,13 @@ class MistralToolCallParser(ToolCallParser):
                     brace_idx = raw.find("{")
                     tool_name = raw[:brace_idx].strip()
                     args_str = raw[brace_idx:]
+
+                    # Validate and clean the JSON arguments
+                    try:
+                        parsed_args = json.loads(args_str)
+                        args_str = json.dumps(parsed_args, ensure_ascii=False)
+                    except json.JSONDecodeError:
+                        pass  # Keep raw if parsing fails
 
                     tool_calls.append(
                         ChatCompletionMessageToolCall(
@@ -100,13 +103,14 @@ class MistralToolCallParser(ToolCallParser):
                             )
                         )
                 except json.JSONDecodeError:
-                    # Fallback regex extraction
-                    match = self.TOOL_CALL_REGEX.findall(first_raw)
-                    if match:
-                        for raw_json in match:
-                            try:
-                                tc = json.loads(raw_json)
-                                args = tc.get("arguments", {})
+                    # Fallback: extract JSON objects using raw_decode
+                    decoder = json.JSONDecoder()
+                    idx = 0
+                    while idx < len(first_raw):
+                        try:
+                            obj, end_idx = decoder.raw_decode(first_raw, idx)
+                            if isinstance(obj, dict) and "name" in obj:
+                                args = obj.get("arguments", {})
                                 if isinstance(args, dict):
                                     args = json.dumps(args, ensure_ascii=False)
                                 tool_calls.append(
@@ -114,12 +118,13 @@ class MistralToolCallParser(ToolCallParser):
                                         id=_generate_mistral_id(),
                                         type="function",
                                         function=Function(
-                                            name=tc["name"], arguments=args
+                                            name=obj["name"], arguments=args
                                         ),
                                     )
                                 )
-                            except (json.JSONDecodeError, KeyError):
-                                continue
+                            idx = end_idx
+                        except json.JSONDecodeError:
+                            idx += 1
 
             if not tool_calls:
                 return text, None

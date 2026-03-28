@@ -386,6 +386,100 @@ class TestLoadTranscriptCorruptLines:
         assert messages[1]["content"] == "b"
 
 
+class TestLoadTranscriptPreferLongerSource:
+    """Regression: load_transcript must return whichever source (SQLite or JSONL)
+    has more messages to prevent silent truncation.  GH-3212."""
+
+    @pytest.fixture()
+    def store_with_db(self, tmp_path):
+        """SessionStore with both SQLite and JSONL active."""
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = SessionDB(db_path=tmp_path / "state.db")
+        s._loaded = True
+        return s
+
+    def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
+        """Legacy session: JSONL has full history, SQLite has only recent turn."""
+        sid = "legacy_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # JSONL has 10 messages (legacy history — written before SQLite existed)
+        for i in range(10):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db.append_to_transcript(
+                sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
+            )
+        # SQLite has only 2 messages (recent turn after migration)
+        store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 10
+        assert result[0]["content"] == "msg-0"
+
+    def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
+        """Fully migrated session: SQLite has more (JSONL stopped growing)."""
+        sid = "migrated_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # JSONL has 2 old messages
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "old-q"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
+        )
+        # SQLite has 4 messages (superset after migration)
+        for i in range(4):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 4
+        assert result[0]["content"] == "db-0"
+
+    def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
+        """No SQLite rows — falls back to JSONL (original behavior preserved)."""
+        sid = "no_db_rows"
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "hello"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "hi"}, skip_db=True,
+        )
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        assert result[0]["content"] == "hello"
+
+    def test_both_empty_returns_empty(self, store_with_db):
+        """Neither source has data — returns empty list."""
+        result = store_with_db.load_transcript("nonexistent")
+        assert result == []
+
+    def test_equal_length_prefers_sqlite(self, store_with_db):
+        """When both have same count, SQLite wins (has richer fields like reasoning)."""
+        sid = "equal_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # Write 2 messages to JSONL only
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
+        )
+        # Write 2 different messages to SQLite only
+        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        # Should be the SQLite version (equal count → prefers SQLite)
+        assert result[0]["content"] == "db-q"
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""
@@ -752,7 +846,7 @@ class TestLastPromptTokens:
 
         store.update_session("k1", model="openai/gpt-5.4")
 
-        store._db.update_token_counts.assert_called_once_with(
+        store._db.set_token_counts.assert_called_once_with(
             "s1",
             input_tokens=0,
             output_tokens=0,
@@ -764,4 +858,48 @@ class TestLastPromptTokens:
             billing_provider=None,
             billing_base_url=None,
             model="openai/gpt-5.4",
+            absolute=True,
         )
+
+
+class TestRewriteTranscriptPreservesReasoning:
+    """rewrite_transcript must not drop reasoning fields from SQLite."""
+
+    def test_reasoning_survives_rewrite(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "reasoning-test"
+        db.create_session(session_id=session_id, source="cli")
+
+        # Insert a message WITH all three reasoning fields
+        db.append_message(
+            session_id=session_id,
+            role="assistant",
+            content="The answer is 42.",
+            reasoning="I need to think step by step.",
+            reasoning_details=[{"type": "summary", "text": "step by step"}],
+            codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
+        )
+
+        # Verify all three were stored
+        before = db.get_messages_as_conversation(session_id)
+        assert before[0].get("reasoning") == "I need to think step by step."
+        assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+        # Now simulate /retry: build the SessionStore and call rewrite_transcript
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        # rewrite_transcript receives the messages that load_transcript returned
+        store.rewrite_transcript(session_id, before)
+
+        # Load again — all three reasoning fields must survive
+        after = db.get_messages_as_conversation(session_id)
+        assert after[0].get("reasoning") == "I need to think step by step."
+        assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]

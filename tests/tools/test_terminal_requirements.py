@@ -18,9 +18,8 @@ def _clear_terminal_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_local_terminal_requirements_do_not_depend_on_minisweagent(monkeypatch, caplog):
-    """Local backend uses Hermes' own LocalEnvironment wrapper and should not
-    be marked unavailable just because `minisweagent` isn't importable."""
+def test_local_terminal_requirements(monkeypatch, caplog):
+    """Local backend uses Hermes' own LocalEnvironment wrapper."""
     _clear_terminal_env(monkeypatch)
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
@@ -64,7 +63,7 @@ def test_modal_backend_without_token_or_config_logs_specific_error(monkeypatch, 
     monkeypatch.setenv("TERMINAL_ENV", "modal")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setattr(terminal_tool_module, "ensure_minisweagent_on_path", lambda *_args, **_kwargs: None)
+    # Pretend swerex is installed
     monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
 
     with caplog.at_level(logging.ERROR):

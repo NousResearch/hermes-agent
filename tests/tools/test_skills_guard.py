@@ -55,6 +55,13 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("anthropics/skills") == "trusted"
         assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
 
+    def test_skills_sh_wrapped_trusted_repos(self):
+        assert _resolve_trust_level("skills-sh/openai/skills/skill-creator") == "trusted"
+        assert _resolve_trust_level("skills-sh/anthropics/skills/frontend-design") == "trusted"
+
+    def test_common_skills_sh_prefix_typo_still_maps_to_trusted_repo(self):
+        assert _resolve_trust_level("skils-sh/anthropics/skills/frontend-design") == "trusted"
+
     def test_community_default(self):
         assert _resolve_trust_level("random-user/my-skill") == "community"
         assert _resolve_trust_level("") == "community"
@@ -167,12 +174,12 @@ class TestShouldAllowInstall:
         assert allowed is True
         assert "agent-created" in reason
 
-    def test_dangerous_agent_created_blocked(self):
-        """Agent-created skills with dangerous verdict (critical findings) stay blocked."""
+    def test_dangerous_agent_created_asks(self):
+        """Agent-created skills with dangerous verdict return None (ask for confirmation)."""
         f = [Finding("env_exfil_curl", "critical", "exfiltration", "SKILL.md", 1, "curl $TOKEN", "exfiltration")]
         allowed, reason = should_allow_install(self._result("agent-created", "dangerous", f))
-        assert allowed is False
-        assert "Blocked" in reason
+        assert allowed is None
+        assert "Requires confirmation" in reason
 
     def test_force_overrides_dangerous_for_agent_created(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]

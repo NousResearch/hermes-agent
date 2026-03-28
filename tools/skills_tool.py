@@ -68,6 +68,8 @@ Usage:
 
 import json
 import logging
+
+from hermes_constants import get_hermes_home
 import os
 import re
 import sys
@@ -85,7 +87,7 @@ logger = logging.getLogger(__name__)
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
@@ -118,28 +120,11 @@ def set_secret_capture_callback(callback) -> None:
 def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     """Check if a skill is compatible with the current OS platform.
 
-    Skills declare platform requirements via a top-level ``platforms`` list
-    in their YAML frontmatter::
-
-        platforms: [macos]          # macOS only
-        platforms: [macos, linux]   # macOS and Linux
-
-    Valid values: ``macos``, ``linux``, ``windows``.
-
-    If the field is absent or empty the skill is compatible with **all**
-    platforms (backward-compatible default).
+    Delegates to ``agent.skill_utils.skill_matches_platform`` — kept here
+    as a public re-export so existing callers don't need updating.
     """
-    platforms = frontmatter.get("platforms")
-    if not platforms:
-        return True  # No restriction → loads everywhere
-    if not isinstance(platforms, list):
-        platforms = [platforms]
-    current = sys.platform
-    for p in platforms:
-        mapped = _PLATFORM_MAP.get(str(p).lower().strip(), str(p).lower().strip())
-        if current.startswith(mapped):
-            return True
-    return False
+    from agent.skill_utils import skill_matches_platform as _impl
+    return _impl(frontmatter)
 
 
 def _normalize_prerequisite_values(value: Any) -> List[str]:
@@ -417,40 +402,13 @@ def check_skills_requirements() -> bool:
 
 
 def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
+    """Parse YAML frontmatter from markdown content.
+
+    Delegates to ``agent.skill_utils.parse_frontmatter`` — kept here
+    as a public re-export so existing callers don't need updating.
     """
-    Parse YAML frontmatter from markdown content.
-
-    Uses yaml.safe_load for full YAML support (nested metadata, lists, etc.)
-    with a fallback to simple key:value splitting for robustness.
-
-    Args:
-        content: Full markdown file content
-
-    Returns:
-        Tuple of (frontmatter dict, remaining content)
-    """
-    frontmatter = {}
-    body = content
-
-    if content.startswith("---"):
-        end_match = re.search(r"\n---\s*\n", content[3:])
-        if end_match:
-            yaml_content = content[3 : end_match.start() + 3]
-            body = content[end_match.end() + 3 :]
-
-            try:
-                parsed = yaml.safe_load(yaml_content)
-                if isinstance(parsed, dict):
-                    frontmatter = parsed
-                # yaml.safe_load returns None for empty frontmatter
-            except yaml.YAMLError:
-                # Fallback: simple key:value parsing for malformed YAML
-                for line in yaml_content.strip().split("\n"):
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        frontmatter[key.strip()] = value.strip()
-
-    return frontmatter, body
+    from agent.skill_utils import parse_frontmatter
+    return parse_frontmatter(content)
 
 
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
@@ -514,24 +472,13 @@ def _parse_tags(tags_value) -> List[str]:
 
 
 def _get_disabled_skill_names() -> Set[str]:
-    """Load disabled skill names from config (once per call).
+    """Load disabled skill names from config.
 
-    Resolves platform from ``HERMES_PLATFORM`` env var, falls back to
-    the global disabled list.
+    Delegates to ``agent.skill_utils.get_disabled_skill_names`` — kept here
+    as a public re-export so existing callers don't need updating.
     """
-    import os
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        skills_cfg = config.get("skills", {})
-        resolved_platform = os.getenv("HERMES_PLATFORM")
-        if resolved_platform:
-            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
-            if platform_disabled is not None:
-                return set(platform_disabled)
-        return set(skills_cfg.get("disabled", []))
-    except Exception:
-        return set()
+    from agent.skill_utils import get_disabled_skill_names
+    return get_disabled_skill_names()
 
 
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
@@ -1145,6 +1092,26 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             backend=backend,
         )
         setup_needed = bool(remaining_missing_required_envs)
+
+        # Register available skill env vars so they pass through to sandboxed
+        # execution environments (execute_code, terminal).  Only vars that are
+        # actually set get registered — missing ones are reported as setup_needed.
+        available_env_names = [
+            e["name"]
+            for e in required_env_vars
+            if e["name"] not in remaining_missing_required_envs
+        ]
+        if available_env_names:
+            try:
+                from tools.env_passthrough import register_env_passthrough
+
+                register_env_passthrough(available_env_names)
+            except Exception:
+                logger.debug(
+                    "Could not register env passthrough for skill %s",
+                    skill_name,
+                    exc_info=True,
+                )
 
         result = {
             "success": True,

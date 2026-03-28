@@ -14,15 +14,14 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
     load_config,
     save_config,
     get_env_value,
     save_env_value,
-    get_hermes_home,
+    get_hermes_home,  # noqa: F401 — used by test mocks
 )
 from hermes_cli.colors import Colors, color
 
@@ -209,14 +208,14 @@ def cmd_mcp_add(args):
         _info(f"Starting OAuth flow for '{name}'...")
         oauth_ok = False
         try:
-            from tools.mcp_oauth import get_auth_headers
-            headers = get_auth_headers(name, url)
-            if headers:
+            from tools.mcp_oauth import build_oauth_auth
+            oauth_auth = build_oauth_auth(name, url)
+            if oauth_auth:
                 server_config["auth"] = "oauth"
-                _success("OAuth authenticated")
-                oauth_ok = True
+                _success("OAuth configured (tokens will be acquired on first connection)")
+                oauth_ok=True
             else:
-                _warning("OAuth flow did not complete")
+                _warning("OAuth setup failed — MCP SDK auth module not available")
         except Exception as exc:
             _warning(f"OAuth error: {exc}")
 
@@ -359,13 +358,12 @@ def cmd_mcp_remove(args):
     _success(f"Removed '{name}' from config")
 
     # Clean up OAuth tokens if they exist
-    token_path = Path(get_hermes_home()) / "mcp-tokens" / f"{name}.json"
-    if token_path.exists():
-        try:
-            token_path.unlink()
-            _success("Cleaned up OAuth tokens")
-        except OSError:
-            _warning(f"Could not remove token file: {token_path}")
+    try:
+        from tools.mcp_oauth import remove_oauth_tokens
+        remove_oauth_tokens(name)
+        _success("Cleaned up OAuth tokens")
+    except Exception:
+        pass
 
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────

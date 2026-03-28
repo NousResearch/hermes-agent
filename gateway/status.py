@@ -17,6 +17,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Any, Optional
 
 _GATEWAY_KIND = "hermes-gateway"
@@ -26,7 +27,7 @@ _LOCKS_DIRNAME = "gateway-locks"
 
 def _get_pid_path() -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
-    home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home = get_hermes_home()
     return home / "gateway.pid"
 
 
@@ -274,6 +275,21 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
+                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
+                # processes still respond to os.kill(pid, 0) but are not
+                # actually running. Treat them as stale so --replace works.
+                if not stale:
+                    try:
+                        _proc_status = Path(f"/proc/{existing_pid}/status")
+                        if _proc_status.exists():
+                            for _line in _proc_status.read_text().splitlines():
+                                if _line.startswith("State:"):
+                                    _state = _line.split()[1]
+                                    if _state in ("T", "t"):  # stopped or tracing stop
+                                        stale = True
+                                    break
+                    except (OSError, PermissionError):
+                        pass
         if stale:
             try:
                 lock_path.unlink(missing_ok=True)
@@ -312,6 +328,25 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         lock_path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def release_all_scoped_locks() -> int:
+    """Remove all scoped lock files in the lock directory.
+
+    Called during --replace to clean up stale locks left by stopped/killed
+    gateway processes that did not release their locks gracefully.
+    Returns the number of lock files removed.
+    """
+    lock_dir = _get_lock_dir()
+    removed = 0
+    if lock_dir.exists():
+        for lock_file in lock_dir.glob("*.lock"):
+            try:
+                lock_file.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 def get_running_pid() -> Optional[int]:

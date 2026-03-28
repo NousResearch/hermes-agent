@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Set
 from model_tools import handle_function_call
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
-# (e.g., mini-swe-agent's modal/docker/daytona backends). Running them in a separate
+# (e.g., the Modal/Docker/Daytona terminal backends). Running them in a separate
 # thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
 # Size must be large enough for concurrent eval tasks (e.g., 89 TB2 tasks all
 # making tool calls). Too small = thread pool starvation, tasks queue for minutes.
@@ -346,78 +346,89 @@ class HermesAgentLoop:
                             tool_name, turn + 1,
                         )
                     else:
-                        # Parse arguments and dispatch
+                        # Parse arguments
                         try:
                             args = json.loads(tool_args_raw)
-                        except json.JSONDecodeError:
-                            args = {}
+                        except json.JSONDecodeError as e:
+                            args = None
+                            tool_result = json.dumps(
+                                {"error": f"Invalid JSON in tool arguments: {e}. Please retry with valid JSON."}
+                            )
+                            tool_errors.append(ToolError(
+                                turn=turn + 1, tool_name=tool_name,
+                                arguments=tool_args_raw[:200],
+                                error=f"Invalid JSON: {e}",
+                                tool_result=tool_result,
+                            ))
                             logger.warning(
                                 "Invalid JSON in tool call arguments for '%s': %s",
                                 tool_name, tool_args_raw[:200],
                             )
 
-                        try:
-                            if tool_name == "terminal":
-                                backend = os.getenv("TERMINAL_ENV", "local")
-                                cmd_preview = args.get("command", "")[:80]
-                                logger.info(
-                                    "[%s] $ %s", self.task_id[:8], cmd_preview,
-                                )
+                        # Dispatch tool only if arguments parsed successfully
+                        if args is not None:
+                            try:
+                                if tool_name == "terminal":
+                                    backend = os.getenv("TERMINAL_ENV", "local")
+                                    cmd_preview = args.get("command", "")[:80]
+                                    logger.info(
+                                        "[%s] $ %s", self.task_id[:8], cmd_preview,
+                                    )
 
-                            tool_submit_time = _time.monotonic()
+                                tool_submit_time = _time.monotonic()
 
-                            # Todo tool -- handle locally (needs per-loop TodoStore)
-                            if tool_name == "todo":
-                                tool_result = _todo_tool(
-                                    todos=args.get("todos"),
-                                    merge=args.get("merge", False),
-                                    store=_todo_store,
-                                )
-                                tool_elapsed = _time.monotonic() - tool_submit_time
-                            elif tool_name == "memory":
-                                tool_result = json.dumps({"error": "Memory is not available in RL environments."})
-                                tool_elapsed = _time.monotonic() - tool_submit_time
-                            elif tool_name == "session_search":
-                                tool_result = json.dumps({"error": "Session search is not available in RL environments."})
-                                tool_elapsed = _time.monotonic() - tool_submit_time
-                            else:
-                                # Run tool calls in a thread pool so backends that
-                                # use asyncio.run() internally (modal, docker, daytona) get
-                                # a clean event loop instead of deadlocking.
-                                loop = asyncio.get_event_loop()
-                                # Capture current tool_name/args for the lambda
-                                _tn, _ta, _tid = tool_name, args, self.task_id
-                                tool_result = await loop.run_in_executor(
-                                    _tool_executor,
-                                    lambda: handle_function_call(
-                                        _tn, _ta, task_id=_tid,
-                                        user_task=_user_task,
-                                    ),
-                                )
-                                tool_elapsed = _time.monotonic() - tool_submit_time
+                                # Todo tool -- handle locally (needs per-loop TodoStore)
+                                if tool_name == "todo":
+                                    tool_result = _todo_tool(
+                                        todos=args.get("todos"),
+                                        merge=args.get("merge", False),
+                                        store=_todo_store,
+                                    )
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
+                                elif tool_name == "memory":
+                                    tool_result = json.dumps({"error": "Memory is not available in RL environments."})
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
+                                elif tool_name == "session_search":
+                                    tool_result = json.dumps({"error": "Session search is not available in RL environments."})
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
+                                else:
+                                    # Run tool calls in a thread pool so backends that
+                                    # use asyncio.run() internally (modal, docker, daytona) get
+                                    # a clean event loop instead of deadlocking.
+                                    loop = asyncio.get_event_loop()
+                                    # Capture current tool_name/args for the lambda
+                                    _tn, _ta, _tid = tool_name, args, self.task_id
+                                    tool_result = await loop.run_in_executor(
+                                        _tool_executor,
+                                        lambda: handle_function_call(
+                                            _tn, _ta, task_id=_tid,
+                                            user_task=_user_task,
+                                        ),
+                                    )
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
 
-                            # Log slow tools and thread pool stats for debugging
-                            pool_active = _tool_executor._work_queue.qsize()
-                            if tool_elapsed > 30:
-                                logger.warning(
-                                    "[%s] turn %d: %s took %.1fs (pool queue=%d)",
-                                    self.task_id[:8], turn + 1, tool_name,
-                                    tool_elapsed, pool_active,
+                                # Log slow tools and thread pool stats for debugging
+                                pool_active = _tool_executor._work_queue.qsize()
+                                if tool_elapsed > 30:
+                                    logger.warning(
+                                        "[%s] turn %d: %s took %.1fs (pool queue=%d)",
+                                        self.task_id[:8], turn + 1, tool_name,
+                                        tool_elapsed, pool_active,
+                                    )
+                            except Exception as e:
+                                tool_result = json.dumps(
+                                    {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}
                                 )
-                        except Exception as e:
-                            tool_result = json.dumps(
-                                {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}
-                            )
-                            tool_errors.append(ToolError(
-                                turn=turn + 1, tool_name=tool_name,
-                                arguments=tool_args_raw[:200],
-                                error=f"{type(e).__name__}: {str(e)}",
-                                tool_result=tool_result,
-                            ))
-                            logger.error(
-                                "Tool '%s' execution failed on turn %d: %s",
-                                tool_name, turn + 1, e,
-                            )
+                                tool_errors.append(ToolError(
+                                    turn=turn + 1, tool_name=tool_name,
+                                    arguments=tool_args_raw[:200],
+                                    error=f"{type(e).__name__}: {str(e)}",
+                                    tool_result=tool_result,
+                                ))
+                                logger.error(
+                                    "Tool '%s' execution failed on turn %d: %s",
+                                    tool_name, turn + 1, e,
+                                )
 
                         # Also check if the tool returned an error in its JSON result
                         try:

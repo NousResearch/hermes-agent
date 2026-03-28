@@ -145,7 +145,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="minimax",
         name="MiniMax",
         auth_type="api_key",
-        inference_base_url="https://api.minimax.io/v1",
+        inference_base_url="https://api.minimax.io/anthropic",
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
     ),
@@ -160,7 +160,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="alibaba",
         name="Alibaba Cloud (DashScope)",
         auth_type="api_key",
-        inference_base_url="https://dashscope-intl.aliyuncs.com/apps/anthropic",
+        inference_base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
         api_key_env_vars=("DASHSCOPE_API_KEY",),
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),
@@ -168,7 +168,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="minimax-cn",
         name="MiniMax (China)",
         auth_type="api_key",
-        inference_base_url="https://api.minimaxi.com/v1",
+        inference_base_url="https://api.minimaxi.com/anthropic",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
@@ -199,9 +199,9 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "opencode-go": ProviderConfig(
         id="opencode-go",
         name="OpenCode Go",
-        auth_type="***",
+        auth_type="api_key",
         inference_base_url="https://opencode.ai/zen/go/v1",
-        api_key_env_vars=("OPEN...",),
+        api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilocode": ProviderConfig(
@@ -211,6 +211,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.kilo.ai/api/gateway",
         api_key_env_vars=("KILOCODE_API_KEY",),
         base_url_env_var="KILOCODE_BASE_URL",
+    ),
+    "huggingface": ProviderConfig(
+        id="huggingface",
+        name="Hugging Face",
+        auth_type="api_key",
+        inference_base_url="https://router.huggingface.co/v1",
+        api_key_env_vars=("HF_TOKEN",),
+        base_url_env_var="HF_BASE_URL",
     ),
 }
 
@@ -278,6 +286,33 @@ def _try_gh_cli_token() -> Optional[str]:
     return None
 
 
+_PLACEHOLDER_SECRET_VALUES = {
+    "*",
+    "**",
+    "***",
+    "changeme",
+    "your_api_key",
+    "your-api-key",
+    "placeholder",
+    "example",
+    "dummy",
+    "null",
+    "none",
+}
+
+
+def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
+    """Return True when a configured secret looks usable, not empty/placeholder."""
+    if not isinstance(value, str):
+        return False
+    cleaned = value.strip()
+    if len(cleaned) < min_length:
+        return False
+    if cleaned.lower() in _PLACEHOLDER_SECRET_VALUES:
+        return False
+    return True
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -297,7 +332,7 @@ def _resolve_api_key_provider_secret(
 
     for env_var in pconfig.api_key_env_vars:
         val = os.getenv(env_var, "").strip()
-        if val:
+        if has_usable_secret(val):
             return val, env_var
 
     return "", ""
@@ -658,13 +693,16 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
+        "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
-    if normalized in {"openrouter", "custom"}:
+    if normalized == "openrouter":
         return "openrouter"
+    if normalized == "custom":
+        return "custom"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
@@ -688,7 +726,7 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
-    if os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"):
+    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
     # Auto-detect API-key providers by checking their env vars
@@ -701,7 +739,7 @@ def resolve_provider(
         if pid == "copilot":
             continue
         for env_var in pconfig.api_key_env_vars:
-            if os.getenv(env_var, "").strip():
+            if has_usable_secret(os.getenv(env_var, "")):
                 return pid
 
     return "openrouter"
@@ -1983,7 +2021,7 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
-    print(f"  Auth state: ~/.hermes/auth.json")
+    print("  Auth state: ~/.hermes/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 
 
@@ -2027,9 +2065,9 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
     # Step 2: Show user the code
     print("To continue, follow these steps:\n")
-    print(f"  1. Open this URL in your browser:")
+    print("  1. Open this URL in your browser:")
     print(f"     \033[94m{issuer}/codex/device\033[0m\n")
-    print(f"  2. Enter this code:")
+    print("  2. Enter this code:")
     print(f"     \033[94m{user_code}\033[0m\n")
     print("Waiting for sign-in... (press Ctrl+C to cancel)")
 

@@ -4,11 +4,26 @@ All functions are stateless. AIAgent._build_system_prompt() calls these to
 assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
+import json
 import logging
 import os
 import re
+import threading
+from collections import OrderedDict
 from pathlib import Path
+
+from hermes_constants import get_hermes_home
 from typing import Optional
+
+from agent.skill_utils import (
+    extract_skill_conditions,
+    extract_skill_description,
+    get_disabled_skill_names,
+    iter_skill_index_files,
+    parse_frontmatter,
+    skill_matches_platform,
+)
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -206,11 +221,11 @@ PLATFORM_HINTS = {
         "contextually appropriate."
     ),
     "cron": (
-        "You are running as a scheduled cron job. Your final response is automatically "
-        "delivered to the job's configured destination, so do not use send_message to "
-        "send to that same target again. If you want the user to receive something in "
-        "the scheduled destination, put it directly in your final response. Use "
-        "send_message only for additional or different targets."
+        "You are running as a scheduled cron job. There is no user present — you "
+        "cannot ask questions, request clarification, or wait for follow-up. Execute "
+        "the task fully and autonomously, making reasonable decisions where needed. "
+        "Your final response is automatically delivered to the job's configured "
+        "destination — put the primary content directly in your response."
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
@@ -229,6 +244,111 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
 
 # =========================================================================
+# Skills prompt cache
+# =========================================================================
+
+_SKILLS_PROMPT_CACHE_MAX = 8
+_SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
+_SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
+_SKILLS_SNAPSHOT_VERSION = 1
+
+
+def _skills_prompt_snapshot_path() -> Path:
+    return get_hermes_home() / ".skills_prompt_snapshot.json"
+
+
+def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
+    """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
+    with _SKILLS_PROMPT_CACHE_LOCK:
+        _SKILLS_PROMPT_CACHE.clear()
+    if clear_snapshot:
+        try:
+            _skills_prompt_snapshot_path().unlink(missing_ok=True)
+        except OSError as e:
+            logger.debug("Could not remove skills prompt snapshot: %s", e)
+
+
+def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
+    """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
+    manifest: dict[str, list[int]] = {}
+    for filename in ("SKILL.md", "DESCRIPTION.md"):
+        for path in iter_skill_index_files(skills_dir, filename):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            manifest[str(path.relative_to(skills_dir))] = [st.st_mtime_ns, st.st_size]
+    return manifest
+
+
+def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+    """Load the disk snapshot if it exists and its manifest still matches."""
+    snapshot_path = _skills_prompt_snapshot_path()
+    if not snapshot_path.exists():
+        return None
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(snapshot, dict):
+        return None
+    if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
+        return None
+    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
+        return None
+    return snapshot
+
+
+def _write_skills_snapshot(
+    skills_dir: Path,
+    manifest: dict[str, list[int]],
+    skill_entries: list[dict],
+    category_descriptions: dict[str, str],
+) -> None:
+    """Persist skill metadata to disk for fast cold-start reuse."""
+    payload = {
+        "version": _SKILLS_SNAPSHOT_VERSION,
+        "manifest": manifest,
+        "skills": skill_entries,
+        "category_descriptions": category_descriptions,
+    }
+    try:
+        atomic_json_write(_skills_prompt_snapshot_path(), payload)
+    except Exception as e:
+        logger.debug("Could not write skills prompt snapshot: %s", e)
+
+
+def _build_snapshot_entry(
+    skill_file: Path,
+    skills_dir: Path,
+    frontmatter: dict,
+    description: str,
+) -> dict:
+    """Build a serialisable metadata dict for one skill."""
+    rel_path = skill_file.relative_to(skills_dir)
+    parts = rel_path.parts
+    if len(parts) >= 2:
+        skill_name = parts[-2]
+        category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+    else:
+        category = "general"
+        skill_name = skill_file.parent.name
+
+    platforms = frontmatter.get("platforms") or []
+    if isinstance(platforms, str):
+        platforms = [platforms]
+
+    return {
+        "skill_name": skill_name,
+        "category": category,
+        "frontmatter_name": str(frontmatter.get("name", skill_name)),
+        "description": description,
+        "platforms": [str(p).strip() for p in platforms if str(p).strip()],
+        "conditions": extract_skill_conditions(frontmatter),
+    }
+
+
+# =========================================================================
 # Skills index
 # =========================================================================
 
@@ -239,22 +359,13 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     (True, {}, "") to err on the side of showing the skill.
     """
     try:
-        from tools.skills_tool import _parse_frontmatter, skill_matches_platform
-
         raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
+        frontmatter, _ = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
-            return False, {}, ""
+            return False, frontmatter, ""
 
-        desc = ""
-        raw_desc = frontmatter.get("description", "")
-        if raw_desc:
-            desc = str(raw_desc).strip().strip("'\"")
-            if len(desc) > 60:
-                desc = desc[:57] + "..."
-
-        return True, frontmatter, desc
+        return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.debug("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
@@ -263,16 +374,9 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
 def _read_skill_conditions(skill_file: Path) -> dict:
     """Extract conditional activation fields from SKILL.md frontmatter."""
     try:
-        from tools.skills_tool import _parse_frontmatter
         raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = _parse_frontmatter(raw)
-        hermes = frontmatter.get("metadata", {}).get("hermes", {})
-        return {
-            "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
-            "requires_toolsets": hermes.get("requires_toolsets", []),
-            "fallback_for_tools": hermes.get("fallback_for_tools", []),
-            "requires_tools": hermes.get("requires_tools", []),
-        }
+        frontmatter, _ = parse_frontmatter(raw)
+        return extract_skill_conditions(frontmatter)
     except Exception as e:
         logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
         return {}
@@ -315,102 +419,153 @@ def build_skills_system_prompt(
 ) -> str:
     """Build a compact skill index for the system prompt.
 
-    Scans ~/.hermes/skills/ for SKILL.md files grouped by category.
-    Includes per-skill descriptions from frontmatter so the model can
-    match skills by meaning, not just name.
-    Filters out skills incompatible with the current OS platform.
+    Two-layer cache:
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
+      2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
+         mtime/size manifest — survives process restarts
+
+    Falls back to a full filesystem scan when both layers miss.
     """
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_home = get_hermes_home()
     skills_dir = hermes_home / "skills"
 
     if not skills_dir.exists():
         return ""
 
-    # Collect skills with descriptions, grouped by category.
-    # Each entry: (skill_name, description)
-    # Supports sub-categories: skills/mlops/training/axolotl/SKILL.md
-    # -> category "mlops/training", skill "axolotl"
-    # Load disabled skill names once for the entire scan
-    try:
-        from tools.skills_tool import _get_disabled_skill_names
-        disabled = _get_disabled_skill_names()
-    except Exception:
-        disabled = set()
+    # ── Layer 1: in-process LRU cache ─────────────────────────────────
+    cache_key = (
+        str(skills_dir.resolve()),
+        tuple(sorted(str(t) for t in (available_tools or set()))),
+        tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+    )
+    with _SKILLS_PROMPT_CACHE_LOCK:
+        cached = _SKILLS_PROMPT_CACHE.get(cache_key)
+        if cached is not None:
+            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+            return cached
+
+    disabled = get_disabled_skill_names()
+
+    # ── Layer 2: disk snapshot ────────────────────────────────────────
+    snapshot = _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
-    for skill_file in skills_dir.rglob("SKILL.md"):
-        is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-        if not is_compatible:
-            continue
-        rel_path = skill_file.relative_to(skills_dir)
-        parts = rel_path.parts
-        if len(parts) >= 2:
-            skill_name = parts[-2]
-            category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
-        else:
-            category = "general"
-            skill_name = skill_file.parent.name
-        # Respect user's disabled skills config
-        fm_name = frontmatter.get("name", skill_name)
-        if fm_name in disabled or skill_name in disabled:
-            continue
-        # Skip skills whose conditional activation rules exclude them
-        conditions = _read_skill_conditions(skill_file)
-        if not _skill_should_show(conditions, available_tools, available_toolsets):
-            continue
-        skills_by_category.setdefault(category, []).append((skill_name, desc))
+    category_descriptions: dict[str, str] = {}
 
-    if not skills_by_category:
-        return ""
+    if snapshot is not None:
+        # Fast path: use pre-parsed metadata from disk
+        for entry in snapshot.get("skills", []):
+            if not isinstance(entry, dict):
+                continue
+            skill_name = entry.get("skill_name") or ""
+            category = entry.get("category") or "general"
+            frontmatter_name = entry.get("frontmatter_name") or skill_name
+            platforms = entry.get("platforms") or []
+            if not skill_matches_platform({"platforms": platforms}):
+                continue
+            if frontmatter_name in disabled or skill_name in disabled:
+                continue
+            if not _skill_should_show(
+                entry.get("conditions") or {},
+                available_tools,
+                available_toolsets,
+            ):
+                continue
+            skills_by_category.setdefault(category, []).append(
+                (skill_name, entry.get("description", ""))
+            )
+        category_descriptions = {
+            str(k): str(v)
+            for k, v in (snapshot.get("category_descriptions") or {}).items()
+        }
+    else:
+        # Cold path: full filesystem scan + write snapshot for next time
+        skill_entries: list[dict] = []
+        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
+            skill_entries.append(entry)
+            if not is_compatible:
+                continue
+            skill_name = entry["skill_name"]
+            if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if not _skill_should_show(
+                extract_skill_conditions(frontmatter),
+                available_tools,
+                available_toolsets,
+            ):
+                continue
+            skills_by_category.setdefault(entry["category"], []).append(
+                (skill_name, entry["description"])
+            )
 
-    # Read category-level descriptions from DESCRIPTION.md
-    # Checks both the exact category path and parent directories
-    category_descriptions = {}
-    for category in skills_by_category:
-        cat_path = Path(category)
-        desc_file = skills_dir / cat_path / "DESCRIPTION.md"
-        if desc_file.exists():
+        # Read category-level DESCRIPTION.md files
+        for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
             try:
                 content = desc_file.read_text(encoding="utf-8")
-                match = re.search(r"^---\s*\n.*?description:\s*(.+?)\s*\n.*?^---", content, re.MULTILINE | re.DOTALL)
-                if match:
-                    category_descriptions[category] = match.group(1).strip()
+                fm, _ = parse_frontmatter(content)
+                cat_desc = fm.get("description")
+                if not cat_desc:
+                    continue
+                rel = desc_file.relative_to(skills_dir)
+                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+                category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
             except Exception as e:
                 logger.debug("Could not read skill description %s: %s", desc_file, e)
 
-    index_lines = []
-    for category in sorted(skills_by_category.keys()):
-        cat_desc = category_descriptions.get(category, "")
-        if cat_desc:
-            index_lines.append(f"  {category}: {cat_desc}")
-        else:
-            index_lines.append(f"  {category}:")
-        # Deduplicate and sort skills within each category
-        seen = set()
-        for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-            if name in seen:
-                continue
-            seen.add(name)
-            if desc:
-                index_lines.append(f"    - {name}: {desc}")
-            else:
-                index_lines.append(f"    - {name}")
+        _write_skills_snapshot(
+            skills_dir,
+            _build_skills_manifest(skills_dir),
+            skill_entries,
+            category_descriptions,
+        )
 
-    return (
-        "## Skills (mandatory)\n"
-        "Before replying, scan the skills below. If one clearly matches your task, "
-        "load it with skill_view(name) and follow its instructions. "
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "If a skill you loaded was missing steps, had wrong commands, or needed "
-        "pitfalls you discovered, update it before finishing.\n"
-        "\n"
-        "<available_skills>\n"
-        + "\n".join(index_lines) + "\n"
-        "</available_skills>\n"
-        "\n"
-        "If none match, proceed normally without loading a skill."
-    )
+    if not skills_by_category:
+        result = ""
+    else:
+        index_lines = []
+        for category in sorted(skills_by_category.keys()):
+            cat_desc = category_descriptions.get(category, "")
+            if cat_desc:
+                index_lines.append(f"  {category}: {cat_desc}")
+            else:
+                index_lines.append(f"  {category}:")
+            # Deduplicate and sort skills within each category
+            seen = set()
+            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                if name in seen:
+                    continue
+                seen.add(name)
+                if desc:
+                    index_lines.append(f"    - {name}: {desc}")
+                else:
+                    index_lines.append(f"    - {name}")
+
+        result = (
+            "## Skills (mandatory)\n"
+            "Before replying, scan the skills below. If one clearly matches your task, "
+            "load it with skill_view(name) and follow its instructions. "
+            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "After difficult/iterative tasks, offer to save as a skill. "
+            "If a skill you loaded was missing steps, had wrong commands, or needed "
+            "pitfalls you discovered, update it before finishing.\n"
+            "\n"
+            "<available_skills>\n"
+            + "\n".join(index_lines) + "\n"
+            "</available_skills>\n"
+            "\n"
+            "If none match, proceed normally without loading a skill."
+        )
+
+    # ── Store in LRU cache ────────────────────────────────────────────
+    with _SKILLS_PROMPT_CACHE_LOCK:
+        _SKILLS_PROMPT_CACHE[cache_key] = result
+        _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+        while len(_SKILLS_PROMPT_CACHE) > _SKILLS_PROMPT_CACHE_MAX:
+            _SKILLS_PROMPT_CACHE.popitem(last=False)
+
+    return result
 
 
 # =========================================================================
@@ -442,7 +597,7 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "SOUL.md"
+    soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
     try:
@@ -457,54 +612,63 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
-    """Discover and load context files for the system prompt.
+def _load_hermes_md(cwd_path: Path) -> str:
+    """.hermes.md / HERMES.md — walk to git root."""
+    hermes_md_path = _find_hermes_md(cwd_path)
+    if not hermes_md_path:
+        return ""
+    try:
+        content = hermes_md_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _strip_yaml_frontmatter(content)
+        rel = hermes_md_path.name
+        try:
+            rel = str(hermes_md_path.relative_to(cwd_path))
+        except ValueError:
+            pass
+        content = _scan_context_content(content, rel)
+        result = f"## {rel}\n\n{content}"
+        return _truncate_content(result, ".hermes.md")
+    except Exception as e:
+        logger.debug("Could not read %s: %s", hermes_md_path, e)
+        return ""
 
-    Discovery: AGENTS.md (recursive), .cursorrules / .cursor/rules/*.mdc,
-    and SOUL.md from HERMES_HOME only. Each capped at 20,000 chars.
 
-    When *skip_soul* is True, SOUL.md is not included here (it was already
-    loaded via ``load_soul_md()`` for the identity slot).
-    """
-    if cwd is None:
-        cwd = os.getcwd()
-
-    cwd_path = Path(cwd).resolve()
-    sections = []
-
-    # AGENTS.md (hierarchical, recursive)
-    top_level_agents = None
+def _load_agents_md(cwd_path: Path) -> str:
+    """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
         if candidate.exists():
-            top_level_agents = candidate
-            break
-
-    if top_level_agents:
-        agents_files = []
-        for root, dirs, files in os.walk(cwd_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('node_modules', '__pycache__', 'venv', '.venv')]
-            for f in files:
-                if f.lower() == "agents.md":
-                    agents_files.append(Path(root) / f)
-        agents_files.sort(key=lambda p: len(p.parts))
-
-        total_agents_content = ""
-        for agents_path in agents_files:
             try:
-                content = agents_path.read_text(encoding="utf-8").strip()
+                content = candidate.read_text(encoding="utf-8").strip()
                 if content:
-                    rel_path = agents_path.relative_to(cwd_path)
-                    content = _scan_context_content(content, str(rel_path))
-                    total_agents_content += f"## {rel_path}\n\n{content}\n\n"
+                    content = _scan_context_content(content, name)
+                    result = f"## {name}\n\n{content}"
+                    return _truncate_content(result, "AGENTS.md")
             except Exception as e:
-                logger.debug("Could not read %s: %s", agents_path, e)
+                logger.debug("Could not read %s: %s", candidate, e)
+    return ""
 
-        if total_agents_content:
-            total_agents_content = _truncate_content(total_agents_content, "AGENTS.md")
-            sections.append(total_agents_content)
 
-    # .cursorrules
+def _load_claude_md(cwd_path: Path) -> str:
+    """CLAUDE.md / claude.md — cwd only."""
+    for name in ["CLAUDE.md", "claude.md"]:
+        candidate = cwd_path / name
+        if candidate.exists():
+            try:
+                content = candidate.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, name)
+                    result = f"## {name}\n\n{content}"
+                    return _truncate_content(result, "CLAUDE.md")
+            except Exception as e:
+                logger.debug("Could not read %s: %s", candidate, e)
+    return ""
+
+
+def _load_cursorrules(cwd_path: Path) -> str:
+    """.cursorrules + .cursor/rules/*.mdc — cwd only."""
     cursorrules_content = ""
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
@@ -528,31 +692,41 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)
 
-    if cursorrules_content:
-        cursorrules_content = _truncate_content(cursorrules_content, ".cursorrules")
-        sections.append(cursorrules_content)
+    if not cursorrules_content:
+        return ""
+    return _truncate_content(cursorrules_content, ".cursorrules")
 
-    # .hermes.md / HERMES.md — per-project agent config (walk to git root)
-    hermes_md_content = ""
-    hermes_md_path = _find_hermes_md(cwd_path)
-    if hermes_md_path:
-        try:
-            content = hermes_md_path.read_text(encoding="utf-8").strip()
-            if content:
-                content = _strip_yaml_frontmatter(content)
-                rel = hermes_md_path.name
-                try:
-                    rel = str(hermes_md_path.relative_to(cwd_path))
-                except ValueError:
-                    pass
-                content = _scan_context_content(content, rel)
-                hermes_md_content = f"## {rel}\n\n{content}"
-        except Exception as e:
-            logger.debug("Could not read %s: %s", hermes_md_path, e)
 
-    if hermes_md_content:
-        hermes_md_content = _truncate_content(hermes_md_content, ".hermes.md")
-        sections.append(hermes_md_content)
+def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+    """Discover and load context files for the system prompt.
+
+    Priority (first found wins — only ONE project context type is loaded):
+      1. .hermes.md / HERMES.md  (walk to git root)
+      2. AGENTS.md / agents.md   (cwd only)
+      3. CLAUDE.md / claude.md   (cwd only)
+      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+
+    SOUL.md from HERMES_HOME is independent and always included when present.
+    Each context source is capped at 20,000 chars.
+
+    When *skip_soul* is True, SOUL.md is not included here (it was already
+    loaded via ``load_soul_md()`` for the identity slot).
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+
+    cwd_path = Path(cwd).resolve()
+    sections = []
+
+    # Priority-based project context: first match wins
+    project_context = (
+        _load_hermes_md(cwd_path)
+        or _load_agents_md(cwd_path)
+        or _load_claude_md(cwd_path)
+        or _load_cursorrules(cwd_path)
+    )
+    if project_context:
+        sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

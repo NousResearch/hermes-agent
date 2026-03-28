@@ -29,9 +29,6 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
-      oauth_server:
-        url: "https://server.ml.ink/mcp"
-        auth: oauth                    # OAuth 2.1 PKCE (auto browser auth)
       analysis:
         command: "npx"
         args: ["-y", "analysis-server"]
@@ -97,15 +94,10 @@ try:
     from mcp.client.stdio import stdio_client
     _MCP_AVAILABLE = True
     try:
-        from mcp.client.streamable_http import streamable_http_client
+        from mcp.client.streamable_http import streamablehttp_client
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
-    try:
-        from mcp.client.sse import sse_client
-        _MCP_SSE_AVAILABLE = True
-    except ImportError:
-        _MCP_SSE_AVAILABLE = False
     # Sampling types -- separated so older SDK versions don't break MCP support
     try:
         from mcp.types import (
@@ -613,7 +605,9 @@ class SamplingHandler:
                     "function": {
                         "name": getattr(t, "name", ""),
                         "description": getattr(t, "description", "") or "",
-                        "parameters": getattr(t, "inputSchema", {}) or {},
+                        "parameters": _normalize_mcp_input_schema(
+                            getattr(t, "inputSchema", None)
+                        ),
                     },
                 }
                 for t in server_tools
@@ -690,9 +684,7 @@ class MCPServerTask:
     runs inside one asyncio Task so that anyio cancel-scopes created by
     the transport client are entered and exited in the same Task context.
 
-    Supports stdio, HTTP/StreamableHTTP, and SSE transports.
-    When the config specifies a ``url`` without an explicit ``transport``
-    key, the server tries Streamable HTTP first and falls back to SSE.
+    Supports both stdio and HTTP/StreamableHTTP transports.
     """
 
     __slots__ = (
@@ -713,7 +705,7 @@ class MCPServerTask:
         self._config: dict = {}
         self._sampling: Optional[SamplingHandler] = None
         self._registered_tool_names: list[str] = []
-        self._auth_type: str = ""  # "oauth" for OAuth 2.1 PKCE
+        self._auth_type: str = ""
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -748,105 +740,37 @@ class MCPServerTask:
                 await self._shutdown_event.wait()
 
     async def _run_http(self, config: dict):
-        """Run the server using HTTP transport (streamable-http or SSE).
-
-        Transport selection order:
-        1. If config has ``transport: sse`` → use SSE directly.
-        2. If config has ``transport: streamable-http`` → use streamable HTTP.
-        3. Otherwise → try streamable HTTP first, fall back to SSE.
-        """
-        if not _MCP_HTTP_AVAILABLE and not _MCP_SSE_AVAILABLE:
+        """Run the server using HTTP/StreamableHTTP transport."""
+        if not _MCP_HTTP_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires HTTP transport but "
-                "neither mcp.client.streamable_http nor mcp.client.sse "
-                "is available. Run: uv pip install -e '.[mcp]' to install."
+                "mcp.client.streamable_http is not available. "
+                "Upgrade the mcp package to get HTTP support."
             )
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-        transport = config.get("transport", "").lower()
 
-        # OAuth 2.1 PKCE: resolve auth headers before connecting
+        # OAuth 2.1 PKCE: build httpx.Auth handler using the MCP SDK
+        _oauth_auth = None
         if self._auth_type == "oauth":
             try:
-                from tools.mcp_oauth import get_auth_headers
-                oauth_headers = get_auth_headers(self.name, url)
-                if oauth_headers:
-                    headers.update(oauth_headers)
-                else:
-                    logger.warning(
-                        "OAuth auth failed for MCP server '%s' — "
-                        "connecting without authentication",
-                        self.name,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "OAuth flow error for MCP server '%s': %s — "
-                    "connecting without authentication",
-                    self.name, e,
-                )
+                from tools.mcp_oauth import build_oauth_auth
+                _oauth_auth = build_oauth_auth(self.name, url)
+            except Exception as exc:
+                logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-
-        # Determine transport order
-        if transport == "sse":
-            await self._connect_sse(url, headers, connect_timeout, sampling_kwargs)
-        elif transport == "streamable-http" or transport == "streamable_http":
-            await self._connect_streamable_http(url, headers, connect_timeout, sampling_kwargs)
-        else:
-            # Auto-detect: try streamable HTTP first, fall back to SSE
-            if _MCP_HTTP_AVAILABLE:
-                try:
-                    await self._connect_streamable_http(url, headers, connect_timeout, sampling_kwargs)
-                    return
-                except Exception as exc:
-                    if not _MCP_SSE_AVAILABLE:
-                        raise
-                    logger.info(
-                        "Streamable HTTP failed for '%s' (%s), "
-                        "falling back to SSE transport",
-                        self.name, exc,
-                    )
-            if _MCP_SSE_AVAILABLE:
-                await self._connect_sse(url, headers, connect_timeout, sampling_kwargs)
-            else:
-                raise ImportError(
-                    f"MCP server '{self.name}' requires HTTP transport but "
-                    "no suitable transport client is available."
-                )
-
-    async def _connect_streamable_http(
-        self, url: str, headers: dict, connect_timeout: float, sampling_kwargs: dict,
-    ):
-        """Connect via Streamable HTTP transport (MCP SDK v2)."""
-        import httpx
-        http_client = httpx.AsyncClient(
-            headers=headers or None,
-            timeout=httpx.Timeout(float(connect_timeout)),
-        )
-
-        async with http_client:
-            async with streamable_http_client(
-                url,
-                http_client=http_client,
-            ) as (read_stream, write_stream, *_rest):
-                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                    await session.initialize()
-                    self.session = session
-                    await self._discover_tools()
-                    self._ready.set()
-                    await self._shutdown_event.wait()
-
-    async def _connect_sse(
-        self, url: str, headers: dict, connect_timeout: float, sampling_kwargs: dict,
-    ):
-        """Connect via SSE (Server-Sent Events) transport."""
-        async with sse_client(
-            url,
-            headers=headers or None,
-            timeout=float(connect_timeout),
-        ) as (read_stream, write_stream):
+        _http_kwargs: dict = {
+            "headers": headers,
+            "timeout": float(connect_timeout),
+        }
+        if _oauth_auth is not None:
+            _http_kwargs["auth"] = _oauth_auth
+        async with streamablehttp_client(url, **_http_kwargs) as (
+            read_stream, write_stream, _get_session_id,
+        ):
             async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                 await session.initialize()
                 self.session = session
@@ -873,7 +797,7 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
-        self._auth_type = config.get("auth", "").lower().strip()
+        self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
         sampling_config = config.get("sampling", {})
@@ -1012,9 +936,12 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
 # ---------------------------------------------------------------------------
 
 def _interpolate_env_vars(value):
-    """Replace ``${VAR}`` with ``os.getenv(VAR, '')`` recursively."""
+    """Recursively resolve ``${VAR}`` placeholders from ``os.environ``."""
     if isinstance(value, str):
-        return re.sub(r"\$\{(\w+)\}", lambda m: os.getenv(m.group(1), ""), value)
+        import re
+        def _replace(m):
+            return os.environ.get(m.group(1), m.group(0))
+        return re.sub(r"\$\{([^}]+)\}", _replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -1028,24 +955,24 @@ def _load_mcp_config() -> Dict[str, dict]:
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
     transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout`` and ``connect_timeout`` overrides.
+    ``timeout``, ``connect_timeout``, and ``auth`` overrides.
 
-    Supports ``${ENV_VAR}`` interpolation in string values — references
-    are resolved from ``os.environ`` (which includes ``~/.hermes/.env``
-    via ``load_config`` → ``load_env``).
+    ``${ENV_VAR}`` placeholders in string values are resolved from
+    ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
     """
     try:
-        from hermes_cli.config import load_config, load_env
-
-        # Ensure .env vars are in os.environ before interpolation
-        for k, v in load_env().items():
-            os.environ.setdefault(k, v)
-
+        from hermes_cli.config import load_config
         config = load_config()
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
             return {}
-        return _interpolate_env_vars(servers)
+        # Ensure .env vars are available for interpolation
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+            load_hermes_dotenv()
+        except Exception:
+            pass
+        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
@@ -1326,6 +1253,17 @@ def _make_check_fn(server_name: str):
 # Discovery & registration
 # ---------------------------------------------------------------------------
 
+def _normalize_mcp_input_schema(schema: dict | None) -> dict:
+    """Normalize MCP input schemas for LLM tool-calling compatibility."""
+    if not schema:
+        return {"type": "object", "properties": {}}
+
+    if schema.get("type") == "object" and "properties" not in schema:
+        return {**schema, "properties": {}}
+
+    return schema
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -1344,10 +1282,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": mcp_tool.inputSchema if mcp_tool.inputSchema else {
-            "type": "object",
-            "properties": {},
-        },
+        "parameters": _normalize_mcp_input_schema(mcp_tool.inputSchema),
     }
 
 
@@ -1597,6 +1532,16 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         schema = _convert_mcp_schema(name, mcp_tool)
         tool_name_prefixed = schema["name"]
 
+        # Guard against collisions with built-in (non-MCP) tools.
+        existing_toolset = registry.get_toolset_for_tool(tool_name_prefixed)
+        if existing_toolset and not existing_toolset.startswith("mcp-"):
+            logger.warning(
+                "MCP server '%s': tool '%s' (→ '%s') collides with built-in "
+                "tool in toolset '%s' — skipping to preserve built-in",
+                name, mcp_tool.name, tool_name_prefixed, existing_toolset,
+            )
+            continue
+
         registry.register(
             name=tool_name_prefixed,
             toolset=toolset_name,
@@ -1621,9 +1566,20 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         schema = entry["schema"]
         handler_key = entry["handler_key"]
         handler = _handler_factories[handler_key](name, server.tool_timeout)
+        util_name = schema["name"]
+
+        # Same collision guard for utility tools.
+        existing_toolset = registry.get_toolset_for_tool(util_name)
+        if existing_toolset and not existing_toolset.startswith("mcp-"):
+            logger.warning(
+                "MCP server '%s': utility tool '%s' collides with built-in "
+                "tool in toolset '%s' — skipping to preserve built-in",
+                name, util_name, existing_toolset,
+            )
+            continue
 
         registry.register(
-            name=schema["name"],
+            name=util_name,
             toolset=toolset_name,
             schema=schema,
             handler=handler,
@@ -1631,7 +1587,7 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
             is_async=False,
             description=schema["description"],
         )
-        registered_names.append(schema["name"])
+        registered_names.append(util_name)
 
     server._registered_tool_names = list(registered_names)
 

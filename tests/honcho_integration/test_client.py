@@ -11,6 +11,7 @@ from honcho_integration.client import (
     HonchoClientConfig,
     get_honcho_client,
     reset_honcho_client,
+    resolve_config_path,
     GLOBAL_CONFIG_PATH,
     HOST,
 )
@@ -25,7 +26,7 @@ class TestHonchoClientConfigDefaults:
         assert config.environment == "production"
         assert config.enabled is False
         assert config.save_messages is True
-        assert config.session_strategy == "per-session"
+        assert config.session_strategy == "per-directory"
         assert config.recall_mode == "hybrid"
         assert config.session_peer_prefix is False
         assert config.linked_hosts == []
@@ -59,6 +60,21 @@ class TestFromEnv:
     def test_custom_workspace(self):
         config = HonchoClientConfig.from_env(workspace_id="custom")
         assert config.workspace_id == "custom"
+
+    def test_reads_base_url_from_env(self):
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            config = HonchoClientConfig.from_env()
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+    def test_enabled_without_api_key_when_base_url_set(self):
+        """base_url alone (no API key) is sufficient to enable a local instance."""
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            os.environ.pop("HONCHO_API_KEY", None)
+            config = HonchoClientConfig.from_env()
+        assert config.api_key is None
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
 
 
 class TestFromGlobalConfig:
@@ -142,7 +158,7 @@ class TestFromGlobalConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"apiKey": "key"}))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
-        assert config.session_strategy == "per-session"
+        assert config.session_strategy == "per-directory"
 
     def test_context_tokens_host_block_wins(self, tmp_path):
         """Host block contextTokens should override root."""
@@ -187,6 +203,36 @@ class TestFromGlobalConfig:
         with patch.dict(os.environ, {"HONCHO_API_KEY": "env-key"}):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.api_key == "env-key"
+
+    def test_base_url_env_fallback(self, tmp_path):
+        """HONCHO_BASE_URL env var is used when no baseUrl in config JSON."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"workspace": "local"}))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://localhost:8000"
+        assert config.enabled is True
+
+    def test_base_url_from_config_root(self, tmp_path):
+        """baseUrl in config root is read and takes precedence over env var."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"baseUrl": "http://config-host:9000"}))
+
+        with patch.dict(os.environ, {"HONCHO_BASE_URL": "http://localhost:8000"}, clear=False):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://config-host:9000"
+
+    def test_base_url_not_read_from_host_block(self, tmp_path):
+        """baseUrl is a root-level connection setting, not overridable per-host (consistent with apiKey)."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://root:9000",
+            "hosts": {"hermes": {"baseUrl": "http://host-block:9001"}},
+        }))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.base_url == "http://root:9000"
 
 
 class TestResolveSessionName:
@@ -283,6 +329,47 @@ class TestGetLinkedWorkspaces:
         )
         workspaces = config.get_linked_workspaces()
         assert "cursor" in workspaces
+
+
+class TestResolveConfigPath:
+    def test_prefers_hermes_home_when_exists(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        local_cfg = hermes_home / "honcho.json"
+        local_cfg.write_text('{"apiKey": "local"}')
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            result = resolve_config_path()
+        assert result == local_cfg
+
+    def test_falls_back_to_global_when_no_local(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        # No honcho.json in HERMES_HOME
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            result = resolve_config_path()
+        assert result == GLOBAL_CONFIG_PATH
+
+    def test_falls_back_to_global_without_hermes_home_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HOME", None)
+            result = resolve_config_path()
+        assert result == GLOBAL_CONFIG_PATH
+
+    def test_from_global_config_uses_local_path(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        local_cfg = hermes_home / "honcho.json"
+        local_cfg.write_text(json.dumps({
+            "apiKey": "local-key",
+            "workspace": "local-ws",
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            config = HonchoClientConfig.from_global_config()
+        assert config.api_key == "local-key"
+        assert config.workspace_id == "local-ws"
 
 
 class TestResetHonchoClient:

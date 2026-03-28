@@ -4,6 +4,7 @@ from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
+    _get_approval_mode,
     approve_session,
     clear_session,
     detect_dangerous_command,
@@ -14,6 +15,16 @@ from tools.approval import (
     prompt_dangerous_approval,
     submit_pending,
 )
+
+
+class TestApprovalModeParsing:
+    def test_unquoted_yaml_off_boolean_false_maps_to_off(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": False}}):
+            assert _get_approval_mode() == "off"
+
+    def test_string_off_still_maps_to_off(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
+            assert _get_approval_mode() == "off"
 
 
 class TestDetectDangerousRm:
@@ -462,5 +473,112 @@ class TestForkBombDetection:
 
     def test_colon_in_safe_command_not_flagged(self):
         dangerous, key, desc = detect_dangerous_command("echo hello:world")
+        assert dangerous is False
+
+
+class TestGatewayProtection:
+    """Prevent agents from starting the gateway outside systemd management."""
+
+    def test_gateway_run_with_disown_detected(self):
+        cmd = "kill 1605 && cd ~/.hermes/hermes-agent && source venv/bin/activate && python -m hermes_cli.main gateway run --replace &disown; echo done"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "systemctl" in desc
+
+    def test_gateway_run_with_ampersand_detected(self):
+        cmd = "python -m hermes_cli.main gateway run --replace &"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_gateway_run_with_nohup_detected(self):
+        cmd = "nohup python -m hermes_cli.main gateway run --replace"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_gateway_run_with_setsid_detected(self):
+        cmd = "hermes_cli.main gateway run --replace &disown"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_gateway_run_foreground_not_flagged(self):
+        """Normal foreground gateway run (as in systemd ExecStart) is fine."""
+        cmd = "python -m hermes_cli.main gateway run --replace"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_systemctl_restart_not_flagged(self):
+        """Using systemctl to manage the gateway is the correct approach."""
+        cmd = "systemctl --user restart hermes-gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestNormalizationBypass:
+    """Obfuscation techniques must not bypass dangerous command detection."""
+
+    def test_fullwidth_unicode_rm(self):
+        """Fullwidth Unicode 'ｒｍ -ｒｆ /' must be caught after NFKC normalization."""
+        cmd = "\uff52\uff4d -\uff52\uff46 /"  # ｒｍ -ｒｆ /
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Fullwidth 'rm -rf /' was not detected: {cmd!r}"
+
+    def test_fullwidth_unicode_dd(self):
+        """Fullwidth 'ｄｄ if=/dev/zero' must be caught."""
+        cmd = "\uff44\uff44 if=/dev/zero of=/dev/sda"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_fullwidth_unicode_chmod(self):
+        """Fullwidth 'ｃｈｍｏｄ 777' must be caught."""
+        cmd = "\uff43\uff48\uff4d\uff4f\uff44 777 /tmp/test"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ansi_csi_wrapped_rm(self):
+        """ANSI CSI color codes wrapping 'rm' must be stripped and caught."""
+        cmd = "\x1b[31mrm\x1b[0m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"ANSI-wrapped 'rm -rf /' was not detected"
+
+    def test_ansi_osc_embedded_rm(self):
+        """ANSI OSC sequences embedded in command must be stripped."""
+        cmd = "\x1b]0;title\x07rm -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ansi_8bit_c1_wrapped_rm(self):
+        """8-bit C1 CSI (0x9b) wrapping 'rm' must be stripped and caught."""
+        cmd = "\x9b31mrm\x9b0m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, "8-bit C1 CSI bypass was not caught"
+
+    def test_null_byte_in_rm(self):
+        """Null bytes injected into 'rm' must be stripped and caught."""
+        cmd = "r\x00m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True, f"Null-byte 'rm' was not detected: {cmd!r}"
+
+    def test_null_byte_in_dd(self):
+        """Null bytes in 'dd' must be stripped."""
+        cmd = "d\x00d if=/dev/sda"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_mixed_fullwidth_and_ansi(self):
+        """Combined fullwidth + ANSI obfuscation must still be caught."""
+        cmd = "\x1b[1m\uff52\uff4d\x1b[0m -rf /"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_command_after_normalization(self):
+        """Normal safe commands must not be flagged after normalization."""
+        cmd = "ls -la /tmp"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_fullwidth_safe_command_not_flagged(self):
+        """Fullwidth 'ｌｓ -ｌａ' is safe and must not be flagged."""
+        cmd = "\uff4c\uff53 -\uff4c\uff41 /tmp"
+        dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 

@@ -319,7 +319,7 @@ class TestEnvVarInterpolation:
         from tools.mcp_tool import _interpolate_env_vars
 
         result = _interpolate_env_vars("Bearer ${MISSING_VAR}")
-        assert result == "Bearer "
+        assert result == "Bearer ${MISSING_VAR}"
 
     def test_interpolate_nested_dict(self, monkeypatch):
         monkeypatch.setenv("API_KEY", "abc")

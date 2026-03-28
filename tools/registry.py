@@ -16,7 +16,7 @@ Import chain (circular-import safe):
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,13 @@ class ToolRegistry:
         emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        existing = self._tools.get(name)
+        if existing and existing.toolset != toolset:
+            logger.warning(
+                "Tool name collision: '%s' (toolset '%s') is being "
+                "overwritten by toolset '%s'",
+                name, existing.toolset, toolset,
+            )
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,
@@ -91,19 +98,22 @@ class ToolRegistry:
         are included.
         """
         result = []
+        check_results: Dict[Callable, bool] = {}
         for name in sorted(tool_names):
             entry = self._tools.get(name)
             if not entry:
                 continue
             if entry.check_fn:
-                try:
-                    if not entry.check_fn():
+                if entry.check_fn not in check_results:
+                    try:
+                        check_results[entry.check_fn] = bool(entry.check_fn())
+                    except Exception:
+                        check_results[entry.check_fn] = False
                         if not quiet:
-                            logger.debug("Tool %s unavailable (check failed)", name)
-                        continue
-                except Exception:
+                            logger.debug("Tool %s check raised; skipping", name)
+                if not check_results[entry.check_fn]:
                     if not quiet:
-                        logger.debug("Tool %s check raised; skipping", name)
+                        logger.debug("Tool %s unavailable (check failed)", name)
                     continue
             result.append({"type": "function", "function": entry.schema})
         return result

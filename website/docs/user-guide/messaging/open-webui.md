@@ -10,15 +10,17 @@ description: "Connect Open WebUI to Hermes Agent via the OpenAI-compatible API s
 
 ## Architecture
 
-```
-┌──────────────────┐    POST /v1/chat/completions    ┌──────────────────────┐
-│   Open WebUI     │ ──────────────────────────────► │  hermes-agent        │
-│   (browser UI)   │    SSE streaming response       │  gateway API server  │
-│   port 3000      │ ◄────────────────────────────── │  port 8642           │
-└──────────────────┘                                  └──────────────────────┘
+```mermaid
+flowchart LR
+    A["Open WebUI<br/>browser UI<br/>port 3000"]
+    B["hermes-agent<br/>gateway API server<br/>port 8642"]
+    A -->|POST /v1/chat/completions| B
+    B -->|SSE streaming response| A
 ```
 
 Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Your agent handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.
+
+Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS_ORIGINS` for this integration.
 
 ## Quick Setup
 
@@ -28,8 +30,7 @@ Add to `~/.hermes/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
-# Optional: set a key for auth (recommended if accessible beyond localhost)
-# API_SERVER_KEY=your-secret-key
+API_SERVER_KEY=your-secret-key
 ```
 
 ### 2. Start Hermes Agent gateway
@@ -49,18 +50,12 @@ You should see:
 ```bash
 docker run -d -p 3000:8080 \
   -e OPENAI_API_BASE_URL=http://host.docker.internal:8642/v1 \
-  -e OPENAI_API_KEY=not-needed \
+  -e OPENAI_API_KEY=your-secret-key \
   --add-host=host.docker.internal:host-gateway \
   -v open-webui:/app/backend/data \
   --name open-webui \
   --restart always \
   ghcr.io/open-webui/open-webui:main
-```
-
-If you set an `API_SERVER_KEY`, use it instead of `not-needed`:
-
-```bash
--e OPENAI_API_KEY=your-secret-key
 ```
 
 ### 4. Open the UI
@@ -81,7 +76,7 @@ services:
       - open-webui:/app/backend/data
     environment:
       - OPENAI_API_BASE_URL=http://host.docker.internal:8642/v1
-      - OPENAI_API_KEY=not-needed
+      - OPENAI_API_KEY=your-secret-key
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
@@ -167,7 +162,7 @@ Your agent has access to all the same tools and capabilities as when using the C
 | `API_SERVER_ENABLED` | `false` | Enable the API server |
 | `API_SERVER_PORT` | `8642` | HTTP server port |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address |
-| `API_SERVER_KEY` | _(none)_ | Bearer token for auth. No key = allow all. |
+| `API_SERVER_KEY` | _(required)_ | Bearer token for auth. Match `OPENAI_API_KEY`. |
 
 ### Open WebUI
 
@@ -195,7 +190,7 @@ Hermes Agent may be executing multiple tool calls (reading files, running comman
 
 ### "Invalid API key" errors
 
-Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in Hermes Agent. If no key is configured on the Hermes side, any non-empty value works.
+Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in Hermes Agent.
 
 ## Linux Docker (no Docker Desktop)
 

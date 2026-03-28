@@ -92,6 +92,31 @@ class TestParseModelInput:
         assert provider == "openrouter"
         assert model == "http://localhost:8080/model"
 
+    def test_custom_colon_model_single(self):
+        """custom:model-name → anonymous custom provider."""
+        provider, model = parse_model_input("custom:qwen-2.5", "openrouter")
+        assert provider == "custom"
+        assert model == "qwen-2.5"
+
+    def test_custom_triple_syntax(self):
+        """custom:name:model → named custom provider."""
+        provider, model = parse_model_input("custom:local-server:qwen-2.5", "openrouter")
+        assert provider == "custom:local-server"
+        assert model == "qwen-2.5"
+
+    def test_custom_triple_spaces(self):
+        """Triple syntax should handle whitespace."""
+        provider, model = parse_model_input("custom: my-server : my-model ", "openrouter")
+        assert provider == "custom:my-server"
+        assert model == "my-model"
+
+    def test_custom_triple_empty_model_falls_back(self):
+        """custom:name: with no model → treated as custom:name (bare)."""
+        provider, model = parse_model_input("custom:name:", "openrouter")
+        # Empty model after second colon → no triple match, falls through
+        assert provider == "custom"
+        assert model == "name:"
+
 
 # -- curated_models_for_provider ---------------------------------------------
 

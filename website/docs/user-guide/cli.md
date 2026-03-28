@@ -94,7 +94,7 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
 | `Ctrl+C` | Interrupt agent (double-press within 2s to force exit) |
 | `Ctrl+D` | Exit |
-| `Tab` | Autocomplete slash commands |
+| `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
 
 ## Slash Commands
 
@@ -179,12 +179,11 @@ Built-in personalities include: `helpful`, `concise`, `technical`, `creative`, `
 You can also define custom personalities in `~/.hermes/config.yaml`:
 
 ```yaml
-agent:
-  personalities:
-    helpful: "You are a helpful, friendly AI assistant."
-    kawaii: "You are a kawaii assistant! Use cute expressions..."
-    pirate: "Arrr! Ye be talkin' to Captain Hermes..."
-    # Add your own!
+personalities:
+  helpful: "You are a helpful, friendly AI assistant."
+  kawaii: "You are a kawaii assistant! Use cute expressions..."
+  pirate: "Arrr! Ye be talkin' to Captain Hermes..."
+  # Add your own!
 ```
 
 ## Multi-line Input
@@ -231,7 +230,7 @@ The CLI shows animated feedback as the agent works:
   ┊ 📄 web_extract (2.1s)
 ```
 
-Cycle through display modes with `/verbose`: `off → new → all → verbose`.
+Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/docs/user-guide/configuration#display-settings).
 
 ## Session Management
 

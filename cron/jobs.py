@@ -14,6 +14,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_DIR = get_hermes_home()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
@@ -248,6 +249,38 @@ def _recoverable_oneshot_run_at(
     return None
 
 
+def _compute_grace_seconds(schedule: dict) -> int:
+    """Compute how late a job can be and still catch up instead of fast-forwarding.
+
+    Uses half the schedule period, clamped between 120 seconds and 2 hours.
+    This ensures daily jobs can catch up if missed by up to 2 hours,
+    while frequent jobs (every 5-10 min) still fast-forward quickly.
+    """
+    MIN_GRACE = 120
+    MAX_GRACE = 7200  # 2 hours
+
+    kind = schedule.get("kind")
+
+    if kind == "interval":
+        period_seconds = schedule.get("minutes", 1) * 60
+        grace = period_seconds // 2
+        return max(MIN_GRACE, min(grace, MAX_GRACE))
+
+    if kind == "cron" and HAS_CRONITER:
+        try:
+            now = _hermes_now()
+            cron = croniter(schedule["expr"], now)
+            first = cron.get_next(datetime)
+            second = cron.get_next(datetime)
+            period_seconds = int((second - first).total_seconds())
+            grace = period_seconds // 2
+            return max(MIN_GRACE, min(grace, MAX_GRACE))
+        except Exception:
+            pass
+
+    return MIN_GRACE
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -350,6 +383,10 @@ def create_job(
         The created job dict
     """
     parsed_schedule = parse_schedule(schedule)
+
+    # Normalize repeat: treat 0 or negative values as None (infinite)
+    if repeat is not None and repeat <= 0:
+        repeat = None
 
     # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
@@ -539,7 +576,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
                 # Check if we've hit the repeat limit
                 times = job["repeat"].get("times")
                 completed = job["repeat"]["completed"]
-                if times is not None and completed >= times:
+                if times is not None and times > 0 and completed >= times:
                     # Remove the job (limit reached)
                     jobs.pop(i)
                     save_jobs(jobs)
@@ -559,6 +596,34 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             return
     
     save_jobs(jobs)
+
+
+def advance_next_run(job_id: str) -> bool:
+    """Preemptively advance next_run_at for a recurring job before execution.
+
+    Call this BEFORE run_job() so that if the process crashes mid-execution,
+    the job won't re-fire on the next gateway restart.  This converts the
+    scheduler from at-least-once to at-most-once for recurring jobs — missing
+    one run is far better than firing dozens of times in a crash loop.
+
+    One-shot jobs are left unchanged so they can still retry on restart.
+
+    Returns True if next_run_at was advanced, False otherwise.
+    """
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == job_id:
+            kind = job.get("schedule", {}).get("kind")
+            if kind not in ("cron", "interval"):
+                return False
+            now = _hermes_now().isoformat()
+            new_next = compute_next_run(job["schedule"], now)
+            if new_next and new_next != job.get("next_run_at"):
+                job["next_run_at"] = new_next
+                save_jobs(jobs)
+                return True
+            return False
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
@@ -610,16 +675,18 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             # For recurring jobs, check if the scheduled time is stale
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
-            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > 120:
-                # More than 2 minutes late — this is a missed run, not a current one.
-                # Recompute next_run_at to the next future occurrence.
+            grace = _compute_grace_seconds(schedule)
+            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
+                # Job is past its catch-up grace window — this is a stale missed run.
+                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
-                        "Job '%s' missed its scheduled time (%s). "
+                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
                         "Fast-forwarding to next run: %s",
                         job.get("name", job["id"]),
                         next_run,
+                        grace,
                         new_next,
                     )
                     # Update the job in storage

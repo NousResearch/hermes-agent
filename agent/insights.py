@@ -181,22 +181,25 @@ class InsightsEngine:
                      "billing_base_url, billing_mode, estimated_cost_usd, "
                      "actual_cost_usd, cost_status, cost_source")
 
+    # Pre-computed query strings — f-string evaluated once at class definition,
+    # not at runtime, so no user-controlled value can alter the query structure.
+    _GET_SESSIONS_WITH_SOURCE = (
+        f"SELECT {_SESSION_COLS} FROM sessions"
+        " WHERE started_at >= ? AND source = ?"
+        " ORDER BY started_at DESC"
+    )
+    _GET_SESSIONS_ALL = (
+        f"SELECT {_SESSION_COLS} FROM sessions"
+        " WHERE started_at >= ?"
+        " ORDER BY started_at DESC"
+    )
+
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
         """Fetch sessions within the time window."""
         if source:
-            cursor = self._conn.execute(
-                f"""SELECT {self._SESSION_COLS} FROM sessions
-                    WHERE started_at >= ? AND source = ?
-                    ORDER BY started_at DESC""",
-                (cutoff, source),
-            )
+            cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
-            cursor = self._conn.execute(
-                f"""SELECT {self._SESSION_COLS} FROM sessions
-                    WHERE started_at >= ?
-                    ORDER BY started_at DESC""",
-                (cutoff,),
-            )
+            cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
@@ -663,7 +666,7 @@ class InsightsEngine:
                     cost_cell = "     N/A"
                 lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,} {cost_cell}")
             if o.get("models_without_pricing"):
-                lines.append(f"  * Cost N/A for custom/self-hosted models")
+                lines.append("  * Cost N/A for custom/self-hosted models")
             lines.append("")
 
         # Platform breakdown

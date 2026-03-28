@@ -186,7 +186,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     Official skills are always shown first, regardless of source filter.
     """
     from tools.skills_hub import (
-        GitHubAuth, create_source_router, OptionalSkillSource, SkillMeta,
+        GitHubAuth, create_source_router,
     )
 
     # Clamp page_size to safe range
@@ -357,7 +357,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Scan
     c.print("[bold]Running security scan...[/]")
-    result = scan_skill(q_path, source=identifier)
+    scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
+    result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
     # Check install policy
@@ -416,6 +417,13 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
+    # Invalidate the skills prompt cache so the new skill appears immediately
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
@@ -455,6 +463,8 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 
     if bundle and "SKILL.md" in bundle.files:
         content = bundle.files["SKILL.md"]
+        if isinstance(content, bytes):
+            content = content.decode("utf-8", errors="replace")
         # Show first 50 lines as preview
         lines = content.split("\n")
         preview = "\n".join(lines[:50])
@@ -620,6 +630,11 @@ def do_uninstall(name: str, console: Optional[Console] = None,
     success, msg = uninstall_skill(name)
     if success:
         c.print(f"[bold green]{msg}[/]\n")
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
     else:
         c.print(f"[bold red]Error:[/] {msg}\n")
 
@@ -640,7 +655,8 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
         table.add_column("Repo", style="bold cyan")
         table.add_column("Path", style="dim")
         for t in taps:
-            table.add_row(t["repo"], t.get("path", "skills/"))
+            label = t.get("repo") or t.get("name") or t.get("path", "unknown")
+            table.add_row(label, t.get("path", "skills/"))
         c.print(table)
         c.print()
 

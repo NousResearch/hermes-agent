@@ -12,7 +12,7 @@ training server.
 
 ```bash
 cd ~/.hermes/hermes-agent
-source .venv/bin/activate
+source venv/bin/activate
 
 python environments/your_env.py process \
   --env.total_steps 1 \

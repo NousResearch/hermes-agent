@@ -31,6 +31,9 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/compress` | Manually compress conversation context (flush memories + summarize) |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
 | `/stop` | Kill all running background processes |
+| `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response) |
+| `/resume [name]` | Resume a previously-named session |
+| `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
 | `/background <prompt>` | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 
@@ -39,11 +42,11 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/config` | Show current configuration |
-| `/model` | Show or change the current model |
+| `/model [model-name]` | Show or change the current model. Supports: `/model claude-sonnet-4`, `/model provider:model` (switch providers), `/model custom:model` (custom endpoint), `/model custom:name:model` (named custom provider), `/model custom` (auto-detect from endpoint) |
 | `/provider` | Show available providers and current provider |
 | `/prompt` | View/set custom system prompt |
 | `/personality` | Set a predefined personality |
-| `/verbose` | Cycle tool progress display: off → new → all → verbose |
+| `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
 | `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
 | `/skin` | Show or change the display skin/theme |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
@@ -97,7 +100,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/reset` | Reset conversation history. |
 | `/status` | Show session info. |
 | `/stop` | Kill all running background processes and interrupt the running agent. |
-| `/model [provider:model]` | Show or change the model, including provider switches. |
+| `/model [provider:model]` | Show or change the model. Supports provider switches (`/model zai:glm-5`), custom endpoints (`/model custom:model`), named custom providers (`/model custom:local:qwen`), and auto-detect (`/model custom`). |
 | `/provider` | Show provider availability and auth status. |
 | `/personality [name]` | Set a personality overlay for the session. |
 | `/retry` | Retry the last message. |
@@ -114,13 +117,16 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 | `/reload-mcp` | Reload MCP servers from config. |
+| `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |
+| `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/help` | Show messaging help. |
 | `/<skill-name>` | Invoke any installed skill by name. |
 
 ## Notes
 
-- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/verbose`, and `/plugins` are **CLI-only** commands.
-- `/status`, `/sethome`, and `/update` are **messaging-only** commands.
+- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/statusbar`, and `/plugins` are **CLI-only** commands.
+- `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
+- `/status`, `/sethome`, `/update`, `/approve`, and `/deny` are **messaging-only** commands.
 - `/background`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

@@ -288,3 +288,34 @@ class TestBlocklistCoverage:
             "DAYTONA_API_KEY",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+
+class TestSanePathIncludesHomebrew:
+    """Verify _SANE_PATH includes macOS Homebrew directories."""
+
+    def test_sane_path_includes_homebrew_bin(self):
+        from tools.environments.local import _SANE_PATH
+        assert "/opt/homebrew/bin" in _SANE_PATH
+
+    def test_sane_path_includes_homebrew_sbin(self):
+        from tools.environments.local import _SANE_PATH
+        assert "/opt/homebrew/sbin" in _SANE_PATH
+
+    def test_make_run_env_appends_homebrew_on_minimal_path(self):
+        """When PATH is minimal (no /usr/bin), _make_run_env should append
+        _SANE_PATH which now includes Homebrew dirs."""
+        from tools.environments.local import _make_run_env
+        minimal_env = {"PATH": "/some/custom/bin"}
+        with patch.dict(os.environ, minimal_env, clear=True):
+            result = _make_run_env({})
+        assert "/opt/homebrew/bin" in result["PATH"]
+        assert "/opt/homebrew/sbin" in result["PATH"]
+
+    def test_make_run_env_does_not_duplicate_on_full_path(self):
+        """When PATH already has /usr/bin, _make_run_env should not append."""
+        from tools.environments.local import _make_run_env
+        full_env = {"PATH": "/usr/bin:/bin"}
+        with patch.dict(os.environ, full_env, clear=True):
+            result = _make_run_env({})
+        # Should keep existing PATH unchanged
+        assert result["PATH"] == "/usr/bin:/bin"

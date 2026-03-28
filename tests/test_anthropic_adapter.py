@@ -450,6 +450,12 @@ class TestNormalizeModelName:
         assert normalize_model_name("claude-opus-4-6") == "claude-opus-4-6"
         assert normalize_model_name("claude-opus-4-5-20251101") == "claude-opus-4-5-20251101"
 
+    def test_preserve_dots_for_alibaba_dashscope(self):
+        """Alibaba/DashScope use dots in model names (e.g. qwen3.5-plus). Fixes #1739."""
+        assert normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion
@@ -578,21 +584,39 @@ class TestConvertMessages:
 
     def test_converts_tool_results(self):
         messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result data"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        assert result[0]["role"] == "user"
-        assert result[0]["content"][0]["type"] == "tool_result"
-        assert result[0]["content"][0]["tool_use_id"] == "tc_1"
+        # tool result is in the second message (user role)
+        user_msg = [m for m in result if m["role"] == "user"][0]
+        assert user_msg["content"][0]["type"] == "tool_result"
+        assert user_msg["content"][0]["tool_use_id"] == "tc_1"
 
     def test_merges_consecutive_tool_results(self):
         messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                    {"id": "tc_2", "function": {"name": "tool_b", "arguments": "{}"}},
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result 1"},
             {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        assert len(result) == 1
-        assert len(result[0]["content"]) == 2
+        # assistant + merged user (with 2 tool_results)
+        user_msgs = [m for m in result if m["role"] == "user"]
+        assert len(user_msgs) == 1
+        assert len(user_msgs[0]["content"]) == 2
 
     def test_strips_orphaned_tool_use(self):
         messages = [
@@ -609,6 +633,51 @@ class TestConvertMessages:
         # tc_orphan has no matching tool_result, should be stripped
         assistant_blocks = result[0]["content"]
         assert all(b.get("type") != "tool_use" for b in assistant_blocks)
+
+    def test_strips_orphaned_tool_result(self):
+        """tool_result with no matching tool_use should be stripped.
+
+        This happens when context compression removes the assistant message
+        containing the tool_use but leaves the subsequent tool_result intact.
+        Anthropic rejects orphaned tool_results with a 400.
+        """
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+            # The assistant tool_use message was removed by compression,
+            # but the tool_result survived:
+            {"role": "tool", "tool_call_id": "tc_gone", "content": "stale result"},
+            {"role": "user", "content": "Thanks"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        # tc_gone has no matching tool_use — its tool_result should be stripped
+        for m in result:
+            if m["role"] == "user" and isinstance(m["content"], list):
+                assert all(
+                    b.get("type") != "tool_result"
+                    for b in m["content"]
+                ), "Orphaned tool_result should have been stripped"
+
+    def test_strips_orphaned_tool_result_preserves_valid(self):
+        """Orphaned tool_results are stripped while valid ones survive."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_valid", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_valid", "content": "good result"},
+            {"role": "tool", "tool_call_id": "tc_orphan", "content": "stale result"},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        user_msg = [m for m in result if m["role"] == "user"][0]
+        tool_results = [
+            b for b in user_msg["content"] if b.get("type") == "tool_result"
+        ]
+        assert len(tool_results) == 1
+        assert tool_results[0]["tool_use_id"] == "tc_valid"
 
     def test_system_with_cache_control(self):
         messages = [
@@ -641,11 +710,19 @@ class TestConvertMessages:
     def test_tool_cache_control_is_preserved_on_tool_result_block(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+            },
             {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
-        ])
+        ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        tool_block = result[0]["content"][0]
+        user_msg = [m for m in result if m["role"] == "user"][0]
+        tool_block = user_msg["content"][0]
 
         assert tool_block["type"] == "tool_result"
         assert tool_block["tool_use_id"] == "tc_1"
@@ -723,6 +800,48 @@ class TestConvertMessages:
 
         assert all(not (b.get("type") == "text" and b.get("text") == "") for b in assistant_blocks)
         assert any(b.get("type") == "tool_use" for b in assistant_blocks)
+
+    def test_empty_user_message_string_gets_placeholder(self):
+        """Empty user message strings should get '(empty message)' placeholder.
+
+        Anthropic rejects requests with empty user message content.
+        Regression test for #3143 — Discord @mention-only messages.
+        """
+        messages = [
+            {"role": "user", "content": ""},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "(empty message)"
+
+    def test_whitespace_only_user_message_gets_placeholder(self):
+        """Whitespace-only user messages should also get placeholder."""
+        messages = [
+            {"role": "user", "content": "   \n\t  "},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["content"] == "(empty message)"
+
+    def test_empty_user_message_list_gets_placeholder(self):
+        """Empty content list for user messages should get placeholder block."""
+        messages = [
+            {"role": "user", "content": []},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["role"] == "user"
+        assert isinstance(result[0]["content"], list)
+        assert len(result[0]["content"]) == 1
+        assert result[0]["content"][0] == {"type": "text", "text": "(empty message)"}
+
+    def test_user_message_with_empty_text_blocks_gets_placeholder(self):
+        """User message with only empty text blocks should get placeholder."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": ""}, {"type": "text", "text": "  "}]},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert result[0]["role"] == "user"
+        assert isinstance(result[0]["content"], list)
+        assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +926,8 @@ class TestBuildAnthropicKwargs:
         )
         assert "thinking" not in kwargs
 
-    def test_default_max_tokens(self):
+    def test_default_max_tokens_uses_model_output_limit(self):
+        """When max_tokens is None, use the model's native output limit."""
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
             messages=[{"role": "user", "content": "Hi"}],
@@ -815,7 +935,135 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 16384
+        assert kwargs["max_tokens"] == 64_000  # Sonnet 4 output limit
+
+    def test_default_max_tokens_opus_4_6(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 128_000
+
+    def test_default_max_tokens_sonnet_4_6(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+    def test_default_max_tokens_date_stamped_model(self):
+        """Date-stamped model IDs should resolve via substring match."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-5-20250929",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+    def test_default_max_tokens_older_model(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-3-5-sonnet-20241022",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 8_192
+
+    def test_default_max_tokens_unknown_model_uses_highest(self):
+        """Unknown future models should get the highest known limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-ultra-5-20260101",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 128_000
+
+    def test_explicit_max_tokens_overrides_default(self):
+        """User-specified max_tokens should be respected."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 4096
+
+    def test_context_length_clamp(self):
+        """max_tokens should be clamped to context_length if it's smaller."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",  # 128K output
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            context_length=50000,
+        )
+        assert kwargs["max_tokens"] == 49999  # context_length - 1
+
+    def test_context_length_no_clamp_when_larger(self):
+        """No clamping when context_length exceeds output limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",  # 64K output
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            context_length=200000,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+
+# ---------------------------------------------------------------------------
+# Model output limit lookup
+# ---------------------------------------------------------------------------
+
+
+class TestGetAnthropicMaxOutput:
+    def test_opus_4_6(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
+
+    def test_opus_4_6_variant(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
+
+    def test_sonnet_4_6(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+
+    def test_sonnet_4_date_stamped(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-sonnet-4-20250514") == 64_000
+
+    def test_claude_3_5_sonnet(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
+
+    def test_claude_3_opus(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-3-opus-20240229") == 4_096
+
+    def test_unknown_future_model(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
+
+    def test_longest_prefix_wins(self):
+        """'claude-3-5-sonnet' should match before 'claude-3-5'."""
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
+        assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
 
 # ---------------------------------------------------------------------------

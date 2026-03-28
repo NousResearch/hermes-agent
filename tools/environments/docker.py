@@ -1,6 +1,6 @@
-"""Docker execution environment wrapping mini-swe-agent's DockerEnvironment.
+"""Docker execution environment for sandboxed command execution.
 
-Adds security hardening (cap-drop ALL, no-new-privileges, PID limits),
+Security hardened (cap-drop ALL, no-new-privileges, PID limits),
 configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment
@@ -227,11 +228,8 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
 
-        # Fail fast if Docker is not available rather than surfacing a cryptic
-        # FileNotFoundError deep inside the mini-swe-agent stack.
+        # Fail fast if Docker is not available.
         _ensure_docker_available()
-
-        from minisweagent.environments.docker import DockerEnvironment as _Docker
 
         # Build resource limit args
         resource_args = []
@@ -320,14 +318,28 @@ class DockerEnvironment(BaseEnvironment):
 
         # Resolve the docker executable once so it works even when
         # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        docker_exe = find_docker() or "docker"
+        self._docker_exe = find_docker() or "docker"
 
-        self._inner = _Docker(
-            image=image, cwd=cwd, timeout=timeout,
-            run_args=all_run_args,
-            executable=docker_exe,
+        # Start the container directly via `docker run -d`.
+        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        run_cmd = [
+            self._docker_exe, "run", "-d",
+            "--name", container_name,
+            "-w", cwd,
+            *all_run_args,
+            image,
+            "sleep", "2h",
+        ]
+        logger.debug(f"Starting container: {' '.join(run_cmd)}")
+        result = subprocess.run(
+            run_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,  # image pull may take a while
+            check=True,
         )
-        self._container_id = self._inner.container_id
+        self._container_id = result.stdout.strip()
+        logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
     @staticmethod
     def _storage_opt_supported() -> bool:
@@ -389,8 +401,8 @@ class DockerEnvironment(BaseEnvironment):
             exec_command = f"cd {work_dir} && {exec_command}"
             work_dir = "/"
 
-        assert self._inner.container_id, "Container not started"
-        cmd = [self._inner.config.executable, "exec"]
+        assert self._container_id, "Container not started"
+        cmd = [self._docker_exe, "exec"]
         if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
@@ -401,9 +413,7 @@ class DockerEnvironment(BaseEnvironment):
                 value = hermes_env.get(key)
             if value is not None:
                 cmd.extend(["-e", f"{key}={value}"])
-        for key, value in self._inner.config.env.items():
-            cmd.extend(["-e", f"{key}={value}"])
-        cmd.extend([self._inner.container_id, "bash", "-lc", exec_command])
+        cmd.extend([self._container_id, "bash", "-lc", exec_command])
 
         try:
             _output_chunks = []
@@ -456,24 +466,29 @@ class DockerEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
-        self._inner.cleanup()
-
-        if not self._persistent and self._container_id:
-            # Inner cleanup only runs `docker stop` in background; container is left
-            # as stopped. When container_persistent=false we must remove it.
-            docker_exe = find_docker() or self._inner.config.executable
+        if self._container_id:
             try:
-                subprocess.run(
-                    [docker_exe, "rm", "-f", self._container_id],
-                    capture_output=True,
-                    timeout=30,
+                # Stop in background so cleanup doesn't block
+                stop_cmd = (
+                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
+                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
                 )
+                subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
-                logger.warning("Failed to remove non-persistent container %s: %s", self._container_id, e)
+                logger.warning("Failed to stop container %s: %s", self._container_id, e)
+
+            if not self._persistent:
+                # Also schedule removal (stop only leaves it as stopped)
+                try:
+                    subprocess.Popen(
+                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
+                        shell=True,
+                    )
+                except Exception:
+                    pass
             self._container_id = None
 
         if not self._persistent:
-            import shutil
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)

@@ -39,10 +39,15 @@ def _make_stream_chunk(
     return chunk
 
 
-def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None):
+def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None, extra_content=None, model_extra=None):
     """Build a mock tool call delta."""
     func = SimpleNamespace(name=name, arguments=arguments)
-    return SimpleNamespace(index=index, id=tc_id, function=func)
+    delta = SimpleNamespace(index=index, id=tc_id, function=func)
+    if extra_content is not None:
+        delta.extra_content = extra_content
+    if model_extra is not None:
+        delta.model_extra = model_extra
+    return delta
 
 
 def _make_empty_chunk(model=None, usage=None):
@@ -131,6 +136,52 @@ class TestStreamingAccumulator:
         assert tc[0].id == "call_123"
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_call_extra_content_preserved(self, mock_close, mock_create):
+        """Streamed tool calls preserve provider-specific extra_content metadata."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_gemini",
+                    name="cronjob",
+                    model_extra={
+                        "extra_content": {
+                            "google": {"thought_signature": "sig-123"}
+                        }
+                    },
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"task": "deep index on ."}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert tc[0].extra_content == {
+            "google": {"thought_signature": "sig-123"}
+        }
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -435,6 +486,51 @@ class TestStreamingFallback:
 
         with pytest.raises(Exception, match="Rate limit exceeded"):
             agent._interruptible_streaming_api_call({})
+
+    @patch("run_agent.AIAgent._interruptible_api_call")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_exhausted_transient_stream_error_falls_back(self, mock_close, mock_create, mock_non_stream):
+        """Transient stream errors retry first, then fall back after retries are exhausted."""
+        from run_agent import AIAgent
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = httpx.ConnectError("socket closed")
+        mock_create.return_value = mock_client
+
+        fallback_response = SimpleNamespace(
+            id="fallback",
+            model="test",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="fallback after retries exhausted",
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        mock_non_stream.return_value = fallback_response
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "fallback after retries exhausted"
+        assert mock_client.chat.completions.create.call_count == 3
+        mock_non_stream.assert_called_once()
+        assert mock_close.call_count >= 1
 
 
 # ── Test: Reasoning Streaming ────────────────────────────────────────────

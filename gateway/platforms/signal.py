@@ -179,6 +179,11 @@ class SignalAdapter(BasePlatformAdapter):
         # Normalize account for self-message filtering
         self._account_normalized = self.account.strip()
 
+        # Track recently sent message timestamps to prevent echo-back loops
+        # in Note to Self / self-chat mode (mirrors WhatsApp recentlySentIds)
+        self._recent_sent_timestamps: set = set()
+        self._max_recent_timestamps = 50
+
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, _redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
@@ -274,6 +279,12 @@ class SignalAdapter(BasePlatformAdapter):
                             line = line.strip()
                             if not line:
                                 continue
+                            # SSE keepalive comments (":") prove the connection
+                            # is alive — update activity so the health monitor
+                            # doesn't report false idle warnings.
+                            if line.startswith(":"):
+                                self._last_sse_activity = time.time()
+                                continue
                             # Parse SSE data lines
                             if line.startswith("data:"):
                                 data_str = line[5:].strip()
@@ -339,7 +350,9 @@ class SignalAdapter(BasePlatformAdapter):
         """Force SSE reconnection by closing the current response."""
         if self._sse_response and not self._sse_response.is_stream_consumed:
             try:
-                asyncio.create_task(self._sse_response.aclose())
+                task = asyncio.create_task(self._sse_response.aclose())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except Exception:
                 pass
             self._sse_response = None
@@ -353,10 +366,26 @@ class SignalAdapter(BasePlatformAdapter):
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
 
-        # Filter syncMessage envelopes (sent transcripts, read receipts, etc.)
-        # signal-cli may set syncMessage to null vs omitting it, so check key existence
+        # Handle syncMessage: extract "Note to Self" messages (sent to own account)
+        # while still filtering other sync events (read receipts, typing, etc.)
+        is_note_to_self = False
         if "syncMessage" in envelope_data:
-            return
+            sync_msg = envelope_data.get("syncMessage")
+            if sync_msg and isinstance(sync_msg, dict):
+                sent_msg = sync_msg.get("sentMessage")
+                if sent_msg and isinstance(sent_msg, dict):
+                    dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
+                    sent_ts = sent_msg.get("timestamp")
+                    if dest == self._account_normalized:
+                        # Check if this is an echo of our own outbound reply
+                        if sent_ts and sent_ts in self._recent_sent_timestamps:
+                            self._recent_sent_timestamps.discard(sent_ts)
+                            return
+                        # Genuine user Note to Self — promote to dataMessage
+                        is_note_to_self = True
+                        envelope_data = {**envelope_data, "dataMessage": sent_msg}
+            if not is_note_to_self:
+                return
 
         # Extract sender info
         sender = (
@@ -371,8 +400,8 @@ class SignalAdapter(BasePlatformAdapter):
             logger.debug("Signal: ignoring envelope with no sender")
             return
 
-        # Self-message filtering — prevent reply loops
-        if self._account_normalized and sender == self._account_normalized:
+        # Self-message filtering — prevent reply loops (but allow Note to Self)
+        if self._account_normalized and sender == self._account_normalized and not is_note_to_self:
             return
 
         # Filter stories
@@ -457,7 +486,7 @@ class SignalAdapter(BasePlatformAdapter):
             if any(mt.startswith("audio/") for mt in media_types):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.IMAGE
+                msg_type = MessageType.PHOTO
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -497,6 +526,13 @@ class SignalAdapter(BasePlatformAdapter):
 
         if not result:
             return None, ""
+
+        # Handle dict response (signal-cli returns {"data": "base64..."})
+        if isinstance(result, dict):
+            result = result.get("data")
+            if not result:
+                logger.warning("Signal: attachment response missing 'data' key")
+                return None, ""
 
         # Result is base64-encoded file content
         raw_data = base64.b64decode(result)
@@ -577,8 +613,17 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("send", params)
 
         if result is not None:
+            self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send failed")
+
+    def _track_sent_timestamp(self, rpc_result) -> None:
+        """Record outbound message timestamp for echo-back filtering."""
+        ts = rpc_result.get("timestamp") if isinstance(rpc_result, dict) else None
+        if ts:
+            self._recent_sent_timestamps.add(ts)
+            if len(self._recent_sent_timestamps) > self._max_recent_timestamps:
+                self._recent_sent_timestamps.pop()
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send a typing indicator."""
@@ -635,6 +680,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
 
@@ -665,6 +711,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         result = await self._rpc("send", params)
         if result is not None:
+            self._track_sent_timestamp(result)
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send document failed")
 

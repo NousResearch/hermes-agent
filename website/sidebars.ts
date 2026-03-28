@@ -9,6 +9,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
+        'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
       ],
@@ -52,6 +53,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/matrix',
             'user-guide/messaging/dingtalk',
             'user-guide/messaging/open-webui',
+            'user-guide/messaging/webhooks',
           ],
         },
         {
@@ -107,6 +109,13 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/rl-training',
           ],
         },
+        {
+          type: 'category',
+          label: 'Skills',
+          items: [
+            'user-guide/skills/godmode',
+          ],
+        },
       ],
     },
     {
@@ -128,6 +137,7 @@ const sidebars: SidebarsConfig = {
         'developer-guide/environments',
         'developer-guide/adding-tools',
         'developer-guide/creating-skills',
+        'developer-guide/extending-the-cli',
         'developer-guide/contributing',
       ],
     },

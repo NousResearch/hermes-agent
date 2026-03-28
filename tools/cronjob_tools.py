@@ -266,8 +266,10 @@ def cronjob(
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if repeat is not None:
+                # Normalize: treat 0 or negative as None (infinite)
+                normalized_repeat = None if repeat <= 0 else repeat
                 repeat_state = dict(job.get("repeat") or {})
-                repeat_state["times"] = repeat
+                repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
@@ -336,11 +338,9 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
-NOTE: The agent's final response is auto-delivered to the target — do NOT use
-send_message in the prompt for that same destination. Same-target send_message
-calls are skipped to avoid duplicate cron deliveries. Put the primary
-user-facing content in the final response, and use send_message only for
-additional or different targets.
+NOTE: The agent's final response is auto-delivered to the target. Put the primary
+user-facing content in the final response. Cron jobs run autonomously with no user
+present — they cannot ask questions or request clarification.
 
 Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
     "parameters": {
@@ -372,7 +372,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, signal, sms, or platform:chat_id"
+                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
             },
             "model": {
                 "type": "string",

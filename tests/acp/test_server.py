@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from acp.schema import (
 )
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
+from hermes_state import SessionDB
 
 
 @pytest.fixture()
@@ -389,3 +391,46 @@ class TestSlashCommands:
             resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
         assert resp.stop_reason == "end_turn"
+
+    def test_model_switch_uses_requested_provider(self, tmp_path, monkeypatch):
+        """`/model provider:model` should rebuild the ACP agent on that provider."""
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages" if provider == "anthropic" else "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            result = acp_agent._cmd_model("anthropic:claude-sonnet-4-6", state)
+
+        assert "Provider: anthropic" in result
+        assert state.agent.provider == "anthropic"
+        assert state.agent.base_url == "https://anthropic.example/v1"
+        assert runtime_calls[-1] == "anthropic"

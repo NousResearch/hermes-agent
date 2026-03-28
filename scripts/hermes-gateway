@@ -82,13 +82,15 @@ def generate_systemd_unit() -> str:
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart={python_path} {script_path} run
 WorkingDirectory={working_dir}
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 StandardOutput=journal
 StandardError=journal
 

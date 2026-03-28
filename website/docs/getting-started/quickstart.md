@@ -50,14 +50,15 @@ hermes setup       # Or configure everything at once
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
+| **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |
 | **Kilo Code** | KiloCode-hosted models | Set `KILOCODE_API_KEY` |
 | **OpenCode Zen** | Pay-as-you-go access to curated models | Set `OPENCODE_ZEN_API_KEY` |
 | **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |
 | **Vercel AI Gateway** | Vercel AI Gateway routing | Set `AI_GATEWAY_API_KEY` |
-| **Custom Endpoint** | VLLM, SGLang, or any OpenAI-compatible API | Set base URL + API key |
+| **Custom Endpoint** | VLLM, SGLang, Ollama, or any OpenAI-compatible API | Set base URL + API key |
 
 :::tip
-You can switch providers at any time with `hermes model` — no code changes, no lock-in.
+You can switch providers at any time with `hermes model` — no code changes, no lock-in. When configuring a custom endpoint, Hermes will prompt for the context window size and auto-detect it when possible. See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for details.
 :::
 
 ## 3. Start Chatting
@@ -139,7 +140,7 @@ hermes gateway setup    # Interactive platform configuration
 Want microphone input in the CLI or spoken replies in messaging?
 
 ```bash
-pip install hermes-agent[voice]
+pip install "hermes-agent[voice]"
 
 # Optional but recommended for free local speech-to-text
 pip install faster-whisper

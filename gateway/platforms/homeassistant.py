@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 try:
     import aiohttp
@@ -114,7 +114,9 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                 return False
 
             # Dedicated REST session for send() calls
-            self._rest_session = aiohttp.ClientSession()
+            self._rest_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30)
+            )
 
             # Warn if no event filters are configured
             if not self._watch_domains and not self._watch_entities and not self._watch_all:
@@ -140,8 +142,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = self._hass_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/websocket"
 
-        self._session = aiohttp.ClientSession()
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30)
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        )
+        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
 
         # Step 1: Receive auth_required
         msg = await self._ws.receive_json()
@@ -435,7 +439,6 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """No typing indicator for Home Assistant."""
-        pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the HA event channel."""

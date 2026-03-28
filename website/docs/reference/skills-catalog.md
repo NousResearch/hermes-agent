@@ -30,6 +30,14 @@ Skills for spawning and orchestrating autonomous AI coding agents and multi-agen
 | `hermes-agent-spawning` | Spawn additional Hermes Agent instances as autonomous subprocesses for independent long-running tasks. Supports non-interactive one-shot mode (-q) and interactive PTY mode for multi-turn collaboration. Different from delegate_task — this runs a full separate hermes process. | `autonomous-ai-agents/hermes-agent` |
 | `opencode` | Delegate coding tasks to OpenCode CLI agent for feature implementation, refactoring, PR review, and long-running autonomous sessions. Requires the opencode CLI installed and authenticated. | `autonomous-ai-agents/opencode` |
 
+## data-science
+
+Skills for data science workflows — interactive exploration, Jupyter notebooks, data analysis, and visualization.
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| `jupyter-live-kernel` | Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. Load this skill when the task involves exploration, iteration, or inspecting intermediate results. | `data-science/jupyter-live-kernel` |
+
 ## creative
 
 Creative content generation — ASCII art, hand-drawn style diagrams, and visual design tools.
@@ -44,7 +52,8 @@ Creative content generation — ASCII art, hand-drawn style diagrams, and visual
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| `dogfood` | Systematic exploratory QA testing of web applications — find bugs, capture evidence, and generate structured reports | `dogfood` |
+| `dogfood` | Systematic exploratory QA testing of web applications — find bugs, capture evidence, and generate structured reports. | `dogfood/dogfood` |
+| `hermes-agent-setup` | Help users configure Hermes Agent — CLI usage, setup wizard, model/provider selection, tools, skills, voice/STT/TTS, gateway, and troubleshooting. | `dogfood/hermes-agent-setup` |
 
 ## email
 
@@ -76,6 +85,14 @@ GitHub workflow skills for managing repositories, pull requests, code reviews, i
 | `github-pr-workflow` | Full pull request lifecycle — create branches, commit changes, open PRs, monitor CI status, auto-fix failures, and merge. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-pr-workflow` |
 | `github-repo-management` | Clone, create, fork, configure, and manage GitHub repositories. Manage remotes, secrets, releases, and workflows. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-repo-management` |
 
+## inference-sh
+
+Skills for AI app execution via inference.sh cloud platform.
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| `inference-sh-cli` | Run 150+ AI apps via inference.sh CLI (infsh) — image generation, video creation, LLMs, search, 3D, social automation. | `inference-sh/cli` |
+
 ## leisure
 
 | Skill | Description | Path |
@@ -101,6 +118,14 @@ Skills for working with media content — YouTube transcripts, GIF search, music
 | `heartmula` | Set up and run HeartMuLa, the open-source music generation model family (Suno-like). Generates full songs from lyrics + tags with multilingual support. | `media/heartmula` |
 | `songsee` | Generate spectrograms and audio feature visualizations (mel, chroma, MFCC, tempogram, etc.) from audio files via CLI. Useful for audio analysis, music production debugging, and visual documentation. | `media/songsee` |
 | `youtube-content` | Fetch YouTube video transcripts and transform them into structured content (chapters, summaries, threads, blog posts). | `media/youtube-content` |
+
+## mlops
+
+General-purpose ML operations tools — model hub management, dataset operations, and workflow orchestration.
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| `huggingface-hub` | Hugging Face Hub CLI (hf) — search, download, and upload models and datasets, manage repos, deploy inference endpoints. | `mlops/huggingface-hub` |
 
 ## mlops/cloud
 
@@ -205,6 +230,7 @@ Skills for document creation, presentations, spreadsheets, and other productivit
 | Skill | Description | Path |
 |-------|-------------|------|
 | `google-workspace` | Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration via Python. Uses OAuth2 with automatic token refresh. No external binaries needed — runs entirely with Google's Python client libraries in the Hermes venv. | `productivity/google-workspace` |
+| `linear` | Manage Linear issues, projects, and teams via the GraphQL API. Create, update, search, and organize issues. | `productivity/linear` |
 | `nano-pdf` | Edit PDFs with natural-language instructions using the nano-pdf CLI. Modify text, fix typos, update titles, and make content changes to specific pages without manual editing. | `productivity/nano-pdf` |
 | `notion` | Notion API for creating and managing pages, databases, and blocks via curl. Search, create, update, and query Notion workspaces directly from the terminal. | `productivity/notion` |
 | `ocr-and-documents` | Extract text from PDFs and scanned documents. Use web_extract for remote URLs, pymupdf for local text-based PDFs, marker-pdf for OCR/scanned docs. For DOCX use python-docx, for PPTX see the powerpoint skill. | `productivity/ocr-and-documents` |
@@ -220,6 +246,7 @@ Skills for academic research, paper discovery, literature review, domain reconna
 | `blogwatcher` | Monitor blogs and RSS/Atom feeds for updates using the blogwatcher CLI. Add blogs, scan for new articles, and track what you've read. | `research/blogwatcher` |
 | `domain-intel` | Passive domain reconnaissance using Python stdlib. Subdomain discovery, SSL certificate inspection, WHOIS lookups, DNS records, domain availability checks, and bulk multi-domain analysis. No API keys required. | `research/domain-intel` |
 | `duckduckgo-search` | Free web search via DuckDuckGo — text, news, images, videos. No API key needed. Use the Python DDGS library or CLI to search, then web_extract for full content. | `research/duckduckgo-search` |
+| `parallel-cli` | Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring. | `research/parallel-cli` |
 | `ml-paper-writing` | Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM. Use when drafting papers from research repos, structuring arguments, verifying citations, or preparing camera-ready submissions. Includes LaTeX templates, reviewer guidelines, and citation verificatio… | `research/ml-paper-writing` |
 | `polymarket` | Query Polymarket prediction market data — search markets, get prices, orderbooks, and price history. Read-only via public REST APIs, no API key needed. | `research/polymarket` |
 
@@ -230,6 +257,14 @@ Skills for controlling smart home devices — lights, switches, sensors, and hom
 | Skill | Description | Path |
 |-------|-------------|------|
 | `openhue` | Control Philips Hue lights, rooms, and scenes via the OpenHue CLI. Turn lights on/off, adjust brightness, color, color temperature, and activate scenes. | `smart-home/openhue` |
+
+## social-media
+
+Skills for interacting with social platforms — posting, reading, monitoring, and account operations.
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| `xitter` | Interact with X/Twitter via the x-cli terminal client using official X API credentials. | `social-media/xitter` |
 
 ## software-development
 

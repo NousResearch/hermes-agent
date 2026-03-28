@@ -24,7 +24,7 @@ Convert text to speech with four providers:
 | Platform | Delivery | Format |
 |----------|----------|--------|
 | Telegram | Voice bubble (plays inline) | Opus `.ogg` |
-| Discord | Audio file attachment | MP3 |
+| Discord | Voice bubble (Opus/OGG), falls back to file attachment | Opus/MP3 |
 | WhatsApp | Audio file attachment | MP3 |
 | CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 
@@ -42,6 +42,7 @@ tts:
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
+    base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
   neutts:
     ref_audio: ''
     ref_text: ''

@@ -56,6 +56,7 @@ class Platform(Enum):
     SMS = "sms"
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
+    WEBHOOK = "webhook"
 
 
 @dataclass
@@ -100,12 +101,16 @@ class SessionResetPolicy:
     mode: str = "both"  # "daily", "idle", "both", or "none"
     at_hour: int = 4  # Hour for daily reset (0-23, local time)
     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
+    notify: bool = True  # Send a notification to the user when auto-reset occurs
+    notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
             "at_hour": self.at_hour,
             "idle_minutes": self.idle_minutes,
+            "notify": self.notify,
+            "notify_exclude_platforms": list(self.notify_exclude_platforms),
         }
     
     @classmethod
@@ -114,10 +119,14 @@ class SessionResetPolicy:
         mode = data.get("mode")
         at_hour = data.get("at_hour")
         idle_minutes = data.get("idle_minutes")
+        notify = data.get("notify")
+        exclude = data.get("notify_exclude_platforms")
         return cls(
             mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
+            notify=notify if notify is not None else True,
+            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
         )
 
 
@@ -129,6 +138,12 @@ class PlatformConfig:
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
     
+    # Reply threading mode (Telegram/Slack)
+    # - "off": Never thread replies to original message
+    # - "first": Only first chunk threads to user's message (default)
+    # - "all": All chunks in multi-part replies thread to user's message
+    reply_to_mode: str = "first"
+    
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
     
@@ -136,6 +151,7 @@ class PlatformConfig:
         result = {
             "enabled": self.enabled,
             "extra": self.extra,
+            "reply_to_mode": self.reply_to_mode,
         }
         if self.token:
             result["token"] = self.token
@@ -156,6 +172,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
+            reply_to_mode=data.get("reply_to_mode", "first"),
             extra=data.get("extra", {}),
         )
 
@@ -253,6 +270,9 @@ class GatewayConfig:
                 connected.append(platform)
             # API Server uses enabled flag only (no token needed)
             elif platform == Platform.API_SERVER:
+                connected.append(platform)
+            # Webhook uses enabled flag only (secrets are per-route)
+            elif platform == Platform.WEBHOOK:
                 connected.append(platform)
         return connected
     
@@ -451,10 +471,26 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
-            # Bridge per-platform settings from config.yaml into gw_data
+            # Merge platforms section from config.yaml into gw_data so that
+            # nested keys like platforms.webhook.extra.routes are loaded.
+            yaml_platforms = yaml_cfg.get("platforms")
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
+                gw_data["platforms"] = platforms_data
+            if isinstance(yaml_platforms, dict):
+                for plat_name, plat_block in yaml_platforms.items():
+                    if not isinstance(plat_block, dict):
+                        continue
+                    existing = platforms_data.get(plat_name, {})
+                    if not isinstance(existing, dict):
+                        existing = {}
+                    # Deep-merge extra dicts so gateway.json defaults survive
+                    merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    merged = {**existing, **plat_block}
+                    if merged_extra:
+                        merged["extra"] = merged_extra
+                    platforms_data[plat_name] = merged
                 gw_data["platforms"] = platforms_data
             for plat in Platform:
                 if plat == Platform.LOCAL:
@@ -495,8 +531,13 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Failed to process config.yaml — falling back to .env / gateway.json values. "
+            "Check %s for syntax errors. Error: %s",
+            _home / "config.yaml",
+            e,
+        )
 
     config = GatewayConfig.from_dict(gw_data)
 
@@ -553,6 +594,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.TELEGRAM].enabled = True
         config.platforms[Platform.TELEGRAM].token = telegram_token
     
+    # Reply threading mode for Telegram (off/first/all)
+    telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
+    if telegram_reply_mode in ("off", "first", "all"):
+        if Platform.TELEGRAM not in config.platforms:
+            config.platforms[Platform.TELEGRAM] = PlatformConfig()
+        config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
+    
+    telegram_fallback_ips = os.getenv("TELEGRAM_FALLBACK_IPS", "")
+    if telegram_fallback_ips:
+        if Platform.TELEGRAM not in config.platforms:
+            config.platforms[Platform.TELEGRAM] = PlatformConfig()
+        config.platforms[Platform.TELEGRAM].extra["fallback_ips"] = [
+            ip.strip() for ip in telegram_fallback_ips.split(",") if ip.strip()
+        ]
+
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
         config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
@@ -718,6 +774,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
     api_server_key = os.getenv("API_SERVER_KEY", "")
+    api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")
     if api_server_enabled or api_server_key:
@@ -726,6 +783,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.API_SERVER].enabled = True
         if api_server_key:
             config.platforms[Platform.API_SERVER].extra["key"] = api_server_key
+        if api_server_cors_origins:
+            origins = [origin.strip() for origin in api_server_cors_origins.split(",") if origin.strip()]
+            if origins:
+                config.platforms[Platform.API_SERVER].extra["cors_origins"] = origins
         if api_server_port:
             try:
                 config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
@@ -733,6 +794,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if api_server_host:
             config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
+
+    # Webhook platform
+    webhook_enabled = os.getenv("WEBHOOK_ENABLED", "").lower() in ("true", "1", "yes")
+    webhook_port = os.getenv("WEBHOOK_PORT")
+    webhook_secret = os.getenv("WEBHOOK_SECRET", "")
+    if webhook_enabled:
+        if Platform.WEBHOOK not in config.platforms:
+            config.platforms[Platform.WEBHOOK] = PlatformConfig()
+        config.platforms[Platform.WEBHOOK].enabled = True
+        if webhook_port:
+            try:
+                config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
+            except ValueError:
+                pass
+        if webhook_secret:
+            config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
@@ -748,6 +825,5 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 
 

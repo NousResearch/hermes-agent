@@ -34,7 +34,6 @@ import logging
 import os
 import platform
 import shlex
-import shutil
 import signal
 import subprocess
 import threading
@@ -44,7 +43,6 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
@@ -426,12 +424,14 @@ class ProcessRegistry:
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
+        from tools.ansi_strip import strip_ansi
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         with session._lock:
-            output_preview = session.output_buffer[-1000:] if session.output_buffer else ""
+            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
 
         result = {
             "session_id": session.id,
@@ -450,12 +450,14 @@ class ProcessRegistry:
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
+        from tools.ansi_strip import strip_ansi
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         with session._lock:
-            full_output = session.output_buffer
+            full_output = strip_ansi(session.output_buffer)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -486,6 +488,7 @@ class ProcessRegistry:
             dict with status ("exited", "timeout", "interrupted", "not_found")
             and output snapshot.
         """
+        from tools.ansi_strip import strip_ansi
         from tools.terminal_tool import _interrupt_event
 
         default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -513,7 +516,7 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
-                    "output": session.output_buffer[-2000:],
+                    "output": strip_ansi(session.output_buffer[-2000:]),
                 }
                 if timeout_note:
                     result["timeout_note"] = timeout_note
@@ -522,7 +525,7 @@ class ProcessRegistry:
             if _interrupt_event.is_set():
                 result = {
                     "status": "interrupted",
-                    "output": session.output_buffer[-1000:],
+                    "output": strip_ansi(session.output_buffer[-1000:]),
                     "note": "User sent a new message -- wait interrupted",
                 }
                 if timeout_note:
@@ -533,7 +536,7 @@ class ProcessRegistry:
 
         result = {
             "status": "timeout",
-            "output": session.output_buffer[-1000:],
+            "output": strip_ansi(session.output_buffer[-1000:]),
         }
         if timeout_note:
             result["timeout_note"] = timeout_note

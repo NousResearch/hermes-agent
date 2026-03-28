@@ -37,6 +37,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/v1`) |
 | `KILOCODE_API_KEY` | Kilo Code API key ([kilo.ai](https://kilo.ai)) |
 | `KILOCODE_BASE_URL` | Override Kilo Code base URL (default: `https://api.kilo.ai/api/gateway`) |
+| `HF_TOKEN` | Hugging Face token for Inference Providers ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
+| `HF_BASE_URL` | Override Hugging Face base URL (default: `https://router.huggingface.co/v1`) |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
 | `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
@@ -61,7 +63,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `alibaba` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `alibaba` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
@@ -92,6 +94,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
+| `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
@@ -207,10 +210,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `MATRIX_ENCRYPTION` | Enable end-to-end encryption (`true`/`false`, default: `false`) |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
+| `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |
+| `WEBHOOK_PORT` | HTTP server port for receiving webhooks (default: `8644`) |
+| `WEBHOOK_SECRET` | Global HMAC secret for webhook signature validation (used as fallback when routes don't specify their own) |
 | `API_SERVER_ENABLED` | Enable the OpenAI-compatible API server (`true`/`false`). Runs alongside other platforms. |
-| `API_SERVER_KEY` | Bearer token for API server authentication. If empty, all requests are allowed (local-only use). |
+| `API_SERVER_KEY` | Bearer token for API server authentication. Strongly recommended; required for any network-accessible deployment. |
+| `API_SERVER_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API server directly (for example `http://localhost:3000,http://127.0.0.1:3000`). Default: disabled. |
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |
-| `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). Use `0.0.0.0` for network access — set `API_SERVER_KEY` for security. |
+| `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). Use `0.0.0.0` for network access only with `API_SERVER_KEY` and a narrow `API_SERVER_CORS_ORIGINS` allowlist. |
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
@@ -228,6 +235,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
 | `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `900`) |
 | `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
+| `HERMES_ENABLE_PROJECT_PLUGINS` | Enable auto-discovery of repo-local plugins from `./.hermes/plugins/` (`true`/`false`, default: `false`) |
 | `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
 | `HERMES_EPHEMERAL_SYSTEM_PROMPT` | Ephemeral system prompt injected at API-call time (never persisted to sessions) |
 

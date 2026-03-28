@@ -18,12 +18,13 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
 
 // Parse CLI args
@@ -41,6 +42,9 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
+const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
+const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -54,6 +58,22 @@ function formatOutgoingMessage(message) {
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
+
+// Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
+function buildLidMap() {
+  const map = {};
+  try {
+    for (const f of readdirSync(SESSION_DIR)) {
+      const m = f.match(/^lid-mapping-(\d+)\.json$/);
+      if (!m) continue;
+      const phone = m[1];
+      const lid = JSON.parse(readFileSync(path.join(SESSION_DIR, f), 'utf8'));
+      if (lid) map[String(lid)] = phone;
+    }
+  } catch {}
+  return map;
+}
+let lidToPhone = buildLidMap();
 
 const logger = pino({ level: 'warn' });
 
@@ -80,9 +100,16 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    // Required for Baileys 7.x: without this, incoming messages that need
+    // E2EE session re-establishment are silently dropped (msg.message === null)
+    getMessage: async (key) => {
+      // We don't maintain a message store, so return a placeholder.
+      // This is enough for Baileys to complete the retry handshake.
+      return { conversation: '' };
+    },
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -120,7 +147,7 @@ async function startSocket() {
     }
   });
 
-  sock.ev.on('messages.upsert', ({ messages, type }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // In self-chat mode, your own messages commonly arrive as 'append' rather
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
@@ -163,9 +190,10 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others
-      if (!msg.key.fromMe && ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(senderNumber)) {
-        continue;
+      // Check allowlist for messages from others (resolve LID → phone if needed)
+      if (!msg.key.fromMe && ALLOWED_USERS.length > 0) {
+        const resolvedNumber = lidToPhone[senderNumber] || senderNumber;
+        if (!ALLOWED_USERS.includes(resolvedNumber)) continue;
       }
 
       // Extract message body
@@ -182,17 +210,68 @@ async function startSocket() {
         body = msg.message.imageMessage.caption || '';
         hasMedia = true;
         mediaType = 'image';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
+          const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
+          const ext = extMap[mime] || '.jpg';
+          mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
+          const filePath = path.join(IMAGE_CACHE_DIR, `img_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download image:', err.message);
+        }
       } else if (msg.message.videoMessage) {
         body = msg.message.videoMessage.caption || '';
         hasMedia = true;
         mediaType = 'video';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = msg.message.videoMessage.mimetype || 'video/mp4';
+          const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
+          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+          const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download video:', err.message);
+        }
       } else if (msg.message.audioMessage || msg.message.pttMessage) {
         hasMedia = true;
         mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
+        try {
+          const audioMsg = msg.message.pttMessage || msg.message.audioMessage;
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = audioMsg.mimetype || 'audio/ogg';
+          const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
+          mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
+          const filePath = path.join(AUDIO_CACHE_DIR, `aud_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download audio:', err.message);
+        }
       } else if (msg.message.documentMessage) {
-        body = msg.message.documentMessage.caption || msg.message.documentMessage.fileName || '';
+        body = msg.message.documentMessage.caption || '';
         hasMedia = true;
         mediaType = 'document';
+        const fileName = msg.message.documentMessage.fileName || 'document';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+          const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+          const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download document:', err.message);
+        }
+      }
+
+      // For media without caption, use a placeholder so the API message is never empty
+      if (hasMedia && !body) {
+        body = `[${mediaType} received]`;
       }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
@@ -433,7 +512,7 @@ if (PAIR_ONLY) {
   console.log();
   startSocket();
 } else {
-  app.listen(PORT, () => {
+  app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.length > 0) {

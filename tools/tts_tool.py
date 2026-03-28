@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Callable, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
+DEFAULT_OUTPUT_DIR = str(get_hermes_home() / "audio_cache")
 MAX_TEXT_LENGTH = 4000
 
 
@@ -101,7 +102,7 @@ def _load_tts_config() -> Dict[str, Any]:
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
-    return tts_config.get("provider", DEFAULT_PROVIDER).lower().strip()
+    return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
 # ===========================================================================
@@ -239,6 +240,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+    base_url = oai_config.get("base_url", "https://api.openai.com/v1")
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -247,7 +249,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         response_format = "mp3"
 
     OpenAIClient = _import_openai_client()
-    client = OpenAIClient(api_key=api_key, base_url="https://api.openai.com/v1")
+    client = OpenAIClient(api_key=api_key, base_url=base_url)
     response = client.audio.speech.create(
         model=model,
         voice=voice,
@@ -628,7 +630,6 @@ def stream_tts_to_speaker(
             if client is not None:
                 try:
                     sd = _import_sounddevice()
-                    import numpy as _np
                     output_stream = sd.OutputStream(
                         samplerate=24000, channels=1, dtype="int16",
                     )
@@ -796,7 +797,7 @@ if __name__ == "__main__":
         except ImportError:
             return False
 
-    print(f"\nProvider availability:")
+    print("\nProvider availability:")
     print(f"  Edge TTS:   {'installed' if _check(_import_edge_tts, 'edge') else 'not installed (pip install edge-tts)'}")
     print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
     print(f"    API Key:  {'set' if os.getenv('ELEVENLABS_API_KEY') else 'not set'}")

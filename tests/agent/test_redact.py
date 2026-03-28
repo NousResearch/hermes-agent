@@ -1,10 +1,17 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import logging
+import os
 
 import pytest
 
 from agent.redact import redact_sensitive_text, RedactingFormatter
+
+
+@pytest.fixture(autouse=True)
+def _ensure_redaction_enabled(monkeypatch):
+    """Ensure HERMES_REDACT_SECRETS is not disabled by prior test imports."""
+    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
 
 
 class TestKnownPrefixes:
@@ -123,6 +130,13 @@ class TestPassthrough:
 
     def test_none_returns_none(self):
         assert redact_sensitive_text(None) is None
+
+    def test_non_string_input_int_coerced(self):
+        assert redact_sensitive_text(12345) == "12345"
+
+    def test_non_string_input_dict_coerced_and_redacted(self):
+        result = redact_sensitive_text({"token": "sk-proj-abc123def456ghi789jkl012"})
+        assert "abc123def456" not in result
 
     def test_normal_text_unchanged(self):
         text = "Hello world, this is a normal log message with no secrets."

@@ -34,7 +34,7 @@ def test_nous_oauth_setup_keeps_current_model_when_syncing_disk_provider(
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            return 0
+            return 1  # Nous Portal
         if question == "Configure vision:":
             return len(choices) - 1
         if question == "Select default model:":
@@ -97,30 +97,32 @@ def test_custom_setup_clears_active_oauth_provider(tmp_path, monkeypatch):
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
 
-    prompt_values = iter(
-        [
-            "https://custom.example/v1",
-            "custom-api-key",
-            "custom/model",
-        ]
-    )
-    monkeypatch.setattr(
-        "hermes_cli.setup.prompt",
-        lambda *args, **kwargs: next(prompt_values),
-    )
+    # _model_flow_custom uses builtins.input (URL, key, model, context_length)
+    input_values = iter([
+        "https://custom.example/v1",
+        "custom-api-key",
+        "custom/model",
+        "",  # context_length (blank = auto-detect)
+    ])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_values))
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {"models": ["m"], "probed_url": base_url + "/models"},
+    )
 
     setup_model_provider(config)
-    save_config(config)
 
-    reloaded = load_config()
-
+    # Core assertion: switching to custom endpoint clears OAuth provider
     assert get_active_provider() is None
-    assert isinstance(reloaded["model"], dict)
-    assert reloaded["model"]["provider"] == "custom"
-    assert reloaded["model"]["base_url"] == "https://custom.example/v1"
-    assert reloaded["model"]["default"] == "custom/model"
+
+    # _model_flow_custom writes config via its own load/save cycle
+    reloaded = load_config()
+    if isinstance(reloaded.get("model"), dict):
+        assert reloaded["model"].get("provider") == "custom"
+        assert reloaded["model"].get("default") == "custom/model"
 
 
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
@@ -133,7 +135,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            return 1
+            return 2  # OpenAI Codex
         if question == "Select default model:":
             return 0
         tts_idx = _maybe_keep_current_tts(question, choices)

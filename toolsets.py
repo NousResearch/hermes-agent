@@ -226,7 +226,6 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools. Messaging platforms add
     # All platforms share the same core tools (including send_message,
     # which is gated on gateway running via its check_fn).
     # ==========================================================================
@@ -246,6 +245,42 @@ TOOLSETS = {
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
+        ],
+        "includes": []
+    },
+
+    "hermes-api-server": {
+        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
+        "tools": [
+            # Web
+            "web_search", "web_extract",
+            # Terminal + process management
+            "terminal", "process",
+            # File manipulation
+            "read_file", "write_file", "patch", "search_files",
+            # Vision + image generation
+            "vision_analyze", "image_generate",
+            # MoA
+            "mixture_of_agents",
+            # Skills
+            "skills_list", "skill_view", "skill_manage",
+            # Browser automation
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision", "browser_console",
+            # Planning & memory
+            "todo", "memory",
+            # Session history search
+            "session_search",
+            # Code execution + delegation
+            "execute_code", "delegate_task",
+            # Cronjob management
+            "cronjob",
+            # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            # Honcho memory tools (gated on honcho being active via check_fn)
+            "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
         ],
         "includes": []
     },
@@ -355,24 +390,34 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
             all_tools.update(resolved)
         return list(all_tools)
 
-    # Check for cycles
+    # Check for cycles / already-resolved (diamond deps).
+    # Silently return [] — either this is a diamond (not a bug, tools already
+    # collected via another path) or a genuine cycle (safe to skip).
     if name in visited:
-        print(f"⚠️  Circular dependency detected in toolset '{name}'")
         return []
-    
+
     visited.add(name)
-    
+
     # Get toolset definition
     toolset = TOOLSETS.get(name)
     if not toolset:
+        # Fall back to tool registry for plugin-provided toolsets
+        if name in _get_plugin_toolset_names():
+            try:
+                from tools.registry import registry
+                return [e.name for e in registry._tools.values() if e.toolset == name]
+            except Exception:
+                pass
         return []
-    
+
     # Collect direct tools
     tools = set(toolset.get("tools", []))
-    
-    # Recursively resolve included toolsets
+
+    # Recursively resolve included toolsets, sharing the visited set across
+    # sibling includes so diamond dependencies are only resolved once and
+    # cycle warnings don't fire multiple times for the same cycle.
     for included_name in toolset.get("includes", []):
-        included_tools = resolve_toolset(included_name, visited.copy())
+        included_tools = resolve_toolset(included_name, visited)
         tools.update(included_tools)
     
     return list(tools)
@@ -397,24 +442,60 @@ def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
     return list(all_tools)
 
 
+def _get_plugin_toolset_names() -> Set[str]:
+    """Return toolset names registered by plugins (from the tool registry).
+
+    These are toolsets that exist in the registry but not in the static
+    ``TOOLSETS`` dict — i.e. they were added by plugins at load time.
+    """
+    try:
+        from tools.registry import registry
+        return {
+            entry.toolset
+            for entry in registry._tools.values()
+            if entry.toolset not in TOOLSETS
+        }
+    except Exception:
+        return set()
+
+
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """
     Get all available toolsets with their definitions.
+
+    Includes both statically-defined toolsets and plugin-registered ones.
     
     Returns:
         Dict: All toolset definitions
     """
-    return TOOLSETS.copy()
+    result = TOOLSETS.copy()
+    # Add plugin-provided toolsets (synthetic entries)
+    for ts_name in _get_plugin_toolset_names():
+        if ts_name not in result:
+            try:
+                from tools.registry import registry
+                tools = [e.name for e in registry._tools.values() if e.toolset == ts_name]
+                result[ts_name] = {
+                    "description": f"Plugin toolset: {ts_name}",
+                    "tools": tools,
+                }
+            except Exception:
+                pass
+    return result
 
 
 def get_toolset_names() -> List[str]:
     """
     Get names of all available toolsets (excluding aliases).
+
+    Includes plugin-registered toolset names.
     
     Returns:
         List[str]: List of toolset names
     """
-    return list(TOOLSETS.keys())
+    names = set(TOOLSETS.keys())
+    names |= _get_plugin_toolset_names()
+    return sorted(names)
 
 
 
@@ -432,7 +513,10 @@ def validate_toolset(name: str) -> bool:
     # Accept special alias names for convenience
     if name in {"all", "*"}:
         return True
-    return name in TOOLSETS
+    if name in TOOLSETS:
+        return True
+    # Check tool registry for plugin-provided toolsets
+    return name in _get_plugin_toolset_names()
 
 
 def create_custom_toolset(
@@ -486,33 +570,6 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
     }
 
 
-def print_toolset_tree(name: str, indent: int = 0) -> None:
-    """
-    Print a tree view of a toolset and its composition.
-    
-    Args:
-        name (str): Toolset name
-        indent (int): Current indentation level
-    """
-    prefix = "  " * indent
-    toolset = get_toolset(name)
-    
-    if not toolset:
-        print(f"{prefix}❌ Unknown toolset: {name}")
-        return
-    
-    # Print toolset name and description
-    print(f"{prefix}📦 {name}: {toolset['description']}")
-    
-    # Print direct tools
-    if toolset["tools"]:
-        print(f"{prefix}  🔧 Tools: {', '.join(toolset['tools'])}")
-    
-    # Print included toolsets
-    if toolset["includes"]:
-        print(f"{prefix}  📂 Includes:")
-        for included in toolset["includes"]:
-            print_toolset_tree(included, indent + 2)
 
 
 if __name__ == "__main__":
@@ -537,7 +594,7 @@ if __name__ == "__main__":
     print("\nMultiple Toolset Resolution:")
     print("-" * 40)
     combined = resolve_multiple_toolsets(["web", "vision", "terminal"])
-    print(f"  Combining ['web', 'vision', 'terminal']:")
+    print("  Combining ['web', 'vision', 'terminal']:")
     print(f"    Result: {', '.join(sorted(combined))}")
     
     print("\nCustom Toolset Creation:")
@@ -549,6 +606,6 @@ if __name__ == "__main__":
         includes=["terminal", "vision"]
     )
     custom_info = get_toolset_info("my_custom")
-    print(f"  Created 'my_custom' toolset:")
+    print("  Created 'my_custom' toolset:")
     print(f"    Description: {custom_info['description']}")
     print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")

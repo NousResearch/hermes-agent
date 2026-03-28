@@ -46,7 +46,7 @@ import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
-from tools.url_safety import is_safe_url
+from tools.url_safety import is_safe_url, async_is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
@@ -881,7 +881,7 @@ async def web_extract_tool(
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
         for url in urls:
-            if not is_safe_url(url):
+            if not await async_is_safe_url(url):
                 ssrf_blocked.append({
                     "url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address",
@@ -1209,7 +1209,7 @@ async def web_crawl_tool(
                 url = f'https://{url}'
 
             # SSRF protection — block private/internal addresses
-            if not is_safe_url(url):
+            if not await async_is_safe_url(url):
                 return json.dumps({"results": [{"url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
 
@@ -1299,7 +1299,7 @@ async def web_crawl_tool(
         logger.info("Crawling %s%s", url, instructions_text)
         
         # SSRF protection — block private/internal addresses
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             return json.dumps({"results": [{"url": url, "title": "", "content": "",
                 "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
 

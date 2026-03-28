@@ -43,6 +43,8 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `bash -c`, `python -e` | Shell/script execution via flags |
 | `find -exec rm`, `find -delete` | Find with destructive actions |
 | Fork bomb patterns | Fork bombs |
+| `pkill`/`killall` hermes/gateway | Self-termination prevention |
+| `gateway run` with `&`/`disown`/`nohup` | Prevents starting gateway outside service manager |
 
 :::info
 **Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -392,7 +394,7 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
-Tirith's verdict integrates with the approval flow: safe commands pass through, suspicious commands trigger user approval, and dangerous commands are blocked.
+Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
 ### Context File Injection Protection
 

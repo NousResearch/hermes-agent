@@ -277,9 +277,12 @@ hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mi
 
 Hermes can install directly from GitHub repositories and GitHub-based taps. This is useful when you already know the repo/path or want to add your own custom source repo.
 
-- OpenAI skills: [openai/skills](https://github.com/openai/skills)
-- Anthropic skills: [anthropics/skills](https://github.com/anthropics/skills)
-- Example community tap source: [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
+Default taps (browsable without any setup):
+- [openai/skills](https://github.com/openai/skills)
+- [anthropics/skills](https://github.com/anthropics/skills)
+- [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills)
+- [garrytan/gstack](https://github.com/garrytan/gstack)
+
 - Example:
 
 ```bash

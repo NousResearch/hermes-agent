@@ -18,6 +18,8 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -926,3 +928,98 @@ class TestBuildSkillsSystemPromptConditional:
             available_toolsets=set(),
         )
         assert "nested-null" in result
+
+
+# =========================================================================
+# Tool-use enforcement guidance
+# =========================================================================
+
+
+class TestToolUseEnforcementGuidance:
+    def test_guidance_mentions_tool_calls(self):
+        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_forbids_description_only(self):
+        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_requires_action(self):
+        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_enforcement_models_includes_gpt(self):
+        assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_codex(self):
+        assert "codex" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_is_tuple(self):
+        assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+# =========================================================================
+# Budget warning history stripping
+# =========================================================================
+
+
+class TestStripBudgetWarningsFromHistory:
+    def test_strips_json_budget_warning_key(self):
+        import json
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
+                "output": "hello",
+                "exit_code": 0,
+                "_budget_warning": "[BUDGET: Iteration 55/60. 5 iterations left. Start consolidating your work.]",
+            })},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        parsed = json.loads(messages[0]["content"])
+        assert "_budget_warning" not in parsed
+        assert parsed["output"] == "hello"
+        assert parsed["exit_code"] == 0
+
+    def test_strips_text_budget_warning(self):
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1",
+             "content": "some result\n\n[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        assert messages[0]["content"] == "some result"
+
+    def test_leaves_non_tool_messages_unchanged(self):
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "assistant", "content": "[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
+            {"role": "user", "content": "hello"},
+        ]
+        original_contents = [m["content"] for m in messages]
+        _strip_budget_warnings_from_history(messages)
+        assert [m["content"] for m in messages] == original_contents
+
+    def test_handles_empty_and_missing_content(self):
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1", "content": ""},
+            {"role": "tool", "tool_call_id": "c2"},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        assert messages[0]["content"] == ""
+
+    def test_strips_caution_variant(self):
+        import json
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
+                "output": "ok",
+                "_budget_warning": "[BUDGET: Iteration 42/60. 18 iterations left. Start consolidating your work.]",
+            })},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        parsed = json.loads(messages[0]["content"])
+        assert "_budget_warning" not in parsed

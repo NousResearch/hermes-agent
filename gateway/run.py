@@ -28,6 +28,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
+from collections import defaultdict, deque
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -357,7 +358,7 @@ class GatewayRunner:
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
-        self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._pending_messages: Dict[str, deque[str]] = defaultdict(deque)
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1647,7 +1648,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
+                    adapter._pending_messages[_quick_key].append(queued_event)
                 return "Queued for the next turn."
 
             if event.message_type == MessageType.PHOTO:
@@ -1655,8 +1656,8 @@ class GatewayRunner:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     # Reuse adapter queue semantics so photo bursts merge cleanly.
-                    if _quick_key in adapter._pending_messages:
-                        existing = adapter._pending_messages[_quick_key]
+                    if adapter._pending_messages[_quick_key]:
+                        existing = adapter._pending_messages[_quick_key][-1]
                         if getattr(existing, "message_type", None) == MessageType.PHOTO:
                             existing.media_urls.extend(event.media_urls)
                             existing.media_types.extend(event.media_types)
@@ -1666,9 +1667,9 @@ class GatewayRunner:
                                 elif event.text not in existing.text:
                                     existing.text = f"{existing.text}\n\n{event.text}".strip()
                         else:
-                            adapter._pending_messages[_quick_key] = event
+                            adapter._pending_messages[_quick_key].append(event)
                     else:
-                        adapter._pending_messages[_quick_key] = event
+                        adapter._pending_messages[_quick_key].append(event)
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
@@ -1684,14 +1685,11 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    adapter._pending_messages[_quick_key].append(event)
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
-            if _quick_key in self._pending_messages:
-                self._pending_messages[_quick_key] += "\n" + event.text
-            else:
-                self._pending_messages[_quick_key] = event.text
+            self._pending_messages[_quick_key].append(event.text)
             return None
 
         # Check for commands

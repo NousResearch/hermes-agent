@@ -17,6 +17,27 @@ def get_hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 
+def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
+    """Resolve a Hermes subdirectory with backward compatibility.
+
+    New installs get the consolidated layout (e.g. ``cache/images``).
+    Existing installs that already have the old path (e.g. ``image_cache``)
+    keep using it — no migration required.
+
+    Args:
+        new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
+        old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
+
+    Returns:
+        Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
+    """
+    home = get_hermes_home()
+    old_path = home / old_name
+    if old_path.exists():
+        return old_path
+    return home / new_subpath
+
+
 VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
 
 

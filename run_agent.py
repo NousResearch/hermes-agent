@@ -3883,6 +3883,12 @@ class AIAgent:
             content_parts: list = []
             tool_calls_acc: dict = {}
             tool_gen_notified: set = set()
+            # Ollama-compatible endpoints reuse index 0 for every tool call
+            # in a parallel batch, distinguishing them only by id.  Track
+            # the last seen id per raw index so we can detect a new tool
+            # call starting at the same index and redirect it to a fresh slot.
+            _last_id_at_idx: dict = {}      # raw_index -> last seen non-empty id
+            _active_slot_by_idx: dict = {}  # raw_index -> current slot in tool_calls_acc
             finish_reason = None
             model_name = None
             role = "assistant"
@@ -3945,7 +3951,24 @@ class AIAgent:
                 # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index if tc_delta.index is not None else 0
+                        raw_idx = tc_delta.index if tc_delta.index is not None else 0
+                        delta_id = tc_delta.id or ""
+
+                        # Ollama fix: detect a new tool call reusing the same
+                        # raw index (different id) and redirect to a fresh slot.
+                        if raw_idx not in _active_slot_by_idx:
+                            _active_slot_by_idx[raw_idx] = raw_idx
+                        if (
+                            delta_id
+                            and raw_idx in _last_id_at_idx
+                            and delta_id != _last_id_at_idx[raw_idx]
+                        ):
+                            new_slot = max(tool_calls_acc, default=-1) + 1
+                            _active_slot_by_idx[raw_idx] = new_slot
+                        if delta_id:
+                            _last_id_at_idx[raw_idx] = delta_id
+                        idx = _active_slot_by_idx[raw_idx]
+
                         if idx not in tool_calls_acc:
                             tool_calls_acc[idx] = {
                                 "id": tc_delta.id or "",

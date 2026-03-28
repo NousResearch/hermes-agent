@@ -2793,6 +2793,50 @@ class TestStreamingApiCall:
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
 
+    def test_ollama_reused_index_separate_tool_calls(self, agent):
+        """Ollama sends every tool call at index 0 with different ids.
+
+        Without the fix, names and arguments get concatenated into one slot.
+        """
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":"hello"}')]),
+            # Second tool call at the SAME index 0, but different id
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read_file", '{"path":"x.py"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2, f"Expected 2 tool calls, got {len(tc)}: {[t.function.name for t in tc]}"
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[0].id == "call_a"
+        assert tc[1].function.name == "read_file"
+        assert tc[1].function.arguments == '{"path":"x.py"}'
+        assert tc[1].id == "call_b"
+
+    def test_ollama_reused_index_streamed_args(self, agent):
+        """Ollama with streamed arguments across multiple chunks at same index."""
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, None, None, '"hello"}')]),
+            # New tool call, same index 0
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read", '{}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[1].function.name == "read"
+        assert tc[1].function.arguments == '{}'
+
     def test_content_and_tool_calls_together(self, agent):
         chunks = [
             _make_chunk(content="I'll search"),

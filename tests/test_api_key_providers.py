@@ -38,6 +38,7 @@ class TestProviderRegistry:
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
+        ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
@@ -87,6 +88,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
         assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
 
+    def test_huggingface_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["huggingface"]
+        assert pconfig.api_key_env_vars == ("HF_TOKEN",)
+        assert pconfig.base_url_env_var == "HF_BASE_URL"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
@@ -96,6 +102,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
+        assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -199,6 +206,18 @@ class TestResolveProvider:
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_explicit_huggingface(self):
+        assert resolve_provider("huggingface") == "huggingface"
+
+    def test_alias_hf(self):
+        assert resolve_provider("hf") == "huggingface"
+
+    def test_alias_hugging_face(self):
+        assert resolve_provider("hugging-face") == "huggingface"
+
+    def test_alias_huggingface_hub(self):
+        assert resolve_provider("huggingface-hub") == "huggingface"
+
     def test_unknown_provider_raises(self):
         with pytest.raises(AuthError):
             resolve_provider("nonexistent-provider-xyz")
@@ -234,6 +253,10 @@ class TestResolveProvider:
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
         assert resolve_provider("auto") == "kilocode"
+
+    def test_auto_detects_hf_token(self, monkeypatch):
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token")
+        assert resolve_provider("auto") == "huggingface"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
@@ -708,3 +731,55 @@ class TestKimiMoonshotModelListIsolation:
         coding_models = _PROVIDER_MODELS["kimi-coding"]
         assert "kimi-for-coding" in coding_models
         assert "kimi-k2-thinking-turbo" in coding_models
+
+
+# =============================================================================
+# Hugging Face provider model list tests
+# =============================================================================
+
+class TestHuggingFaceModels:
+    """Verify Hugging Face model lists are consistent across all locations."""
+
+    def test_main_provider_models_has_huggingface(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "huggingface" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["huggingface"]
+        assert len(models) >= 6, "Expected at least 6 curated HF models"
+
+    def test_models_py_has_huggingface(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "huggingface" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["huggingface"]
+        assert len(models) >= 6
+
+    def test_model_lists_match(self):
+        """Model lists in main.py and models.py should be identical."""
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["huggingface"] == models_models["huggingface"]
+
+    def test_model_metadata_has_context_lengths(self):
+        """Every HF model should have a context length entry."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        hf_models = _PROVIDER_MODELS["huggingface"]
+        for model in hf_models:
+            assert model in DEFAULT_CONTEXT_LENGTHS, (
+                f"HF model {model!r} missing from DEFAULT_CONTEXT_LENGTHS"
+            )
+
+    def test_models_use_org_name_format(self):
+        """HF models should use org/name format (e.g. Qwen/Qwen3-235B)."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["huggingface"]:
+            assert "/" in model, f"HF model {model!r} missing org/ prefix"
+
+    def test_provider_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("hf") == "huggingface"
+        assert _PROVIDER_ALIASES.get("hugging-face") == "huggingface"
+
+    def test_provider_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "huggingface" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"

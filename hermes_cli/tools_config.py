@@ -108,7 +108,8 @@ def _get_effective_configurable_toolsets():
     """
     result = list(CONFIGURABLE_TOOLSETS)
     try:
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()  # idempotent — ensures plugins are loaded
         result.extend(get_plugin_toolsets())
     except Exception:
         pass
@@ -118,7 +119,8 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()  # idempotent — ensures plugins are loaded
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
@@ -133,6 +135,7 @@ PLATFORMS = {
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
+    "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
     "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
 }

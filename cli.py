@@ -449,6 +449,17 @@ try:
 except Exception:
     pass  # Skin engine is optional — default skin used if unavailable
 
+# Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
+# created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
+# which, during CLI idle time, finds prompt_toolkit's event loop and tries to
+# close TCP transports bound to dead worker loops — producing
+# "Event loop is closed" / "Press ENTER to continue..." errors.
+try:
+    from agent.auxiliary_client import neuter_async_httpx_del
+    neuter_async_httpx_del()
+except Exception:
+    pass
+
 from rich import box as rich_box
 from rich.console import Console
 from rich.markup import escape as _escape
@@ -1614,6 +1625,7 @@ class HermesCLI:
         if not text:
             return
         self._reasoning_stream_started = True
+        self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
 
@@ -5534,6 +5546,10 @@ class HermesCLI:
 
             # Reset streaming display state for this turn
             self._reset_stream_state()
+            # Separate from _reset_stream_state because this must persist
+            # across intermediate turn boundaries (tool-calling loops) — only
+            # reset at the start of each user turn.
+            self._reasoning_shown_this_turn = False
 
             # --- Streaming TTS setup ---
             # When ElevenLabs is the TTS provider and sounddevice is available,
@@ -5678,6 +5694,16 @@ class HermesCLI:
 
             agent_thread.join()  # Ensure agent thread completes
 
+            # Proactively clean up async clients whose event loop is dead.
+            # The agent thread may have created AsyncOpenAI clients bound
+            # to a per-thread event loop; if that loop is now closed, those
+            # clients' __del__ would crash prompt_toolkit's loop on GC.
+            try:
+                from agent.auxiliary_client import cleanup_stale_async_clients
+                cleanup_stale_async_clients()
+            except Exception:
+                pass
+
             # Flush any remaining streamed text and close the box
             self._flush_stream()
 
@@ -5738,8 +5764,13 @@ class HermesCLI:
             response_previewed = result.get("response_previewed", False) if result else False
 
             # Display reasoning (thinking) box if enabled and available.
-            # Skip when streaming already showed reasoning live.
-            if self.show_reasoning and result and not self._reasoning_stream_started:
+            # Skip when streaming already showed reasoning live.  Use the
+            # turn-persistent flag (_reasoning_shown_this_turn) instead of
+            # _reasoning_stream_started — the latter gets reset during
+            # intermediate turn boundaries (tool-calling loops), which caused
+            # the reasoning box to re-render after the final response.
+            _reasoning_already_shown = getattr(self, '_reasoning_shown_this_turn', False)
+            if self.show_reasoning and result and not _reasoning_already_shown:
                 reasoning = result.get("last_reasoning")
                 if reasoning:
                     w = shutil.get_terminal_size().columns
@@ -6126,10 +6157,18 @@ class HermesCLI:
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
 
-        # Ensure tirith security scanner is available (downloads if needed)
+        # Ensure tirith security scanner is available (downloads if needed).
+        # Warn the user if tirith is enabled in config but not available,
+        # so they know command security scanning is degraded.
         try:
             from tools.tirith_security import ensure_installed
-            ensure_installed(log_failures=False)
+            tirith_path = ensure_installed(log_failures=False)
+            if tirith_path is None:
+                security_cfg = self.config.get("security", {}) or {}
+                tirith_enabled = security_cfg.get("tirith_enabled", True)
+                if tirith_enabled:
+                    _cprint(f"  {_DIM}⚠ tirith security scanner enabled but not available "
+                            f"— command scanning will use pattern matching only{_RST}")
         except Exception:
             pass  # Non-fatal — fail-open at scan time if unavailable
         
@@ -7241,9 +7280,28 @@ class HermesCLI:
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         
+        # Install a custom asyncio exception handler that suppresses the
+        # "Event loop is closed" RuntimeError from httpx transport cleanup.
+        # This is defense-in-depth — the primary fix is neuter_async_httpx_del
+        # which disables __del__ entirely, but older clients or SDK upgrades
+        # could bypass it.
+        def _suppress_closed_loop_errors(loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+                return  # silently suppress
+            # Fall back to default handler for everything else
+            loop.default_exception_handler(context)
+
         # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
+                # Set the custom handler on prompt_toolkit's event loop
+                try:
+                    import asyncio as _aio
+                    _loop = _aio.get_event_loop()
+                    _loop.set_exception_handler(_suppress_closed_loop_errors)
+                except Exception:
+                    pass
                 app.run()
         except (EOFError, KeyboardInterrupt):
             pass

@@ -232,7 +232,18 @@ class TestPromptBuilderImports:
 # =========================================================================
 
 
+import pytest
+
+
 class TestBuildSkillsSystemPrompt:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        """Ensure the in-process skills prompt cache doesn't leak between tests."""
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_empty_when_no_skills_dir(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         result = build_skills_system_prompt()
@@ -302,7 +313,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
@@ -330,7 +341,7 @@ class TestBuildSkillsSystemPrompt:
         from unittest.mock import patch
 
         with patch(
-            "tools.skills_tool._get_disabled_skill_names",
+            "agent.prompt_builder.get_disabled_skill_names",
             return_value={"old-tool"},
         ):
             result = build_skills_system_prompt()
@@ -804,6 +815,13 @@ class TestSkillShouldShow:
 
 
 class TestBuildSkillsSystemPromptConditional:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"

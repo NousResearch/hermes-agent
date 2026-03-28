@@ -926,7 +926,8 @@ class TestBuildAnthropicKwargs:
         )
         assert "thinking" not in kwargs
 
-    def test_default_max_tokens(self):
+    def test_default_max_tokens_uses_model_output_limit(self):
+        """When max_tokens is None, use the model's native output limit."""
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
             messages=[{"role": "user", "content": "Hi"}],
@@ -934,7 +935,135 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 16384
+        assert kwargs["max_tokens"] == 64_000  # Sonnet 4 output limit
+
+    def test_default_max_tokens_opus_4_6(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 128_000
+
+    def test_default_max_tokens_sonnet_4_6(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+    def test_default_max_tokens_date_stamped_model(self):
+        """Date-stamped model IDs should resolve via substring match."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-5-20250929",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+    def test_default_max_tokens_older_model(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-3-5-sonnet-20241022",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 8_192
+
+    def test_default_max_tokens_unknown_model_uses_highest(self):
+        """Unknown future models should get the highest known limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-ultra-5-20260101",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 128_000
+
+    def test_explicit_max_tokens_overrides_default(self):
+        """User-specified max_tokens should be respected."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        assert kwargs["max_tokens"] == 4096
+
+    def test_context_length_clamp(self):
+        """max_tokens should be clamped to context_length if it's smaller."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",  # 128K output
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            context_length=50000,
+        )
+        assert kwargs["max_tokens"] == 49999  # context_length - 1
+
+    def test_context_length_no_clamp_when_larger(self):
+        """No clamping when context_length exceeds output limit."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",  # 64K output
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            context_length=200000,
+        )
+        assert kwargs["max_tokens"] == 64_000
+
+
+# ---------------------------------------------------------------------------
+# Model output limit lookup
+# ---------------------------------------------------------------------------
+
+
+class TestGetAnthropicMaxOutput:
+    def test_opus_4_6(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-opus-4-6") == 128_000
+
+    def test_opus_4_6_variant(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-opus-4-6:1m:fast") == 128_000
+
+    def test_sonnet_4_6(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+
+    def test_sonnet_4_date_stamped(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-sonnet-4-20250514") == 64_000
+
+    def test_claude_3_5_sonnet(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
+
+    def test_claude_3_opus(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-3-opus-20240229") == 4_096
+
+    def test_unknown_future_model(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-ultra-5-20260101") == 128_000
+
+    def test_longest_prefix_wins(self):
+        """'claude-3-5-sonnet' should match before 'claude-3-5'."""
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
+        assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
 
 # ---------------------------------------------------------------------------

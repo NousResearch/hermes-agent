@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import re
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ try:
         filters,
     )
     from telegram.constants import ParseMode, ChatType
+    from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -34,6 +35,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     TelegramMessageHandler = Any
+    HTTPXRequest = Any
     filters = None
     ParseMode = None
     ChatType = None
@@ -58,6 +60,11 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+)
+from gateway.platforms.telegram_network import (
+    TelegramFallbackTransport,
+    discover_fallback_ips,
+    parse_fallback_ip_env,
 )
 
 
@@ -137,6 +144,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+
+    def _fallback_ips(self) -> list[str]:
+        """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
+        configured = self.config.extra.get("fallback_ips", []) if getattr(self.config, "extra", None) else []
+        if isinstance(configured, str):
+            configured = configured.split(",")
+        return parse_fallback_ip_env(",".join(str(v) for v in configured) if configured else None)
 
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
@@ -474,7 +488,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
 
             # Build the application
-            self._app = Application.builder().token(self.config.token).build()
+            builder = Application.builder().token(self.config.token)
+            fallback_ips = self._fallback_ips()
+            if not fallback_ips:
+                fallback_ips = await discover_fallback_ips()
+                logger.info(
+                    "[%s] Auto-discovered Telegram fallback IPs: %s",
+                    self.name,
+                    ", ".join(fallback_ips),
+                )
+            if fallback_ips:
+                logger.warning(
+                    "[%s] Telegram fallback IPs active: %s",
+                    self.name,
+                    ", ".join(fallback_ips),
+                )
+                transport = TelegramFallbackTransport(fallback_ips)
+                request = HTTPXRequest(httpx_kwargs={"transport": transport})
+                get_updates_request = HTTPXRequest(httpx_kwargs={"transport": transport})
+                builder = builder.request(request).get_updates_request(get_updates_request)
+            self._app = builder.build()
             self._bot = self._app.bot
             
             # Register handlers
@@ -674,9 +707,15 @@ class TelegramAdapter(BasePlatformAdapter):
             except ImportError:
                 _NetErr = OSError  # type: ignore[misc,assignment]
 
+            try:
+                from telegram.error import BadRequest as _BadReq
+            except ImportError:
+                _BadReq = None  # type: ignore[assignment,misc]
+
             for i, chunk in enumerate(chunks):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
+                effective_thread_id = int(thread_id) if thread_id else None
 
                 msg = None
                 for _send_attempt in range(3):
@@ -688,7 +727,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
-                                message_thread_id=int(thread_id) if thread_id else None,
+                                message_thread_id=effective_thread_id,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -700,12 +739,30 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
-                                    message_thread_id=int(thread_id) if thread_id else None,
+                                    message_thread_id=effective_thread_id,
                                 )
                             else:
                                 raise
                         break  # success
                     except _NetErr as send_err:
+                        # BadRequest is a subclass of NetworkError in
+                        # python-telegram-bot but represents permanent errors
+                        # (not transient network issues). Detect and handle
+                        # specific cases instead of blindly retrying.
+                        if _BadReq and isinstance(send_err, _BadReq):
+                            err_lower = str(send_err).lower()
+                            if "thread not found" in err_lower and effective_thread_id is not None:
+                                # Thread doesn't exist — retry without
+                                # message_thread_id so the message still
+                                # reaches the chat.
+                                logger.warning(
+                                    "[%s] Thread %s not found, retrying without message_thread_id",
+                                    self.name, effective_thread_id,
+                                )
+                                effective_thread_id = None
+                                continue
+                            # Other BadRequest errors are permanent — don't retry
+                            raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",

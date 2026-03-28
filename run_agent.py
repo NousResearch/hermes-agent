@@ -62,7 +62,12 @@ else:
 
 
 # Import our tool system
-from model_tools import get_tool_definitions, handle_function_call, check_toolset_requirements
+from model_tools import (
+    get_tool_definitions,
+    get_toolset_for_tool,
+    handle_function_call,
+    check_toolset_requirements,
+)
 from tools.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
@@ -534,6 +539,7 @@ class AIAgent:
         self.tool_progress_callback = tool_progress_callback
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
+        self._reasoning_deltas_fired = False  # Set by _fire_reasoning_delta, reset per API call
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
@@ -2520,7 +2526,13 @@ class AIAgent:
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
-            avail_toolsets = {ts for ts, avail in check_toolset_requirements().items() if avail}
+            avail_toolsets = {
+                toolset
+                for toolset in (
+                    get_toolset_for_tool(tool_name) for tool_name in self.valid_tool_names
+                )
+                if toolset
+            }
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
@@ -3404,6 +3416,7 @@ class AIAgent:
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False
+        self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
@@ -3680,6 +3693,7 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
+        self._reasoning_deltas_fired = True
         cb = self.reasoning_callback
         if cb is not None:
             try:
@@ -3758,7 +3772,7 @@ class AIAgent:
         def _call_chat_completions():
             """Stream a chat completions response."""
             import httpx as _httpx
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 900.0))
+            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
             _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 60.0))
             stream_kwargs = {
                 **api_kwargs,
@@ -3774,6 +3788,9 @@ class AIAgent:
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )
+            # Reset stale-stream timer so the detector measures from this
+            # attempt's start, not a previous attempt's last chunk.
+            last_chunk_time["t"] = time.time()
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             content_parts: list = []
@@ -3784,6 +3801,9 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
+            # Reset per-call reasoning tracking so _build_assistant_message
+            # knows whether reasoning was already displayed during streaming.
+            self._reasoning_deltas_fired = False
 
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
@@ -3903,7 +3923,10 @@ class AIAgent:
             works unchanged.
             """
             has_tool_use = False
+            self._reasoning_deltas_fired = False
 
+            # Reset stale-stream timer for this attempt
+            last_chunk_time["t"] = time.time()
             # Use the Anthropic SDK's streaming context manager
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
                 for event in stream:
@@ -4016,6 +4039,10 @@ class AIAgent:
                             )
 
                         try:
+                            # Reset stale timer — the non-streaming fallback
+                            # uses its own client; prevent the stale detector
+                            # from firing on stale timestamps from failed streams.
+                            last_chunk_time["t"] = time.time()
                             result["response"] = self._interruptible_api_call(api_kwargs)
                         except Exception as fallback_err:
                             result["error"] = fallback_err
@@ -4025,7 +4052,19 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
-        _stream_stale_timeout = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 90.0))
+        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+        # Scale the stale timeout for large contexts: slow models (like Opus)
+        # can legitimately think for minutes before producing the first token
+        # when the context is large.  Without this, the stale detector kills
+        # healthy connections during the model's thinking phase, producing
+        # spurious RemoteProtocolError ("peer closed connection").
+        _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+        if _est_tokens > 100_000:
+            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
+        elif _est_tokens > 50_000:
+            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
+        else:
+            _stream_stale_timeout = _stream_stale_timeout_base
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -4339,6 +4378,10 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
+            # Pass context_length so the adapter can clamp max_tokens if the
+            # user configured a smaller context window than the model's output limit.
+            ctx_len = getattr(self, "context_compressor", None)
+            ctx_len = ctx_len.context_length if ctx_len else None
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
@@ -4347,6 +4390,7 @@ class AIAgent:
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
+                context_length=ctx_len,
             )
 
         if self.api_mode == "codex_responses":
@@ -4458,7 +4502,7 @@ class AIAgent:
             "model": self.model,
             "messages": sanitized_messages,
             "tools": self.tools if self.tools else None,
-            "timeout": float(os.getenv("HERMES_API_TIMEOUT", 900.0)),
+            "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
 
         if self.max_tokens is not None:
@@ -4598,11 +4642,15 @@ class AIAgent:
             logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
         if reasoning_text and self.reasoning_callback:
-            # Skip callback for <think>-extracted reasoning when streaming is active.
-            # _stream_delta() already displayed <think> blocks during streaming;
-            # firing the callback again would cause duplicate display.
-            # Structured reasoning (from reasoning_content field) always fires.
-            if _from_structured or not self.stream_delta_callback:
+            # Skip callback when streaming is active — reasoning was already
+            # displayed during the stream via one of two paths:
+            #   (a) _fire_reasoning_delta (structured reasoning_content deltas)
+            #   (b) _stream_delta tag extraction (<think>/<REASONING_SCRATCHPAD>)
+            # When streaming is NOT active, always fire so non-streaming modes
+            # (gateway, batch, quiet) still get reasoning.
+            # Any reasoning that wasn't shown during streaming is caught by the
+            # CLI post-response display fallback (cli.py _reasoning_shown_this_turn).
+            if not self.stream_delta_callback:
                 try:
                     self.reasoning_callback(reasoning_text)
                 except Exception:
@@ -6292,6 +6340,62 @@ class AIAgent:
                     if finish_reason == "length":
                         self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
 
+                        # ── Detect thinking-budget exhaustion ──────────────
+                        # When the model spends ALL output tokens on reasoning
+                        # and has none left for the response, continuation
+                        # retries are pointless.  Detect this early and give a
+                        # targeted error instead of wasting 3 API calls.
+                        _trunc_content = None
+                        if self.api_mode == "chat_completions":
+                            _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
+                            _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
+                        elif self.api_mode == "anthropic_messages":
+                            # Anthropic response.content is a list of blocks
+                            _text_parts = []
+                            for _blk in getattr(response, "content", []):
+                                if getattr(_blk, "type", None) == "text":
+                                    _text_parts.append(getattr(_blk, "text", ""))
+                            _trunc_content = "\n".join(_text_parts) if _text_parts else None
+
+                        _thinking_exhausted = (
+                            _trunc_content is not None
+                            and not self._has_content_after_think_block(_trunc_content)
+                        ) or _trunc_content is None
+
+                        if _thinking_exhausted:
+                            _exhaust_error = (
+                                "Model used all output tokens on reasoning with none left "
+                                "for the response. Try lowering reasoning effort or "
+                                "increasing max_tokens."
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}💭 Reasoning exhausted the output token budget — "
+                                f"no visible response was produced.",
+                                force=True,
+                            )
+                            # Return a user-friendly message as the response so
+                            # CLI (response box) and gateway (chat message) both
+                            # display it naturally instead of a suppressed error.
+                            _exhaust_response = (
+                                "⚠️ **Thinking Budget Exhausted**\n\n"
+                                "The model used all its output tokens on reasoning "
+                                "and had none left for the actual response.\n\n"
+                                "To fix this:\n"
+                                "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
+                                "→ Increase the output token limit: "
+                                "set `model.max_tokens` in config.yaml"
+                            )
+                            self._cleanup_task_resources(effective_task_id)
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": _exhaust_response,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": _exhaust_error,
+                            }
+
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:
@@ -7207,7 +7311,6 @@ class AIAgent:
                         except Exception:
                             pass
 
-                    _msg_count_before_tools = len(messages)
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                     # Signal that a paragraph break is needed before the next
@@ -7225,18 +7328,18 @@ class AIAgent:
                     if _tc_names == {"execute_code"}:
                         self.iteration_budget.refund()
                     
-                    # Estimate next prompt size using real token counts from the
-                    # last API response + rough estimate of newly appended tool
-                    # results.  This catches cases where tool results push the
-                    # context past the limit that last_prompt_tokens alone misses
-                    # (e.g. large file reads, web extractions).
+                    # Use real token counts from the API response to decide
+                    # compression.  prompt_tokens + completion_tokens is the
+                    # actual context size the provider reported plus the
+                    # assistant turn — a tight lower bound for the next prompt.
+                    # Tool results appended above aren't counted yet, but the
+                    # threshold (default 50%) leaves ample headroom; if tool
+                    # results push past it, the next API call will report the
+                    # real total and trigger compression then.
                     _compressor = self.context_compressor
-                    _new_tool_msgs = messages[_msg_count_before_tools:]
-                    _new_chars = sum(len(str(m.get("content", "") or "")) for m in _new_tool_msgs)
-                    _estimated_next_prompt = (
+                    _real_tokens = (
                         _compressor.last_prompt_tokens
                         + _compressor.last_completion_tokens
-                        + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
 
                     # ── Context pressure warnings (user-facing only) ──────────
@@ -7246,12 +7349,12 @@ class AIAgent:
                     # Does not inject into messages — just prints to CLI output
                     # and fires status_callback for gateway platforms.
                     if _compressor.threshold_tokens > 0:
-                        _compaction_progress = _estimated_next_prompt / _compressor.threshold_tokens
+                        _compaction_progress = _real_tokens / _compressor.threshold_tokens
                         if _compaction_progress >= 0.85 and not self._context_pressure_warned:
                             self._context_pressure_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
-                    if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
+                    if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,

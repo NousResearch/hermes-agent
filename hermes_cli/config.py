@@ -547,14 +547,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
     },
     "DASHSCOPE_API_KEY": {
-        "description": "Alibaba Cloud DashScope API key for Qwen models",
+        "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
         "prompt": "DashScope API Key",
         "url": "https://modelstudio.console.alibabacloud.com/",
         "password": True,
         "category": "provider",
     },
     "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: international endpoint)",
+        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
         "prompt": "DashScope Base URL",
         "url": "",
         "password": False,
@@ -588,6 +588,21 @@ OPTIONAL_ENV_VARS = {
     "OPENCODE_GO_BASE_URL": {
         "description": "OpenCode Go base URL override",
         "prompt": "OpenCode Go base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HF_TOKEN": {
+        "description": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
+        "prompt": "Hugging Face Token",
+        "url": "https://huggingface.co/settings/tokens",
+        "password": True,
+        "category": "provider",
+    },
+    "HF_BASE_URL": {
+        "description": "Hugging Face Inference Providers base URL override",
+        "prompt": "HF base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",

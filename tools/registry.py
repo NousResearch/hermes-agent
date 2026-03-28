@@ -98,19 +98,22 @@ class ToolRegistry:
         are included.
         """
         result = []
+        check_results: Dict[Callable, bool] = {}
         for name in sorted(tool_names):
             entry = self._tools.get(name)
             if not entry:
                 continue
             if entry.check_fn:
-                try:
-                    if not entry.check_fn():
+                if entry.check_fn not in check_results:
+                    try:
+                        check_results[entry.check_fn] = bool(entry.check_fn())
+                    except Exception:
+                        check_results[entry.check_fn] = False
                         if not quiet:
-                            logger.debug("Tool %s unavailable (check failed)", name)
-                        continue
-                except Exception:
+                            logger.debug("Tool %s check raised; skipping", name)
+                if not check_results[entry.check_fn]:
                     if not quiet:
-                        logger.debug("Tool %s check raised; skipping", name)
+                        logger.debug("Tool %s unavailable (check failed)", name)
                     continue
             result.append({"type": "function", "function": entry.schema})
         return result

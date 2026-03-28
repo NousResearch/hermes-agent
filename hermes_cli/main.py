@@ -795,6 +795,7 @@ def cmd_model(args):
         "ai-gateway": "AI Gateway",
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
+        "huggingface": "Hugging Face",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -820,7 +821,8 @@ def cmd_model(args):
         ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
-        ("alibaba", "Alibaba Cloud / DashScope (Qwen models, Anthropic-compatible)"),
+        ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -893,7 +895,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1502,6 +1504,18 @@ _PROVIDER_MODELS = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
+    # Format: HF model ID → OpenRouter equivalent noted in comment
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",                  # ↔ qwen/qwen3.5-plus
+        "Qwen/Qwen3.5-35B-A3B",                     # ↔ qwen/qwen3.5-35b-a3b
+        "deepseek-ai/DeepSeek-V3.2",                # ↔ deepseek/deepseek-chat
+        "moonshotai/Kimi-K2.5",                      # ↔ moonshotai/kimi-k2.5
+        "MiniMaxAI/MiniMax-M2.5",                    # ↔ minimax/minimax-m2.5
+        "zai-org/GLM-5",                             # ↔ z-ai/glm-5
+        "XiaomiMiMo/MiMo-V2-Flash",                 # ↔ xiaomi/mimo-v2-pro
+        "moonshotai/Kimi-K2-Thinking",               # ↔ moonshotai/kimi-k2-thinking
+    ],
 }
 
 
@@ -2031,19 +2045,25 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection — try live /models endpoint first, fall back to defaults
-    from hermes_cli.models import fetch_api_models
-    api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
-    live_models = fetch_api_models(api_key_for_probe, effective_base)
+    # Model selection — try live /models endpoint first, fall back to defaults.
+    # Providers with large live catalogs (100+ models) use a curated list instead
+    # so users see familiar model names rather than an overwhelming dump.
+    curated = _PROVIDER_MODELS.get(provider_id, [])
+    if curated and len(curated) >= 8:
+        # Curated list is substantial — use it directly, skip live probe
+        live_models = None
+    else:
+        from hermes_cli.models import fetch_api_models
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        live_models = fetch_api_models(api_key_for_probe, effective_base)
 
     if live_models:
         model_list = live_models
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        model_list = curated
         if model_list:
-            print("  ⚠ Could not auto-detect models from API — showing defaults.")
-            print("    Use \"Enter custom model name\" if you don't see your model.")
+            print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
         # else: no defaults either, will fall through to raw input
 
     if model_list:
@@ -2612,7 +2632,12 @@ def _restore_stashed_changes(
             print("Resolve conflicts manually, then run: git stash drop")
 
         print(f"Restore your changes with: git stash apply {stash_ref}")
-        sys.exit(1)
+        # In non-interactive mode (gateway /update), don't abort — the code
+        # update itself succeeded, only the stash restore had conflicts.
+        # Aborting would report the entire update as failed.
+        if prompt_user:
+            sys.exit(1)
+        return False
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
@@ -2686,30 +2711,60 @@ def cmd_update(args):
 
     # Fetch and pull
     try:
-        print("→ Fetching updates...")
         git_cmd = ["git"]
         if sys.platform == "win32":
             git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-        
-        subprocess.run(git_cmd + ["fetch", "origin"], cwd=PROJECT_ROOT, check=True)
-        
-        # Get current branch
+
+        print("→ Fetching updates...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            stderr = fetch_result.stderr.strip()
+            if "Could not resolve host" in stderr or "unable to access" in stderr:
+                print("✗ Network error — cannot reach the remote repository.")
+                print(f"  {stderr.splitlines()[0]}" if stderr else "")
+            elif "Authentication failed" in stderr or "could not read Username" in stderr:
+                print("✗ Authentication failed — check your git credentials or SSH key.")
+            else:
+                print(f"✗ Failed to fetch updates from origin.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+            sys.exit(1)
+
+        # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
             git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
-        branch = result.stdout.strip()
+        current_branch = result.stdout.strip()
 
-        # Fall back to main if the current branch doesn't exist on the remote
-        verify = subprocess.run(
-            git_cmd + ["rev-parse", "--verify", f"origin/{branch}"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
-        )
-        if verify.returncode != 0:
-            branch = "main"
+        # Always update against main
+        branch = "main"
+
+        # If user is on a non-main branch or detached HEAD, switch to main
+        if current_branch != "main":
+            label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
+            print(f"  ⚠ Currently on {label} — switching to main for update...")
+            # Stash before checkout so uncommitted work isn't lost
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            subprocess.run(
+                git_cmd + ["checkout", "main"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        else:
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+        prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
 
         # Check if there are updates
         result = subprocess.run(
@@ -2717,31 +2772,69 @@ def cmd_update(args):
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
         commit_count = int(result.stdout.strip())
-        
+
         if commit_count == 0:
             _invalidate_update_cache()
-            print("✓ Already up to date!")
-            return
-        
-        print(f"→ Found {commit_count} new commit(s)")
-
-        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-        prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
-
-        print("→ Pulling updates...")
-        try:
-            subprocess.run(git_cmd + ["pull", "--ff-only", "origin", branch], cwd=PROJECT_ROOT, check=True)
-        finally:
+            # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
+                    git_cmd, PROJECT_ROOT, auto_stash_ref,
                     prompt_user=prompt_for_restore,
                 )
+            if current_branch not in ("main", "HEAD"):
+                subprocess.run(
+                    git_cmd + ["checkout", current_branch],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+                )
+            print("✓ Already up to date!")
+            return
+
+        print(f"→ Found {commit_count} new commit(s)")
+
+        print("→ Pulling updates...")
+        update_succeeded = False
+        try:
+            pull_result = subprocess.run(
+                git_cmd + ["pull", "--ff-only", "origin", branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if pull_result.returncode != 0:
+                # ff-only failed — local and remote have diverged (e.g. upstream
+                # force-pushed or rebase).  Since local changes are already
+                # stashed, reset to match the remote exactly.
+                print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+                reset_result = subprocess.run(
+                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if reset_result.returncode != 0:
+                    print(f"✗ Failed to reset to origin/{branch}.")
+                    if reset_result.stderr.strip():
+                        print(f"  {reset_result.stderr.strip()}")
+                    print("  Try manually: git fetch origin && git reset --hard origin/main")
+                    sys.exit(1)
+            update_succeeded = True
+        finally:
+            if auto_stash_ref is not None:
+                # Don't attempt stash restore if the code update itself failed —
+                # working tree is in an unknown state.
+                if not update_succeeded:
+                    print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
+                    print(f"  Restore manually with: git stash apply")
+                else:
+                    _restore_stashed_changes(
+                        git_cmd,
+                        PROJECT_ROOT,
+                        auto_stash_ref,
+                        prompt_user=prompt_for_restore,
+                    )
         
         _invalidate_update_cache()
         
@@ -3122,7 +3215,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

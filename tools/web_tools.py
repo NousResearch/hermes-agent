@@ -44,7 +44,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
 from firecrawl import Firecrawl
-from agent.auxiliary_client import async_call_llm
+from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
@@ -73,7 +73,7 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = _load_web_config().get("backend", "").lower().strip()
+    configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured in ("parallel", "firecrawl", "tavily"):
         return configured
 
@@ -416,7 +416,16 @@ Create a markdown summary that captures all key information in a well-organized,
             if model:
                 call_kwargs["model"] = model
             response = await async_call_llm(**call_kwargs)
-            return response.choices[0].message.content.strip()
+            content = extract_content_or_reasoning(response)
+            if content:
+                return content
+            # Reasoning-only / empty response — let the retry loop handle it
+            logger.warning("LLM returned empty content (attempt %d/%d), retrying", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+                continue
+            return content  # Return whatever we got after exhausting retries
         except RuntimeError:
             logger.warning("No auxiliary model available for web content processing")
             return None
@@ -535,8 +544,14 @@ Create a single, unified markdown summary."""
         if model:
             call_kwargs["model"] = model
         response = await async_call_llm(**call_kwargs)
-        final_summary = response.choices[0].message.content.strip()
-        
+        final_summary = extract_content_or_reasoning(response)
+
+        # Retry once on empty content (reasoning-only response)
+        if not final_summary:
+            logger.warning("Synthesis LLM returned empty content, retrying once")
+            response = await async_call_llm(**call_kwargs)
+            final_summary = extract_content_or_reasoning(response)
+
         # Enforce hard cap
         if len(final_summary) > max_output_size:
             final_summary = final_summary[:max_output_size] + "\n\n[... summary truncated for context management ...]"

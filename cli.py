@@ -5891,10 +5891,22 @@ class HermesCLI:
             else:
                 duration_str = f"{seconds}s"
             
+            # Look up session title for resume-by-name hint
+            session_title = None
+            if self._session_db:
+                try:
+                    session_title = self._session_db.get_session_title(self.session_id)
+                except Exception:
+                    pass
+
             print("Resume this session with:")
             print(f"  hermes --resume {self.session_id}")
+            if session_title:
+                print(f"  hermes -c \"{session_title}\"")
             print()
             print(f"Session:        {self.session_id}")
+            if session_title:
+                print(f"Title:          {session_title}")
             print(f"Duration:       {duration_str}")
             print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
         else:

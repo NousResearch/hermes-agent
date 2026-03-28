@@ -7,6 +7,7 @@
 # =============================================================================
 model:
   # Default model to use (can be overridden with --model flag)
+  # Both "default" and "model" work as the key name here.
   default: "anthropic/claude-opus-4.6"
   
   # Inference provider selection:

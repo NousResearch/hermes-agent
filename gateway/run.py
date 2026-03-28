@@ -4974,12 +4974,17 @@ class GatewayRunner:
             progress_queue.put(msg)
         
         # Background task to send progress messages
-        # Accumulates tool lines into a single message that gets edited
-        # For DM top-level Slack messages, source.thread_id is None but the
-        # final reply will be threaded under the original message via reply_to.
-        # Use event_message_id as fallback so progress messages land in the
-        # same thread as the final response instead of going to the DM root.
-        _progress_thread_id = source.thread_id or event_message_id
+        # Accumulates tool lines into a single message that gets edited.
+        #
+        # Threading metadata is platform-specific:
+        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Telegram uses message_thread_id only for forum topics; passing a
+        #   normal DM/group message id as thread_id causes send failures
+        # - Other platforms should use explicit source.thread_id only
+        if source.platform == Platform.SLACK:
+            _progress_thread_id = source.thread_id or event_message_id
+        else:
+            _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():

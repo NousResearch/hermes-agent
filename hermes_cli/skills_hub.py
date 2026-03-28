@@ -304,7 +304,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
-               console: Optional[Console] = None, skip_confirm: bool = False) -> None:
+               console: Optional[Console] = None, skip_confirm: bool = False,
+               invalidate_cache: bool = True) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill."""
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -417,12 +418,16 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
-    # Invalidate the skills prompt cache so the new skill appears immediately
-    try:
-        from agent.prompt_builder import clear_skills_system_prompt_cache
-        clear_skills_system_prompt_cache(clear_snapshot=True)
-    except Exception:
-        pass
+    if invalidate_cache:
+        # Invalidate the skills prompt cache so the new skill appears immediately
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+    else:
+        c.print("[dim]Skill will be available in your next session.[/]")
+        c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
@@ -610,7 +615,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
 
 def do_uninstall(name: str, console: Optional[Console] = None,
-                 skip_confirm: bool = False) -> None:
+                 skip_confirm: bool = False,
+                 invalidate_cache: bool = True) -> None:
     """Remove a hub-installed skill with confirmation."""
     from tools.skills_hub import uninstall_skill
 
@@ -630,11 +636,15 @@ def do_uninstall(name: str, console: Optional[Console] = None,
     success, msg = uninstall_skill(name)
     if success:
         c.print(f"[bold green]{msg}[/]\n")
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
+        if invalidate_cache:
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
+        else:
+            c.print("[dim]Change will take effect in your next session.[/]")
+            c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
     else:
         c.print(f"[bold red]Error:[/] {msg}\n")
 
@@ -1071,19 +1081,23 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "install":
         if not args:
-            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force|--yes]\n")
+            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force] [--now]\n")
             return
         identifier = args[0]
         category = ""
-        # --yes / -y bypasses confirmation prompt (needed in TUI mode)
-        # --force handles reinstall override
-        skip_confirm = any(flag in args for flag in ("--yes", "-y"))
+        # Slash commands run inside prompt_toolkit where input() hangs.
+        # Always skip confirmation — the user typing the command is implicit consent.
+        skip_confirm = True
         force = "--force" in args
+        # --now invalidates prompt cache immediately (costs more money).
+        # Default: defer to next session to preserve cache.
+        invalidate_cache = "--now" in args
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
                 category = args[i + 1]
         do_install(identifier, category=category, force=force,
-                   skip_confirm=skip_confirm, console=c)
+                   skip_confirm=skip_confirm, invalidate_cache=invalidate_cache,
+                   console=c)
 
     elif action == "inspect":
         if not args:
@@ -1113,10 +1127,13 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "uninstall":
         if not args:
-            c.print("[bold red]Usage:[/] /skills uninstall <name> [--yes]\n")
+            c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
             return
-        skip_confirm = any(flag in args for flag in ("--yes", "-y"))
-        do_uninstall(args[0], console=c, skip_confirm=skip_confirm)
+        # Slash commands run inside prompt_toolkit where input() hangs.
+        skip_confirm = True
+        invalidate_cache = "--now" in args
+        do_uninstall(args[0], console=c, skip_confirm=skip_confirm,
+                     invalidate_cache=invalidate_cache)
 
     elif action == "publish":
         if not args:

@@ -526,6 +526,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a local image file natively via bridge."""
         return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
@@ -536,6 +537,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a video natively via bridge — plays inline in WhatsApp."""
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
@@ -547,6 +549,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a document/file as a downloadable attachment via bridge."""
         return await self._send_media_to_bridge(

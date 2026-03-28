@@ -6024,6 +6024,22 @@ class AIAgent:
                     self._cached_system_prompt = (
                         self._cached_system_prompt + "\n\n" + self._honcho_context
                     ).strip()
+
+                # Plugin hook: on_session_start
+                # Fired once when a brand-new session is created (not on
+                # continuation).  Plugins can use this to initialise
+                # session-scoped state (e.g. warm a memory cache).
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_session_start",
+                        session_id=self.session_id,
+                        model=self.model,
+                        platform=getattr(self, "platform", None) or "",
+                    )
+                except Exception as exc:
+                    logger.warning("on_session_start hook failed: %s", exc)
+
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:
                     try:
@@ -6084,6 +6100,34 @@ class AIAgent:
                     )
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
+
+        # Plugin hook: pre_llm_call
+        # Fired once per turn before the tool-calling loop.  Plugins can
+        # return a dict with a ``context`` key whose value is a string
+        # that will be appended to the ephemeral system prompt for every
+        # API call in this turn (not persisted to session DB or cache).
+        _plugin_turn_context = ""
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _pre_results = _invoke_hook(
+                "pre_llm_call",
+                session_id=self.session_id,
+                user_message=original_user_message,
+                conversation_history=list(messages),
+                is_first_turn=(not bool(conversation_history)),
+                model=self.model,
+                platform=getattr(self, "platform", None) or "",
+            )
+            _ctx_parts = []
+            for r in _pre_results:
+                if isinstance(r, dict) and r.get("context"):
+                    _ctx_parts.append(str(r["context"]))
+                elif isinstance(r, str) and r.strip():
+                    _ctx_parts.append(r)
+            if _ctx_parts:
+                _plugin_turn_context = "\n\n".join(_ctx_parts)
+        except Exception as exc:
+            logger.warning("pre_llm_call hook failed: %s", exc)
 
         # Main conversation loop
         api_call_count = 0
@@ -6182,6 +6226,9 @@ class AIAgent:
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            # Plugin context from pre_llm_call hooks — ephemeral, not cached.
+            if _plugin_turn_context:
+                effective_system = (effective_system + "\n\n" + _plugin_turn_context).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -7759,6 +7806,25 @@ class AIAgent:
             self._honcho_sync(original_user_message, final_response)
             self._queue_honcho_prefetch(original_user_message)
 
+        # Plugin hook: post_llm_call
+        # Fired once per turn after the tool-calling loop completes.
+        # Plugins can use this to persist conversation data (e.g. sync
+        # to an external memory system).
+        if final_response and not interrupted:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "post_llm_call",
+                    session_id=self.session_id,
+                    user_message=original_user_message,
+                    assistant_response=final_response,
+                    conversation_history=list(messages),
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("post_llm_call hook failed: %s", exc)
+
         # Extract reasoning from the last assistant message (if any)
         last_reasoning = None
         for msg in reversed(messages):
@@ -7823,6 +7889,22 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        # Plugin hook: on_session_end
+        # Fired at the very end of every run_conversation call.
+        # Plugins can use this for cleanup, flushing buffers, etc.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_end",
+                session_id=self.session_id,
+                completed=completed,
+                interrupted=interrupted,
+                model=self.model,
+                platform=getattr(self, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_end hook failed: %s", exc)
 
         return result
 

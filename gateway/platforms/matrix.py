@@ -715,23 +715,29 @@ class MatrixAdapter(BasePlatformAdapter):
         elif event_mimetype:
             media_type = event_mimetype
 
-        # For images, download and cache locally so vision tools can access them.
-        # Matrix MXC URLs require authentication, so direct URL access fails.
+        # Download and cache media locally — Matrix MXC URLs require authentication
+        # so direct URL access fails for all file types.
         cached_path = None
-        if msg_type == MessageType.PHOTO and url:
+        if url:
             try:
-                ext_map = {
-                    "image/jpeg": ".jpg", "image/png": ".png",
-                    "image/gif": ".gif", "image/webp": ".webp",
-                }
-                ext = ext_map.get(event_mimetype, ".jpg")
                 download_resp = await self._client.download(url)
                 if isinstance(download_resp, nio.DownloadResponse):
-                    from gateway.platforms.base import cache_image_from_bytes
-                    cached_path = cache_image_from_bytes(download_resp.body, ext=ext)
-                    logger.info("[Matrix] Cached user image at %s", cached_path)
+                    if msg_type == MessageType.PHOTO:
+                        ext_map = {
+                            "image/jpeg": ".jpg", "image/png": ".png",
+                            "image/gif": ".gif", "image/webp": ".webp",
+                        }
+                        ext = ext_map.get(event_mimetype, ".jpg")
+                        from gateway.platforms.base import cache_image_from_bytes
+                        cached_path = cache_image_from_bytes(download_resp.body, ext=ext)
+                        logger.info("[Matrix] Cached user image at %s", cached_path)
+                    else:
+                        filename = body or "file"
+                        from gateway.platforms.base import cache_document_from_bytes
+                        cached_path = cache_document_from_bytes(download_resp.body, filename=filename)
+                        logger.info("[Matrix] Cached user file at %s", cached_path)
             except Exception as e:
-                logger.warning("[Matrix] Failed to cache image: %s", e)
+                logger.warning("[Matrix] Failed to cache media: %s", e)
 
         is_dm = self._dm_rooms.get(room.room_id, False)
         if not is_dm and room.member_count == 2:

@@ -2727,6 +2727,7 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self.extra_headers = runtime.get("extra_headers")
 
         # When a custom_provider entry carries an explicit `model` field,
         # use it as the effective model name.  Without this, running
@@ -2779,6 +2780,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "extra_headers": getattr(self, "extra_headers", None),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -2863,6 +2865,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "extra_headers": getattr(self, "extra_headers", None),
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
@@ -2874,6 +2877,7 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                extra_headers=runtime.get("extra_headers"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),

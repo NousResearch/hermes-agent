@@ -337,6 +337,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "extra_headers": runtime.get("extra_headers"),
         "credential_pool": runtime.get("credential_pool"),
     }
 

@@ -603,6 +603,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        extra_headers: Dict[str, str] = None,
         persist_session: bool = True,
     ):
         """
@@ -643,6 +644,8 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
+            extra_headers (Dict[str, str]): Custom HTTP headers to include with API requests (optional).
+                Used for custom providers that require additional headers for authentication or routing.
         """
         _install_safe_stdio()
 
@@ -666,6 +669,7 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        self.extra_headers = extra_headers  # Custom headers for custom providers
         self.persist_session = persist_session
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -916,6 +920,9 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.30.0",
                     }
+                # Apply custom headers for named custom providers (from config.yaml)
+                if self.provider == "custom" and self.extra_headers:
+                    client_kwargs["default_headers"] = self.extra_headers
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
             else:

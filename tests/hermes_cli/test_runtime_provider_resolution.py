@@ -1102,6 +1102,177 @@ def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):
     assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
+# ------------------------------------------------------------------
+# extra_headers support for named custom providers
+# ------------------------------------------------------------------
+
+
+def test_named_custom_provider_with_extra_headers(monkeypatch):
+    """Custom providers with extra_headers should have them resolved."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "CustomHost",
+                    "base_url": "https://custom.host.ai/v1",
+                    "api_key": "custom-host-key",
+                    "extra_headers": {
+                        "x-host-head": "test-host-value",
+                        "x-custom-auth": "auth-123",
+                    },
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="customhost")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["extra_headers"] == {
+        "x-host-head": "test-host-value",
+        "x-custom-auth": "auth-123",
+    }
+    assert resolved["base_url"] == "https://custom.host.ai/v1"
+    assert resolved["api_key"] == "custom-host-key"
+
+
+def test_named_custom_provider_extra_headers_empty_dict_ignored(monkeypatch):
+    """Custom providers with empty extra_headers dict should not include the key."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "EmptyHeaders",
+                    "base_url": "https://empty.host/v1",
+                    "api_key": "key",
+                    "extra_headers": {},
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="emptyheaders")
+
+    # empty dict results in extra_headers being None (key exists but value is None)
+    assert "extra_headers" in resolved
+    assert resolved["extra_headers"] is None
+
+
+def test_named_custom_provider_extra_headers_non_dict_ignored(monkeypatch):
+    """Custom providers with non-dict extra_headers should not include the key."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "BadHeaders",
+                    "base_url": "https://bad.host/v1",
+                    "api_key": "key",
+                    "extra_headers": "not-a-dict",
+                }
+            ]
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="badheaders")
+
+    # non-dict results in extra_headers being None (key exists but value is None)
+    assert "extra_headers" in resolved
+    assert resolved["extra_headers"] is None
+
+
+def test_resolve_named_custom_runtime_includes_extra_headers(monkeypatch):
+    """_resolve_named_custom_runtime should include extra_headers from the provider config."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "MyHost",
+            "base_url": "https://myhost.example/v1",
+            "api_key": "host-key",
+            "extra_headers": {"x-host-head": "myhost-123"},
+        },
+    )
+
+    resolved = rp._resolve_named_custom_runtime(requested_provider="myhost")
+
+    assert resolved is not None
+    assert resolved["extra_headers"] == {"x-host-head": "myhost-123"}
+    assert resolved["provider"] == "custom"
+
+
+def test_resolve_named_custom_runtime_without_extra_headers(monkeypatch):
+    """_resolve_named_custom_runtime includes extra_headers as None when not configured."""
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "PlainHost",
+            "base_url": "https://plain.host/v1",
+            "api_key": "plain-key",
+        },
+    )
+
+    resolved = rp._resolve_named_custom_runtime(requested_provider="plainhost")
+
+    assert resolved is not None
+    # extra_headers key is present but value is None when not configured
+    assert "extra_headers" in resolved
+    assert resolved["extra_headers"] is None
+
+
+def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeypatch):
+    """When a credential pool exists, extra_headers from the custom provider config
+    must still be propagated to the pool result.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/pull/3526#issuecomment-4232793523
+    """
+    pool_return_value = {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": "https://lmstudio.example.com/v1",
+        "api_key": "pooled-key",
+        "source": "pool:lmstudio-pool",
+        "credential_pool": "fake-pool",
+    }
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: pool_return_value)
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "lmstudio",
+            "base_url": "https://lmstudio.example.com/v1",
+            "api_key": "not-used-when-pooled",
+            "extra_headers": {
+                "CF-Access-Client-Id": "xxx.access",
+                "CF-Access-Client-Secret": "yyy",
+            },
+        },
+    )
+
+    resolved = rp._resolve_named_custom_runtime(requested_provider="custom:lmstudio")
+
+    assert resolved is not None
+    assert resolved["extra_headers"] == {
+        "CF-Access-Client-Id": "xxx.access",
+        "CF-Access-Client-Secret": "yyy",
+    }
+    # Ensure the pool result fields are preserved
+    assert resolved["api_key"] == "pooled-key"
+    assert resolved["source"] == "pool:lmstudio-pool"
+
+
 def test_opencode_go_configured_api_mode_still_overrides_default(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
     monkeypatch.setattr(

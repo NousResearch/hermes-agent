@@ -357,6 +357,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        extra_headers = entry.get("extra_headers")
+        if isinstance(extra_headers, dict) and extra_headers:
+            result["extra_headers"] = extra_headers
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
@@ -390,6 +393,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        # Propagate extra_headers so custom provider auth headers are included
+        # even when using pooled credentials.
+        pool_result["extra_headers"] = custom_provider.get("extra_headers")
         return pool_result
 
     api_key_candidates = [
@@ -409,6 +415,7 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "extra_headers": custom_provider.get("extra_headers"),
     }
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.

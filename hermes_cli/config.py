@@ -1682,6 +1682,10 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    extra_headers = entry.get("extra_headers")
+    if isinstance(extra_headers, dict) and extra_headers:
+        normalized["extra_headers"] = extra_headers
+
     return normalized
 
 

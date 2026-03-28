@@ -1075,9 +1075,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             return
         identifier = args[0]
         category = ""
-        # --yes / -y bypasses confirmation prompt (needed in TUI mode)
-        # --force handles reinstall override
-        skip_confirm = any(flag in args for flag in ("--yes", "-y"))
+        # Slash command handler always runs in TUI mode where input() hangs.
+        # Confirmation is skipped by default; --no-confirm is kept for symmetry.
+        skip_confirm = "--no-confirm" not in args
         force = "--force" in args
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
@@ -1115,7 +1115,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         if not args:
             c.print("[bold red]Usage:[/] /skills uninstall <name> [--yes]\n")
             return
-        skip_confirm = any(flag in args for flag in ("--yes", "-y"))
+        skip_confirm = "--no-confirm" not in args
         do_uninstall(args[0], console=c, skip_confirm=skip_confirm)
 
     elif action == "publish":

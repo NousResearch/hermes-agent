@@ -153,12 +153,13 @@ class TestLaunchdServiceRecovery:
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
 
         calls = []
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
-            if cmd == ["launchctl", "start", "ai.hermes.gateway"] and calls.count(cmd) == 1:
+            if cmd == ["launchctl", "start", label] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -168,9 +169,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
-            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "start", label],
             ["launchctl", "load", str(plist_path)],
-            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "start", label],
         ]
 
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):

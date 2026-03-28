@@ -2968,10 +2968,11 @@ def cmd_update(args):
             # Check for macOS launchd service
             if is_macos():
                 try:
+                    from hermes_cli.gateway import get_launchd_label
                     plist_path = get_launchd_plist_path()
                     if plist_path.exists():
                         check = subprocess.run(
-                            ["launchctl", "list", "ai.hermes.gateway"],
+                            ["launchctl", "list", get_launchd_label()],
                             capture_output=True, text=True, timeout=5,
                         )
                         has_launchd_service = check.returncode == 0
@@ -3027,12 +3028,13 @@ def cmd_update(args):
                     # after a manual SIGTERM, which would race with the
                     # PID file cleanup.
                     print("→ Restarting gateway service...")
+                    _launchd_label = get_launchd_label()
                     stop = subprocess.run(
-                        ["launchctl", "stop", "ai.hermes.gateway"],
+                        ["launchctl", "stop", _launchd_label],
                         capture_output=True, text=True, timeout=10,
                     )
                     start = subprocess.run(
-                        ["launchctl", "start", "ai.hermes.gateway"],
+                        ["launchctl", "start", _launchd_label],
                         capture_output=True, text=True, timeout=10,
                     )
                     if start.returncode == 0:

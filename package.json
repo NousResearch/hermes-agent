@@ -4,7 +4,7 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
+    "postinstall": "echo '\u2705 Browser tools ready. Run: python run_agent.py --help'"
   },
   "repository": {
     "type": "git",
@@ -16,8 +16,10 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
+    "@askjo/camoufox-browser": "^1.0.0",
     "agent-browser": "^0.13.0",
-    "@askjo/camoufox-browser": "^1.0.0"
+    "dotenv": "^8.2.0",
+    "node-fetch": "^3.3.2"
   },
   "engines": {
     "node": ">=18.0.0"

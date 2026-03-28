@@ -64,6 +64,7 @@ def test_cmd_chat_uses_directory_root_scope_and_does_not_inject_by_default(monke
     args = _Args(resume=None, continue_last=False, continue_name=None)
 
     with pytest.raises(_StopChatStartup):
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         main_mod.cmd_chat(args)
 
     assert call["cwd"] == "/tmp/repo"
@@ -108,6 +109,7 @@ def test_cmd_chat_exact_cwd_scope_and_injects_when_enabled(monkeypatch):
     args = _Args(resume=None, continue_last=False, continue_name=None)
 
     with pytest.raises(_StopChatStartup):
+        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         main_mod.cmd_chat(args)
 
     assert call["cwd_scope"] == "exact"

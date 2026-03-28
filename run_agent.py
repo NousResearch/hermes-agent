@@ -7311,7 +7311,6 @@ class AIAgent:
                         except Exception:
                             pass
 
-                    _msg_count_before_tools = len(messages)
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                     # Signal that a paragraph break is needed before the next
@@ -7329,18 +7328,18 @@ class AIAgent:
                     if _tc_names == {"execute_code"}:
                         self.iteration_budget.refund()
                     
-                    # Estimate next prompt size using real token counts from the
-                    # last API response + rough estimate of newly appended tool
-                    # results.  This catches cases where tool results push the
-                    # context past the limit that last_prompt_tokens alone misses
-                    # (e.g. large file reads, web extractions).
+                    # Use real token counts from the API response to decide
+                    # compression.  prompt_tokens + completion_tokens is the
+                    # actual context size the provider reported plus the
+                    # assistant turn — a tight lower bound for the next prompt.
+                    # Tool results appended above aren't counted yet, but the
+                    # threshold (default 50%) leaves ample headroom; if tool
+                    # results push past it, the next API call will report the
+                    # real total and trigger compression then.
                     _compressor = self.context_compressor
-                    _new_tool_msgs = messages[_msg_count_before_tools:]
-                    _new_chars = sum(len(str(m.get("content", "") or "")) for m in _new_tool_msgs)
-                    _estimated_next_prompt = (
+                    _real_tokens = (
                         _compressor.last_prompt_tokens
                         + _compressor.last_completion_tokens
-                        + _new_chars // 3  # conservative: JSON-heavy tool results ≈ 3 chars/token
                     )
 
                     # ── Context pressure warnings (user-facing only) ──────────
@@ -7350,12 +7349,12 @@ class AIAgent:
                     # Does not inject into messages — just prints to CLI output
                     # and fires status_callback for gateway platforms.
                     if _compressor.threshold_tokens > 0:
-                        _compaction_progress = _estimated_next_prompt / _compressor.threshold_tokens
+                        _compaction_progress = _real_tokens / _compressor.threshold_tokens
                         if _compaction_progress >= 0.85 and not self._context_pressure_warned:
                             self._context_pressure_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
-                    if self.compression_enabled and _compressor.should_compress(_estimated_next_prompt):
+                    if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message,
                             approx_tokens=self.context_compressor.last_prompt_tokens,

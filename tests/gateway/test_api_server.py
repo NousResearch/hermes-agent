@@ -217,6 +217,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=[cors_middleware])
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
@@ -246,6 +247,17 @@ class TestHealthEndpoint:
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+            assert data["platform"] == "hermes-agent"
+
+    @pytest.mark.asyncio
+    async def test_v1_health_alias_returns_ok(self, adapter):
+        """GET /v1/health should return the same response as /health."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/health")
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "ok"

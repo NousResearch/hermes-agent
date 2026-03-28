@@ -227,42 +227,49 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,         # seconds — increase for slow local models
         },
         "compression": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "skills_hub": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "mcp": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "flush_memories": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
     },
     

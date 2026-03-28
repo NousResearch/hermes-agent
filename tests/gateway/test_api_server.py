@@ -12,6 +12,7 @@ Tests cover:
 - Error handling (invalid JSON, missing fields)
 """
 
+import hashlib
 import json
 import time
 import uuid
@@ -529,6 +530,69 @@ class TestChatCompletionsEndpoint:
             assert len(call_kwargs["conversation_history"]) == 2
             assert call_kwargs["conversation_history"][0] == {"role": "user", "content": "1+1=?"}
             assert call_kwargs["conversation_history"][1] == {"role": "assistant", "content": "2"}
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_uses_x_chat_id_as_session_id(self, adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                    headers={"X-Chat-ID": "webui-thread-123"},
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["session_id"] == "api-server-chat-webui-thread-123"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_uses_conversation_field_as_session_id(self, adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "conversation": "conv-abc",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["session_id"] == "api-server-chat-conv-abc"
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_fallback_session_id_is_deterministic(self, adapter):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+
+        expected_messages = [{"role": "user", "content": "Hello"}]
+        payload = json.dumps(expected_messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        expected_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["session_id"] == f"api-server-chat-{expected_digest}"
 
     @pytest.mark.asyncio
     async def test_agent_error_returns_500(self, adapter):

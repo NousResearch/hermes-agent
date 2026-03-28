@@ -18,6 +18,7 @@ Requires:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -279,6 +280,58 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
+def _normalize_openai_content(content: Any) -> str:
+    """Normalize OpenAI-style message content into plain text."""
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if isinstance(item, dict):
+                item_type = item.get("type")
+                if item_type in ("text", "input_text", "output_text"):
+                    text = item.get("text", "")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+        return "\n".join(parts)
+
+    return str(content)
+
+
+def _derive_chat_session_id(request: "web.Request", body: Dict[str, Any], messages: List[Dict[str, Any]]) -> str:
+    """Derive a stable session_id for chat completions requests."""
+    header_chat_id = request.headers.get("X-Chat-ID", "").strip()
+    if header_chat_id:
+        return f"api-server-chat-{header_chat_id}"
+
+    conversation = body.get("conversation")
+    if isinstance(conversation, str) and conversation.strip():
+        return f"api-server-chat-{conversation.strip()}"
+
+    normalized_messages: List[Dict[str, str]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        normalized_messages.append(
+            {
+                "role": str(msg.get("role", "")),
+                "content": _normalize_openai_content(msg.get("content", "")),
+            }
+        )
+
+    payload = json.dumps(normalized_messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"api-server-chat-{digest}"
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -471,7 +524,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = _normalize_openai_content(msg.get("content", ""))
             if role == "system":
                 # Accumulate system messages
                 if system_prompt is None:
@@ -494,7 +547,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        session_id = str(uuid.uuid4())
+        session_id = _derive_chat_session_id(request, body, messages)
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", "hermes-agent")
         created = int(time.time())

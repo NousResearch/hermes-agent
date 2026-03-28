@@ -1301,6 +1301,31 @@ class TestCORS:
             assert "DELETE" in resp.headers.get("Access-Control-Allow-Methods", "")
 
     @pytest.mark.asyncio
+    async def test_cors_allows_idempotency_key_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Idempotency-Key",
+                },
+            )
+            assert resp.status == 200
+            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    @pytest.mark.asyncio
+    async def test_cors_sets_vary_origin_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health", headers={"Origin": "http://localhost:3000"})
+            assert resp.status == 200
+            assert resp.headers.get("Vary") == "Origin"
+
+    @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])

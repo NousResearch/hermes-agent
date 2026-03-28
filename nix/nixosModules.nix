@@ -111,6 +111,7 @@
       fi
       mkdir -p "$TARGET_HOME"
       chown "$HERMES_UID:$HERMES_GID" "$TARGET_HOME"
+      chmod 0750 "$TARGET_HOME"
 
       # Ensure HERMES_HOME is owned by the target user
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
@@ -551,8 +552,8 @@
       # ── Directories ───────────────────────────────────────────────────
       {
         systemd.tmpfiles.rules = [
-          "d ${cfg.stateDir}                0755 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes        0755 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}                0750 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes        0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.workingDirectory}         0750 ${cfg.user} ${cfg.group} - -"
         ];
@@ -566,21 +567,23 @@
           mkdir -p ${cfg.stateDir}/home
           mkdir -p ${cfg.workingDirectory}
           chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
+          chmod 0750 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
 
           # Merge Nix settings into existing config.yaml.
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
           # If configFile is user-provided (not generated), overwrite instead of merge.
           ${if cfg.configFile != null then ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0644 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
           '' else ''
             ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
             chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
-            chmod 0644 ${cfg.stateDir}/.hermes/config.yaml
+            chmod 0640 ${cfg.stateDir}/.hermes/config.yaml
           ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)
           touch ${cfg.stateDir}/.hermes/.managed
           chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
+          chmod 0644 ${cfg.stateDir}/.hermes/.managed
 
           # Seed auth file if provided
           ${lib.optionalString (cfg.authFile != null) ''
@@ -612,7 +615,7 @@ HERMES_NIX_ENV_EOF
 
           # Link documents into workspace
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0644 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
           '') cfg.documents)}
         '';
       }

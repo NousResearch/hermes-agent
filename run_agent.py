@@ -368,6 +368,48 @@ _BUDGET_WARNING_RE = re.compile(
 )
 
 
+# Regex to match lone surrogate code points (U+D800..U+DFFF).
+# These are invalid in UTF-8 and cause UnicodeEncodeError when the OpenAI SDK
+# serialises messages to JSON.  Common source: clipboard paste from Google Docs
+# or other rich-text editors on some platforms.
+_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+
+
+def _sanitize_surrogates(text: str) -> str:
+    """Replace lone surrogate code points with U+FFFD (replacement character).
+
+    Surrogates are invalid in UTF-8 and will crash ``json.dumps()`` inside the
+    OpenAI SDK.  This is a fast no-op when the text contains no surrogates.
+    """
+    if _SURROGATE_RE.search(text):
+        return _SURROGATE_RE.sub('\ufffd', text)
+    return text
+
+
+def _sanitize_messages_surrogates(messages: list) -> bool:
+    """Sanitize surrogate characters from all string content in a messages list.
+
+    Walks message dicts in-place.  Returns True if any surrogates were found
+    and replaced, False otherwise.
+    """
+    found = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and _SURROGATE_RE.search(content):
+            msg["content"] = _SURROGATE_RE.sub('\ufffd', content)
+            found = True
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str) and _SURROGATE_RE.search(text):
+                        part["text"] = _SURROGATE_RE.sub('\ufffd', text)
+                        found = True
+    return found
+
+
 def _strip_budget_warnings_from_history(messages: list) -> None:
     """Remove budget pressure warnings from tool-result messages in-place.
 
@@ -5959,6 +6001,14 @@ class AIAgent:
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
 
+        # Sanitize surrogate characters from user input.  Clipboard paste from
+        # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
+        # that are invalid UTF-8 and crash JSON serialization in the OpenAI SDK.
+        if isinstance(user_message, str):
+            user_message = _sanitize_surrogates(user_message)
+        if isinstance(persist_user_message, str):
+            persist_user_message = _sanitize_surrogates(persist_user_message)
+
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
@@ -5975,6 +6025,7 @@ class AIAgent:
         self._codex_incomplete_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
+        self._surrogate_sanitized = False
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
@@ -6810,6 +6861,24 @@ class AIAgent:
                     if self.thinking_callback:
                         self.thinking_callback("")
 
+                    # -----------------------------------------------------------
+                    # Surrogate character recovery.  UnicodeEncodeError happens
+                    # when the messages contain lone surrogates (U+D800..U+DFFF)
+                    # that are invalid UTF-8.  Common source: clipboard paste
+                    # from Google Docs or similar rich-text editors.  We sanitize
+                    # the entire messages list in-place and retry once.
+                    # -----------------------------------------------------------
+                    if isinstance(api_error, UnicodeEncodeError) and not getattr(self, '_surrogate_sanitized', False):
+                        self._surrogate_sanitized = True
+                        if _sanitize_messages_surrogates(messages):
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Stripped invalid surrogate characters from messages. Retrying...",
+                                force=True,
+                            )
+                            continue
+                        # Surrogates weren't in messages — might be in system
+                        # prompt or prefill.  Fall through to normal error path.
+
                     status_code = getattr(api_error, "status_code", None)
                     if (
                         self.api_mode == "codex_responses"
@@ -7078,8 +7147,13 @@ class AIAgent:
                     # 529 (Anthropic overloaded) is also transient.
                     # Also catch local validation errors (ValueError, TypeError) — these
                     # are programming bugs, not transient failures.
+                    # Exclude UnicodeEncodeError — it's a ValueError subclass but is
+                    # handled separately by the surrogate sanitization path above.
                     _RETRYABLE_STATUS_CODES = {413, 429, 529}
-                    is_local_validation_error = isinstance(api_error, (ValueError, TypeError))
+                    is_local_validation_error = (
+                        isinstance(api_error, (ValueError, TypeError))
+                        and not isinstance(api_error, UnicodeEncodeError)
+                    )
                     # Detect generic 400s from Anthropic OAuth (transient server-side failures).
                     # Real invalid_request_error responses include a descriptive message;
                     # transient ones contain only "Error" or are empty. (ref: issue #1608)

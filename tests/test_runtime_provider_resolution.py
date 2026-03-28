@@ -534,8 +534,8 @@ def test_minimax_explicit_api_mode_respected(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 
-def test_alibaba_default_anthropic_endpoint_uses_anthropic_messages(monkeypatch):
-    """Alibaba with default /apps/anthropic URL should use anthropic_messages mode."""
+def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
+    """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
@@ -544,22 +544,22 @@ def test_alibaba_default_anthropic_endpoint_uses_anthropic_messages(monkeypatch)
     resolved = rp.resolve_runtime_provider(requested="alibaba")
 
     assert resolved["provider"] == "alibaba"
-    assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://dashscope-intl.aliyuncs.com/apps/anthropic"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
 
 
-def test_alibaba_openai_compatible_v1_endpoint_stays_chat_completions(monkeypatch):
-    """Alibaba with /v1 coding endpoint should use chat_completions mode."""
+def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch):
+    """Alibaba with /apps/anthropic URL override should auto-detect anthropic_messages mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
-    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/v1")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic")
 
     resolved = rp.resolve_runtime_provider(requested="alibaba")
 
     assert resolved["provider"] == "alibaba"
-    assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

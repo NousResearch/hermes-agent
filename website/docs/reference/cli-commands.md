@@ -39,6 +39,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
+| `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
@@ -213,6 +214,39 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
+
+## `hermes webhook`
+
+```bash
+hermes webhook <subscribe|list|remove|test>
+```
+
+Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
+
+| Subcommand | Description |
+|------------|-------------|
+| `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
+| `list` / `ls` | Show all agent-created subscriptions. |
+| `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
+| `test` | Send a test POST to verify a subscription is working. |
+
+### `hermes webhook subscribe`
+
+```bash
+hermes webhook subscribe <name> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--prompt` | Prompt template with `{dot.notation}` payload references. |
+| `--events` | Comma-separated event types to accept (e.g. `issues,pull_request`). Empty = all. |
+| `--description` | Human-readable description. |
+| `--skills` | Comma-separated skill names to load for the agent run. |
+| `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
+| `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
+| `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+
+Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 
 ## `hermes doctor`
 

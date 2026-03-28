@@ -2917,10 +2917,15 @@ def cmd_update(args):
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
             
             print()
-            if sys.stdin.isatty():
-                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
-            else:
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                print("  ℹ Non-interactive session — skipping config migration prompt.")
+                print("    Run 'hermes config migrate' later to apply any new config/env options.")
                 response = "n"
+            else:
+                try:
+                    response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+                except EOFError:
+                    response = "n"
             
             if response in ('', 'y', 'yes'):
                 print()

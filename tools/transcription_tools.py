@@ -2,10 +2,12 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with four providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
+  - **mlx_whisper** (free, macOS/Apple Silicon) — MLX Whisper running locally.
+    Uses Hugging Face model cache shared with other tools.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
 
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 import importlib.util as _ilu
 _HAS_FASTER_WHISPER = _ilu.find_spec("faster_whisper") is not None
+_HAS_MLX_WHISPER = _ilu.find_spec("mlx_whisper") is not None
 _HAS_OPENAI = _ilu.find_spec("openai") is not None
 
 # ---------------------------------------------------------------------------
@@ -67,6 +70,19 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+
+# MLX Whisper model aliases — short names → Hugging Face repo IDs
+DEFAULT_MLX_MODEL = "mlx-community/whisper-base-mlx"
+MLX_MODEL_ALIASES = {
+    "tiny":           "mlx-community/whisper-tiny-mlx",
+    "base":           "mlx-community/whisper-base-mlx",
+    "small":          "mlx-community/whisper-small-mlx",
+    "medium":         "mlx-community/whisper-medium-mlx",
+    "large":          "mlx-community/whisper-large-v3-mlx",
+    "large-v3":       "mlx-community/whisper-large-v3-mlx",
+    "turbo":          "mlx-community/whisper-large-v3-turbo",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -163,6 +179,13 @@ def _normalize_local_command_model(model_name: Optional[str]) -> str:
     return model_name
 
 
+def _normalize_mlx_model(model_name: Optional[str]) -> str:
+    """Resolve a short alias or cloud model name to a valid MLX HF repo ID."""
+    if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        return DEFAULT_MLX_MODEL
+    return MLX_MODEL_ALIASES.get(model_name, model_name)
+
+
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
@@ -179,6 +202,15 @@ def _get_provider(stt_config: dict) -> str:
     # --- Explicit provider: respect the user's choice ----------------------
 
     if explicit:
+        if provider == "mlx_whisper":
+            if _HAS_MLX_WHISPER:
+                return "mlx_whisper"
+            logger.warning(
+                "STT provider 'mlx_whisper' configured but mlx-whisper is not installed "
+                "(pip install mlx-whisper)"
+            )
+            return "none"
+
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
@@ -219,10 +251,15 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+    # --- Auto-detect (no explicit provider): local > mlx_whisper (macOS) > groq > openai ---------
 
     if _HAS_FASTER_WHISPER:
         return "local"
+    if _HAS_MLX_WHISPER:
+        import platform
+        if platform.system() == "Darwin":
+            logger.info("No faster-whisper found, using mlx_whisper on macOS")
+            return "mlx_whisper"
     if _has_local_command():
         return "local_command"
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
@@ -383,6 +420,30 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: mlx_whisper (local, macOS/Apple Silicon)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_mlx_whisper(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using MLX Whisper (local, free, Apple Silicon)."""
+    if not _HAS_MLX_WHISPER:
+        return {"success": False, "transcript": "", "error": "mlx-whisper not installed (pip install mlx-whisper)"}
+
+    try:
+        import mlx_whisper
+        result = mlx_whisper.transcribe(file_path, path_or_hf_repo=model_name)
+        transcript = (result.get("text") or "").strip()
+        logger.info(
+            "Transcribed %s via mlx_whisper (%s, %d chars)",
+            Path(file_path).name, model_name, len(transcript),
+        )
+        return {"success": True, "transcript": transcript, "provider": "mlx_whisper"}
+    except Exception as e:
+        logger.error("MLX Whisper transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"MLX Whisper transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
 # ---------------------------------------------------------------------------
 
@@ -522,6 +583,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     provider = _get_provider(stt_config)
 
+    if provider == "mlx_whisper":
+        mlx_cfg = stt_config.get("mlx_whisper", {})
+        model_name = _normalize_mlx_model(model or mlx_cfg.get("model"))
+        return _transcribe_mlx_whisper(file_path, model_name)
+
     if provider == "local":
         local_cfg = stt_config.get("local", {})
         model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
@@ -548,8 +614,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "success": False,
         "transcript": "",
         "error": (
-            "No STT provider available. Install faster-whisper for free local "
-            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "No STT provider available. Install faster-whisper for free local transcription, "
+            "install mlx-whisper for Apple Silicon, "
+            f"configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),

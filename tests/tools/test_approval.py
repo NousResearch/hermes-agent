@@ -512,6 +512,30 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    def test_pkill_hermes_detected(self):
+        """pkill targeting hermes/gateway processes must be caught."""
+        cmd = 'pkill -f "cli.py --gateway"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_killall_hermes_detected(self):
+        cmd = "killall hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_pkill_gateway_detected(self):
+        cmd = "pkill -f gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pkill_unrelated_not_flagged(self):
+        """pkill targeting unrelated processes should not be flagged."""
+        cmd = "pkill -f nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
 
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""

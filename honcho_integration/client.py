@@ -133,6 +133,12 @@ class HonchoClientConfig:
     # block exists or enabled was set explicitly), vs auto-enabled from a
     # stray HONCHO_API_KEY env var.
     explicitly_configured: bool = False
+  
+    def __post_init__(self):
+        # Bypass API key validation for local Honcho servers
+        if self.base_url and ("localhost" in self.base_url or "127.0.0.1" in self.base_url):
+            if not self.api_key:
+                self.api_key = "local_dummy_key"
 
     @classmethod
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:

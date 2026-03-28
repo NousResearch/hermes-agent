@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
+from collections import defaultdict, deque
 
 import sys
 from pathlib import Path as _Path
@@ -398,7 +399,7 @@ class BasePlatformAdapter(ABC):
         # Track active message handlers per session for interrupt support
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
         self._active_sessions: Dict[str, asyncio.Event] = {}
-        self._pending_messages: Dict[str, MessageEvent] = {}
+        self._pending_messages: Dict[str, deque[MessageEvent]] = defaultdict(deque)
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
@@ -980,7 +981,7 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 print(f"[{self.name}] 🖼️ Queuing photo follow-up for session {session_key} without interrupt")
-                existing = self._pending_messages.get(session_key)
+                existing = self._pending_messages[session_key][-1] if self._pending_messages[session_key] else None
                 if existing and existing.message_type == MessageType.PHOTO:
                     existing.media_urls.extend(event.media_urls)
                     existing.media_types.extend(event.media_types)
@@ -990,12 +991,12 @@ class BasePlatformAdapter(ABC):
                         elif event.text not in existing.text:
                             existing.text = f"{existing.text}\n\n{event.text}".strip()
                 else:
-                    self._pending_messages[session_key] = event
+                    self._pending_messages[session_key].append(event)
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
             print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
-            self._pending_messages[session_key] = event
+            self._pending_messages[session_key].append(event)
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
@@ -1286,7 +1287,9 @@ class BasePlatformAdapter(ABC):
     
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
-        return self._pending_messages.pop(session_key, None)
+        if self._pending_messages[session_key]:
+            return self._pending_messages[session_key].popleft()
+        return None
     
     def build_source(
         self,

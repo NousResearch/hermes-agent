@@ -112,6 +112,30 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "blockrun": {
+        "description": (
+            "BlockRun / ClawRouter wallet and payment tools. "
+            "Manage the x402 wallet used for autonomous LLM payments via blockrun.ai. "
+            "Required when using provider='blockrun'. "
+            "Also exposes image generation and prediction market data (Polymarket, Kalshi, dFlow)."
+        ),
+        "tools": [
+            # Wallet — Base (EVM / USDC on Base mainnet)
+            "blockrun_wallet_setup",
+            "blockrun_wallet_balance",
+            "blockrun_wallet_address",
+            # Wallet — Solana (SPL-USDC)
+            "blockrun_solana_wallet_setup",
+            "blockrun_solana_wallet_balance",
+            # Images (DALL-E 3, GPT Image 1, Flux, Nano Banana)
+            "blockrun_image_generate",
+            "blockrun_image_edit",
+            # Prediction markets (Polymarket, Kalshi, dFlow, Binance)
+            "blockrun_prediction_markets",
+        ],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",

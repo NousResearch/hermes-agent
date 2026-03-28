@@ -37,6 +37,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+blockrun = [
+    "blockrun-llm>=0.10.0",
+    "eth-account>=0.13.0",
+]
+blockrun-solana = [
+    "blockrun-llm>=0.10.0",
+    "solders>=0.21.0",
+    "base58>=2.1.1",
+]
 modal = ["swe-rex[modal]>=1.4.0,<2"]
 daytona = ["daytona>=0.148.0,<1"]
 dev = ["pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2"]

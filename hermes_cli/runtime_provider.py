@@ -316,6 +316,21 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # ── BlockRun / ClawRouter ──────────────────────────────────────────────
+    # Must come before resolve_provider() which raises AuthError for unknown names.
+    _requested_norm = (requested_provider or "").strip().lower()
+    if _requested_norm in ("blockrun", "clawrouter"):
+        from hermes_cli.blockrun_provider import resolve_blockrun_provider
+        model_cfg = _get_model_config()
+        chain = str(model_cfg.get("chain") or "").strip().lower() or None
+        result = resolve_blockrun_provider(
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+            chain=chain,  # type: ignore[arg-type]
+        )
+        result["requested_provider"] = requested_provider
+        return result
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,

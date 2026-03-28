@@ -18,6 +18,8 @@ model:
   #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
   #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
   #   "minimax-cn" - Use MiniMax China endpoint (requires: MINIMAX_CN_API_KEY)
+  #   "blockrun"   - Use BlockRun / ClawRouter with x402 micropayments (requires: BLOCKRUN_WALLET_KEY)
+  #   "clawrouter" - Alias for "blockrun"
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   
@@ -50,6 +52,22 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+
+# =============================================================================
+# BlockRun / ClawRouter Provider (x402 micropayments — no API key needed)
+# =============================================================================
+# BlockRun is an OpenRouter alternative: 50+ models, pay per request with USDC.
+# Install: pip install "hermes-agent[blockrun]"
+# Wallet:  run `blockrun_wallet_setup` tool, then fund at https://blockrun.ai/fund
+#
+# model:
+#   provider: "blockrun"           # or "clawrouter" (alias)
+#   default: "openai/gpt-5.2"
+#   # chain: "solana"              # optional — defaults to "base"
+#
+# Available models: openai/gpt-5.2, anthropic/claude-opus-4-6,
+#   google/gemini-2.5-pro, deepseek/deepseek-v3, x-ai/grok-4, and 50+ more.
+# Free fallback: nvidia/gpt-oss-20b (no payment required when balance is low)
 
 # =============================================================================
 # Smart Model Routing (optional)

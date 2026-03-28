@@ -29,12 +29,24 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import ctypes
+import ctypes.util
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Helper to check for CUDA
+# ---------------------------------------------------------------------------
+
+def _has_cuda_libraries() -> bool:
+    """Check if essential CUDA libraries are available."""
+    # Check for cublas and cudart
+    return (ctypes.util.find_library("cublas") is not None and 
+            ctypes.util.find_library("cudart") is not None)
 
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
@@ -267,83 +279,63 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Provider: local (openai-whisper)
-# ---------------------------------------------------------------------------
-
-def _transcribe_local_fallback(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using vanilla openai-whisper (local, free)."""
-    global _local_model, _local_model_name
-
-    try:
-        import whisper
-        from typing import Dict, Any
-        from pathlib import Path
-        # Lazy-load the model
-        if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading vanilla whisper model '%s'...", model_name)
-            # Vanilla whisper automatically detects CUDA; 
-            # use device="cpu" if you want to force CPU
-            _local_model = whisper.load_model(model_name)
-            _local_model_name = model_name
-
-        # Transcribe returns a dict containing 'text', 'segments', and 'language'
-        # fp16 parameter removed - not supported in newer faster-whisper versions
-        result = _local_model.transcribe(file_path, beam_size=5)
-
-        transcript = result["text"].strip()
-        language = result.get("language", "unknown")
-
-        logger.info(
-            "Transcribed %s via local vanilla whisper (%s, lang=%s)",
-            Path(file_path).name, model_name, language
-        )
-
-        return {
-            "success": True,
-            "transcript": transcript,
-            "provider": "local",
-            "language": language
-        }
-
-    except Exception as e:
-        logger.error("Local fallback transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
-
-
-
-# ---------------------------------------------------------------------------
-# Provider: local (faster-whisper)
+# Provider: local (Unified: faster-whisper + vanilla openai-whisper)
 # ---------------------------------------------------------------------------
 
 
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using faster-whisper (local, free)."""
+    """Transcribe using local models (faster-whisper preferred, fallback to openai-whisper)."""
     global _local_model, _local_model_name
 
-    if not _HAS_FASTER_WHISPER:
-        return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
+    # Try faster-whisper first if installed
+    if _HAS_FASTER_WHISPER:
+        try:
+            from faster_whisper import WhisperModel
+            if _local_model_name != f"fw-{model_name}":
+                logger.info("Loading faster-whisper model '%s'...", model_name)
+                
+                device = "auto"
+                compute_type = "auto"
+                if not _has_cuda_libraries():
+                    logger.warning("CUDA libraries not found. Forcing CPU/int8 for faster-whisper.")
+                    device, compute_type = "cpu", "int8"
+                
+                _local_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+                _local_model_name = f"fw-{model_name}"
 
+            segments, info = _local_model.transcribe(file_path, beam_size=5)
+            transcript = " ".join(segment.text.strip() for segment in segments)
+            
+            logger.info(
+                "Transcribed %s via faster-whisper (%s, lang=%s, %.1fs audio)",
+                Path(file_path).name, model_name, info.language, info.duration,
+            )
+            return {"success": True, "transcript": transcript, "provider": "local"}
+        except Exception as e:
+            logger.warning("faster-whisper failed: %s. Falling back to vanilla whisper.", e)
+            _local_model = None  # Reset singleton
+            _local_model_name = None
+
+    # Fallback to vanilla openai-whisper
     try:
-        from faster_whisper import WhisperModel
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
-        if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
-            _local_model_name = model_name
+        import whisper
+        if _local_model_name != f"v-{model_name}":
+            logger.info("Loading vanilla whisper model '%s'...", model_name)
+            device = "cuda" if _has_cuda_libraries() else "cpu"
+            _local_model = whisper.load_model(model_name, device=device)
+            _local_model_name = f"v-{model_name}"
 
-        segments, info = _local_model.transcribe(file_path, beam_size=5)
-        transcript = " ".join(segment.text.strip() for segment in segments)
-
+        result = _local_model.transcribe(file_path, beam_size=5)
+        transcript = result["text"].strip()
+        
         logger.info(
-            "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
-            Path(file_path).name, model_name, info.language, info.duration,
+            "Transcribed %s via vanilla whisper (%s)",
+            Path(file_path).name, model_name
         )
-
         return {"success": True, "transcript": transcript, "provider": "local"}
-
     except Exception as e:
-        logger.warn("Local transcription failed: %s\nFalling back to openai-whisper", e)
-        return _transcribe_local_fallback(file_path, model_name)
+        logger.error("Local transcription (vanilla) failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 
 def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], Optional[str]]:

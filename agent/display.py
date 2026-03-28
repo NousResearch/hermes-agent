@@ -699,7 +699,7 @@ def format_context_pressure(
         threshold_percent: Compaction threshold as a fraction of context window.
         compression_enabled: Whether auto-compression is active.
     """
-    pct_int = int(compaction_progress * 100)
+    pct_int = min(int(compaction_progress * 100), 100)
     filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
     bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 
@@ -729,7 +729,7 @@ def format_context_pressure_gateway(
     No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
     The percentage shows progress toward the compaction threshold.
     """
-    pct_int = int(compaction_progress * 100)
+    pct_int = min(int(compaction_progress * 100), 100)
     filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
     bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 

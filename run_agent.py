@@ -3804,6 +3804,14 @@ class AIAgent:
             # Reset per-call reasoning tracking so _build_assistant_message
             # knows whether reasoning was already displayed during streaming.
             self._reasoning_deltas_fired = False
+            # Fix: sequential tool dispatch for Ollama-compatible endpoints
+            # (parallel tool call concatenation bug)
+            # Ollama reuses index 0 for every tool call in a parallel batch,
+            # causing names/args to be concatenated into one slot.
+            # Track the last seen id per raw index so we can detect a new tool
+            # call starting at the same index and redirect it to a fresh slot.
+            _last_id_at_idx: dict = {}    # raw_index -> last seen non-empty id
+            _active_slot_by_idx: dict = {}  # raw_index -> current slot in tool_calls_acc
 
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
@@ -3841,10 +3849,31 @@ class AIAgent:
                 # Accumulate tool call deltas — notify display on first name
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index if tc_delta.index is not None else 0
+                        raw_idx = tc_delta.index if tc_delta.index is not None else 0
+                        delta_id = tc_delta.id or ""
+
+                        # Fix: sequential tool dispatch for Ollama-compatible endpoints
+                        # (parallel tool call concatenation bug)
+                        # Ollama sends every tool call in a parallel batch at the same
+                        # index (typically 0).  Detect a new tool call by watching for a
+                        # new non-empty id at an already-active index, then redirect it to
+                        # a fresh slot so names and arguments are never concatenated.
+                        if raw_idx not in _active_slot_by_idx:
+                            _active_slot_by_idx[raw_idx] = raw_idx
+                        if (
+                            delta_id
+                            and raw_idx in _last_id_at_idx
+                            and delta_id != _last_id_at_idx[raw_idx]
+                        ):
+                            new_slot = max(tool_calls_acc, default=-1) + 1
+                            _active_slot_by_idx[raw_idx] = new_slot
+                        if delta_id:
+                            _last_id_at_idx[raw_idx] = delta_id
+                        idx = _active_slot_by_idx[raw_idx]
+
                         if idx not in tool_calls_acc:
                             tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
+                                "id": delta_id,
                                 "type": "function",
                                 "function": {"name": "", "arguments": ""},
                                 "extra_content": None,

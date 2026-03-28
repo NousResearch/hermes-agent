@@ -1525,6 +1525,14 @@ class DiscordAdapter(BasePlatformAdapter):
             event = self._build_slash_event(interaction, f"/voice {mode}".strip())
             await self.handle_message(event)
 
+        @tree.command(name="approve", description="Approve a pending dangerous command")
+        async def slash_approve(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/approve")
+
+        @tree.command(name="deny", description="Deny a pending dangerous command")
+        async def slash_deny(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/deny")
+
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")

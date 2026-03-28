@@ -29,6 +29,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import json
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -465,6 +466,15 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
             )
 
         transcript_text = str(transcription).strip()
+        # Some OpenAI-compatible local servers return JSON even when
+        # response_format="text". Accept {"text": "..."} as a friendly fallback.
+        if transcript_text.startswith("{"):
+            try:
+                parsed = json.loads(transcript_text)
+                if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
+                    transcript_text = parsed["text"].strip()
+            except Exception:
+                pass
         logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
                      Path(file_path).name, model_name, len(transcript_text))
 

@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-modal = ["swe-rex[modal]>=1.4.0,<2"]
+modal = ["modal>=1.0.0,<2"]
 daytona = ["daytona>=0.148.0,<1"]
 dev = ["pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2"]
 messaging = ["python-telegram-bot>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]

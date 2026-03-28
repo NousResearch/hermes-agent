@@ -2092,11 +2092,11 @@ def setup_terminal_backend(config: dict):
         print_info("Serverless cloud sandboxes. Each session gets its own container.")
         print_info("Requires a Modal account: https://modal.com")
 
-        # Check if swe-rex[modal] is installed
+        # Check if modal SDK is installed
         try:
-            __import__("swe_rex")
+            __import__("modal")
         except ImportError:
-            print_info("Installing swe-rex[modal]...")
+            print_info("Installing modal SDK...")
             import subprocess
 
             uv_bin = shutil.which("uv")
@@ -2108,22 +2108,22 @@ def setup_terminal_backend(config: dict):
                         "install",
                         "--python",
                         sys.executable,
-                        "swe-rex[modal]",
+                        "modal",
                     ],
                     capture_output=True,
                     text=True,
                 )
             else:
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "swe-rex[modal]"],
+                    [sys.executable, "-m", "pip", "install", "modal"],
                     capture_output=True,
                     text=True,
                 )
             if result.returncode == 0:
-                print_success("swe-rex[modal] installed")
+                print_success("modal SDK installed")
             else:
                 print_warning(
-                    "Install failed — run manually: pip install 'swe-rex[modal]'"
+                    "Install failed — run manually: pip install modal"
                 )
 
         # Modal token

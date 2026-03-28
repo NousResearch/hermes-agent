@@ -1216,8 +1216,8 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "modal":
-            if importlib.util.find_spec("swerex") is None:
-                logger.error("swe-rex is required for modal terminal backend: pip install 'swe-rex[modal]'")
+            if importlib.util.find_spec("modal") is None:
+                logger.error("modal is required for modal terminal backend: pip install modal")
                 return False
             has_token = os.getenv("MODAL_TOKEN_ID") is not None
             has_config = Path.home().joinpath(".modal.toml").exists()

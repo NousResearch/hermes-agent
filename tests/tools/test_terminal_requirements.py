@@ -63,7 +63,7 @@ def test_modal_backend_without_token_or_config_logs_specific_error(monkeypatch, 
     monkeypatch.setenv("TERMINAL_ENV", "modal")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    # Pretend swerex is installed
+    # Pretend modal is installed
     monkeypatch.setattr(terminal_tool_module.importlib.util, "find_spec", lambda _name: object())
 
     with caplog.at_level(logging.ERROR):

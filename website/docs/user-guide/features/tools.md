@@ -104,7 +104,7 @@ hermes config set terminal.singularity_image ~/python.sif
 ### Modal (Serverless Cloud)
 
 ```bash
-uv pip install "swe-rex[modal]"
+uv pip install modal
 modal setup
 hermes config set terminal.backend modal
 ```

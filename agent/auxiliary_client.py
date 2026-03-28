@@ -1458,6 +1458,29 @@ def _resolve_task_provider_model(
     return "auto", resolved_model, None, None
 
 
+_DEFAULT_AUX_TIMEOUT = 30.0
+
+
+def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    if not task:
+        return default
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return default
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    raw = task_config.get("timeout")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -1515,7 +1538,7 @@ def call_llm(
     temperature: float = None,
     max_tokens: int = None,
     tools: list = None,
-    timeout: float = 30.0,
+    timeout: float = None,
     extra_body: dict = None,
 ) -> Any:
     """Centralized synchronous LLM call.
@@ -1533,7 +1556,7 @@ def call_llm(
         temperature: Sampling temperature (None = provider default).
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
         tools: Tool definitions (for function calling).
-        timeout: Request timeout in seconds.
+        timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
 
     Returns:
@@ -1598,10 +1621,12 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
     # Handle max_tokens vs max_completion_tokens retry
@@ -1683,7 +1708,7 @@ async def async_call_llm(
     temperature: float = None,
     max_tokens: int = None,
     tools: list = None,
-    timeout: float = 30.0,
+    timeout: float = None,
     extra_body: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
@@ -1744,10 +1769,12 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
     try:

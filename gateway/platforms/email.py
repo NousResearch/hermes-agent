@@ -43,6 +43,20 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 
 logger = logging.getLogger(__name__)
+# Automated sender patterns — emails from these are silently ignored
+_NOREPLY_PATTERNS = (
+    "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
+    "mailer-daemon", "postmaster", "bounce", "notifications@",
+    "automated@", "auto-confirm", "auto-reply", "automailer",
+)
+
+# RFC headers that indicate bulk/automated mail
+_AUTOMATED_HEADERS = {
+    "Auto-Submitted": lambda v: v.lower() != "no",
+    "Precedence": lambda v: v.lower() in ("bulk", "list", "junk"),
+    "X-Auto-Response-Suppress": lambda v: bool(v),
+    "List-Unsubscribe": lambda v: bool(v),
+}
 
 # Gmail-safe max length per email body
 MAX_MESSAGE_LENGTH = 50_000
@@ -50,7 +64,17 @@ MAX_MESSAGE_LENGTH = 50_000
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
-
+def _is_automated_sender(address: str, headers: dict) -> bool:
+    """Return True if this email is from an automated/noreply source."""
+    addr = address.lower()
+    if any(pattern in addr for pattern in _NOREPLY_PATTERNS):
+        return True
+    for header, check in _AUTOMATED_HEADERS.items():
+        value = headers.get(header, "")
+        if value and check(value):
+            return True
+    return False
+    
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
     addr = os.getenv("EMAIL_ADDRESS")
@@ -346,6 +370,11 @@ class EmailAdapter(BasePlatformAdapter):
                 subject = _decode_header_value(msg.get("Subject", "(no subject)"))
                 message_id = msg.get("Message-ID", "")
                 in_reply_to = msg.get("In-Reply-To", "")
+                # Skip automated/noreply senders before any processing
+                msg_headers = dict(msg.items())
+                if _is_automated_sender(sender_addr, msg_headers):
+                    logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+                    continue
                 body = _extract_text_body(msg)
                 attachments = _extract_attachments(msg, skip_attachments=self._skip_attachments)
 
@@ -372,6 +401,11 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Skip self-messages
         if sender_addr == self._address.lower():
+            return
+
+        # Never reply to automated senders
+        if _is_automated_sender(sender_addr, {}):
+            logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
             return
 
         subject = msg_data["subject"]

@@ -203,7 +203,7 @@ def _resolve_named_custom_runtime(
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,
-        "api_key": api_key,
+        "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
 

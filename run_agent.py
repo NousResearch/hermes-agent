@@ -429,6 +429,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        extra_headers: Dict[str, str] = None,
     ):
         """
         Initialize the AI Agent.
@@ -472,6 +473,8 @@ class AIAgent:
                 When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
             honcho_manager: Optional shared HonchoSessionManager owned by the caller.
             honcho_config: Optional HonchoClientConfig corresponding to honcho_manager.
+            extra_headers (Dict[str, str]): Custom HTTP headers to include with API requests (optional).
+                Used for custom providers that require additional headers for authentication or routing.
         """
         _install_safe_stdio()
 
@@ -494,6 +497,7 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        self.extra_headers = extra_headers  # Custom headers for custom providers
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -746,6 +750,9 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                # Apply custom headers for named custom providers (from config.yaml)
+                if self.provider == "custom" and self.extra_headers:
+                    client_kwargs["default_headers"] = self.extra_headers
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client

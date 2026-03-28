@@ -167,6 +167,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        extra_headers = entry.get("extra_headers")
+        if isinstance(extra_headers, dict) and extra_headers:
+            result["extra_headers"] = extra_headers
         return result
 
     return None
@@ -205,6 +208,7 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key,
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
+        "extra_headers": custom_provider.get("extra_headers"),
     }
 
 

@@ -1933,6 +1933,7 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self.extra_headers = runtime.get("extra_headers")
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.
@@ -1959,6 +1960,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "extra_headers": self.extra_headers,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
             },
@@ -2029,6 +2031,7 @@ class HermesCLI:
                 "base_url": self.base_url,
                 "provider": self.provider,
                 "api_mode": self.api_mode,
+                "extra_headers": self.extra_headers,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
             }
@@ -2039,6 +2042,7 @@ class HermesCLI:
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
+                extra_headers=runtime.get("extra_headers"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 max_iterations=self.max_turns,

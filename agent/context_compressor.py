@@ -141,7 +141,7 @@ class ContextCompressor:
             "last_prompt_tokens": self.last_prompt_tokens,
             "threshold_tokens": self.threshold_tokens,
             "context_length": self.context_length,
-            "usage_percent": (self.last_prompt_tokens / self.context_length * 100) if self.context_length else 0,
+            "usage_percent": min(100, (self.last_prompt_tokens / self.context_length * 100)) if self.context_length else 0,
             "compression_count": self.compression_count,
         }
 

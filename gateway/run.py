@@ -4190,7 +4190,7 @@ class GatewayRunner:
             ]
             ctx = agent.context_compressor
             if ctx.last_prompt_tokens:
-                pct = ctx.last_prompt_tokens / ctx.context_length * 100 if ctx.context_length else 0
+                pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
             if ctx.compression_count:
                 lines.append(f"Compressions: {ctx.compression_count}")

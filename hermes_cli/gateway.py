@@ -420,6 +420,17 @@ def get_hermes_cli_path() -> str:
 # Systemd (Linux)
 # =============================================================================
 
+def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
+    """Return user-local bin dirs that exist and aren't already in *path_entries*."""
+    candidates = [
+        str(home / ".local" / "bin"),       # uv, uvx, pip-installed CLIs
+        str(home / ".cargo" / "bin"),        # Rust/cargo tools
+        str(home / "go" / "bin"),            # Go tools
+        str(home / ".npm-global" / "bin"),   # npm global packages
+    ]
+    return [p for p in candidates if p not in path_entries and Path(p).exists()]
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -434,13 +445,16 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
-    path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
 
     hermes_home = str(get_hermes_home().resolve())
 
+    common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
+        path_entries.extend(common_bin_paths)
+        sane_path = ":".join(path_entries)
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -472,6 +486,9 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
+    path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
+    path_entries.extend(common_bin_paths)
+    sane_path = ":".join(path_entries)
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target

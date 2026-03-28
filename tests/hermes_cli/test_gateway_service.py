@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import hermes_cli.gateway as gateway_cli
@@ -352,6 +353,20 @@ class TestGeneratedUnitUsesDetectedVenv:
         assert f"{dot_venv}/bin" in unit
         # Must NOT contain a hardcoded /venv/ path
         assert "/venv/" not in unit or "/.venv/" in unit
+
+
+class TestGeneratedUnitIncludesLocalBin:
+    """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
+
+    def test_user_unit_includes_local_bin_in_path(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        home = str(Path.home())
+        assert f"{home}/.local/bin" in unit
+
+    def test_system_unit_includes_local_bin_in_path(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+        # System unit uses the resolved home dir from _system_service_identity
+        assert "/.local/bin" in unit
 
 
 class TestEnsureUserSystemdEnv:

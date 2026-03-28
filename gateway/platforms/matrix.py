@@ -40,7 +40,9 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 4000
 
 # Store directory for E2EE keys and sync state.
-_STORE_DIR = Path.home() / ".hermes" / "matrix" / "store"
+# Uses get_hermes_home() so each profile gets its own Matrix store.
+from hermes_constants import get_hermes_home as _get_hermes_home
+_STORE_DIR = _get_hermes_home() / "matrix" / "store"
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5

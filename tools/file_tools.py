@@ -171,8 +171,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Security: block direct reads of internal Hermes cache/index files
         # to prevent prompt injection via catalog or hub metadata files.
         import pathlib as _pathlib
+        from hermes_constants import get_hermes_home as _get_hh
         _resolved = _pathlib.Path(path).expanduser().resolve()
-        _hermes_home = _pathlib.Path("~/.hermes").expanduser().resolve()
+        _hermes_home = _get_hh().resolve()
         _blocked_dirs = [
             _hermes_home / "skills" / ".hub" / "index-cache",
             _hermes_home / "skills" / ".hub",

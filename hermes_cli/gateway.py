@@ -125,20 +125,43 @@ _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
+def _profile_suffix() -> str:
+    """Derive a service-name suffix from the current HERMES_HOME.
+
+    Returns ``""`` for the default ``~/.hermes``, the profile name for
+    ``~/.hermes/profiles/<name>``, or a short hash for any other custom
+    HERMES_HOME path.
+    """
+    import hashlib
+    import re
+    from pathlib import Path as _Path
+    home = get_hermes_home().resolve()
+    default = (_Path.home() / ".hermes").resolve()
+    if home == default:
+        return ""
+    # Detect ~/.hermes/profiles/<name> pattern → use the profile name
+    profiles_root = (default / "profiles").resolve()
+    try:
+        rel = home.relative_to(profiles_root)
+        parts = rel.parts
+        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
+            return parts[0]
+    except ValueError:
+        pass
+    # Fallback: short hash for arbitrary HERMES_HOME paths
+    return hashlib.sha256(str(home).encode()).hexdigest()[:8]
+
+
 def get_service_name() -> str:
     """Derive a systemd service name scoped to this HERMES_HOME.
 
     Default ``~/.hermes`` returns ``hermes-gateway`` (backward compatible).
-    Any other HERMES_HOME appends a short hash so multiple installations
-    can each have their own systemd service without conflicting.
+    Profile ``~/.hermes/profiles/coder`` returns ``hermes-gateway-coder``.
+    Any other HERMES_HOME appends a short hash for uniqueness.
     """
-    import hashlib
-    from pathlib import Path as _Path  # local import to avoid monkeypatch interference
-    home = get_hermes_home().resolve()
-    default = (_Path.home() / ".hermes").resolve()
-    if home == default:
+    suffix = _profile_suffix()
+    if not suffix:
         return _SERVICE_BASE
-    suffix = hashlib.sha256(str(home).encode()).hexdigest()[:8]
     return f"{_SERVICE_BASE}-{suffix}"
 
 
@@ -369,7 +392,14 @@ def print_systemd_linger_guidance() -> None:
         print("  sudo loginctl enable-linger $USER")
 
 def get_launchd_plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
+    """Return the launchd plist path, scoped per profile.
+
+    Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
+    Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
+    """
+    suffix = _profile_suffix()
+    name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+    return Path.home() / "Library" / "LaunchAgents" / f"{name}.plist"
 
 def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
@@ -769,18 +799,26 @@ def systemd_status(deep: bool = False, system: bool = False):
 # Launchd (macOS)
 # =============================================================================
 
+def get_launchd_label() -> str:
+    """Return the launchd service label, scoped per profile."""
+    suffix = _profile_suffix()
+    return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    label = get_launchd_label()
     
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>ai.hermes.gateway</string>
+    <string>{label}</string>
     
     <key>ProgramArguments</key>
     <array>
@@ -794,6 +832,12 @@ def generate_launchd_plist() -> str:
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>
@@ -882,18 +926,20 @@ def launchd_uninstall():
 def launchd_start():
     refresh_launchd_plist_if_needed()
     plist_path = get_launchd_plist_path()
+    label = get_launchd_label()
     try:
-        subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+        subprocess.run(["launchctl", "start", label], check=True)
     except subprocess.CalledProcessError as e:
         if e.returncode != 3 or not plist_path.exists():
             raise
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+        subprocess.run(["launchctl", "start", label], check=True)
     print("✓ Service started")
 
 def launchd_stop():
-    subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
+    label = get_launchd_label()
+    subprocess.run(["launchctl", "stop", label], check=True)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -948,8 +994,9 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
+    label = get_launchd_label()
     result = subprocess.run(
-        ["launchctl", "list", "ai.hermes.gateway"],
+        ["launchctl", "list", label],
         capture_output=True,
         text=True
     )
@@ -1454,7 +1501,7 @@ def _is_service_running() -> bool:
         return False
     elif is_macos() and get_launchd_plist_path().exists():
         result = subprocess.run(
-            ["launchctl", "list", "ai.hermes.gateway"],
+            ["launchctl", "list", get_launchd_label()],
             capture_output=True, text=True
         )
         return result.returncode == 0

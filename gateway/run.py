@@ -2204,6 +2204,15 @@ class GatewayRunner:
                                     ),
                                 )
 
+                                # _compress_context ends the old session and creates
+                                # a new session_id.  Write compressed messages into
+                                # the NEW session so the old transcript stays intact
+                                # and searchable via session_search.
+                                _hyg_new_sid = _hyg_agent.session_id
+                                if _hyg_new_sid != session_entry.session_id:
+                                    session_entry.session_id = _hyg_new_sid
+                                    self.session_store._save()
+
                                 self.session_store.rewrite_transcript(
                                     session_entry.session_id, _compressed
                                 )
@@ -3998,13 +4007,22 @@ class GatewayRunner:
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens),
+                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens)
             )
 
-            self.session_store.rewrite_transcript(session_entry.session_id, compressed)
+            # _compress_context already calls end_session() on the old session
+            # (preserving its full transcript in SQLite) and creates a new
+            # session_id for the continuation.  Write the compressed messages
+            # into the NEW session so the original history stays searchable.
+            new_session_id = tmp_agent.session_id
+            if new_session_id != session_entry.session_id:
+                session_entry.session_id = new_session_id
+                self.session_store._save()
+
+            self.session_store.rewrite_transcript(new_session_id, compressed)
             # Reset stored token count — transcript changed, old value is stale
             self.session_store.update_session(
-                session_entry.session_key, last_prompt_tokens=0,
+                session_entry.session_key, last_prompt_tokens=0
             )
             new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)

@@ -3065,14 +3065,15 @@ class GatewayRunner:
             base_url = ""
             api_key = ""
             try:
-                from hermes_cli.runtime_provider import _normalize_custom_provider_name
+                def _norm(s: str) -> str:
+                    return s.strip().lower().replace(" ", "-")
                 from hermes_cli.config import load_config as _load_cfg
                 _cfg = _load_cfg()
                 for entry in (_cfg.get("custom_providers") or []):
                     if not isinstance(entry, dict):
                         continue
-                    ename = _normalize_custom_provider_name(str(entry.get("name", "")))
-                    if ename == _normalize_custom_provider_name(custom_name):
+                    ename = _norm(str(entry.get("name", "")))
+                    if ename == _norm(custom_name):
                         base_url = str(entry.get("base_url", "")).strip()
                         api_key = str(entry.get("api_key", "") or "").strip()
                         break

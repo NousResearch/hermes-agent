@@ -154,7 +154,7 @@ Lists `hermes-agent` as an available model. Required by most frontends for model
 
 ### GET /health
 
-Health check. Returns `{"status": "ok"}`.
+Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
 
 ## System Prompt Handling
 
@@ -199,6 +199,12 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 # config.yaml support coming in a future release.
 ```
 
+## Security Headers
+
+All responses include security headers:
+- `X-Content-Type-Options: nosniff` — prevents MIME type sniffing
+- `Referrer-Policy: no-referrer` — prevents referrer leakage
+
 ## CORS
 
 The API server does **not** enable browser CORS by default.
@@ -208,6 +214,11 @@ For direct browser access, set an explicit allowlist:
 ```bash
 API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
+
+When CORS is enabled:
+- **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
+- **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
+- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

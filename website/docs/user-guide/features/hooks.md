@@ -209,10 +209,10 @@ def register(ctx):
 |------|-----------|-------------------|
 | `pre_tool_call` | Before any tool executes | `tool_name`, `args`, `task_id` |
 | `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
-| `pre_llm_call` | Before LLM API request | *(planned — not yet wired)* |
-| `post_llm_call` | After LLM API response | *(planned — not yet wired)* |
-| `on_session_start` | Session begins | *(planned — not yet wired)* |
-| `on_session_end` | Session ends | *(planned — not yet wired)* |
+| `pre_llm_call` | Before LLM API request | `session_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform` |
+| `post_llm_call` | After LLM API response | `session_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` |
+| `on_session_start` | Session begins | `session_id`, `model`, `platform` |
+| `on_session_end` | Session ends | `session_id`, `completed`, `interrupted`, `model`, `platform` |
 
 Callbacks receive keyword arguments matching the columns above:
 

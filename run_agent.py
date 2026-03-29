@@ -4706,7 +4706,7 @@ class AIAgent:
         api_kwargs = {
             "model": self.model,
             "messages": sanitized_messages,
-            "tools": self.tools if self.tools else None,
+            "tools": self.tools if self.tools else [],
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
 

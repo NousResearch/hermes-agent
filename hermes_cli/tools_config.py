@@ -138,6 +138,7 @@ PLATFORMS = {
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
     "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
+    "webhook":    {"label": "🪝 Webhook",    "default_toolset": "hermes-webhook"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
 }
 

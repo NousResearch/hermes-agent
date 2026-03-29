@@ -285,6 +285,12 @@ TOOLSETS = {
         "includes": []
     },
     
+    "hermes-webhook": {
+        "description": "Webhook toolset - full access for event-driven agent runs",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
         "tools": _HERMES_CORE_TOOLS,

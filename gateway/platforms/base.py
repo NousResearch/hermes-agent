@@ -1005,7 +1005,7 @@ class BasePlatformAdapter(ABC):
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
-                print(f"[{self.name}] 🖼️ Queuing photo follow-up for session {session_key} without interrupt")
+                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
                 existing = self._pending_messages.get(session_key)
                 if existing and existing.message_type == MessageType.PHOTO:
                     existing.media_urls.extend(event.media_urls)
@@ -1020,7 +1020,7 @@ class BasePlatformAdapter(ABC):
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
-            print(f"[{self.name}] ⚡ New message while session {session_key} is active - triggering interrupt")
+            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
             self._pending_messages[session_key] = event
             # Signal the interrupt (the processing task checks this)
             self._active_sessions[session_key].set()
@@ -1206,9 +1206,9 @@ class BasePlatformAdapter(ABC):
                             )
 
                         if not media_result.success:
-                            print(f"[{self.name}] Failed to send media ({ext}): {media_result.error}")
+                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                     except Exception as media_err:
-                        print(f"[{self.name}] Error sending media: {media_err}")
+                        logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
                 # Send auto-detected local files as native attachments
                 for file_path in local_files:
@@ -1240,7 +1240,7 @@ class BasePlatformAdapter(ABC):
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
-                print(f"[{self.name}] 📨 Processing queued message from interrupt")
+                logger.debug("[%s] Processing queued message from interrupt", self.name)
                 # Clean up current session before processing pending
                 if session_key in self._active_sessions:
                     del self._active_sessions[session_key]
@@ -1254,9 +1254,7 @@ class BasePlatformAdapter(ABC):
                 return  # Already cleaned up
                 
         except Exception as e:
-            print(f"[{self.name}] Error handling message: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__

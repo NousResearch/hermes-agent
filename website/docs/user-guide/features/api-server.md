@@ -49,6 +49,68 @@ curl http://localhost:8642/v1/chat/completions \
 
 Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/docs/user-guide/messaging/open-webui) for step-by-step instructions.
 
+## Adding Remote Hermes Servers
+
+If you want one Hermes instance to be reachable from other machines (or from cloud frontends), run it on a host with the API server enabled and expose it over your network/VPN/reverse proxy.
+
+### 1. Configure the remote host
+
+On the remote Hermes host, set:
+
+```bash
+API_SERVER_ENABLED=true
+API_SERVER_HOST=0.0.0.0
+API_SERVER_PORT=8642
+API_SERVER_KEY=replace-with-a-strong-key
+```
+
+Then start/restart the gateway:
+
+```bash
+hermes gateway
+```
+
+Use a firewall/security group to allow only trusted source IPs.
+
+### 2. Add the remote endpoint in your integration
+
+In any OpenAI-compatible client, set:
+
+- Base URL: `http://REMOTE_HOST:8642/v1` (or your HTTPS reverse-proxy URL)
+- API key: the same `API_SERVER_KEY` configured on the remote host
+- Model: `hermes-agent`
+
+You can keep multiple remote Hermes endpoints in your frontend and switch between them as needed (dev/staging/prod, personal/work, etc.).
+
+### 3. Test reachability locally with curl
+
+From your local machine, check health first:
+
+```bash
+curl -sS http://REMOTE_HOST:8642/health
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+Then test an authenticated chat request:
+
+```bash
+curl -sS http://REMOTE_HOST:8642/v1/chat/completions \
+  -H "Authorization: Bearer replace-with-a-strong-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "hermes-agent",
+    "messages": [{"role": "user", "content": "Reply with: remote reachability ok"}],
+    "stream": false
+  }'
+```
+
+If this returns a normal completion payload, the remote Hermes server is reachable and correctly authenticated.
+
 ## Endpoints
 
 ### POST /v1/chat/completions

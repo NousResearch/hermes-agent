@@ -55,8 +55,8 @@ class TestSendMattermost:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
              patch.dict(os.environ, {"MATTERMOST_URL": "", "MATTERMOST_TOKEN": ""}, clear=False):
-            extra = {"url": "https://mm.example.com", "token": "tok-abc"}
-            result = asyncio.run(_send_mattermost(extra, "channel1", "hello"))
+            extra = {"url": "https://mm.example.com"}
+            result = asyncio.run(_send_mattermost("tok-abc", extra, "channel1", "hello"))
 
         assert result == {"success": True, "platform": "mattermost", "chat_id": "channel1", "message_id": "post123"}
         session.post.assert_called_once()
@@ -71,7 +71,7 @@ class TestSendMattermost:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             result = asyncio.run(_send_mattermost(
-                {"url": "https://mm.example.com", "token": "tok"}, "ch", "hi"
+                "tok", {"url": "https://mm.example.com"}, "ch", "hi"
             ))
 
         assert "error" in result
@@ -80,7 +80,7 @@ class TestSendMattermost:
 
     def test_missing_config(self):
         with patch.dict(os.environ, {"MATTERMOST_URL": "", "MATTERMOST_TOKEN": ""}, clear=False):
-            result = asyncio.run(_send_mattermost({}, "ch", "hi"))
+            result = asyncio.run(_send_mattermost("", {}, "ch", "hi"))
 
         assert "error" in result
         assert "MATTERMOST_URL" in result["error"] or "not configured" in result["error"]
@@ -91,7 +91,7 @@ class TestSendMattermost:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
              patch.dict(os.environ, {"MATTERMOST_URL": "https://mm.env.com", "MATTERMOST_TOKEN": "env-tok"}, clear=False):
-            result = asyncio.run(_send_mattermost({}, "ch", "hi"))
+            result = asyncio.run(_send_mattermost("", {}, "ch", "hi"))
 
         assert result["success"] is True
         call_kwargs = session.post.call_args
@@ -111,8 +111,8 @@ class TestSendMatrix:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
              patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):
-            extra = {"homeserver": "https://matrix.example.com", "access_token": "syt_tok"}
-            result = asyncio.run(_send_matrix(extra, "!room:example.com", "hello matrix"))
+            extra = {"homeserver": "https://matrix.example.com"}
+            result = asyncio.run(_send_matrix("syt_tok", extra, "!room:example.com", "hello matrix"))
 
         assert result == {
             "success": True,
@@ -133,7 +133,7 @@ class TestSendMatrix:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             result = asyncio.run(_send_matrix(
-                {"homeserver": "https://matrix.example.com", "access_token": "tok"},
+                "tok", {"homeserver": "https://matrix.example.com"},
                 "!room:example.com", "hi"
             ))
 
@@ -143,7 +143,7 @@ class TestSendMatrix:
 
     def test_missing_config(self):
         with patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):
-            result = asyncio.run(_send_matrix({}, "!room:example.com", "hi"))
+            result = asyncio.run(_send_matrix("", {}, "!room:example.com", "hi"))
 
         assert "error" in result
         assert "MATRIX_HOMESERVER" in result["error"] or "not configured" in result["error"]
@@ -157,7 +157,7 @@ class TestSendMatrix:
                  "MATRIX_HOMESERVER": "https://matrix.env.com",
                  "MATRIX_ACCESS_TOKEN": "env-tok",
              }, clear=False):
-            result = asyncio.run(_send_matrix({}, "!r:env.com", "hi"))
+            result = asyncio.run(_send_matrix("", {}, "!r:env.com", "hi"))
 
         assert result["success"] is True
         url = session.put.call_args[0][0]
@@ -181,14 +181,14 @@ class TestSendMatrix:
         session_ctx.__aenter__ = AsyncMock(return_value=session)
         session_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        extra = {"homeserver": "https://matrix.example.com", "access_token": "tok"}
+        extra = {"homeserver": "https://matrix.example.com"}
 
         import time
         with patch("aiohttp.ClientSession", return_value=session_ctx):
-            asyncio.run(_send_matrix(extra, "!r:example.com", "first"))
+            asyncio.run(_send_matrix("tok", extra, "!r:example.com", "first"))
         time.sleep(0.002)
         with patch("aiohttp.ClientSession", return_value=session_ctx):
-            asyncio.run(_send_matrix(extra, "!r:example.com", "second"))
+            asyncio.run(_send_matrix("tok", extra, "!r:example.com", "second"))
 
         assert len(txn_ids) == 2
         assert txn_ids[0] != txn_ids[1]
@@ -206,8 +206,8 @@ class TestSendHomeAssistant:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
              patch.dict(os.environ, {"HASS_URL": "", "HASS_TOKEN": ""}, clear=False):
-            extra = {"url": "https://hass.example.com", "token": "hass-tok"}
-            result = asyncio.run(_send_homeassistant(extra, "mobile_app_phone", "alert!"))
+            extra = {"url": "https://hass.example.com"}
+            result = asyncio.run(_send_homeassistant("hass-tok", extra, "mobile_app_phone", "alert!"))
 
         assert result == {"success": True, "platform": "homeassistant", "chat_id": "mobile_app_phone"}
         session.post.assert_called_once()
@@ -222,7 +222,7 @@ class TestSendHomeAssistant:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx):
             result = asyncio.run(_send_homeassistant(
-                {"url": "https://hass.example.com", "token": "bad-tok"},
+                "bad-tok", {"url": "https://hass.example.com"},
                 "target", "msg"
             ))
 
@@ -232,7 +232,7 @@ class TestSendHomeAssistant:
 
     def test_missing_config(self):
         with patch.dict(os.environ, {"HASS_URL": "", "HASS_TOKEN": ""}, clear=False):
-            result = asyncio.run(_send_homeassistant({}, "target", "msg"))
+            result = asyncio.run(_send_homeassistant("", {}, "target", "msg"))
 
         assert "error" in result
         assert "HASS_URL" in result["error"] or "not configured" in result["error"]
@@ -243,7 +243,7 @@ class TestSendHomeAssistant:
 
         with patch("aiohttp.ClientSession", return_value=session_ctx), \
              patch.dict(os.environ, {"HASS_URL": "https://hass.env.com", "HASS_TOKEN": "env-tok"}, clear=False):
-            result = asyncio.run(_send_homeassistant({}, "notify_target", "hi"))
+            result = asyncio.run(_send_homeassistant("", {}, "notify_target", "hi"))
 
         assert result["success"] is True
         url = session.post.call_args[0][0]
@@ -315,7 +315,20 @@ class TestSendDingtalk:
         assert "DingTalk send failed" in result["error"]
 
     def test_missing_config(self):
-        result = asyncio.run(_send_dingtalk({}, "ch", "hi"))
+        with patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": ""}, clear=False):
+            result = asyncio.run(_send_dingtalk({}, "ch", "hi"))
 
         assert "error" in result
-        assert "webhook_url" in result["error"] or "not configured" in result["error"]
+        assert "DINGTALK_WEBHOOK_URL" in result["error"] or "not configured" in result["error"]
+
+    def test_env_var_fallback(self):
+        resp = self._make_httpx_resp(json_data={"errcode": 0, "errmsg": "ok"})
+        client_ctx, client = self._make_httpx_client(resp)
+
+        with patch("httpx.AsyncClient", return_value=client_ctx), \
+             patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send?access_token=env"}, clear=False):
+            result = asyncio.run(_send_dingtalk({}, "ch", "hi"))
+
+        assert result["success"] is True
+        call_kwargs = client.post.await_args
+        assert "access_token=env" in call_kwargs[0][0]

@@ -344,11 +344,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATTERMOST:
-            result = await _send_mattermost(pconfig.extra, chat_id, chunk)
+            result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
-            result = await _send_matrix(pconfig.extra, chat_id, chunk)
+            result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
-            result = await _send_homeassistant(pconfig.extra, chat_id, chunk)
+            result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         else:
@@ -674,7 +674,7 @@ async def _send_sms(auth_token, chat_id, message):
         return {"error": f"SMS send failed: {e}"}
 
 
-async def _send_mattermost(extra, chat_id, message):
+async def _send_mattermost(token, extra, chat_id, message):
     """Send via Mattermost REST API."""
     try:
         import aiohttp
@@ -682,7 +682,7 @@ async def _send_mattermost(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         base_url = (extra.get("url") or os.getenv("MATTERMOST_URL", "")).rstrip("/")
-        token = extra.get("token") or os.getenv("MATTERMOST_TOKEN", "")
+        token = token or os.getenv("MATTERMOST_TOKEN", "")
         if not base_url or not token:
             return {"error": "Mattermost not configured (MATTERMOST_URL, MATTERMOST_TOKEN required)"}
         url = f"{base_url}/api/v4/posts"
@@ -698,7 +698,7 @@ async def _send_mattermost(extra, chat_id, message):
         return {"error": f"Mattermost send failed: {e}"}
 
 
-async def _send_matrix(extra, chat_id, message):
+async def _send_matrix(token, extra, chat_id, message):
     """Send via Matrix Client-Server API."""
     try:
         import aiohttp
@@ -706,7 +706,7 @@ async def _send_matrix(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        token = extra.get("access_token") or os.getenv("MATRIX_ACCESS_TOKEN", "")
+        token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
         txn_id = f"hermes_{int(time.time() * 1000)}"
@@ -723,7 +723,7 @@ async def _send_matrix(extra, chat_id, message):
         return {"error": f"Matrix send failed: {e}"}
 
 
-async def _send_homeassistant(extra, chat_id, message):
+async def _send_homeassistant(token, extra, chat_id, message):
     """Send via Home Assistant notify service."""
     try:
         import aiohttp
@@ -731,7 +731,7 @@ async def _send_homeassistant(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-        token = extra.get("token") or os.getenv("HASS_TOKEN", "")
+        token = token or os.getenv("HASS_TOKEN", "")
         if not hass_url or not token:
             return {"error": "Home Assistant not configured (HASS_URL, HASS_TOKEN required)"}
         url = f"{hass_url}/api/services/notify/notify"
@@ -747,15 +747,22 @@ async def _send_homeassistant(extra, chat_id, message):
 
 
 async def _send_dingtalk(extra, chat_id, message):
-    """Send via DingTalk outgoing webhook."""
+    """Send via DingTalk robot webhook.
+
+    Note: The gateway's DingTalk adapter uses per-session webhook URLs from
+    incoming messages (dingtalk-stream SDK).  For cross-platform send_message
+    delivery we use a static robot webhook URL instead, which must be
+    configured via ``DINGTALK_WEBHOOK_URL`` env var or ``webhook_url`` in the
+    platform's extra config.
+    """
     try:
         import httpx
     except ImportError:
         return {"error": "httpx not installed"}
     try:
-        webhook_url = extra.get("webhook_url", "")
+        webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
         if not webhook_url:
-            return {"error": "DingTalk not configured (webhook_url required in extra config)"}
+            return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 webhook_url,

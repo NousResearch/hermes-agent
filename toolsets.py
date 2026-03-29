@@ -59,7 +59,7 @@ _HERMES_CORE_TOOLS = [
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
+    "send_message", "read_channel",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -132,7 +132,7 @@ TOOLSETS = {
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "tools": ["send_message", "read_channel"],
         "includes": []
     },
     

@@ -3779,6 +3779,16 @@ For more help on a command:
 
     plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
 
+    plugins_enable = plugins_subparsers.add_parser(
+        "enable", help="Enable a disabled plugin"
+    )
+    plugins_enable.add_argument("name", help="Plugin name to enable")
+
+    plugins_disable = plugins_subparsers.add_parser(
+        "disable", help="Disable a plugin without removing it"
+    )
+    plugins_disable.add_argument("name", help="Plugin name to disable")
+
     def cmd_plugins(args):
         from hermes_cli.plugins_cmd import plugins_command
         plugins_command(args)

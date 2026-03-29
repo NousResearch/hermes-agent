@@ -87,9 +87,26 @@ The handler receives the argument string (everything after `/greet`) and returns
 
 ## Managing plugins
 
+```bash
+hermes plugins                  # interactive toggle UI — enable/disable with checkboxes
+hermes plugins list             # table view with enabled/disabled status
+hermes plugins install user/repo  # install from Git
+hermes plugins update my-plugin   # pull latest
+hermes plugins remove my-plugin   # uninstall
+hermes plugins enable my-plugin   # re-enable a disabled plugin
+hermes plugins disable my-plugin  # disable without removing
 ```
-/plugins              # list loaded plugins in a session
-hermes config set display.show_cost true  # show cost in status bar
+
+Running `hermes plugins` with no arguments launches an interactive curses checklist (same UI as `hermes tools`) where you can toggle plugins on/off with arrow keys and space.
+
+Disabled plugins remain installed but are skipped during loading. The disabled list is stored in `config.yaml` under `plugins.disabled`:
+
+```yaml
+plugins:
+  disabled:
+    - my-noisy-plugin
 ```
+
+In a running session, `/plugins` shows which plugins are currently loaded.
 
 See the **[full guide](/docs/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

@@ -399,17 +399,22 @@ See [MCP Config Reference](./mcp-config-reference.md) and [Use MCP with Hermes](
 ## `hermes plugins`
 
 ```bash
-hermes plugins <subcommand>
+hermes plugins [subcommand]
 ```
 
-Manage Hermes Agent plugins.
+Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launches an interactive curses checklist to enable/disable installed plugins.
 
 | Subcommand | Description |
 |------------|-------------|
+| *(none)* | Interactive toggle UI — enable/disable plugins with arrow keys and space. |
 | `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
 | `update <name>` | Pull latest changes for an installed plugin. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
-| `list` (alias: `ls`) | List installed plugins. |
+| `enable <name>` | Enable a disabled plugin. |
+| `disable <name>` | Disable a plugin without removing it. |
+| `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+
+Disabled plugins are stored in `config.yaml` under `plugins.disabled` and skipped during loading.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
 

@@ -258,7 +258,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
     """
-    from model_tools import check_tool_availability
+    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -267,8 +267,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
+    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
+    # homeassistant) — they show as unavailable at banner time because the
+    # check hasn't run yet, but they aren't misconfigured.
+    lazy_tools = set()
     for item in unavailable_toolsets:
-        disabled_tools.update(item.get("tools", []))
+        toolset_name = item.get("name", "")
+        ts_req = TOOLSET_REQUIREMENTS.get(toolset_name, {})
+        tools_in_ts = item.get("tools", [])
+        if ts_req.get("check_fn"):
+            lazy_tools.update(tools_in_ts)
+        else:
+            disabled_tools.update(tools_in_ts)
 
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("left", justify="center")
@@ -328,6 +338,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         for name in sorted(tool_names):
             if name in disabled_tools:
                 colored_names.append(f"[red]{name}[/]")
+            elif name in lazy_tools:
+                colored_names.append(f"[yellow]{name}[/]")
             else:
                 colored_names.append(f"[{text}]{name}[/]")
 
@@ -347,6 +359,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     colored_names.append("[dim]...[/]")
                 elif name in disabled_tools:
                     colored_names.append(f"[red]{name}[/]")
+                elif name in lazy_tools:
+                    colored_names.append(f"[yellow]{name}[/]")
                 else:
                     colored_names.append(f"[{text}]{name}[/]")
             tools_str = ", ".join(colored_names)

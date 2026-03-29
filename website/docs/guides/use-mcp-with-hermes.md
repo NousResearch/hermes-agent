@@ -411,5 +411,6 @@ Not-great first servers:
 ## Related docs
 
 - [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
+- [Tutorial: Use Lightpanda with Hermes](/docs/guides/lightpanda-with-hermes)
 - [FAQ](/docs/reference/faq)
 - [Slash Commands](/docs/reference/slash-commands)

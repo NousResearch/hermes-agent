@@ -130,6 +130,10 @@ class TestCuratedModelsForProvider:
         models = curated_models_for_provider("zai")
         assert any("glm" in m[0] for m in models)
 
+    def test_fireworks_returns_curated_models(self):
+        models = curated_models_for_provider("fireworks")
+        assert any("accounts/fireworks/models/" in m[0] for m in models)
+
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
 
@@ -146,6 +150,7 @@ class TestNormalizeProvider:
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("github-copilot") == "copilot"
+        assert normalize_provider("fireworks-ai") == "fireworks"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"
@@ -157,6 +162,7 @@ class TestProviderLabel:
         assert provider_label("kimi") == "Kimi / Moonshot"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("fireworks") == "Fireworks AI"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -176,6 +182,9 @@ class TestProviderModelIds:
 
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
+
+    def test_fireworks_returns_fireworks_models(self):
+        assert "accounts/fireworks/models/kimi-k2p5" in provider_model_ids("fireworks")
 
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \

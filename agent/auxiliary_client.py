@@ -11,7 +11,7 @@ Resolution order for text tasks (auto mode):
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
   5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
+  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, Fireworks, etc.)
   7. None
 
 Resolution order for vision/multimodal tasks (auto mode):
@@ -60,6 +60,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "minimax-cn": "MiniMax-M2.7-highspeed",
     "anthropic": "claude-haiku-4-5-20251001",
     "ai-gateway": "google/gemini-3-flash",
+    "fireworks": "accounts/fireworks/models/qwen3-8b",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -804,7 +805,7 @@ def resolve_provider_client(
     Args:
         provider: Provider identifier.  One of:
             "openrouter", "nous", "openai-codex" (or "codex"),
-            "zai", "kimi-coding", "minimax", "minimax-cn",
+            "zai", "kimi-coding", "minimax", "minimax-cn", "fireworks",
             "custom" (OPENAI_BASE_URL + OPENAI_API_KEY),
             "auto" (full auto-detection chain).
         model: Model slug override.  If None, uses the provider's default

@@ -793,6 +793,7 @@ def cmd_model(args):
         "opencode-zen": "OpenCode Zen",
         "opencode-go": "OpenCode Go",
         "ai-gateway": "AI Gateway",
+        "fireworks": "Fireworks AI",
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
@@ -823,6 +824,7 @@ def cmd_model(args):
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("fireworks", "Fireworks AI (serverless open models via OpenAI-compatible API)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -895,7 +897,7 @@ def cmd_model(args):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "fireworks"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -1505,6 +1507,15 @@ _PROVIDER_MODELS = {
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
+    ],
+    "fireworks": [
+        "accounts/fireworks/models/kimi-k2p5",
+        "accounts/fireworks/models/kimi-k2-thinking",
+        "accounts/fireworks/models/deepseek-v3p2",
+        "accounts/fireworks/models/minimax-m2p5",
+        "accounts/fireworks/models/glm-5",
+        "accounts/fireworks/models/gpt-oss-120b",
+        "accounts/fireworks/models/qwen3-8b",
     ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     # Format: HF model ID → OpenRouter equivalent noted in comment
@@ -3253,7 +3264,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "fireworks"],
         default=None,
         help="Inference provider (default: auto)"
     )

@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, Fireworks, AI Gateway)."""
 
 import os
 import sys
@@ -44,6 +44,7 @@ class TestProviderRegistry:
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
+        ("fireworks", "Fireworks AI", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
@@ -83,6 +84,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_fireworks_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["fireworks"]
+        assert pconfig.api_key_env_vars == ("FIREWORKS_API_KEY",)
+        assert pconfig.base_url_env_var == "FIREWORKS_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -101,6 +107,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
+        assert PROVIDER_REGISTRY["fireworks"].inference_base_url == "https://api.fireworks.ai/inference/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
@@ -122,6 +129,7 @@ PROVIDER_ENV_VARS = (
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
+    "FIREWORKS_API_KEY", "FIREWORKS_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
@@ -155,6 +163,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_fireworks(self):
+        assert resolve_provider("fireworks") == "fireworks"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
@@ -178,6 +189,12 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_fireworks_ai(self):
+        assert resolve_provider("fireworks-ai") == "fireworks"
+
+    def test_alias_fw(self):
+        assert resolve_provider("fw") == "fireworks"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -250,6 +267,10 @@ class TestResolveProvider:
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
         assert resolve_provider("auto") == "ai-gateway"
 
+    def test_auto_detects_fireworks_key(self, monkeypatch):
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+        assert resolve_provider("auto") == "fireworks"
+
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
         assert resolve_provider("auto") == "kilocode"
@@ -314,6 +335,14 @@ class TestApiKeyProviderStatus:
         status = get_auth_status("minimax")
         assert status["configured"] is True
         assert status["provider"] == "minimax"
+
+    def test_fireworks_status(self, monkeypatch):
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-key")
+        status = get_api_key_provider_status("fireworks")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "FIREWORKS_API_KEY"
+        assert status["base_url"] == "https://api.fireworks.ai/inference/v1"
 
     def test_copilot_acp_status_detects_local_cli(self, monkeypatch):
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
@@ -438,6 +467,20 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "gw-secret-key"
         assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
 
+    def test_resolve_fireworks_with_key(self, monkeypatch):
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-secret-key")
+        creds = resolve_api_key_provider_credentials("fireworks")
+        assert creds["provider"] == "fireworks"
+        assert creds["api_key"] == "fw-secret-key"
+        assert creds["base_url"] == "https://api.fireworks.ai/inference/v1"
+        assert creds["source"] == "FIREWORKS_API_KEY"
+
+    def test_resolve_fireworks_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-secret-key")
+        monkeypatch.setenv("FIREWORKS_BASE_URL", "https://proxy.fireworks.example/v1")
+        creds = resolve_api_key_provider_credentials("fireworks")
+        assert creds["base_url"] == "https://proxy.fireworks.example/v1"
+
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
         creds = resolve_api_key_provider_credentials("kilocode")
@@ -520,6 +563,15 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "gw-key"
         assert "ai-gateway.vercel.sh" in result["base_url"]
+
+    def test_runtime_fireworks(self, monkeypatch):
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fw-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="fireworks")
+        assert result["provider"] == "fireworks"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "fw-key"
+        assert "api.fireworks.ai" in result["base_url"]
 
     def test_runtime_kilocode(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
@@ -783,3 +835,46 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+# =============================================================================
+# Fireworks provider model list tests
+# =============================================================================
+
+class TestFireworksModels:
+    """Verify Fireworks model lists are consistent across all locations."""
+
+    def test_main_provider_models_has_fireworks(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "fireworks" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["fireworks"]
+        assert len(models) >= 6
+
+    def test_models_py_has_fireworks(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "fireworks" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["fireworks"]
+        assert len(models) >= 6
+
+    def test_model_lists_match(self):
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["fireworks"] == models_models["fireworks"]
+
+    def test_model_metadata_has_context_lengths(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+        for model in _PROVIDER_MODELS["fireworks"]:
+            assert model in DEFAULT_CONTEXT_LENGTHS, (
+                f"Fireworks model {model!r} missing from DEFAULT_CONTEXT_LENGTHS"
+            )
+
+    def test_provider_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("fireworks-ai") == "fireworks"
+        assert _PROVIDER_ALIASES.get("fw") == "fireworks"
+
+    def test_provider_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "fireworks" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["fireworks"] == "Fireworks AI"

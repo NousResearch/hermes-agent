@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "fireworks",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "custom", "local",
     # Common aliases
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
+    "fireworks-ai", "fw",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
 })
 
@@ -113,6 +115,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "glm": 202752,
     # Kimi
     "kimi": 262144,
+    # Fireworks AI curated defaults
+    "accounts/fireworks/models/kimi-k2p5": 256000,
+    "accounts/fireworks/models/kimi-k2-thinking": 256000,
+    "accounts/fireworks/models/deepseek-v3p2": 160000,
+    "accounts/fireworks/models/minimax-m2p5": 196608,
+    "accounts/fireworks/models/glm-5": 202752,
+    "accounts/fireworks/models/gpt-oss-120b": 131072,
+    "accounts/fireworks/models/qwen3-8b": 40000,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
     "Qwen/Qwen3.5-35B-A3B": 131072,
@@ -173,6 +183,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "openrouter.ai": "openrouter",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
+    "api.fireworks.ai": "fireworks",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
 }

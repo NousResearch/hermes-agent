@@ -559,7 +559,7 @@ def run_doctor(args):
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
 
-    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, Fireworks, etc.) --
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
@@ -569,6 +569,7 @@ def run_doctor(args):
         ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
+        ("Fireworks AI",     ("FIREWORKS_API_KEY",),                           "https://api.fireworks.ai/inference/v1/models", "FIREWORKS_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:

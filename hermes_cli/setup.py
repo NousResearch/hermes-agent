@@ -80,6 +80,15 @@ _DEFAULT_PROVIDER_MODELS = {
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
+    "fireworks": [
+        "accounts/fireworks/models/kimi-k2p5",
+        "accounts/fireworks/models/kimi-k2-thinking",
+        "accounts/fireworks/models/deepseek-v3p2",
+        "accounts/fireworks/models/minimax-m2p5",
+        "accounts/fireworks/models/glm-5",
+        "accounts/fireworks/models/gpt-oss-120b",
+        "accounts/fireworks/models/qwen3-8b",
+    ],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -891,6 +900,7 @@ def setup_model_provider(config: dict):
         "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)",
         "GitHub Copilot ACP (spawns `copilot --acp --stdio`)",
         "Hugging Face Inference Providers (20+ open models)",
+        "Fireworks AI (serverless open models via OpenAI-compatible API)",
     ]
     if keep_label:
         provider_choices.append(keep_label)
@@ -1554,7 +1564,39 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "huggingface", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 17 (Keep current) — only shown when a provider already exists
+    elif provider_idx == 17:  # Fireworks AI
+        selected_provider = "fireworks"
+        print()
+        print_header("Fireworks API Key")
+        pconfig = PROVIDER_REGISTRY["fireworks"]
+        print_info(f"Provider: {pconfig.name}")
+        print_info("Get your API key at: https://app.fireworks.ai/settings/users/api-keys")
+        print_info("Uses Fireworks' OpenAI-compatible endpoint by default.")
+        print()
+
+        existing_key = get_env_value("FIREWORKS_API_KEY")
+        if existing_key:
+            print_info(f"Current: {existing_key[:8]}... (configured)")
+            if prompt_yes_no("Update API key?", False):
+                api_key = prompt("  Fireworks API key", password=True)
+                if api_key:
+                    save_env_value("FIREWORKS_API_KEY", api_key)
+                    print_success("Fireworks API key updated")
+        else:
+            api_key = prompt("  Fireworks API key", password=True)
+            if api_key:
+                save_env_value("FIREWORKS_API_KEY", api_key)
+                print_success("Fireworks API key saved")
+            else:
+                print_warning("Skipped - agent won't work without an API key")
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "fireworks", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    # else: provider_idx == 18 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1594,6 +1636,7 @@ def setup_model_provider(config: dict):
             "minimax-cn": "MiniMax CN",
             "anthropic": "Anthropic",
             "ai-gateway": "AI Gateway",
+            "fireworks": "Fireworks AI",
             "custom": "your custom endpoint",
         }
         _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
@@ -1735,7 +1778,7 @@ def setup_model_provider(config: dict):
             model_cfg = _model_config_dict(config)
             model_cfg["api_mode"] = "chat_completions"
             config["model"] = model_cfg
-        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "opencode-zen", "opencode-go", "alibaba"):
+        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "opencode-zen", "opencode-go", "alibaba", "fireworks"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,
@@ -1796,7 +1839,7 @@ def setup_model_provider(config: dict):
     # Write provider+base_url to config.yaml only after model selection is complete.
     # This prevents a race condition where the gateway picks up a new provider
     # before the model name has been updated to match.
-    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
+    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "fireworks") and selected_base_url is not None:
         _update_config_for_provider(selected_provider, selected_base_url)
 
     save_config(config)

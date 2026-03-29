@@ -60,6 +60,16 @@ SAMPLE_REGISTRY = {
             },
         },
     },
+    "fireworks-ai": {
+        "id": "fireworks-ai",
+        "name": "Fireworks AI",
+        "models": {
+            "accounts/fireworks/models/kimi-k2p5": {
+                "id": "accounts/fireworks/models/kimi-k2p5",
+                "limit": {"context": 256000, "output": 256000},
+            },
+        },
+    },
     "audio-only": {
         "id": "audio-only",
         "models": {
@@ -83,6 +93,7 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
+        assert PROVIDER_TO_MODELS_DEV["fireworks"] == "fireworks-ai"
 
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
@@ -138,6 +149,11 @@ class TestLookupModelsDevContext:
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
         # GitHub Copilot: only 128K for same model
         assert lookup_models_dev_context("copilot", "claude-opus-4.6") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_fireworks_lookup(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("fireworks", "accounts/fireworks/models/kimi-k2p5") == 256000
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):

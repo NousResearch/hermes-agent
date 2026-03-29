@@ -47,6 +47,7 @@ Current provider families include:
 - Kimi / Moonshot
 - MiniMax
 - MiniMax China
+- Fireworks AI
 - Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
 - Named custom providers (`custom_providers` list in config.yaml)
 
@@ -75,14 +76,19 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 
 Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
 
-## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
+## Fireworks AI
 
-Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, and `OPENAI_API_KEY`).
+Set `FIREWORKS_API_KEY` in `~/.hermes/.env` and run with `--provider fireworks`. Hermes uses Fireworks' OpenAI-compatible endpoint at `https://api.fireworks.ai/inference/v1` and supports `FIREWORKS_BASE_URL` for explicit overrides.
+
+## OpenRouter, AI Gateway, Fireworks, and custom OpenAI-compatible base URLs
+
+Hermes contains logic to avoid leaking the wrong API key to a custom endpoint when multiple provider keys exist (e.g. `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, `FIREWORKS_API_KEY`, and `OPENAI_API_KEY`).
 
 Each provider's API key is scoped to its own base URL:
 
 - `OPENROUTER_API_KEY` is only sent to `openrouter.ai` endpoints
 - `AI_GATEWAY_API_KEY` is only sent to `ai-gateway.vercel.sh` endpoints
+- `FIREWORKS_API_KEY` is only sent to `api.fireworks.ai` endpoints
 - `OPENAI_API_KEY` is used for custom endpoints and as a fallback
 
 Hermes also distinguishes between:

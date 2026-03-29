@@ -40,6 +40,20 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["requested_provider"] == "ai-gateway"
 
 
+def test_resolve_runtime_provider_fireworks(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "fireworks")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+
+    resolved = rp.resolve_runtime_provider(requested="fireworks")
+
+    assert resolved["provider"] == "fireworks"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://api.fireworks.ai/inference/v1"
+    assert resolved["api_key"] == "test-fireworks-key"
+    assert resolved["requested_provider"] == "fireworks"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

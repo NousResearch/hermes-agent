@@ -24,6 +24,7 @@ Hermes Agent works with any OpenAI-compatible API. Supported providers include:
 - **z.ai / ZhipuAI** — GLM models
 - **Kimi / Moonshot AI** — Kimi models
 - **MiniMax** — global and China endpoints
+- **Fireworks AI** — serverless open models through an OpenAI-compatible API
 - **Local models** — via [Ollama](https://ollama.com/), [vLLM](https://docs.vllm.ai/), [llama.cpp](https://github.com/ggerganov/llama.cpp), [SGLang](https://github.com/sgl-project/sglang), or any OpenAI-compatible server
 
 Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [Environment Variables](./environment-variables.md) reference for all provider keys.

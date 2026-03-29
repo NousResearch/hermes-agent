@@ -43,6 +43,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
 | MiniMax (China) | `minimax-cn` | `MINIMAX_CN_API_KEY` |
+| Fireworks AI | `fireworks` | `FIREWORKS_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
@@ -163,7 +164,7 @@ When a task's provider is set to `"auto"` (the default), Hermes tries providers 
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
-API-key providers (z.ai, Kimi, MiniMax, Hugging Face, Anthropic) → give up
+API-key providers (z.ai, Kimi, MiniMax, Fireworks, Hugging Face, Anthropic) → give up
 ```
 
 **For vision tasks:**

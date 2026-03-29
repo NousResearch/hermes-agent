@@ -40,6 +40,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "alibaba": "alibaba",
     "copilot": "github-copilot",
     "ai-gateway": "vercel",
+    "fireworks": "fireworks-ai",
     "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo",

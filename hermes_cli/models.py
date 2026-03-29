@@ -201,6 +201,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v3.2",
     ],
+    "fireworks": [
+        "accounts/fireworks/models/kimi-k2p5",
+        "accounts/fireworks/models/kimi-k2-thinking",
+        "accounts/fireworks/models/deepseek-v3p2",
+        "accounts/fireworks/models/minimax-m2p5",
+        "accounts/fireworks/models/glm-5",
+        "accounts/fireworks/models/gpt-oss-120b",
+        "accounts/fireworks/models/qwen3-8b",
+    ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
@@ -251,6 +260,7 @@ _PROVIDER_LABELS = {
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
+    "fireworks": "Fireworks AI",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "huggingface": "Hugging Face",
@@ -282,6 +292,9 @@ _PROVIDER_ALIASES = {
     "aigateway": "ai-gateway",
     "vercel": "ai-gateway",
     "vercel-ai-gateway": "ai-gateway",
+    "fireworks-ai": "fireworks",
+    "fireworksai": "fireworks",
+    "fw": "fireworks",
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
@@ -326,6 +339,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "fireworks",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

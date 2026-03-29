@@ -22,6 +22,7 @@ def mock_provider_registry():
         "kimi-coding": FakePConfig("Kimi Coding", ["KIMI_API_KEY"], "KIMI_BASE_URL", "https://api.kimi.example"),
         "minimax": FakePConfig("MiniMax", ["MINIMAX_API_KEY"], "MINIMAX_BASE_URL", "https://api.minimax.example"),
         "minimax-cn": FakePConfig("MiniMax CN", ["MINIMAX_API_KEY"], "MINIMAX_CN_BASE_URL", "https://api.minimax-cn.example"),
+        "fireworks": FakePConfig("Fireworks AI", ["FIREWORKS_API_KEY"], "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference/v1"),
     }
 
 
@@ -34,6 +35,7 @@ class TestSetupProviderModelSelection:
         ("kimi-coding", ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]),
         ("minimax", ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
         ("minimax-cn", ["MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
+        ("fireworks", ["accounts/fireworks/models/kimi-k2p5", "accounts/fireworks/models/kimi-k2-thinking", "accounts/fireworks/models/deepseek-v3p2"]),
     ])
     @patch("hermes_cli.models.fetch_api_models", return_value=[])
     @patch("hermes_cli.config.get_env_value", return_value="fake-key")

@@ -581,6 +581,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "FIREWORKS_API_KEY": {
+        "description": "Fireworks AI API key for serverless open models",
+        "prompt": "Fireworks API key",
+        "url": "https://app.fireworks.ai/settings/users/api-keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "FIREWORKS_BASE_URL": {
+        "description": "Fireworks AI base URL override",
+        "prompt": "Fireworks base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENCODE_ZEN_API_KEY": {
         "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
         "prompt": "OpenCode Zen API key",

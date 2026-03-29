@@ -4721,9 +4721,10 @@ class AIAgent:
         api_kwargs = {
             "model": self.model,
             "messages": sanitized_messages,
-            "tools": self.tools if self.tools else None,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
+        if self.tools:
+            api_kwargs["tools"] = self.tools
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))

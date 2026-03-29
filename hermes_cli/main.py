@@ -2121,7 +2121,8 @@ def _run_anthropic_oauth_flow(save_env_value):
         ):
             use_anthropic_claude_code_credentials(save_fn=save_env_value)
             print("  ✓ Claude Code credentials linked.")
-            print("    Hermes will use Claude's credential store directly instead of copying a setup-token into ~/.hermes/.env.")
+            from hermes_constants import display_hermes_home as _dhh_fn
+            print(f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env.")
             return True
         return False
 

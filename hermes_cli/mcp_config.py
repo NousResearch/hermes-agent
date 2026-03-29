@@ -24,6 +24,7 @@ from hermes_cli.config import (
     get_hermes_home,  # noqa: F401 — used by test mocks
 )
 from hermes_cli.colors import Colors, color
+from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ def cmd_mcp_add(args):
                     api_key = _prompt("API key / Bearer token", password=True)
                     if api_key:
                         save_env_value(env_key, api_key)
-                        _success(f"Saved to ~/.hermes/.env as {env_key}")
+                        _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
 
                 # Set header with env var interpolation
                 if api_key or existing_key:
@@ -332,7 +333,7 @@ def cmd_mcp_add(args):
     _save_mcp_server(name, server_config)
 
     print()
-    _success(f"Saved '{name}' to ~/.hermes/config.yaml ({tool_count}/{total} tools enabled)")
+    _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
     _info("Start a new session to use these tools.")
 
 

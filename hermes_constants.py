@@ -38,6 +38,26 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     return home / new_subpath
 
 
+def display_hermes_home() -> str:
+    """Return a user-friendly display string for the current HERMES_HOME.
+
+    Uses ``~/`` shorthand for readability::
+
+        default:  ``~/.hermes``
+        profile:  ``~/.hermes/profiles/coder``
+        custom:   ``/opt/hermes-custom``
+
+    Use this in **user-facing** print/log messages instead of hardcoding
+    ``~/.hermes``.  For code that needs a real ``Path``, use
+    :func:`get_hermes_home` instead.
+    """
+    home = get_hermes_home()
+    try:
+        return "~/" + str(home.relative_to(Path.home()))
+    except ValueError:
+        return str(home)
+
+
 VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
 
 

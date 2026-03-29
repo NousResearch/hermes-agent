@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_constants import display_hermes_home
+
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 
@@ -76,13 +78,15 @@ def _get_webhook_base_url() -> str:
     return f"http://{display_host}:{port}"
 
 
-_SETUP_HINT = """
+def _setup_hint() -> str:
+    _dhh = display_hermes_home()
+    return f"""
   Webhook platform is not enabled. To set it up:
 
   1. Run the gateway setup wizard:
      hermes gateway setup
 
-  2. Or manually add to ~/.hermes/config.yaml:
+  2. Or manually add to {_dhh}/config.yaml:
      platforms:
        webhook:
          enabled: true
@@ -91,7 +95,7 @@ _SETUP_HINT = """
            port: 8644
            secret: "your-global-hmac-secret"
 
-  3. Or set environment variables in ~/.hermes/.env:
+  3. Or set environment variables in {_dhh}/.env:
      WEBHOOK_ENABLED=true
      WEBHOOK_PORT=8644
      WEBHOOK_SECRET=your-global-secret
@@ -104,7 +108,7 @@ def _require_webhook_enabled() -> bool:
     """Check webhook is enabled. Print setup guide and return False if not."""
     if _is_webhook_enabled():
         return True
-    print(_SETUP_HINT)
+    print(_setup_hint())
     return False
 
 

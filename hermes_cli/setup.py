@@ -289,6 +289,7 @@ from hermes_cli.config import (
     get_env_value,
     ensure_hermes_home,
 )
+from hermes_constants import display_hermes_home
 
 from hermes_cli.colors import Colors, color
 
@@ -683,7 +684,7 @@ def _print_setup_summary(config: dict, hermes_home):
         print_warning(
             "Some tools are disabled. Run 'hermes setup tools' to configure them,"
         )
-        print_warning("or edit ~/.hermes/.env directly to add the missing API keys.")
+        print_warning(f"or edit {display_hermes_home()}/.env directly to add the missing API keys.")
         print()
 
     # Done banner
@@ -706,7 +707,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
     # Show file locations prominently
-    print(color("📁 All your files are in ~/.hermes/:", Colors.CYAN, Colors.BOLD))
+    print(color(f"📁 All your files are in {display_hermes_home()}/:", Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
     print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
@@ -2837,7 +2838,7 @@ def setup_gateway(config: dict):
         save_env_value("WEBHOOK_ENABLED", "true")
         print()
         print_success("Webhooks enabled! Next steps:")
-        print_info("   1. Define webhook routes in ~/.hermes/config.yaml")
+        print_info(f"   1. Define webhook routes in {display_hermes_home()}/config.yaml")
         print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
         print_info("      http://your-server:8644/webhooks/<route-name>")
         print()

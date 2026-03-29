@@ -33,7 +33,7 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Callable, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -832,7 +832,7 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": "Optional custom file path to save the audio. Defaults to ~/.hermes/cache/audio/<timestamp>.mp3"
+                "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/cache/audio/<timestamp>.mp3"
             }
         },
         "required": ["text"]

@@ -1151,6 +1151,43 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
+### Delegation Model Pool
+
+Opt specific models into subagent routing with a pool configuration. Each entry declares a model with its strengths. The pool is injected into the `delegate_task` tool description, so the LLM sees available models and picks the best fit automatically.
+
+```yaml
+delegation:
+  provider: zai
+  model: glm-5-turbo           # Fallback when no model is picked
+  pool:
+    - model: glm-5.1
+      strengths: coding, debugging, implementation
+    - model: glm-5
+      strengths: research, analysis, reasoning, math
+    - model: glm-5-turbo
+      strengths: general-purpose, writing, quick tasks
+    # Cross-provider example:
+    # - model: deepseek-r1
+    #   provider: openrouter
+    #   strengths: math, formal proofs
+```
+
+The LLM reads the pool and selects the best model for each task via the `model` param. No manual task-type mapping needed.
+
+**Model resolution (highest to lowest precedence):**
+
+1. Per-call `model` param — explicit override
+2. Per-task `model` field (batch mode) — override for that task
+3. Pool validation — if model was set but not in pool, falls back to default with a warning
+4. `delegation.model` — fallback default from config
+5. Parent agent's model — inherited when nothing is configured
+
+**Key points:**
+- Models NOT in the pool cannot be selected — this prevents surprise costs from expensive models.
+- `pool` only selects the model name. Provider is always `delegation.provider` (unless overridden per-entry or per-call).
+- Any model name is valid — the pool is user-defined, not a fixed taxonomy.
+- If no pool is configured, all models are allowed (backward compatible).
+
 ## Clarify
 
 Configure the clarification prompt behavior:

@@ -452,6 +452,15 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        # Delegation model pool — opt specific models into subagent routing.
+        # Each entry declares a model the LLM can choose for delegation tasks.
+        # The pool is injected into delegate_task's tool description so the
+        # LLM sees available models and their strengths, then picks the best
+        # fit via the existing 'model' param. Models NOT in the pool cannot
+        # be selected (prevents surprise costs from expensive models).
+        # Per-entry 'provider' is optional — inherits delegation.provider.
+        # Resolution: per-call model > pool match > delegation.model > parent model
+        "pool": [],  # e.g. [{"model": "glm-5.1", "strengths": "coding, debugging"}, ...]
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

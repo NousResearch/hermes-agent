@@ -429,6 +429,12 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "cron": {
+        # Wrap delivered cron responses with a header (task name) and footer
+        # ("The agent cannot see this message").  Set to false for clean output.
+        "wrap_response": True,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 10,
 }

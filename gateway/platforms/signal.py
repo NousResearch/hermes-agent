@@ -22,7 +22,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -253,7 +253,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={self.account}"
+        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
@@ -521,7 +521,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
-            "attachmentId": attachment_id,
+            "id": attachment_id,
         })
 
         if not result:

@@ -2351,7 +2351,7 @@ if DISCORD_AVAILABLE:
             except Exception as e:
                 reasoning_msg = f"\nReasoning update failed: {e}"
             if ok:
-                desc = f"Switched to `{format_model_selection(self.selected_provider, self.selected_model)}`{reasoning_msg}\n\n{message}\n\nStart a `/new` session to use the new settings."
+                desc = f"Switched to `{format_model_selection(self.selected_provider, self.selected_model)}`{reasoning_msg}\n\n{message}"
                 color = discord.Color.green()
             else:
                 desc = f"Failed: {message}"
@@ -2364,14 +2364,14 @@ if DISCORD_AVAILABLE:
     class _CancelButton(discord.ui.Button):
         def __init__(self, picker):
             self.picker = picker
-            super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=2)
+            super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=3)
         async def callback(self, interaction: discord.Interaction):
             await interaction.response.edit_message(embed=discord.Embed(title="Model Picker", description="Cancelled.", color=discord.Color.dark_grey()), view=None)
 
     class _ResetDefaultButton(discord.ui.Button):
         def __init__(self, picker):
             self.picker = picker
-            super().__init__(label="Reset to default", style=discord.ButtonStyle.secondary, row=2)
+            super().__init__(label="Reset to default", style=discord.ButtonStyle.secondary, row=3)
         async def callback(self, interaction: discord.Interaction):
             self.picker.selected_provider = self.picker.default_provider
             self.picker.selected_model = self.picker.default_model
@@ -2381,7 +2381,7 @@ if DISCORD_AVAILABLE:
     class _SubmitButton(discord.ui.Button):
         def __init__(self, picker):
             self.picker = picker
-            super().__init__(label="Submit", style=discord.ButtonStyle.primary, row=2)
+            super().__init__(label="Submit", style=discord.ButtonStyle.primary, row=3)
         async def callback(self, interaction: discord.Interaction):
             await self.picker.apply_selection(interaction)
 

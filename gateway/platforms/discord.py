@@ -486,6 +486,16 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         
         try:
+            # Acquire scoped lock to prevent duplicate bot token usage
+            from gateway.status import acquire_scoped_lock
+            acquired, existing = acquire_scoped_lock('discord-bot-token', self.config.token, metadata={'platform': 'discord'})
+            if not acquired:
+                owner_pid = existing.get('pid') if isinstance(existing, dict) else None
+                message = f'Discord bot token already in use' + (f' (PID {owner_pid})' if owner_pid else '') + '. Stop the other gateway first.'
+                logger.error('[%s] %s', self.name, message)
+                self._set_fatal_error('discord_token_lock', message, retryable=False)
+                return False
+
             # Set up intents -- members intent needed for username-to-ID resolution
             intents = Intents.default()
             intents.message_content = True
@@ -638,6 +648,14 @@ class DiscordAdapter(BasePlatformAdapter):
         self._running = False
         self._client = None
         self._ready_event.clear()
+
+        # Release the token lock
+        try:
+            from gateway.status import release_scoped_lock
+            release_scoped_lock('discord-bot-token', self.config.token)
+        except Exception:
+            pass
+
         logger.info("[%s] Disconnected", self.name)
     
     async def send(

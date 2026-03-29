@@ -54,6 +54,71 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# ---------------------------------------------------------------------------
+# Profile override — MUST happen before any hermes module import.
+#
+# Many modules cache HERMES_HOME at import time (module-level constants).
+# We intercept --profile/-p from sys.argv here and set the env var so that
+# every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
+# The flag is stripped from sys.argv so argparse never sees it.
+# Falls back to ~/.hermes/active_profile for sticky default.
+# ---------------------------------------------------------------------------
+def _apply_profile_override() -> None:
+    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    argv = sys.argv[1:]
+    profile_name = None
+    consume = 0
+
+    # 1. Check for explicit -p / --profile flag
+    for i, arg in enumerate(argv):
+        if arg in ("--profile", "-p") and i + 1 < len(argv):
+            profile_name = argv[i + 1]
+            consume = 2
+            break
+        elif arg.startswith("--profile="):
+            profile_name = arg.split("=", 1)[1]
+            consume = 1
+            break
+
+    # 2. If no flag, check ~/.hermes/active_profile
+    if profile_name is None:
+        try:
+            active_path = Path.home() / ".hermes" / "active_profile"
+            if active_path.exists():
+                name = active_path.read_text().strip()
+                if name and name != "default":
+                    profile_name = name
+                    consume = 0  # don't strip anything from argv
+        except (UnicodeDecodeError, OSError):
+            pass  # corrupted file, skip
+
+    # 3. If we found a profile, resolve and set HERMES_HOME
+    if profile_name is not None:
+        try:
+            from hermes_cli.profiles import resolve_profile_env
+            hermes_home = resolve_profile_env(profile_name)
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            # A bug in profiles.py must NEVER prevent hermes from starting
+            print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
+            return
+        os.environ["HERMES_HOME"] = hermes_home
+        # Strip the flag from argv so argparse doesn't choke
+        if consume > 0:
+            for i, arg in enumerate(argv):
+                if arg in ("--profile", "-p"):
+                    start = i + 1  # +1 because argv is sys.argv[1:]
+                    sys.argv = sys.argv[:start] + sys.argv[start + consume:]
+                    break
+                elif arg.startswith("--profile="):
+                    start = i + 1
+                    sys.argv = sys.argv[:start] + sys.argv[start + 1:]
+                    break
+
+_apply_profile_override()
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
@@ -2924,7 +2989,35 @@ def cmd_update(args):
                 print("  ✓ Skills are up to date")
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)
-        
+
+        # Sync bundled skills to all other profiles
+        try:
+            from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
+            active = get_active_profile_name()
+            other_profiles = [p for p in list_profiles() if not p.is_default and p.name != active]
+            if other_profiles:
+                print()
+                print("→ Syncing bundled skills to other profiles...")
+                for p in other_profiles:
+                    try:
+                        r = seed_profile_skills(p.path, quiet=True)
+                        if r:
+                            copied = len(r.get("copied", []))
+                            updated = len(r.get("updated", []))
+                            modified = len(r.get("user_modified", []))
+                            parts = []
+                            if copied: parts.append(f"+{copied} new")
+                            if updated: parts.append(f"↑{updated} updated")
+                            if modified: parts.append(f"~{modified} user-modified")
+                            status = ", ".join(parts) if parts else "up to date"
+                        else:
+                            status = "sync failed"
+                        print(f"  {p.name}: {status}")
+                    except Exception as pe:
+                        print(f"  {p.name}: error ({pe})")
+        except Exception:
+            pass  # profiles module not available or no profiles
+
         # Check for config migrations
         print()
         print("→ Checking configuration for new options...")
@@ -3122,6 +3215,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
+        "profile",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -3143,6 +3237,253 @@ def _coalesce_session_name_args(argv: list) -> list:
             result.append(token)
             i += 1
     return result
+
+
+def cmd_profile(args):
+    """Profile management — create, delete, list, switch, alias."""
+    from hermes_cli.profiles import (
+        list_profiles, create_profile, delete_profile, seed_profile_skills,
+        get_active_profile, set_active_profile, get_active_profile_name,
+        check_alias_collision, create_wrapper_script, remove_wrapper_script,
+        _is_wrapper_dir_in_path, _get_wrapper_dir,
+    )
+    from hermes_constants import display_hermes_home
+
+    action = getattr(args, "profile_action", None)
+
+    if action is None:
+        # Bare `hermes profile` — show current profile status
+        profile_name = get_active_profile_name()
+        dhh = display_hermes_home()
+        print(f"\nActive profile: {profile_name}")
+        print(f"Path:           {dhh}")
+
+        profiles = list_profiles()
+        for p in profiles:
+            if p.name == profile_name or (profile_name == "default" and p.is_default):
+                if p.model:
+                    print(f"Model:          {p.model}" + (f" ({p.provider})" if p.provider else ""))
+                print(f"Gateway:        {'running' if p.gateway_running else 'stopped'}")
+                print(f"Skills:         {p.skill_count} installed")
+                if p.alias_path:
+                    print(f"Alias:          {p.name} → hermes -p {p.name}")
+                break
+        print()
+        return
+
+    if action == "list":
+        profiles = list_profiles()
+        active = get_active_profile_name()
+
+        if not profiles:
+            print("No profiles found.")
+            return
+
+        # Header
+        print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias'}")
+        print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 12}")
+
+        for p in profiles:
+            marker = " ◆" if (p.name == active or (active == "default" and p.is_default)) else "  "
+            name = p.name
+            model = (p.model or "—")[:26]
+            gw = "running" if p.gateway_running else "stopped"
+            alias = p.name if p.alias_path else "—"
+            if p.is_default:
+                alias = "—"
+            print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias}")
+        print()
+
+    elif action == "use":
+        name = args.profile_name
+        try:
+            set_active_profile(name)
+            if name == "default":
+                print(f"Switched to: default (~/.hermes)")
+            else:
+                print(f"Switched to: {name}")
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "create":
+        name = args.profile_name
+        clone = getattr(args, "clone", False)
+        clone_all = getattr(args, "clone_all", False)
+        no_alias = getattr(args, "no_alias", False)
+
+        try:
+            clone_from = getattr(args, "clone_from", None)
+
+            profile_dir = create_profile(
+                name=name,
+                clone_from=clone_from,
+                clone_all=clone_all,
+                clone_config=clone,
+                no_alias=no_alias,
+            )
+            print(f"\nProfile '{name}' created at {profile_dir}")
+
+            if clone or clone_all:
+                source_label = getattr(args, "clone_from", None) or get_active_profile_name()
+                if clone_all:
+                    print(f"Full copy from {source_label}.")
+                else:
+                    print(f"Cloned config, .env, SOUL.md from {source_label}.")
+
+            # Seed bundled skills (skip if --clone-all already copied them)
+            if not clone_all:
+                result = seed_profile_skills(profile_dir)
+                if result:
+                    copied = len(result.get("copied", []))
+                    print(f"{copied} bundled skills synced.")
+                else:
+                    print("⚠ Skills could not be seeded. Run `{} update` to retry.".format(name))
+
+            # Create wrapper alias
+            if not no_alias:
+                collision = check_alias_collision(name)
+                if collision:
+                    print(f"\n⚠ Cannot create alias '{name}' — {collision}")
+                    print(f"  Choose a custom alias:  hermes profile alias {name} --name <custom>")
+                    print(f"  Or access via flag:     hermes -p {name} chat")
+                else:
+                    wrapper_path = create_wrapper_script(name)
+                    if wrapper_path:
+                        print(f"Wrapper created: {wrapper_path}")
+                        if not _is_wrapper_dir_in_path():
+                            print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
+                            print(f'  Add to your shell config (~/.bashrc or ~/.zshrc):')
+                            print(f'    export PATH="$HOME/.local/bin:$PATH"')
+
+            # Next steps
+            print(f"\nNext steps:")
+            print(f"  {name} setup              Configure API keys and model")
+            print(f"  {name} chat               Start chatting")
+            print(f"  {name} gateway start      Start the messaging gateway")
+            if clone or clone_all:
+                from hermes_constants import get_hermes_home
+                profile_dir_display = f"~/.hermes/profiles/{name}"
+                print(f"\n  Edit {profile_dir_display}/.env for different API keys")
+                print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
+            print()
+
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "delete":
+        name = args.profile_name
+        yes = getattr(args, "yes", False)
+        try:
+            delete_profile(name, yes=yes)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "show":
+        name = args.profile_name
+        from hermes_cli.profiles import get_profile_dir, profile_exists, _read_config_model, _check_gateway_running, _count_skills
+        if not profile_exists(name):
+            print(f"Error: Profile '{name}' does not exist.")
+            sys.exit(1)
+        profile_dir = get_profile_dir(name)
+        model, provider = _read_config_model(profile_dir)
+        gw = _check_gateway_running(profile_dir)
+        skills = _count_skills(profile_dir)
+        wrapper = _get_wrapper_dir() / name
+
+        print(f"\nProfile: {name}")
+        print(f"Path:    {profile_dir}")
+        if model:
+            print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
+        print(f"Gateway: {'running' if gw else 'stopped'}")
+        print(f"Skills:  {skills}")
+        print(f".env:    {'exists' if (profile_dir / '.env').exists() else 'not configured'}")
+        print(f"SOUL.md: {'exists' if (profile_dir / 'SOUL.md').exists() else 'not configured'}")
+        if wrapper.exists():
+            print(f"Alias:   {wrapper}")
+        print()
+
+    elif action == "alias":
+        name = args.profile_name
+        remove = getattr(args, "remove", False)
+        custom_name = getattr(args, "alias_name", None)
+
+        from hermes_cli.profiles import profile_exists
+        if not profile_exists(name):
+            print(f"Error: Profile '{name}' does not exist.")
+            sys.exit(1)
+
+        alias_name = custom_name or name
+
+        if remove:
+            if remove_wrapper_script(alias_name):
+                print(f"✓ Removed alias '{alias_name}'")
+            else:
+                print(f"No alias '{alias_name}' found to remove.")
+        else:
+            collision = check_alias_collision(alias_name)
+            if collision:
+                print(f"Error: {collision}")
+                sys.exit(1)
+            wrapper_path = create_wrapper_script(alias_name)
+            if wrapper_path:
+                # If custom name, write the profile name into the wrapper
+                if custom_name:
+                    wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
+                print(f"✓ Alias created: {wrapper_path}")
+                if not _is_wrapper_dir_in_path():
+                    print(f"⚠ {_get_wrapper_dir()} is not in your PATH.")
+
+    elif action == "rename":
+        from hermes_cli.profiles import rename_profile
+        try:
+            new_dir = rename_profile(args.old_name, args.new_name)
+            print(f"\nProfile renamed: {args.old_name} → {args.new_name}")
+            print(f"Path: {new_dir}\n")
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "export":
+        from hermes_cli.profiles import export_profile
+        name = args.profile_name
+        output = args.output or f"{name}.tar.gz"
+        try:
+            result_path = export_profile(name, output)
+            print(f"✓ Exported '{name}' to {result_path}")
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "import":
+        from hermes_cli.profiles import import_profile
+        try:
+            profile_dir = import_profile(args.archive, name=getattr(args, "import_name", None))
+            name = profile_dir.name
+            print(f"✓ Imported profile '{name}' at {profile_dir}")
+
+            # Offer to create alias
+            collision = check_alias_collision(name)
+            if not collision:
+                wrapper_path = create_wrapper_script(name)
+                if wrapper_path:
+                    print(f"  Wrapper created: {wrapper_path}")
+            print()
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+
+def cmd_completion(args):
+    """Print shell completion script."""
+    from hermes_cli.profiles import generate_bash_completion, generate_zsh_completion
+    shell = getattr(args, "shell", "bash")
+    if shell == "zsh":
+        print(generate_zsh_completion())
+    else:
+        print(generate_bash_completion())
 
 
 def main():
@@ -4342,7 +4683,75 @@ For more help on a command:
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
-    
+
+    # =========================================================================
+    # profile command
+    # =========================================================================
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Manage profiles — multiple isolated Hermes instances",
+    )
+    profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
+
+    profile_list = profile_subparsers.add_parser("list", help="List all profiles")
+    profile_use = profile_subparsers.add_parser("use", help="Set sticky default profile")
+    profile_use.add_argument("profile_name", help="Profile name (or 'default')")
+
+    profile_create = profile_subparsers.add_parser("create", help="Create a new profile")
+    profile_create.add_argument("profile_name", help="Profile name (lowercase, alphanumeric)")
+    profile_create.add_argument("--clone", action="store_true",
+                                help="Copy config.yaml, .env, SOUL.md from active profile")
+    profile_create.add_argument("--clone-all", action="store_true",
+                                help="Full copy of active profile (all state)")
+    profile_create.add_argument("--clone-from", metavar="SOURCE",
+                                help="Source profile to clone from (default: active)")
+    profile_create.add_argument("--no-alias", action="store_true",
+                                help="Skip wrapper script creation")
+
+    profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
+    profile_delete.add_argument("profile_name", help="Profile to delete")
+    profile_delete.add_argument("-y", "--yes", action="store_true",
+                                help="Skip confirmation prompt")
+
+    profile_show = profile_subparsers.add_parser("show", help="Show profile details")
+    profile_show.add_argument("profile_name", help="Profile to show")
+
+    profile_alias = profile_subparsers.add_parser("alias", help="Manage wrapper scripts")
+    profile_alias.add_argument("profile_name", help="Profile name")
+    profile_alias.add_argument("--remove", action="store_true",
+                               help="Remove the wrapper script")
+    profile_alias.add_argument("--name", dest="alias_name", metavar="NAME",
+                               help="Custom alias name (default: profile name)")
+
+    profile_rename = profile_subparsers.add_parser("rename", help="Rename a profile")
+    profile_rename.add_argument("old_name", help="Current profile name")
+    profile_rename.add_argument("new_name", help="New profile name")
+
+    profile_export = profile_subparsers.add_parser("export", help="Export a profile to archive")
+    profile_export.add_argument("profile_name", help="Profile to export")
+    profile_export.add_argument("-o", "--output", default=None,
+                                help="Output file (default: <name>.tar.gz)")
+
+    profile_import = profile_subparsers.add_parser("import", help="Import a profile from archive")
+    profile_import.add_argument("archive", help="Path to .tar.gz archive")
+    profile_import.add_argument("--name", dest="import_name", metavar="NAME",
+                                help="Profile name (default: inferred from archive)")
+
+    profile_parser.set_defaults(func=cmd_profile)
+
+    # =========================================================================
+    # completion command
+    # =========================================================================
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Print shell completion script (bash or zsh)",
+    )
+    completion_parser.add_argument(
+        "shell", nargs="?", default="bash", choices=["bash", "zsh"],
+        help="Shell type (default: bash)",
+    )
+    completion_parser.set_defaults(func=cmd_completion)
+
     # =========================================================================
     # Parse and execute
     # =========================================================================

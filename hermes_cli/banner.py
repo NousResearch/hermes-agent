@@ -403,6 +403,15 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Show active profile name when not 'default'
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _profile_name = get_active_profile_name()
+        if _profile_name and _profile_name != "default":
+            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+    except Exception:
+        pass  # Never break the banner over a profiles.py bug
+
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
     # Update check — use prefetched result if available

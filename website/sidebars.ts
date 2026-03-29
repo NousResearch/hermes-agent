@@ -38,6 +38,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/sessions',
         'user-guide/security',
         'user-guide/docker',
+        'user-guide/profiles',
         {
           type: 'category',
           label: 'Messaging Gateway',
@@ -153,6 +154,7 @@ const sidebars: SidebarsConfig = {
         'reference/mcp-config-reference',
         'reference/skills-catalog',
         'reference/optional-skills-catalog',
+        'reference/profile-commands',
         'reference/environment-variables',
         'reference/faq',
       ],

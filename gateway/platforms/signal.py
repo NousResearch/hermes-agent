@@ -160,6 +160,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.send_read_receipts = extra.get("send_read_receipts", False)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -545,6 +546,22 @@ class SignalAdapter(BasePlatformAdapter):
                       _redact_phone(sender), chat_id[:20], (text or "")[:50])
 
         await self.handle_message(event)
+
+        # Send read receipt if enabled
+        if self.send_read_receipts and sender and ts_ms:
+            await self._send_read_receipt(sender, ts_ms)
+
+    async def _send_read_receipt(self, sender: str, timestamp: int) -> None:
+        """Send a read receipt for a message."""
+        try:
+            await self._rpc("sendReceipt", {
+                "account": self.account,
+                "recipient": sender,
+                "type": "read",
+                "targetTimestamp": timestamp,
+            }, rpc_id="receipt")
+        except Exception:
+            logger.debug("Signal: failed to send read receipt to %s", _redact_phone(sender))
 
     # ------------------------------------------------------------------
     # Attachment Handling

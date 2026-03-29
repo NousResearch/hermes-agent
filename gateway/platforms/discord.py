@@ -550,22 +550,6 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
                     # "all" falls through to handle_message
                 
-                # If the message @mentions other users but NOT the bot, the
-                # sender is talking to someone else — stay silent.  Only
-                # applies in server channels; in DMs the user is always
-                # talking to the bot (mentions are just references).
-                # Controlled by DISCORD_IGNORE_NO_MENTION (default: true).
-                _ignore_no_mention = os.getenv(
-                    "DISCORD_IGNORE_NO_MENTION", "true"
-                ).lower() in ("true", "1", "yes")
-                if _ignore_no_mention and message.mentions and not isinstance(message.channel, discord.DMChannel):
-                    _bot_mentioned = (
-                        self._client.user is not None
-                        and self._client.user in message.mentions
-                    )
-                    if not _bot_mentioned:
-                        return  # Talking to someone else, don't interrupt
-
                 await self._handle_message(message)
 
             @self._client.event
@@ -1373,7 +1357,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not to_resolve:
             return
 
-        print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
+        logger.debug("[%s] Resolving %d username(s): %s", self.name, len(to_resolve), ", ".join(to_resolve))
         resolved_count = 0
 
         for guild in self._client.guilds:
@@ -1400,19 +1384,19 @@ class DiscordAdapter(BasePlatformAdapter):
                         display_lower if display_lower in to_resolve else global_lower
                     )
                     to_resolve.discard(matched_name)
-                    print(f"[{self.name}] Resolved '{matched_name}' -> {uid} ({member.name}#{member.discriminator})")
+                    logger.debug("[%s] Resolved '%s' -> %s (%s#%s)", self.name, matched_name, uid, member.name, member.discriminator)
 
             if not to_resolve:
                 break
 
         if to_resolve:
-            print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
+            logger.warning("[%s] Could not resolve usernames: %s", self.name, ", ".join(to_resolve))
 
         # Update internal set and env var so gateway auth checks use IDs
         self._allowed_user_ids = numeric_ids
         os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+            logger.info("[%s] Updated DISCORD_ALLOWED_USERS with %d resolved ID(s)", self.name, resolved_count)
 
     def format_message(self, content: str) -> str:
         """
@@ -1429,23 +1413,15 @@ class DiscordAdapter(BasePlatformAdapter):
         command_text: str,
         followup_msg: str | None = None,
     ) -> None:
-        """Common handler for simple slash commands that dispatch a command string.
-
-        Defers the interaction (shows "thinking..."), dispatches the command,
-        then cleans up the deferred response.  If *followup_msg* is provided
-        the "thinking..." indicator is replaced with that text; otherwise it
-        is deleted so the channel isn't cluttered.
-        """
+        """Common handler for simple slash commands that dispatch a command string."""
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
-        try:
-            if followup_msg:
-                await interaction.edit_original_response(content=followup_msg)
-            else:
-                await interaction.delete_original_response()
-        except Exception as e:
-            logger.debug("Discord interaction cleanup failed: %s", e)
+        if followup_msg:
+            try:
+                await interaction.followup.send(followup_msg, ephemeral=True)
+            except Exception as e:
+                logger.debug("Discord followup failed: %s", e)
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -1470,7 +1446,9 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="reasoning", description="Show or change reasoning effort")
         @discord.app_commands.describe(effort="Reasoning effort: xhigh, high, medium, low, minimal, or none.")
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
-            await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/reasoning {effort}".strip())
+            await self.handle_message(event)
 
         @tree.command(name="personality", description="Set a personality")
         @discord.app_commands.describe(name="Personality name. Leave empty to list available.")
@@ -1543,7 +1521,9 @@ class DiscordAdapter(BasePlatformAdapter):
             discord.app_commands.Choice(name="status — show current mode", value="status"),
         ])
         async def slash_voice(interaction: discord.Interaction, mode: str = ""):
-            await self._run_simple_slash(interaction, f"/voice {mode}".strip())
+            await interaction.response.defer(ephemeral=True)
+            event = self._build_slash_event(interaction, f"/voice {mode}".strip())
+            await self.handle_message(event)
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
@@ -2034,9 +2014,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     cached_path = await cache_image_from_url(att.url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
-                    print(f"[Discord] Cached user image: {cached_path}", flush=True)
+                    logger.debug("[Discord] Cached user image: %s", cached_path)
                 except Exception as e:
-                    print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
+                    logger.warning("[Discord] Failed to cache image attachment: %s", e)
                     # Fall back to the CDN URL if caching fails
                     media_urls.append(att.url)
                     media_types.append(content_type)
@@ -2048,9 +2028,9 @@ class DiscordAdapter(BasePlatformAdapter):
                     cached_path = await cache_audio_from_url(att.url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
-                    print(f"[Discord] Cached user audio: {cached_path}", flush=True)
+                    logger.debug("[Discord] Cached user audio: %s", cached_path)
                 except Exception as e:
-                    print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
+                    logger.warning("[Discord] Failed to cache audio attachment: %s", e)
                     media_urls.append(att.url)
                     media_types.append(content_type)
             else:

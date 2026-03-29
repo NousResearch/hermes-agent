@@ -1258,6 +1258,8 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
             mock_hfc.assert_called_once_with(
                 "web_search", {"q": "test"}, "task-1",
+                tool_call_id=None,
+                session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
 
             )
@@ -1441,7 +1443,7 @@ class TestRunConversation:
         resp2 = _mock_response(content="Done searching", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
         with (
-            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("run_agent.handle_function_call", return_value="search result") as mock_handle_function_call,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -1449,6 +1451,39 @@ class TestRunConversation:
             result = agent.run_conversation("search something")
         assert result["final_response"] == "Done searching"
         assert result["api_calls"] == 2
+        assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
+        assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_request_scoped_llm_hooks_fire_for_each_api_call(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        pre_request_calls = [kw for name, kw in hook_calls if name == "pre_llm_request"]
+        post_request_calls = [kw for name, kw in hook_calls if name == "post_llm_request"]
+        assert len(pre_request_calls) == 2
+        assert len(post_request_calls) == 2
+        assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
+        assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
+        assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
 
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)

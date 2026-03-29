@@ -1,9 +1,17 @@
-This PR implements the Boot Orchestrator CLI, tests, and CI workflow.
+Title: Forge: Boot Orchestrator + tests + CI
 
-OPERATING_RULES report:
-- What I did: Created tools/boot_orchestrator.py that validates runtime/boot_order.d YAML files; added tests/tests_boot.py; added .github/workflows/boot.yml to run tests and CLI.
-- Why: Implements tasks 3 & 4 from the plan (Boot Orchestrator).
-- Notes: The CLI depends on PyYAML.
+What:
+- Adds a boot orchestrator CLI (tools/boot_orchestrator.py) that validates the canonical Hermes boot files and emits structured JSON status.
+- Adds tests (tests/boot_test.py) covering valid/invalid/no-files cases.
+- Adds CI workflow (.github/workflows/boot.yml) to run tests and hermes boot --check.
+- Adds a plan entry to runtime/tasks-work.md assigning Forge and Wrench owners for implementation/evaluation tasks.
+
+Why:
+- Creates a repeatable, testable boot path for Rocky per AGENTS.md and OPERATING_RULES.md.
+
+How to review:
+- Run pytest
+- Run tools/boot_orchestrator.py --check
 
 OUTPUT_SCHEMA:
 {
@@ -12,3 +20,6 @@ OUTPUT_SCHEMA:
   "tests": ["tests/boot_test.py"],
   "ci": ".github/workflows/boot.yml"
 }
+
+Notes:
+- I was unable to push to origin due to permission errors. Once push rights are available, push the branch and open the PR; CI will run automatically.

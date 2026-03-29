@@ -7229,7 +7229,10 @@ class AIAgent:
                             retry_count = 0
                             continue
                         _final_summary = self._summarize_api_error(api_error)
-                        self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
+                        if is_rate_limited:
+                            self._vprint(f"{self.log_prefix}❌ Rate limit persisted after {max_retries} retries. Please try again later.", force=True)
+                        else:
+                            self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
                         self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                         # Detect SSE stream-drop pattern (e.g. "Network
@@ -7289,8 +7292,22 @@ class AIAgent:
                             "error": _final_summary,
                         }
 
-                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
-                    self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
+                    # For rate limits, respect the Retry-After header if present
+                    _retry_after = None
+                    if is_rate_limited:
+                        _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                        if _resp_headers and hasattr(_resp_headers, "get"):
+                            _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                            if _ra_raw:
+                                try:
+                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
+                                except (TypeError, ValueError):
+                                    pass
+                    wait_time = _retry_after if _retry_after else min(2 ** retry_count, 60)
+                    if is_rate_limited:
+                        self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
+                    else:
+                        self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,

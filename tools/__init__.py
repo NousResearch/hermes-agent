@@ -50,6 +50,11 @@ from .image_generation_tool import (
     check_image_generation_requirements
 )
 
+from .minimax_image_tool import (
+    minimax_image_generate_tool,
+    check_minimax_image_requirements
+)
+
 from .skills_tool import (
     skills_list,
     skill_view,
@@ -184,6 +189,8 @@ __all__ = [
     # Image generation tools
     'image_generate_tool',
     'check_image_generation_requirements',
+    'minimax_image_generate_tool',
+    'check_minimax_image_requirements',
     # Skills tools
     'skills_list',
     'skill_view',

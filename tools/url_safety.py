@@ -17,6 +17,7 @@ Limitations (documented, not fixable at pre-flight level):
 
 import ipaddress
 import logging
+import os
 import socket
 from urllib.parse import urlparse
 
@@ -34,9 +35,26 @@ _BLOCKED_HOSTNAMES = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 198.18.0.0/15 (RFC 2544 Benchmarking Test Range).
+# Python 3.11 expanded ipaddress.is_private to cover all IANA special-purpose
+# ranges, including this one. As a result, modern proxy software (Clash,
+# Mihomo, Sing-box, Surge) that uses this range as a Fake-IP pool in TUN mode
+# is incorrectly blocked — DNS returns a virtual 198.18.x.x address, but the
+# actual traffic is forwarded by the TUN interface to the real public destination.
+# Set HERMES_ALLOW_RFC2544=true to unblock this range for TUN-mode proxy users.
+_RFC2544_BENCHMARK = ipaddress.ip_network("198.18.0.0/15")
+_ALLOW_RFC2544 = os.getenv("HERMES_ALLOW_RFC2544", "").lower() in ("true", "1", "yes")
+
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
+    # Allow RFC 2544 range when explicitly enabled (TUN-mode proxy / Fake-IP)
+    if (
+        _ALLOW_RFC2544
+        and isinstance(ip, ipaddress.IPv4Address)
+        and ip in _RFC2544_BENCHMARK
+    ):
+        return False
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         return True
     if ip.is_multicast or ip.is_unspecified:

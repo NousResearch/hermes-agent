@@ -153,6 +153,62 @@ class TestIsSafeUrl:
             assert is_safe_url("http://legit-host.example/") is True
 
 
+class TestRfc2544FakeIp:
+    """RFC 2544 / Fake-IP range behaviour (Python 3.11 regression)."""
+
+    def test_rfc2544_blocked_by_default(self):
+        """198.18.0.0/15 must be blocked when HERMES_ALLOW_RFC2544 is not set."""
+        import tools.url_safety as safety
+        original = safety._ALLOW_RFC2544
+        try:
+            safety._ALLOW_RFC2544 = False
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("198.18.4.114", 0)),
+            ]):
+                assert is_safe_url("https://www.baidu.com") is False
+        finally:
+            safety._ALLOW_RFC2544 = original
+
+    def test_rfc2544_allowed_when_env_enabled(self):
+        """198.18.0.0/15 must be allowed when HERMES_ALLOW_RFC2544=true."""
+        import tools.url_safety as safety
+        original = safety._ALLOW_RFC2544
+        try:
+            safety._ALLOW_RFC2544 = True
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("198.18.4.114", 0)),
+            ]):
+                assert is_safe_url("https://www.baidu.com") is True
+        finally:
+            safety._ALLOW_RFC2544 = original
+
+    def test_rfc2544_upper_bound_allowed_when_env_enabled(self):
+        """Upper end of range (198.19.255.254) also unblocked."""
+        import tools.url_safety as safety
+        original = safety._ALLOW_RFC2544
+        try:
+            safety._ALLOW_RFC2544 = True
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("198.19.255.254", 0)),
+            ]):
+                assert is_safe_url("https://github.com") is True
+        finally:
+            safety._ALLOW_RFC2544 = original
+
+    def test_private_rfc1918_still_blocked_when_rfc2544_allowed(self):
+        """Enabling RFC 2544 must not unblock real private ranges."""
+        import tools.url_safety as safety
+        original = safety._ALLOW_RFC2544
+        try:
+            safety._ALLOW_RFC2544 = True
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("192.168.1.1", 0)),
+            ]):
+                assert is_safe_url("http://router.local") is False
+        finally:
+            safety._ALLOW_RFC2544 = original
+
+
 class TestIsBlockedIp:
     """Direct tests for the _is_blocked_ip helper."""
 
@@ -160,12 +216,20 @@ class TestIsBlockedIp:
         "127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
         "169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255",
         "100.64.0.1", "100.100.100.100", "100.127.255.254",
+        # RFC 2544 blocked by default
+        "198.18.0.1", "198.18.4.114", "198.19.255.254",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
     ])
     def test_blocked_ips(self, ip_str):
-        ip = ipaddress.ip_address(ip_str)
-        assert _is_blocked_ip(ip) is True, f"{ip_str} should be blocked"
+        import tools.url_safety as safety
+        original = safety._ALLOW_RFC2544
+        try:
+            safety._ALLOW_RFC2544 = False
+            ip = ipaddress.ip_address(ip_str)
+            assert _is_blocked_ip(ip) is True, f"{ip_str} should be blocked"
+        finally:
+            safety._ALLOW_RFC2544 = original
 
     @pytest.mark.parametrize("ip_str", [
         "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",

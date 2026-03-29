@@ -928,6 +928,22 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
 
+    # ── Security ──
+    "HERMES_ALLOW_RFC2544": {
+        "description": (
+            "Allow the RFC 2544 Benchmarking range (198.18.0.0/15) to bypass SSRF protection. "
+            "Enable this if you use TUN-mode proxy software (Clash, Mihomo, Sing-box, Surge) "
+            "with Fake-IP, where DNS returns virtual 198.18.x.x addresses that are forwarded "
+            "to real public destinations by the TUN interface. "
+            "Python 3.11+ incorrectly classifies this range as private. "
+            "Do NOT enable on machines without a TUN proxy intercepting this range."
+        ),
+        "prompt": "Allow RFC 2544 Fake-IP range (true/false, for TUN proxy users)",
+        "url": None,
+        "password": False,
+        "category": "setting",
+    },
+
     # ── Agent settings ──
     "MESSAGING_CWD": {
         "description": "Working directory for terminal commands via messaging",

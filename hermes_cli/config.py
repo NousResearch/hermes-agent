@@ -366,6 +366,13 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Skills — external skill directories for sharing skills across tools/agents.
+    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
+    # always goes to ~/.hermes/skills/.
+    "skills": {
+        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.

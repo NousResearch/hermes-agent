@@ -18,6 +18,7 @@ from typing import Optional
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
+    get_all_skills_dirs,
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
@@ -444,16 +445,23 @@ def build_skills_system_prompt(
          mtime/size manifest — survives process restarts
 
     Falls back to a full filesystem scan when both layers miss.
+
+    External skill directories (``skills.external_dirs`` in config.yaml) are
+    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
+    are read-only — they appear in the index but new skills are always created
+    in the local dir.  Local skills take precedence when names collide.
     """
     hermes_home = get_hermes_home()
     skills_dir = hermes_home / "skills"
+    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists():
+    if not skills_dir.exists() and not external_dirs:
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     cache_key = (
         str(skills_dir.resolve()),
+        tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
     )
@@ -539,6 +547,56 @@ def build_skills_system_prompt(
             skill_entries,
             category_descriptions,
         )
+
+    # ── External skill directories ─────────────────────────────────────
+    # Scan external dirs directly (no snapshot caching — they're read-only
+    # and typically small).  Local skills already in skills_by_category take
+    # precedence: we track seen names and skip duplicates from external dirs.
+    seen_skill_names: set[str] = set()
+    for cat_skills in skills_by_category.values():
+        for name, _desc in cat_skills:
+            seen_skill_names.add(name)
+
+    for ext_dir in external_dirs:
+        if not ext_dir.exists():
+            continue
+        for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
+            try:
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                if not is_compatible:
+                    continue
+                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
+                skill_name = entry["skill_name"]
+                if skill_name in seen_skill_names:
+                    continue
+                if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                seen_skill_names.add(skill_name)
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (skill_name, entry["description"])
+                )
+            except Exception as e:
+                logger.debug("Error reading external skill %s: %s", skill_file, e)
+
+        # External category descriptions
+        for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
+            try:
+                content = desc_file.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(content)
+                cat_desc = fm.get("description")
+                if not cat_desc:
+                    continue
+                rel = desc_file.relative_to(ext_dir)
+                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+            except Exception as e:
+                logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
     if not skills_by_category:
         result = ""

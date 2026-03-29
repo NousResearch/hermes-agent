@@ -87,6 +87,23 @@ class ToolRegistry:
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
 
+    def deregister(self, name: str) -> None:
+        """Remove a tool from the registry.
+
+        Also cleans up the toolset check if no other tools remain in the
+        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
+        when a server sends ``notifications/tools/list_changed``.
+        """
+        entry = self._tools.pop(name, None)
+        if entry is None:
+            return
+        # Drop the toolset check if this was the last tool in that toolset
+        if entry.toolset in self._toolset_checks and not any(
+            e.toolset == entry.toolset for e in self._tools.values()
+        ):
+            self._toolset_checks.pop(entry.toolset, None)
+        logger.debug("Deregistered tool: %s", name)
+
     # ------------------------------------------------------------------
     # Schema retrieval
     # ------------------------------------------------------------------

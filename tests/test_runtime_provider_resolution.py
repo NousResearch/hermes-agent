@@ -40,6 +40,28 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["requested_provider"] == "ai-gateway"
 
 
+def test_resolve_runtime_provider_anthropic_ignores_stale_openrouter_base_url(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://api.anthropic.com"
+    assert resolved["api_key"] == "sk-ant-oat01-test-token"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

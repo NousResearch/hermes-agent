@@ -37,6 +37,33 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _is_official_anthropic_base_url(base_url: str) -> bool:
+    """Return True when a configured Anthropic base URL targets Anthropic itself.
+
+    Native Anthropic auth supports custom proxies via ``provider: custom`` with
+    ``api_mode: anthropic_messages``. For ``provider: anthropic`` we only honor
+    official Anthropic / Claude hosts so stale OpenRouter or custom endpoints
+    from previous config do not hijack OAuth traffic.
+    """
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return False
+
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+        hostname = (parsed.hostname or "").lower()
+    except Exception:
+        return False
+
+    return (
+        hostname == "api.anthropic.com"
+        or hostname.endswith(".anthropic.com")
+        or hostname.endswith(".claude.com")
+    )
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -374,14 +401,16 @@ def resolve_runtime_provider(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                 "run 'claude setup-token', or authenticate with 'claude /login'."
             )
-        # Allow base URL override from config.yaml model.base_url, but only
-        # when the configured provider is anthropic — otherwise a non-Anthropic
-        # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
+        # Allow base URL override from config.yaml only for official Anthropic
+        # hosts. Anthropic-compatible proxies should be configured as
+        # ``provider: custom`` with ``api_mode: anthropic_messages``.
         model_cfg = _get_model_config()
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == "anthropic":
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            candidate = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if _is_official_anthropic_base_url(candidate):
+                cfg_base_url = candidate
         base_url = cfg_base_url or "https://api.anthropic.com"
         return {
             "provider": "anthropic",

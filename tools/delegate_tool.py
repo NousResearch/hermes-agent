@@ -425,22 +425,32 @@ def _delegate_to_remote(
     """
     if not REMOTE_AGENTS_AVAILABLE:
         return json.dumps({
-            "error": "Remote agents not available. Check that tools/remote_agent.py is installed."
+            "error": "Remote agents not available. Check that tools/remote_agent.py is installed.",
+            "type": "remote",
+            "agent": agent_name,
+            "resolved_endpoint": None,
         })
     
+    logger.info(f"get remote agents {agent_name}")
     remote_agents = get_remote_agents()
     
     if agent_name not in remote_agents:
         available = ", ".join(remote_agents.keys()) or "none"
         return json.dumps({
-            "error": f"Unknown remote agent: '{agent_name}'. Available agents: {available}"
+            "error": f"Unknown remote agent: '{agent_name}'. Available agents: {available}",
+            "type": "remote",
+            "agent": agent_name,
+            "resolved_endpoint": None,
         })
     
     agent_config = remote_agents.get(agent_name)
     endpoint = agent_config.get("endpoint")
     if not endpoint:
         return json.dumps({
-            "error": f"Remote agent '{agent_name}' has no endpoint configured"
+            "error": f"Remote agent '{agent_name}' has no endpoint configured",
+            "type": "remote",
+            "agent": agent_name,
+            "resolved_endpoint": None,
         })
     
     logger.info(f"Delegating to remote agent '{agent_name}' at {endpoint}")
@@ -456,13 +466,17 @@ def _delegate_to_remote(
     
     if "error" in result:
         return json.dumps({
-            "error": f"Remote agent '{agent_name}' failed: {result['error']}"
+            "error": f"Remote agent '{agent_name}' failed: {result['error']}",
+            "type": "remote",
+            "agent": agent_name,
+            "resolved_endpoint": endpoint,
         })
     
     return json.dumps({
         "success": True,
         "agent": agent_name,
         "type": "remote",
+        "resolved_endpoint": endpoint,
         "result": result.get("content", ""),
     })
 
@@ -488,6 +502,7 @@ def delegate_task(
     """
     if parent_agent is None:
         return json.dumps({"error": "delegate_task requires a parent agent context."})
+    logger.info(f"delegate task remote agents {agent}")
 
     # Check for remote agent delegation first
     if agent and isinstance(agent, str) and agent.strip():
@@ -496,6 +511,7 @@ def delegate_task(
             return json.dumps({
                 "error": "Remote agent mode requires a 'goal' parameter."
             })
+        logger.info(f"delegate task goto remote agents {agent}")
         return _delegate_to_remote(
             agent_name=agent.strip(),
             goal=goal,

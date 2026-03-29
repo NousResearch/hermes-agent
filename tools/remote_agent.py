@@ -11,6 +11,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
 # Try to import httpx, fall back to requests
 try:
     import httpx
@@ -135,13 +137,13 @@ def _blocking_request(
     headers = {
         "Content-Type": "application/json",
     }
-    
-    api_key=agent_...ey")
+
+    api_key = agent_config.get("api_key")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     
     payload = {
-        "model": agent_config.get("model", "qwen3.5"),
+        "model": agent_config.get("model", "hermes-agent"),
         "messages": messages,
         "stream": False,
     }

@@ -747,7 +747,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 |--------|---------|-------|
 | `official` | `official/security/1password` | Optional skills shipped with Hermes. |
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
-| `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
+| `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills discovered from Agent Skills v0.2 `/.well-known/agent-skills/index.json` or the legacy v0.1 `/.well-known/skills/index.json`. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to `SKILL.md` plus explicitly referenced support files. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `browse-sh` | Source-specific identifiers | Community or marketplace integrations. |
@@ -786,9 +786,12 @@ hermes skills install skills-sh/vercel-labs/json-render/json-render-react --forc
 
 #### 3. Well-known skill endpoints (`well-known`)
 
-This is URL-based discovery from sites that publish `/.well-known/skills/index.json`. It is not a single centralized hub — it is a web discovery convention.
+This is URL-based discovery from sites that publish an Agent Skills well-known index. It is not a single centralized hub — it is a web discovery convention.
 
-- Example live endpoint: [Mintlify docs skills index](https://mintlify.com/docs/.well-known/skills/index.json)
+For a site or docs root, Hermes tries Agent Skills v0.2 at `/.well-known/agent-skills/index.json` first. A v0.2 `skill-md` entry advertises the exact skill file in its `url` field; Hermes validates and fetches that URL directly, so it does not have to follow a name-based directory layout. If the v0.2 endpoint is unavailable, Hermes falls back to the legacy v0.1 `/.well-known/skills/index.json` layout and its `files` arrays.
+
+- v0.2 discovery path: `/.well-known/agent-skills/index.json`
+- Example legacy v0.1 endpoint: [Mintlify docs skills index](https://mintlify.com/docs/.well-known/skills/index.json)
 - Reference server implementation: [vercel-labs/skills-handler](https://github.com/vercel-labs/skills-handler)
 - Example:
 

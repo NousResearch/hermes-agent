@@ -19,9 +19,16 @@ logger = logging.getLogger("tools.skills_hub")
 # --- Well-known Agent Skills endpoint source adapter ------------------------
 
 class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
-    """Read skills from a domain exposing /.well-known/skills/index.json."""
+    """Read skills from an Agent Skills well-known discovery endpoint.
+
+    Discovery prefers the v0.2 path and falls back to the legacy v0.1 path for
+    bare site URLs.  v0.2 entries advertise the skill file with an explicit
+    ``url``; that URL is preserved and fetched through the same guarded HTTP
+    path as the index instead of being reconstructed from the skill name.
+    """
 
     SOURCE_ID = "well-known"
+    AGENT_SKILLS_PATH = "/.well-known/agent-skills"
     BASE_PATH = "/.well-known/skills"
 
     def _meta(self, parsed: dict, skill_name: str, description: str, files: Any, **extra) -> SkillMeta:
@@ -33,30 +40,48 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
         )
 
     def search(self, query: str, limit: int = 10) -> list[SkillMeta]:
-        index_url = self._query_to_index_url(query)
-        parsed = self._parse_index(index_url) if index_url else None
+        parsed = None
+        candidates = self._query_to_index_urls(query)
+        for position, index_url in enumerate(candidates):
+            candidate = self._parse_index(index_url)
+            if candidate and candidate.get("status_code", 200) == 200:
+                parsed = candidate
+                break
+            is_v2_fallback = position == 0 and len(candidates) > 1
+            if not (is_v2_fallback and candidate and candidate.get("status_code") == 404):
+                return []
         if not parsed:
             return []
         results: list[SkillMeta] = []
-        for entry in parsed["skills"][:limit]:
+        for entry in parsed["skills"]:
+            if not isinstance(entry, dict) or not self._supported_entry(entry):
+                continue
             name = entry.get("name")
             if not isinstance(name, str) or not name:
                 continue
             files = entry.get("files", ["SKILL.md"])
+            skill_file_url = self._entry_skill_file_url(parsed, entry)
+            if entry.get("type") == "skill-md" and skill_file_url is None:
+                continue
             results.append(self._meta(parsed, name, str(entry.get("description", "")),
-                                      files if isinstance(files, list) else ["SKILL.md"]))
+                                      files if isinstance(files, list) else ["SKILL.md"],
+                                      skill_file_url=skill_file_url))
+            if len(results) >= limit:
+                break
         return results
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         parsed = self._parse_identifier(identifier)
         entry = self._index_entry(parsed["index_url"], parsed["skill_name"]) if parsed else None
-        skill_md = self._fetch_text(f"{parsed['skill_url']}/SKILL.md") if entry else None
+        skill_file_url = self._entry_skill_file_url(parsed, entry) if entry else None
+        skill_md = self._fetch_text(skill_file_url) if skill_file_url else None
         if skill_md is None:
             return None
         fm = _parse_frontmatter(skill_md)
         return self._meta(parsed, str(fm.get("name") or parsed["skill_name"]),
                           str(fm.get("description") or entry.get("description") or ""),
-                          entry.get("files", ["SKILL.md"]), endpoint=parsed["skill_url"])
+                          entry.get("files", ["SKILL.md"]), endpoint=skill_file_url,
+                          skill_file_url=skill_file_url)
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         parsed = self._parse_identifier(identifier)
@@ -68,42 +93,58 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             logger.warning("Well-known skill identifier contained unsafe skill name: %s", identifier)
             return None
         entry = self._index_entry(parsed["index_url"], parsed["skill_name"])
-        if not entry:
+        if not entry or not self._supported_entry(entry):
             return None
-        files = entry.get("files", ["SKILL.md"])
-        if not isinstance(files, list) or not files:
+        skill_file_url = self._entry_skill_file_url(parsed, entry)
+        if skill_file_url is None:
+            return None
+
+        if entry.get("type") == "skill-md":
+            skill_md = self._fetch_text(skill_file_url)
+            if skill_md is None:
+                return None
             files = ["SKILL.md"]
-        downloaded: dict[str, str] = {}
-        for rel_path in files:
-            if not isinstance(rel_path, str) or not rel_path:
-                continue
-            try:
-                safe_rel_path = _validate_bundle_rel_path(rel_path)
-            except ValueError:
-                logger.warning("Well-known skill %s advertised unsafe file path: %r", identifier, rel_path)
-                return None
-            text = self._fetch_text(f"{parsed['skill_url']}/{safe_rel_path}")
-            if text is None:
-                return None
-            downloaded[safe_rel_path] = text
+            downloaded = {"SKILL.md": skill_md}
+        else:
+            files = entry.get("files", ["SKILL.md"])
+            if not isinstance(files, list) or not files:
+                files = ["SKILL.md"]
+            downloaded: dict[str, str] = {}
+            for rel_path in files:
+                if not isinstance(rel_path, str) or not rel_path:
+                    continue
+                try:
+                    safe_rel_path = _validate_bundle_rel_path(rel_path)
+                except ValueError:
+                    logger.warning("Well-known skill %s advertised unsafe file path: %r", identifier, rel_path)
+                    return None
+                text = self._fetch_text(f"{parsed['skill_url']}/{safe_rel_path}")
+                if text is None:
+                    return None
+                downloaded[safe_rel_path] = text
         if "SKILL.md" not in downloaded:
             return None
         return SkillBundle(
             name=skill_name, files=downloaded, source="well-known",
             identifier=self._wrap_identifier(parsed["base_url"], skill_name), trust_level="community",
             metadata={"index_url": parsed["index_url"], "base_url": parsed["base_url"],
-                      "endpoint": parsed["skill_url"], "files": files},
+                      "endpoint": skill_file_url, "files": files},
         )
 
-    def _query_to_index_url(self, query: str) -> Optional[str]:
+    def _query_to_index_urls(self, query: str) -> list[str]:
         query = query.strip()
         if not query.startswith(("http://", "https://")):
-            return None
+            return []
         if query.endswith("/index.json"):
-            return query
-        if f"{self.BASE_PATH}/" in query:
-            return query.split(f"{self.BASE_PATH}/", 1)[0] + f"{self.BASE_PATH}/index.json"
-        return query.rstrip("/") + f"{self.BASE_PATH}/index.json"
+            return [query]
+        for path in (self.AGENT_SKILLS_PATH, self.BASE_PATH):
+            if f"{path}/" in query:
+                return [query.split(f"{path}/", 1)[0] + f"{path}/index.json"]
+        root = query.rstrip("/")
+        return [
+            f"{root}{self.AGENT_SKILLS_PATH}/index.json",
+            f"{root}{self.BASE_PATH}/index.json",
+        ]
 
     def _parse_identifier(self, identifier: str) -> Optional[dict]:
         raw = identifier.removeprefix("well-known:")
@@ -118,7 +159,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             skill_url = f"{base_url}/{skill_name}"
         else:
             skill_url = clean_url[:-len("/SKILL.md")] if clean_url.endswith("/SKILL.md") else clean_url.rstrip("/")
-            if f"{self.BASE_PATH}/" not in skill_url:
+            if not any(f"{path}/" in skill_url for path in (self.AGENT_SKILLS_PATH, self.BASE_PATH)):
                 return None
             base_url, skill_name = skill_url.rsplit("/", 1)
         return {"index_url": f"{base_url}/index.json", "base_url": base_url,
@@ -127,8 +168,15 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
     def _parse_index(self, index_url: str) -> Optional[dict]:
         def compute():
             resp = hub()._guarded_http_get(index_url, timeout=20)
-            if resp is None or resp.status_code != 200:
+            if resp is None:
                 return None
+            base = {
+                "index_url": index_url,
+                "base_url": index_url[:-len("/index.json")],
+                "status_code": resp.status_code,
+            }
+            if resp.status_code != 200:
+                return {**base, "skills": []}
             try:
                 data = resp.json()
             except json.JSONDecodeError:
@@ -136,7 +184,7 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
             skills = data.get("skills", []) if isinstance(data, dict) else []
             if not isinstance(skills, list):
                 return None
-            return {"index_url": index_url, "base_url": index_url[:-len("/index.json")], "skills": skills}
+            return {**base, "skills": skills}
 
         return _memo_json(f"well_known_index_{hashlib.md5(index_url.encode()).hexdigest()}", compute,
                           valid=lambda c: isinstance(c, dict) and isinstance(c.get("skills"), list))
@@ -144,7 +192,29 @@ class WellKnownSkillSource(GuardedFetchMixin, SkillSource):
     def _index_entry(self, index_url: str, skill_name: str) -> Optional[dict]:
         parsed = self._parse_index(index_url)
         skills = parsed["skills"] if parsed else []
-        return next((e for e in skills if isinstance(e, dict) and e.get("name") == skill_name), None)
+        return next((e for e in skills if isinstance(e, dict) and e.get("name") == skill_name
+                     and self._supported_entry(e)), None)
+
+    @staticmethod
+    def _supported_entry(entry: dict) -> bool:
+        """Accept v0.1 entries and the v0.2 skill-md entry type."""
+        entry_type = entry.get("type")
+        return entry_type is None or entry_type == "skill-md"
+
+    @staticmethod
+    def _entry_skill_file_url(parsed: dict, entry: dict) -> Optional[str]:
+        advertised_url = entry.get("url")
+        if advertised_url is not None:
+            if not isinstance(advertised_url, str) or not advertised_url.strip():
+                return None
+            resolved = urljoin(parsed["index_url"], advertised_url.strip())
+            if not resolved.startswith(("http://", "https://")):
+                return None
+            return resolved
+        if entry.get("type") == "skill-md":
+            return None
+        skill_url = parsed.get("skill_url")
+        return f"{skill_url}/SKILL.md" if skill_url else None
 
     @staticmethod
     def _wrap_identifier(base_url: str, skill_name: str) -> str:
@@ -171,11 +241,15 @@ class UrlSource(GuardedFetchMixin, SkillSource):
 
     def _matches(self, identifier: str) -> bool:
         """Claim bare HTTP(S) URLs ending in ``.md``; leave wrapped identifiers
-        and ``/.well-known/skills/`` URLs to their own adapters."""
+        and well-known discovery URLs to their own adapter."""
         if not isinstance(identifier, str):
             return False
         ident = identifier.strip()
-        if (not ident.lower().startswith(("http://", "https://")) or "/.well-known/skills/" in ident
+        if (not ident.lower().startswith(("http://", "https://"))
+                or any(f"{path}/" in ident for path in (
+                    WellKnownSkillSource.AGENT_SKILLS_PATH,
+                    WellKnownSkillSource.BASE_PATH,
+                ))
                 or ident.rstrip("/").endswith("/index.json")):
             return False
         try:

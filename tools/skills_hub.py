@@ -303,20 +303,20 @@ class GitHubSource(SkillSource):
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """
         Download a skill from GitHub.
-        identifier format: "owner/repo/path/to/skill-dir"
+        identifier format: "owner/repo/path/to/skill-dir" or "owner/repo" (root skill)
         """
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
-        skill_path = parts[2]
+        skill_path = parts[2] if len(parts) >= 3 else ""
 
         files = self._download_directory(repo, skill_path)
         if not files or "SKILL.md" not in files:
             return None
 
-        skill_name = skill_path.rstrip("/").split("/")[-1]
+        skill_name = skill_path.rstrip("/").split("/")[-1] if skill_path else parts[1]
         trust = self.trust_level_for(identifier)
 
         return SkillBundle(
@@ -330,19 +330,19 @@ class GitHubSource(SkillSource):
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
-        skill_path = parts[2].rstrip("/")
-        skill_md_path = f"{skill_path}/SKILL.md"
+        skill_path = parts[2].rstrip("/") if len(parts) >= 3 else ""
+        skill_md_path = f"{skill_path}/SKILL.md" if skill_path else "SKILL.md"
 
         content = self._fetch_file_content(repo, skill_md_path)
         if not content:
             return None
 
         fm = self._parse_frontmatter_quick(content)
-        skill_name = fm.get("name", skill_path.split("/")[-1])
+        skill_name = fm.get("name", skill_path.split("/")[-1] if skill_path else parts[1])
         description = fm.get("description", "")
 
         tags = []
@@ -452,13 +452,13 @@ class GitHubSource(SkillSource):
             return None
 
         # Filter to blobs under our target path and fetch content
-        prefix = f"{path}/"
+        prefix = f"{path}/" if path else ""
         files: Dict[str, str] = {}
         for item in tree_data.get("tree", []):
             if item.get("type") != "blob":
                 continue
             item_path = item.get("path", "")
-            if not item_path.startswith(prefix):
+            if prefix and not item_path.startswith(prefix):
                 continue
             rel_path = item_path[len(prefix):]
             content = self._fetch_file_content(repo, item_path)

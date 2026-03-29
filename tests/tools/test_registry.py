@@ -17,6 +17,13 @@ def _make_schema(name="test_tool"):
     }
 
 
+def _make_schema_without_name():
+    return {
+        "description": "A tool without name in schema",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+
 class TestRegisterAndDispatch:
     def test_register_and_dispatch(self):
         reg = ToolRegistry()
@@ -309,3 +316,64 @@ class TestSecretCaptureResultContract:
             "validated": False,
         }
         assert "secret" not in json.dumps(result).lower()
+
+
+class TestSchemaNameNormalization:
+    def test_schema_missing_name_gets_canonical_name(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="my_tool",
+            toolset="core",
+            schema=_make_schema_without_name(),
+            handler=_dummy_handler,
+        )
+        defs = reg.get_definitions({"my_tool"})
+        assert defs[0]["function"]["name"] == "my_tool"
+
+    def test_schema_missing_name_no_keyerror_in_comprehension(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="bare_tool",
+            toolset="core",
+            schema=_make_schema_without_name(),
+            handler=_dummy_handler,
+        )
+        defs = reg.get_definitions({"bare_tool"})
+        names = {t["function"]["name"] for t in defs}
+        assert "bare_tool" in names
+
+    def test_existing_schema_name_preserved_when_present(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="different_canonical",
+            toolset="core",
+            schema=_make_schema("existing_name"),
+            handler=_dummy_handler,
+        )
+        defs = reg.get_definitions({"different_canonical"})
+        assert defs[0]["function"]["name"] == "existing_name"
+
+    def test_mixed_tools_some_missing_name(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="tool_a",
+            toolset="core",
+            schema=_make_schema("tool_a"),
+            handler=_dummy_handler,
+        )
+        reg.register(
+            name="tool_b",
+            toolset="core",
+            schema=_make_schema_without_name(),
+            handler=_dummy_handler,
+        )
+        reg.register(
+            name="tool_c",
+            toolset="core",
+            schema=_make_schema_without_name(),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        defs = reg.get_definitions({"tool_a", "tool_b", "tool_c"})
+        assert len(defs) == 2
+        assert {d["function"]["name"] for d in defs} == {"tool_a", "tool_b"}

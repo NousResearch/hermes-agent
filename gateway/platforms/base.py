@@ -175,29 +175,51 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     return str(filepath)
 
 
-async def cache_audio_from_url(url: str, ext: str = ".ogg") -> str:
+async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
     """
     Download an audio file from a URL and save it to the local cache.
+
+    Retries on transient failures (timeouts, 429, 5xx) with exponential
+    backoff so a single slow CDN response doesn't lose the media.
 
     Args:
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".ogg", ".mp3").
+        retries: Number of retry attempts on transient failures.
 
     Returns:
         Absolute path to the cached audio file as a string.
     """
+    import asyncio
     import httpx
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
 
+    last_exc = None
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                "Accept": "audio/*,*/*;q=0.8",
-            },
-        )
-        response.raise_for_status()
-        return cache_audio_from_bytes(response.content, ext)
+        for attempt in range(retries + 1):
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
+                        "Accept": "audio/*,*/*;q=0.8",
+                    },
+                )
+                response.raise_for_status()
+                return cache_audio_from_bytes(response.content, ext)
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                last_exc = exc
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                    raise
+                if attempt < retries:
+                    wait = 1.5 * (attempt + 1)
+                    _log.debug("Audio cache retry %d/%d for %s (%.1fs): %s",
+                               attempt + 1, retries, url[:80], wait, exc)
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+    raise last_exc
 
 
 # ---------------------------------------------------------------------------

@@ -730,7 +730,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     # Build a live status function that shows deduplicated total token cost.
     status_fn = None
     if tool_tokens:
-        ts_keys = [ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS]
+        ts_keys = [ts_key for ts_key, _, _ in effective]
 
         def status_fn(chosen: set) -> str:
             # Collect unique tool names across all selected toolsets

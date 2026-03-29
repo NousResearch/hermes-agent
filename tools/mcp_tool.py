@@ -98,6 +98,13 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
+    # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
+    # deprecated wrapper for older SDK versions.
+    try:
+        from mcp.client.streamable_http import streamable_http_client
+        _MCP_NEW_HTTP = True
+    except ImportError:
+        _MCP_NEW_HTTP = False
     # Sampling types -- separated so older SDK versions don't break MCP support
     try:
         from mcp.types import (
@@ -762,21 +769,50 @@ class MCPServerTask:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
-        _http_kwargs: dict = {
-            "headers": headers,
-            "timeout": float(connect_timeout),
-        }
-        if _oauth_auth is not None:
-            _http_kwargs["auth"] = _oauth_auth
-        async with streamablehttp_client(url, **_http_kwargs) as (
-            read_stream, write_stream, _get_session_id,
-        ):
-            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
-                await session.initialize()
-                self.session = session
-                await self._discover_tools()
-                self._ready.set()
-                await self._shutdown_event.wait()
+
+        if _MCP_NEW_HTTP:
+            # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
+            # matching the SDK's own create_mcp_http_client defaults.
+            import httpx
+
+            client_kwargs: dict = {
+                "follow_redirects": True,
+                "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
+            }
+            if headers:
+                client_kwargs["headers"] = headers
+            if _oauth_auth is not None:
+                client_kwargs["auth"] = _oauth_auth
+
+            # Caller owns the client lifecycle — the SDK skips cleanup when
+            # http_client is provided, so we wrap in async-with.
+            async with httpx.AsyncClient(**client_kwargs) as http_client:
+                async with streamable_http_client(url, http_client=http_client) as (
+                    read_stream, write_stream, _get_session_id,
+                ):
+                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                        await session.initialize()
+                        self.session = session
+                        await self._discover_tools()
+                        self._ready.set()
+                        await self._shutdown_event.wait()
+        else:
+            # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+            _http_kwargs: dict = {
+                "headers": headers,
+                "timeout": float(connect_timeout),
+            }
+            if _oauth_auth is not None:
+                _http_kwargs["auth"] = _oauth_auth
+            async with streamablehttp_client(url, **_http_kwargs) as (
+                read_stream, write_stream, _get_session_id,
+            ):
+                async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    await session.initialize()
+                    self.session = session
+                    await self._discover_tools()
+                    self._ready.set()
+                    await self._shutdown_event.wait()
 
     async def _discover_tools(self):
         """Discover tools from the connected session."""

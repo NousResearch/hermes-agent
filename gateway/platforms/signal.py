@@ -460,7 +460,7 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
                 try:
-                    cached_path, ext = await self._fetch_attachment(att_id)
+                    cached_path, ext = await self._fetch_attachment(att_id, sender=sender, group_id=group_id)
                     if cached_path:
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
@@ -517,12 +517,28 @@ class SignalAdapter(BasePlatformAdapter):
     # Attachment Handling
     # ------------------------------------------------------------------
 
-    async def _fetch_attachment(self, attachment_id: str) -> tuple:
+    async def _fetch_attachment(self, attachment_id: str, sender: Optional[str] = None, group_id: Optional[str] = None) -> tuple:
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
-        result = await self._rpc("getAttachment", {
+        # Per signal-cli GetAttachmentCommand.java:
+        #   subparser.addArgument("--id").required(true)...
+        #   mut.addArgument("--recipient")...
+        #   mut.addArgument("-g", "--group-id")...
+        # Per signal-cli-jsonrpc man page (line 87-89):
+        #   JSON-RPC uses camelCase for parameters, e.g. --group-id becomes "groupId"
+        # Requires: 'id' (not 'attachmentId'), and either 'recipient' or 'groupId'
+        params = {
             "account": self.account,
-            "attachmentId": attachment_id,
-        })
+            "id": attachment_id,
+        }
+        if group_id:
+            params["groupId"] = group_id
+        elif sender:
+            params["recipient"] = sender
+        else:
+            # Fallback: try with sender as the account itself (for Note to Self)
+            params["recipient"] = self.account
+        
+        result = await self._rpc("getAttachment", params)
 
         if not result:
             return None, ""

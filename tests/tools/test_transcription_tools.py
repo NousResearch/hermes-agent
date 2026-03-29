@@ -96,6 +96,7 @@ class TestGetProviderFallbackPriority:
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             assert _get_provider({}) == "groq"
@@ -130,9 +131,10 @@ class TestExplicitProviderRespected:
     def test_explicit_local_no_fallback_to_openai(self, monkeypatch):
         """GH-1774: provider=local must not silently fall back to openai
         even when an OpenAI API key is set."""
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key-here")
+        monkeypatch.setenv("OPENAI_API_KEY", "***")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
@@ -141,6 +143,7 @@ class TestExplicitProviderRespected:
     def test_explicit_local_no_fallback_to_groq(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
@@ -181,6 +184,7 @@ class TestExplicitProviderRespected:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             # Empty dict = no explicit provider, uses DEFAULT_PROVIDER auto-detect
@@ -191,6 +195,7 @@ class TestExplicitProviderRespected:
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({})

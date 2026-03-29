@@ -5965,7 +5965,8 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
-    def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str) -> str:
+    def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
+                     tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -6033,6 +6034,8 @@ class AIAgent:
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
+                tool_call_id=tool_call_id,
+                session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
             )
 
@@ -6134,7 +6137,7 @@ class AIAgent:
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id)
+                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -6452,6 +6455,8 @@ class AIAgent:
                 try:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
+                        tool_call_id=tool_call.id,
+                        session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                     )
                     _spinner_result = function_result
@@ -6469,6 +6474,8 @@ class AIAgent:
                 try:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
+                        tool_call_id=tool_call.id,
+                        session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                     )
                 except Exception as tool_error:
@@ -7273,7 +7280,26 @@ class AIAgent:
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
-                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
+                    try:
+                        from hermes_cli.plugins import invoke_hook
+                        invoke_hook(
+                            "pre_llm_request",
+                            task_id=effective_task_id,
+                            session_id=self.session_id or "",
+                            platform=self.platform or "",
+                            model=self.model,
+                            provider=self.provider,
+                            base_url=self.base_url,
+                            api_mode=self.api_mode,
+                            api_call_count=api_call_count,
+                            messages=api_messages,
+                            max_tokens=self.max_tokens,
+                            tools=self.tools or [],
+                        )
+                    except Exception:
+                        pass
+
+                    if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
                     # Always prefer the streaming path — even without stream
@@ -8358,6 +8384,27 @@ class AIAgent:
                         assistant_message.content = "\n".join(parts)
                     else:
                         assistant_message.content = str(raw)
+
+                try:
+                    from hermes_cli.plugins import invoke_hook
+                    invoke_hook(
+                        "post_llm_request",
+                        task_id=effective_task_id,
+                        session_id=self.session_id or "",
+                        platform=self.platform or "",
+                        model=self.model,
+                        provider=self.provider,
+                        base_url=self.base_url,
+                        api_mode=self.api_mode,
+                        api_call_count=api_call_count,
+                        api_duration=api_duration,
+                        finish_reason=finish_reason,
+                        messages=api_messages,
+                        response=response,
+                        assistant_message=assistant_message,
+                    )
+                except Exception:
+                    pass
 
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:

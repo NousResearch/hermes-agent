@@ -196,6 +196,10 @@ class TestPluginLoading:
 class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
+    def test_valid_hooks_include_request_scoped_llm_hooks(self):
+        assert "pre_llm_request" in VALID_HOOKS
+        assert "post_llm_request" in VALID_HOOKS
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -261,6 +265,28 @@ class TestPluginHooks:
         results = mgr.invoke_hook("post_llm_call", session_id="s1",
                                   user_message="hi", assistant_response="bye", model="test")
         assert results == []
+
+    def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "request_hook",
+            register_body='ctx.register_hook("pre_llm_request", lambda **kw: {"seen": kw.get("api_call_count")})',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_llm_request",
+            session_id="s1",
+            task_id="t1",
+            model="test",
+            api_call_count=2,
+            messages=[],
+            tools=[],
+        )
+        assert results == [{"seen": 2}]
 
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""

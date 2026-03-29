@@ -1054,10 +1054,12 @@ def setup_model_provider(config: dict):
         # env saving, config.yaml updates, and custom_providers persistence.
         from hermes_cli.main import _model_flow_custom
         _model_flow_custom(config)
-        # _model_flow_custom handles model selection, config, env vars,
-        # and custom_providers. Keep selected_provider = "custom" so
-        # the model selection step below is skipped (line 1631 check)
-        # but vision and TTS setup still run.
+        # _model_flow_custom saves config independently (loads its own copy).
+        # Reload here so the final save_config(config) below doesn't overwrite it.
+        from hermes_cli.config import load_config as _reload_config
+        config.update(_reload_config())
+        # Keep selected_provider = "custom" so the model selection step below is
+        # skipped (line 1631 check) but vision and TTS setup still run.
 
     elif provider_idx == 4:  # Z.AI / GLM
         selected_provider = "zai"

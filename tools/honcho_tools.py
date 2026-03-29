@@ -45,8 +45,23 @@ def clear_session_context() -> None:
 # ── Availability check ──
 
 def _check_honcho_available() -> bool:
-    """Tool is only available when Honcho is active."""
-    return _session_manager is not None and _session_key is not None
+    """Tool is available when Honcho is active OR configured.
+
+    At banner time the session context hasn't been injected yet, but if
+    a valid config exists the tools *will* activate once the agent starts.
+    Returning True for "configured" prevents the banner from marking
+    honcho tools as red/disabled when they're actually going to work.
+    """
+    # Fast path: session already active (mid-conversation)
+    if _session_manager is not None and _session_key is not None:
+        return True
+    # Slow path: check if Honcho is configured (banner time)
+    try:
+        from honcho_integration.client import HonchoClientConfig
+        cfg = HonchoClientConfig.from_global_config()
+        return cfg.enabled and bool(cfg.api_key or cfg.base_url)
+    except Exception:
+        return False
 
 
 def _resolve_session_context(**kwargs):

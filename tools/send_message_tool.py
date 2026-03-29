@@ -343,6 +343,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
+        elif platform == Platform.MATTERMOST:
+            result = await _send_mattermost(pconfig, chat_id, chunk, thread_id=thread_id)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -664,6 +666,42 @@ async def _send_sms(auth_token, chat_id, message):
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": msg_sid}
     except Exception as e:
         return {"error": f"SMS send failed: {e}"}
+
+
+async def _send_mattermost(pconfig, chat_id, message, thread_id=None):
+    """Send a single message to a Mattermost channel via REST API.
+
+    Uses a direct aiohttp POST to /api/v4/posts — no adapter instantiation
+    needed, matching the same pattern as _send_discord and _send_slack.
+    Chunking is handled by _send_to_platform() before this is called.
+    thread_id maps to Mattermost's root_id for threaded replies.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        base_url = pconfig.extra.get("url", "").rstrip("/")
+        token = pconfig.token or pconfig.api_key
+        url = f"{base_url}/api/v4/posts"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {"channel_id": chat_id, "message": message}
+        if thread_id:
+            payload["root_id"] = thread_id
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "platform": "mattermost",
+                        "chat_id": chat_id,
+                        "message_id": data.get("id"),
+                    }
+                body = await resp.text()
+                return {"error": f"Mattermost API error ({resp.status}): {body}"}
+    except Exception as e:
+        return {"error": f"Mattermost send failed: {e}"}
 
 
 def _check_send_message():

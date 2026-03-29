@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import _send_mattermost, _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -504,3 +504,98 @@ class TestSendTelegramHtmlDetection:
         assert bot.send_message.await_count == 2
         second_call = bot.send_message.await_args_list[1].kwargs
         assert second_call["parse_mode"] is None
+
+
+# ---------------------------------------------------------------------------
+# Mattermost direct send (_send_mattermost and _send_to_platform routing)
+# ---------------------------------------------------------------------------
+
+
+class TestSendMattermost:
+    def _make_pconfig(self, url="https://mattermost.example.com"):
+        return SimpleNamespace(
+            enabled=True,
+            token="xoxb-test-token",
+            api_key=None,
+            extra={"url": url},
+        )
+
+    def test_routes_to_send_mattermost(self):
+        """Platform.MATTERMOST routes through _send_mattermost, not the else branch."""
+        mock = AsyncMock(return_value={"success": True, "platform": "mattermost", "chat_id": "ch123", "message_id": "m1"})
+        with patch("tools.send_message_tool._send_mattermost", mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATTERMOST,
+                    self._make_pconfig(),
+                    "ch123",
+                    "hello",
+                )
+            )
+        assert result["success"] is True
+        mock.assert_awaited_once()
+
+    def test_send_mattermost_success(self):
+        """_send_mattermost returns success dict with message_id on HTTP 201."""
+        pconfig = self._make_pconfig()
+        fake_resp = AsyncMock()
+        fake_resp.status = 201
+        fake_resp.json = AsyncMock(return_value={"id": "post-abc"})
+
+        fake_session = MagicMock()
+        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+        fake_session.__aexit__ = AsyncMock(return_value=False)
+        fake_session.post.return_value.__aenter__ = AsyncMock(return_value=fake_resp)
+        fake_session.post.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=fake_session):
+            result = asyncio.run(_send_mattermost(pconfig, "ch123", "hello"))
+
+        assert result == {"success": True, "platform": "mattermost", "chat_id": "ch123", "message_id": "post-abc"}
+
+    def test_send_mattermost_thread_id_sets_root_id(self):
+        """When thread_id is provided, payload includes root_id for threaded replies."""
+        pconfig = self._make_pconfig()
+        captured = {}
+
+        fake_resp = AsyncMock()
+        fake_resp.status = 201
+        fake_resp.json = AsyncMock(return_value={"id": "post-xyz"})
+
+        fake_cm = MagicMock()
+        fake_cm.__aenter__ = AsyncMock(return_value=fake_resp)
+        fake_cm.__aexit__ = AsyncMock(return_value=False)
+
+        fake_session = MagicMock()
+        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+        fake_session.__aexit__ = AsyncMock(return_value=False)
+
+        def capturing_post(url, headers=None, json=None):
+            captured["payload"] = json
+            return fake_cm
+
+        fake_session.post = capturing_post
+
+        with patch("aiohttp.ClientSession", return_value=fake_session):
+            asyncio.run(_send_mattermost(pconfig, "ch123", "reply", thread_id="root-1"))
+
+        assert captured["payload"]["root_id"] == "root-1"
+
+    def test_send_mattermost_api_error(self):
+        """Non-2xx response returns an error dict with status and body."""
+        pconfig = self._make_pconfig()
+        fake_resp = AsyncMock()
+        fake_resp.status = 403
+        fake_resp.text = AsyncMock(return_value="Forbidden")
+
+        fake_session = MagicMock()
+        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+        fake_session.__aexit__ = AsyncMock(return_value=False)
+        fake_session.post.return_value.__aenter__ = AsyncMock(return_value=fake_resp)
+        fake_session.post.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=fake_session):
+            result = asyncio.run(_send_mattermost(pconfig, "ch123", "hello"))
+
+        assert "error" in result
+        assert "403" in result["error"]

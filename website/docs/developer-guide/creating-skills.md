@@ -168,10 +168,37 @@ required_environment_variables:
 The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
 
 :::tip Sandbox Passthrough
-When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
 :::
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
+
+### Credential File Requirements (OAuth tokens, etc.)
+
+Skills that use OAuth or file-based credentials can declare files that need to be mounted into remote sandboxes. This is for credentials stored as **files** (not env vars) — typically OAuth token files produced by a setup script.
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+Each entry supports:
+- `path` (required) — file path relative to `~/.hermes/`
+- `description` (optional) — explains what the file is and how it's created
+
+When loaded, Hermes checks if these files exist. Missing files trigger `setup_needed`. Existing files are automatically:
+- **Mounted into Docker** containers as read-only bind mounts
+- **Synced into Modal** sandboxes (at creation + before each command, so mid-session OAuth works)
+- Available on **local** backend without any special handling
+
+:::tip When to use which
+Use `required_environment_variables` for simple API keys and tokens (strings stored in `~/.hermes/.env`). Use `required_credential_files` for OAuth token files, client secrets, service account JSON, certificates, or any credential that's a file on disk.
+:::
+
+See the `skills/productivity/google-workspace/SKILL.md` for a complete example using both.
 
 ## Skill Guidelines
 

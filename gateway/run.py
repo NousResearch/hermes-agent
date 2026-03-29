@@ -77,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from utils import atomic_yaml_write
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -3095,8 +3096,7 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = ""
-                with open(config_path, "w") as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                atomic_yaml_write(config_path, config)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
             self._ephemeral_system_prompt = ""
@@ -3109,8 +3109,7 @@ class GatewayRunner:
                 if "agent" not in config or not isinstance(config.get("agent"), dict):
                     config["agent"] = {}
                 config["agent"]["system_prompt"] = new_prompt
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                atomic_yaml_write(config_path, config)
             except Exception as e:
                 return f"⚠️ Failed to save personality change: {e}"
 
@@ -3200,8 +3199,7 @@ class GatewayRunner:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
             user_config[env_key] = chat_id
-            with open(config_path, 'w', encoding="utf-8") as f:
-                yaml.dump(user_config, f, default_flow_style=False)
+            atomic_yaml_write(config_path, user_config)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
         except Exception as e:
@@ -3869,8 +3867,7 @@ class GatewayRunner:
                         current[k] = {}
                     current = current[k]
                 current[keys[-1]] = value
-                with open(config_path, "w", encoding="utf-8") as f:
-                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+                atomic_yaml_write(config_path, user_config)
                 return True
             except Exception as e:
                 logger.error("Failed to save config key %s: %s", key_path, e)
@@ -3978,8 +3975,7 @@ class GatewayRunner:
             if "display" not in user_config or not isinstance(user_config.get("display"), dict):
                 user_config["display"] = {}
             user_config["display"]["tool_progress"] = new_mode
-            with open(config_path, "w", encoding="utf-8") as f:
-                yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+            atomic_yaml_write(config_path, user_config)
             return f"{descriptions[new_mode]}\n_(saved to config — takes effect on next message)_"
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)

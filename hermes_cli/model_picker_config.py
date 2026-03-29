@@ -246,6 +246,9 @@ def get_current_model_selection() -> tuple[str, str]:
 def format_model_selection(provider: str | None, model: str | None) -> str:
     provider = (provider or "").strip()
     model = (model or "").strip()
+    # Strip provider prefix if already in model ID (e.g. "ollama-cloud/glm-5" → "glm-5")
+    if provider and model and model.startswith(f"{provider}/"):
+        model = model[len(provider) + 1:]
     if provider and model:
         return f"{provider}/{model}"
     return model or "(not set)"

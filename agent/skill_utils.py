@@ -158,6 +158,73 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── External skills directories ──────────────────────────────────────────
+
+
+def get_external_skills_dirs() -> List[Path]:
+    """Read ``skills.external_dirs`` from config.yaml and return validated paths.
+
+    Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
+    path.  Only directories that actually exist are returned.  Duplicates and
+    paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
+    """
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (get_hermes_home() / "skills").resolve()
+    seen: Set[Path] = set()
+    result: List[Path] = []
+
+    for entry in raw_dirs:
+        entry = str(entry).strip()
+        if not entry:
+            continue
+        # Expand ~ and environment variables
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        p = Path(expanded).resolve()
+        if p == local_skills:
+            continue
+        if p in seen:
+            continue
+        if p.is_dir():
+            seen.add(p)
+            result.append(p)
+        else:
+            logger.debug("External skills dir does not exist, skipping: %s", p)
+
+    return result
+
+
+def get_all_skills_dirs() -> List[Path]:
+    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+
+    The local dir is always first (and always included even if it doesn't exist
+    yet — callers handle that).  External dirs follow in config order.
+    """
+    dirs = [get_hermes_home() / "skills"]
+    dirs.extend(get_external_skills_dirs())
+    return dirs
+
+
 # ── Condition extraction ──────────────────────────────────────────────────
 
 

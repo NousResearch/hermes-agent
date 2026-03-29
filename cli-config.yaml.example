@@ -402,6 +402,15 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # External skill directories — share skills across tools/agents without
+  # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
+  # and resolved to an absolute path.  External dirs are read-only: skill
+  # creation always writes to ~/.hermes/skills/.  Local skills take precedence
+  # when names collide.
+  # external_dirs:
+  #   - ~/.agents/skills
+  #   - /home/shared/team-skills
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

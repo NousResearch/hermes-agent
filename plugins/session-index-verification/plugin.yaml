@@ -1,0 +1,15 @@
+name: session-index-verification
+version: 1.0.0
+description: |
+  Verifies and reconstructs missing session index on startup.
+  
+  When Hermes crashes or restarts abruptly, sessions may be saved as JSON files
+  but not indexed in the SQLite database. This plugin detects and fixes that
+  automatically on every session start.
+  
+author: Hermes Community
+requires_env: []
+provides_tools:
+  - verify_session_index
+provides_hooks:
+  - on_session_start

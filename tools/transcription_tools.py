@@ -2,12 +2,13 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with four providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **qwen** — Alibaba DashScope Paraformer ASR, requires ``DASHSCOPE_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 import importlib.util as _ilu
 _HAS_FASTER_WHISPER = _ilu.find_spec("faster_whisper") is not None
 _HAS_OPENAI = _ilu.find_spec("openai") is not None
+_HAS_DASHSCOPE = _ilu.find_spec("dashscope") is not None
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -67,6 +69,13 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+QWEN_STT_MODELS = {
+    "paraformer-v2",
+    "paraformer-8k-v2",
+    "qwen3-asr-flash",
+    "qwen3-asr-flash-filetrans",
+}
+DEFAULT_QWEN_STT_MODEL = os.getenv("STT_QWEN_MODEL", "paraformer-v2")
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -217,9 +226,18 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "qwen":
+            if _HAS_DASHSCOPE and os.getenv("DASHSCOPE_API_KEY"):
+                return "qwen"
+            logger.warning(
+                "STT provider 'qwen' configured but DASHSCOPE_API_KEY not set "
+                "or dashscope package not installed"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+    # --- Auto-detect (no explicit provider): local > groq > openai > qwen ---
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -231,6 +249,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _resolve_openai_api_key():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
+    if _HAS_DASHSCOPE and os.getenv("DASHSCOPE_API_KEY"):
+        logger.info("No local STT available, using Qwen Paraformer ASR")
+        return "qwen"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -483,6 +504,80 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: qwen (DashScope Paraformer ASR)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_qwen(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Alibaba DashScope Paraformer ASR."""
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "DASHSCOPE_API_KEY not set"}
+
+    if not _HAS_DASHSCOPE:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "dashscope package not installed. Run: pip install dashscope",
+        }
+
+    try:
+        import dashscope
+        from dashscope.audio.asr import Transcription
+
+        dashscope.api_key = api_key
+
+        # async_call + wait — SDK handles local file upload transparently
+        submit = Transcription.async_call(
+            model=model_name,
+            file_urls=[file_path],
+        )
+
+        if submit.status_code != 200:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Qwen ASR submission failed (HTTP {submit.status_code}): {submit.message}",
+            }
+
+        result = Transcription.wait(task=submit.output.task_id)
+
+        if result.output.task_status != "SUCCEEDED":
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Qwen ASR task failed: {result.output.task_status}",
+            }
+
+        # Extract transcript — prefer sentence-level text, fall back to top-level text
+        results = result.output.results or []
+        parts = []
+        for r in results:
+            transcription = r.get("transcription", {})
+            sentences = transcription.get("sentences") or []
+            if sentences:
+                parts.extend(s.get("text", "") for s in sentences)
+            else:
+                top_text = transcription.get("text", "")
+                if top_text:
+                    parts.append(top_text)
+
+        transcript = " ".join(parts).strip()
+
+        logger.info(
+            "Transcribed %s via Qwen ASR (%s, %d chars)",
+            Path(file_path).name, model_name, len(transcript),
+        )
+        return {"success": True, "transcript": transcript, "provider": "qwen"}
+
+    except ImportError as e:
+        return {"success": False, "transcript": "", "error": f"dashscope import failed: {e}"}
+    except Exception as e:
+        logger.error("Qwen ASR transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Qwen ASR failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -543,6 +638,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
 
+    if provider == "qwen":
+        qwen_cfg = stt_config.get("qwen", {})
+        model_name = model or qwen_cfg.get("model", DEFAULT_QWEN_STT_MODEL)
+        return _transcribe_qwen(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -550,7 +650,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "set GROQ_API_KEY for free Groq Whisper, set VOICE_TOOLS_OPENAI_KEY "
+            "or OPENAI_API_KEY for the OpenAI Whisper API, or set DASHSCOPE_API_KEY "
+            "and install dashscope (pip install dashscope) for Qwen Paraformer ASR."
         ),
     }

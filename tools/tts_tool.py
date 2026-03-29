@@ -2,11 +2,12 @@
 """
 Text-to-Speech Tool Module
 
-Supports four TTS providers:
+Supports five TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- Qwen TTS: Alibaba DashScope CosyVoice, needs DASHSCOPE_API_KEY and dashscope package
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -74,6 +75,8 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
+DEFAULT_QWEN_TTS_MODEL = "cosyvoice-v2"
+DEFAULT_QWEN_TTS_VOICE = "longxiaochun"
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
     return str(get_hermes_dir("cache/audio", "audio_cache"))
@@ -342,6 +345,54 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 
 # ===========================================================================
+# Provider: Qwen TTS (DashScope CosyVoice)
+# ===========================================================================
+
+def _generate_qwen_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Alibaba DashScope CosyVoice TTS.
+
+    Args:
+        text: Text to synthesise.
+        output_path: Where to save the MP3 file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "DASHSCOPE_API_KEY not set. Get one at https://dashscope.console.aliyun.com/"
+        )
+
+    try:
+        import dashscope
+        from dashscope.audio.tts_v2 import SpeechSynthesizer
+    except ImportError as e:
+        raise ImportError(
+            f"dashscope package not installed. Run: pip install dashscope ({e})"
+        ) from e
+
+    qwen_cfg = tts_config.get("qwen", {})
+    model = qwen_cfg.get("model", DEFAULT_QWEN_TTS_MODEL)
+    voice = qwen_cfg.get("voice", DEFAULT_QWEN_TTS_VOICE)
+
+    dashscope.api_key = api_key
+
+    synthesizer = SpeechSynthesizer(model=model, voice=voice)
+    audio = synthesizer.call(text)
+
+    audio_data = audio.get_audio_data()
+    if not audio_data:
+        raise RuntimeError(f"Qwen TTS returned empty audio (model={model}, voice={voice})")
+
+    with open(output_path, "wb") as f:
+        f.write(audio_data)
+
+    return output_path
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -392,7 +443,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs"):
+        if want_opus and provider in ("openai", "elevenlabs", "qwen"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -434,6 +485,21 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
+
+        elif provider == "qwen":
+            import importlib.util as _ilu
+            if not os.getenv("DASHSCOPE_API_KEY"):
+                return json.dumps({
+                    "success": False,
+                    "error": "Qwen TTS provider selected but DASHSCOPE_API_KEY not set.",
+                }, ensure_ascii=False)
+            if _ilu.find_spec("dashscope") is None:
+                return json.dumps({
+                    "success": False,
+                    "error": "Qwen TTS provider selected but dashscope package not installed. Run: pip install dashscope",
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Qwen TTS (DashScope)...")
+            _generate_qwen_tts(text, file_str, tts_config)
 
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
@@ -480,7 +546,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai"):
+        elif provider in ("elevenlabs", "openai", "qwen"):
             # These providers can output Opus natively if the path ends in .ogg
             voice_compatible = file_str.endswith(".ogg")
 

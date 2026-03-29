@@ -134,6 +134,8 @@ PLATFORMS = {
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
+    "qq": {"label": "💬 QQ Bot", "default_toolset": "hermes-qq"},
+
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
 }
 

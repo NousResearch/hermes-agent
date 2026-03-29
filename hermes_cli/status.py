@@ -254,6 +254,7 @@ def show_status(args):
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "QQ": ("QQ_BOT_APP_ID", "QQ_BOT_APP_SECRET"),
     }
     
     for name, (token_var, home_var) in platforms.items():

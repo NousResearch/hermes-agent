@@ -39,6 +39,15 @@ _PREFIX_PATTERNS = [
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
 ]
 
+# QQ OpenID redaction pattern (openid_<id>)
+_QQ_OPENID_PATTERN = re.compile(r"openid_[a-zA-Z0-9]{20,}")
+
+
+def redact_openid(text: str) -> str:
+    """Redact QQ OpenID while preserving first 8 chars for debugging."""
+    return _QQ_OPENID_PATTERN.sub(lambda m: m.group(0)[:8] + "***", text)
+
+
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
@@ -111,6 +120,9 @@ def redact_sensitive_text(text: str) -> str:
 
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
+
+    # OpenID redaction (openid_... tokens)
+    text = redact_openid(text)
 
     # ENV assignments: OPENAI_API_KEY=sk-abc...
     def _redact_env(m):

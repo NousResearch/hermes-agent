@@ -339,6 +339,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-qq": {
+        "description": "QQ Bot platform tools (requires QQ_BOT_APP_ID and QQ_BOT_APP_SECRET)",
+        "tools": ["send_message"],
+        "includes": [],
+        "check_fn": lambda: os.getenv("QQ_BOT_APP_ID") and os.getenv("QQ_BOT_APP_SECRET"),
+    },
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],

@@ -130,6 +130,8 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+    
+        "qq": Platform.QQ,
     }
     platform = platform_map.get(platform_name)
     if not platform:

@@ -813,6 +813,29 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
 
+    def test_remote_backend_treats_persisted_env_as_available(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "remote-ready",
+                frontmatter_extra="prerequisites:\n  env_vars: [PERSISTED_REMOTE_KEY]\n",
+            )
+            from hermes_cli.config import save_env_value
+
+            save_env_value("PERSISTED_REMOTE_KEY", "persisted-value")
+            monkeypatch.delenv("PERSISTED_REMOTE_KEY", raising=False)
+            raw = skill_view("remote-ready")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["setup_needed"] is False
+        assert result["missing_required_environment_variables"] == []
+        assert result["readiness_status"] == "available"
+
     def test_no_setup_metadata_when_no_required_envs(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "plain-skill")
@@ -878,17 +901,11 @@ class TestSkillViewPrerequisites:
         assert result["setup_needed"] is True
 
     @pytest.mark.parametrize(
-        "backend,expected_note",
-        [
-            ("ssh", "remote environment"),
-            ("daytona", "remote environment"),
-            ("docker", "docker-backed skills"),
-            ("singularity", "singularity-backed skills"),
-            ("modal", "modal-backed skills"),
-        ],
+        "backend",
+        ["ssh", "daytona", "docker", "singularity", "modal"],
     )
-    def test_remote_backend_keeps_setup_needed_after_local_secret_capture(
-        self, tmp_path, monkeypatch, backend, expected_note
+    def test_remote_backend_becomes_available_after_local_secret_capture(
+        self, tmp_path, monkeypatch, backend
     ):
         monkeypatch.setenv("TERMINAL_ENV", backend)
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
@@ -926,10 +943,10 @@ class TestSkillViewPrerequisites:
         result = json.loads(raw)
         assert result["success"] is True
         assert len(calls) == 1
-        assert result["setup_needed"] is True
-        assert result["readiness_status"] == "setup_needed"
-        assert result["missing_required_environment_variables"] == ["TENOR_API_KEY"]
-        assert expected_note in result["setup_note"].lower()
+        assert result["setup_needed"] is False
+        assert result["readiness_status"] == "available"
+        assert result["missing_required_environment_variables"] == []
+        assert "setup_note" not in result
 
     def test_skill_view_surfaces_skill_read_errors(self, tmp_path, monkeypatch):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

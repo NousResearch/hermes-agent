@@ -488,7 +488,8 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             # Acquire scoped lock to prevent duplicate bot token usage
             from gateway.status import acquire_scoped_lock
-            acquired, existing = acquire_scoped_lock('discord-bot-token', self.config.token, metadata={'platform': 'discord'})
+            self._token_lock_identity = self.config.token
+            acquired, existing = acquire_scoped_lock('discord-bot-token', self._token_lock_identity, metadata={'platform': 'discord'})
             if not acquired:
                 owner_pid = existing.get('pid') if isinstance(existing, dict) else None
                 message = f'Discord bot token already in use' + (f' (PID {owner_pid})' if owner_pid else '') + '. Stop the other gateway first.'
@@ -652,7 +653,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Release the token lock
         try:
             from gateway.status import release_scoped_lock
-            release_scoped_lock('discord-bot-token', self.config.token)
+            if getattr(self, '_token_lock_identity', None):
+                release_scoped_lock('discord-bot-token', self._token_lock_identity)
+                self._token_lock_identity = None
         except Exception:
             pass
 

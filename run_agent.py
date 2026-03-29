@@ -1271,7 +1271,7 @@ class AIAgent:
         try:
             fn = self._print_fn or print
             fn(*args, **kwargs)
-        except OSError:
+        except (OSError, ValueError):
             pass
 
     def _vprint(self, *args, force: bool = False, **kwargs):
@@ -7875,7 +7875,7 @@ class AIAgent:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
                 try:
                     print(f"❌ {error_msg}")
-                except OSError:
+                except (OSError, ValueError):
                     logger.error(error_msg)
                 
                 if self.verbose_logging:

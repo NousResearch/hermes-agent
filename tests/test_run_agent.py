@@ -137,6 +137,15 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_safe_print_ignores_closed_stdout_value_error(agent):
+    broken_print = MagicMock(side_effect=ValueError("I/O operation on closed file"))
+    agent._print_fn = broken_print
+
+    agent._safe_print("hello")
+
+    broken_print.assert_called_once_with("hello")
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------

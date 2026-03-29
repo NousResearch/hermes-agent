@@ -403,6 +403,105 @@ Because Hermes now only registers those wrappers when both are true:
 
 This is intentional and keeps the tool list honest.
 
+## Running Hermes as an MCP server
+
+In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
+
+### When to use this
+
+- You want Claude Code, Cursor, or another coding agent to send and read Telegram/Discord/Slack messages through Hermes
+- You want a single MCP server that bridges to all of Hermes's connected messaging platforms at once
+- You already have a running Hermes gateway with connected platforms
+
+### Quick start
+
+```bash
+hermes mcp serve
+```
+
+This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
+
+### MCP client configuration
+
+Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "hermes",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Or if you installed Hermes in a specific location:
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+### Available tools
+
+The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
+
+| Tool | Description |
+|------|-------------|
+| `conversations_list` | List active messaging conversations. Filter by platform or search by name. |
+| `conversation_get` | Get detailed info about one conversation by session key. |
+| `messages_read` | Read recent message history for a conversation. |
+| `attachments_fetch` | Extract non-text attachments (images, media) from a specific message. |
+| `events_poll` | Poll for new conversation events since a cursor position. |
+| `events_wait` | Long-poll / block until the next event arrives (near-real-time). |
+| `messages_send` | Send a message through a platform (e.g. `telegram:123456`, `discord:#general`). |
+| `channels_list` | List available messaging targets across all platforms. |
+| `permissions_list_open` | List pending approval requests observed during this bridge session. |
+| `permissions_respond` | Allow or deny a pending approval request. |
+
+### Event system
+
+The MCP server includes a live event bridge that polls Hermes's session database for new messages. This gives MCP clients near-real-time awareness of incoming conversations:
+
+```
+# Poll for new events (non-blocking)
+events_poll(after_cursor=0)
+
+# Wait for next event (blocks up to timeout)
+events_wait(after_cursor=42, timeout_ms=30000)
+```
+
+Event types: `message`, `approval_requested`, `approval_resolved`
+
+The event queue is in-memory and starts when the bridge connects. Older messages are available through `messages_read`.
+
+### Options
+
+```bash
+hermes mcp serve              # Normal mode
+hermes mcp serve --verbose    # Debug logging on stderr
+```
+
+### How it works
+
+The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself.
+
+The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
+
+### Current limits
+
+- Stdio transport only (no HTTP MCP transport yet)
+- Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
+- No `claude/channel` push notification protocol yet
+- Text-only sends (no media/attachment sending through `messages_send`)
+
 ## Related docs
 
 - [Use MCP with Hermes](/docs/guides/use-mcp-with-hermes)

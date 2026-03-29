@@ -18,6 +18,8 @@ Requires:
 """
 
 import asyncio
+import hmac
+import hmac
 import json
 import logging
 import os
@@ -363,7 +365,8 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if token == self._api_key:
+            # Use constant-time comparison to prevent timing-based API key enumeration
+            if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
         return web.json_response(

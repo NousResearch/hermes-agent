@@ -993,7 +993,7 @@ def _extract_relevant_content(
         if model:
             call_kwargs["model"] = model
         response = call_llm(**call_kwargs)
-        return response.choices[0].message.content
+        return (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
     except Exception:
         return _truncate_snapshot(snapshot_text)
 
@@ -1623,10 +1623,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             call_kwargs["model"] = vision_model
         response = call_llm(**call_kwargs)
         
-        analysis = response.choices[0].message.content
+        analysis = (response.choices[0].message.content or "").strip()
         response_data = {
             "success": True,
-            "analysis": analysis,
+            "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
         }
         # Include annotation data if annotated screenshot was taken

@@ -887,10 +887,15 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
         "taps": tap_list,
     }
 
-    out = Path(output_path)
-    out.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n")
-    c.print(f"[bold green]Snapshot exported:[/] {out}")
-    c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
+    payload = json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n"
+    if output_path == "-":
+        import sys
+        sys.stdout.write(payload)
+    else:
+        out = Path(output_path)
+        out.write_text(payload)
+        c.print(f"[bold green]Snapshot exported:[/] {out}")
+        c.print(f"[dim]{len(installed)} skill(s), {len(tap_list)} tap(s)[/]\n")
 
 
 def do_snapshot_import(input_path: str, force: bool = False,

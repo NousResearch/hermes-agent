@@ -819,25 +819,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
-        # QQ Bot
-        qq_app_id = os.getenv("QQ_BOT_APP_ID") or os.getenv("QQ_APP_ID", "")
-        qq_app_secret = os.getenv("QQ_BOT_APP_SECRET") or os.getenv("QQ_APP_SECRET", "")
-        if qq_app_id and qq_app_secret:
-            if Platform.QQ not in config.platforms:
-                config.platforms[Platform.QQ] = PlatformConfig()
-            config.platforms[Platform.QQ].enabled = True
-            config.platforms[Platform.QQ].extra.update(
-                {
-                    "app_id": qq_app_id,
-                    "app_secret": qq_app_secret,
-                    "refresh_token": os.getenv("QQ_BOT_REFRESH_TOKEN", ""),
-                    "token": os.getenv("QQ_BOT_TOKEN", ""),
-                    "ws_url": os.getenv("QQ_BOT_WS_URL", ""),
-                    "token_url": os.getenv(
-                        "QQ_BOT_TOKEN_URL", "https://bots.qq.com/app/getAppAccessToken"
-                    ),
-                }
-            )
+    # QQ Bot
+    qq_app_id = os.getenv("QQ_BOT_APP_ID") or os.getenv("QQ_APP_ID", "")
+    qq_app_secret = os.getenv("QQ_BOT_APP_SECRET") or os.getenv("QQ_APP_SECRET", "")
+    if qq_app_id and qq_app_secret:
+        if Platform.QQ not in config.platforms:
+            config.platforms[Platform.QQ] = PlatformConfig()
+        config.platforms[Platform.QQ].enabled = True
+        config.platforms[Platform.QQ].extra.update(
+            {
+                "app_id": qq_app_id,
+                "app_secret": qq_app_secret,
+                "refresh_token": os.getenv("QQ_BOT_REFRESH_TOKEN", ""),
+                "token": os.getenv("QQ_BOT_TOKEN", ""),
+                "ws_url": os.getenv("QQ_BOT_WS_URL", ""),
+                "token_url": os.getenv(
+                    "QQ_BOT_TOKEN_URL", "https://bots.qq.com/app/getAppAccessToken"
+                ),
+            }
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

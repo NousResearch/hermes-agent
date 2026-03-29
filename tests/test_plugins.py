@@ -356,6 +356,38 @@ class TestPluginToolVisibility:
         tool_names3 = [t["function"]["name"] for t in tools3]
         assert "vis_tool" in tool_names3
 
+    def test_plugin_tool_without_schema_name_uses_registered_name(self, tmp_path, monkeypatch):
+        """Plugin tools should stay loadable even if schema["name"] is omitted."""
+        import hermes_cli.plugins as plugins_mod
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "missing_name_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "missing_name_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="missing_name_tool",\n'
+            '        toolset="plugin_missing_name_plugin",\n'
+            '        schema={"description": "Visible", "parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '    )\n'
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["plugin_missing_name_plugin"],
+            quiet_mode=True,
+        )
+
+        assert [t["function"]["name"] for t in tools] == ["missing_name_tool"]
+
 
 # ── TestPluginManagerList ──────────────────────────────────────────────────
 

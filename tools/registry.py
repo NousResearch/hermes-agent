@@ -66,6 +66,8 @@ class ToolRegistry:
         emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        normalized_schema = dict(schema)
+        normalized_schema.setdefault("name", name)
         existing = self._tools.get(name)
         if existing and existing.toolset != toolset:
             logger.warning(
@@ -76,12 +78,12 @@ class ToolRegistry:
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,
-            schema=schema,
+            schema=normalized_schema,
             handler=handler,
             check_fn=check_fn,
             requires_env=requires_env or [],
             is_async=is_async,
-            description=description or schema.get("description", ""),
+            description=description or normalized_schema.get("description", ""),
             emoji=emoji,
         )
         if check_fn and toolset not in self._toolset_checks:

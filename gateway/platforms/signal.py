@@ -268,6 +268,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.send_read_receipts = extra.get("send_read_receipts", False)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -770,6 +771,10 @@ class SignalAdapter(BasePlatformAdapter):
 
         await self.handle_message(event)
 
+        # Send read receipt if enabled
+        if self.send_read_receipts and sender and ts_ms:
+            await self._send_read_receipt(sender, ts_ms)
+
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
         """Cache any number↔UUID mapping observed from Signal envelopes."""
         if not number or not service_id or not _is_signal_service_id(service_id):
@@ -877,6 +882,18 @@ class SignalAdapter(BasePlatformAdapter):
                         self._remember_recipient_identifiers(number, service_id)
 
             return self._recipient_uuid_by_number.get(chat_id, chat_id)
+
+    async def _send_read_receipt(self, sender: str, timestamp: int) -> None:
+        """Send a read receipt for a message."""
+        try:
+            await self._rpc("sendReceipt", {
+                "account": self.account,
+                "recipient": sender,
+                "type": "read",
+                "targetTimestamp": timestamp,
+            }, rpc_id="receipt")
+        except Exception:
+            logger.debug("Signal: failed to send read receipt to %s", redact_phone(sender))
 
     # ------------------------------------------------------------------
     # Attachment Handling

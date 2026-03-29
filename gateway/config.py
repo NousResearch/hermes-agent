@@ -1810,6 +1810,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "http_url": signal_url,
             "account": signal_account,
             "ignore_stories": is_truthy_value(getenv("SIGNAL_IGNORE_STORIES", "true")),
+            "send_read_receipts": is_truthy_value(
+                getenv("SIGNAL_SEND_READ_RECEIPTS", "true")
+            ),
         })
     signal_home = getenv("SIGNAL_HOME_CHANNEL")
     if signal_home and Platform.SIGNAL in config.platforms:

@@ -74,7 +74,7 @@ def main() -> None:
 
     agent = HermesACPAgent()
     try:
-        asyncio.run(acp.run_agent(agent))
+        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

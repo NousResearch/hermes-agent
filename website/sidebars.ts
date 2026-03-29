@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/configuration',
         'user-guide/sessions',
         'user-guide/security',
+        'user-guide/docker',
         {
           type: 'category',
           label: 'Messaging Gateway',

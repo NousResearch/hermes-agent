@@ -671,6 +671,22 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_bundle_content_hash_supports_byte_files(self):
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"same content",
+                "references/checklist.md": b"- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        digest = bundle_content_hash(bundle)
+
+        assert digest.startswith("sha256:")
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{

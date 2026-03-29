@@ -2502,7 +2502,11 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
-        h.update(bundle.files[rel_path].encode("utf-8"))
+        file_content = bundle.files[rel_path]
+        if isinstance(file_content, bytes):
+            h.update(file_content)
+        else:
+            h.update(file_content.encode("utf-8"))
     return f"sha256:{h.hexdigest()[:16]}"
 
 

@@ -2461,6 +2461,34 @@ def cmd_uninstall(args):
     run_uninstall(args)
 
 
+def _clear_bytecode_cache(root: Path) -> int:
+    """Remove all __pycache__ directories under *root*.
+
+    Stale .pyc files can cause ImportError after code updates when Python
+    loads a cached bytecode file that references names that no longer exist
+    (or don't yet exist) in the updated source.  Clearing them forces Python
+    to recompile from the .py source on next import.
+
+    Returns the number of directories removed.
+    """
+    removed = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        # Skip venv / node_modules / .git entirely
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in ("venv", ".venv", "node_modules", ".git", ".worktrees")
+        ]
+        if os.path.basename(dirpath) == "__pycache__":
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(dirpath)
+                removed += 1
+            except OSError:
+                pass
+            dirnames.clear()  # nothing left to recurse into
+    return removed
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
     
@@ -2502,7 +2530,7 @@ def _update_via_zip(args):
                     break
         
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {'venv', 'node_modules', '.git', '__pycache__', '.env'}
+        preserve = {'venv', 'node_modules', '.git', '.env'}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -2525,6 +2553,11 @@ def _update_via_zip(args):
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
+
+    # Clear stale bytecode after ZIP extraction
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
     
     # Reinstall Python dependencies (try .[all] first for optional extras,
     # fall back to . if extras fail — mirrors the install script behavior)
@@ -2923,6 +2956,13 @@ def cmd_update(args):
                     )
         
         _invalidate_update_cache()
+
+        # Clear stale .pyc bytecode cache — prevents ImportError on gateway
+        # restart when updated source references names that didn't exist in
+        # the old bytecode (e.g. get_hermes_home added to hermes_constants).
+        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        if removed:
+            print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
         
         # Reinstall Python dependencies (try .[all] first for optional extras,
         # fall back to . if extras fail — mirrors the install script behavior)

@@ -73,6 +73,11 @@ class ToolRegistry:
                 "overwritten by toolset '%s'",
                 name, existing.toolset, toolset,
             )
+        # Ensure schema always carries the canonical tool name so that
+        # downstream code (e.g. get_definitions → available_tool_names) can
+        # rely on t["function"]["name"] existing.
+        if "name" not in schema:
+            schema["name"] = name
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,

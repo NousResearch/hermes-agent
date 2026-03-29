@@ -74,14 +74,16 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
 
     # Fallback for manual / legacy config — use whichever key is present.
     has_firecrawl = _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")
     has_parallel = _has_env("PARALLEL_API_KEY")
     has_tavily = _has_env("TAVILY_API_KEY")
-
+    has_exa = _has_env("EXA_API_KEY")
+    if has_exa and not has_firecrawl and not has_parallel and not has_tavily:
+        return "exa"
     if has_tavily and not has_firecrawl and not has_parallel:
         return "tavily"
     if has_parallel and not has_firecrawl:
@@ -605,6 +607,91 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
+# ─── Exa Client ──────────────────────────────────────────────────────────────
+
+_exa_client = None
+
+def _get_exa_client():
+    """Get or create the Exa client (lazy initialization).
+
+    Requires EXA_API_KEY environment variable.
+    """
+    from exa_py import Exa
+    global _exa_client
+    if _exa_client is None:
+        api_key = os.getenv("EXA_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "EXA_API_KEY environment variable not set. "
+                "Get your API key at https://exa.ai"
+            )
+        _exa_client = Exa(api_key=api_key)
+        _exa_client.headers["x-exa-integration"] = "hermes-agent"
+    return _exa_client
+
+
+# ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
+
+def _exa_search(query: str, limit: int = 10) -> dict:
+    """Search using the Exa SDK and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("Exa search: '%s' (limit=%d)", query, limit)
+    response = _get_exa_client().search(
+        query,
+        num_results=limit,
+        contents={
+            "highlights": True,
+        },
+    )
+
+    web_results = []
+    for i, result in enumerate(response.results or []):
+        highlights = result.highlights or []
+        web_results.append({
+            "url": result.url or "",
+            "title": result.title or "",
+            "description": " ".join(highlights) if highlights else "",
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the Exa SDK.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    logger.info("Exa extract: %d URL(s)", len(urls))
+    response = _get_exa_client().get_contents(
+        urls,
+        text=True,
+    )
+
+    results = []
+    for result in response.results or []:
+        content = result.text or ""
+        url = result.url or ""
+        title = result.title or ""
+        results.append({
+            "url": url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": {"sourceURL": url, "title": title},
+        })
+
+    return results
+
+
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -735,6 +822,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         backend = _get_backend()
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "exa":
+            response_data = _exa_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -897,6 +993,8 @@ async def web_extract_tool(
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
+            elif backend == "exa":
+                results = _exa_extract(safe_urls)
             elif backend == "tavily":
                 logger.info("Tavily extract: %d URL(s)", len(safe_urls))
                 raw = _tavily_request("extract", {
@@ -1567,9 +1665,10 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check if any web backend API key is available (Parallel, Firecrawl, or Tavily)."""
+    """Check if any web backend API key is available (Exa, Parallel, Firecrawl, or Tavily)."""
     return bool(
-        os.getenv("PARALLEL_API_KEY")
+        os.getenv("EXA_API_KEY")
+        or os.getenv("PARALLEL_API_KEY")
         or os.getenv("FIRECRAWL_API_KEY")
         or os.getenv("FIRECRAWL_API_URL")
         or os.getenv("TAVILY_API_KEY")
@@ -1608,7 +1707,9 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "parallel":
+        if backend == "exa":
+            print("   Using Exa API (https://exa.ai)")
+        elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
@@ -1616,7 +1717,7 @@ if __name__ == "__main__":
             print("   Using Firecrawl API (https://firecrawl.dev)")
     else:
         print("❌ No web search backend configured")
-        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
+        print("Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
 
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")
@@ -1726,7 +1827,7 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_web_api_key,
-    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     emoji="🔍",
 )
 registry.register(
@@ -1736,7 +1837,7 @@ registry.register(
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
     check_fn=check_web_api_key,
-    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     is_async=True,
     emoji="📄",
 )

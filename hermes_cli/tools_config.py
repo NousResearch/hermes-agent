@@ -191,6 +191,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Exa",
+                "tag": "AI-native search and contents",
+                "web_backend": "exa",
+                "env_vars": [
+                    {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://exa.ai"},
+                ],
+            },
+            {
                 "name": "Parallel",
                 "tag": "AI-native search and extract",
                 "web_backend": "parallel",

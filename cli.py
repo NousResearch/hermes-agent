@@ -2697,7 +2697,7 @@ class HermesCLI:
         doesn't fire for image-only clipboard content (e.g., VSCode terminal,
         Windows Terminal with WSL2).
         """
-        from hermes_cli.clipboard import has_clipboard_image
+        from hermes_cli.clipboard import has_clipboard_image, get_clipboard_text
         if has_clipboard_image():
             if self._try_attach_clipboard_image():
                 n = len(self._attached_images)
@@ -2705,7 +2705,15 @@ class HermesCLI:
             else:
                 _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
         else:
-            _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
+            # No image — try text clipboard as fallback
+            txt = get_clipboard_text()
+            if txt:
+                preview = txt[:120] + ("..." if len(txt) > 120 else "")
+                _cprint(f"  {_DIM}No image found. Text in clipboard ({len(txt)} chars):{_RST}")
+                _cprint(f"  {_DIM}{preview}{_RST}")
+                _cprint(f"  {_DIM}Use Ctrl+V or Shift+Insert to paste text into the prompt.{_RST}")
+            else:
+                _cprint(f"  {_DIM}(._.) No image or text found in clipboard{_RST}")
 
     def _preprocess_images_with_vision(self, text: str, images: list) -> str:
         """Analyze attached images via the vision tool and return enriched text.
@@ -2855,7 +2863,10 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+        if sys.platform == "win32":
+            _cprint(f"  {_DIM}Paste image: screenshots auto-attach, or /paste{_RST}\n")
+        else:
+            _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -4282,17 +4293,6 @@ class HermesCLI:
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
                 )
-                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
-                bg_agent._print_fn = lambda *_a, **_kw: None
-
-                def _bg_thinking(text: str) -> None:
-                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
-                    if not self._agent_running:
-                        self._spinner_text = text
-                        if self._app:
-                            self._app.invalidate()
-
-                bg_agent.thinking_callback = _bg_thinking
 
                 result = bg_agent.run_conversation(
                     user_message=prompt,
@@ -4355,9 +4355,6 @@ class HermesCLI:
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
                 self._background_tasks.pop(task_id, None)
-                # Clear spinner only if no foreground agent owns it
-                if not self._agent_running:
-                    self._spinner_text = ""
                 if self._app:
                     self._invalidate(min_interval=0)
 
@@ -5568,8 +5565,10 @@ class HermesCLI:
 
         reqs = check_voice_requirements()
 
+
         _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
-        _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
+        _cprint(f"  Mode:      {'ON' if self.logout
+_voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
         _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
@@ -5953,13 +5952,6 @@ class HermesCLI:
                     message = _ctx_result.message
             except Exception as e:
                 logging.debug("@ context reference expansion failed: %s", e)
-
-        # Sanitize surrogate characters that can arrive via clipboard paste from
-        # rich-text editors (Google Docs, Word, etc.).  Lone surrogates are invalid
-        # UTF-8 and crash JSON serialization in the OpenAI SDK.
-        if isinstance(message, str):
-            from run_agent import _sanitize_surrogates
-            message = _sanitize_surrogates(message)
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -6536,6 +6528,7 @@ class HermesCLI:
         # One-line Honcho session indicator (TTY-only, not captured by agent).
         # Only show when the user explicitly configured Honcho for Hermes
         # (not auto-enabled from a stray HONCHO_API_KEY env var).
+
         # If resuming a session, load history and display it immediately
         # so the user has context before typing their first message.
         if self._resumed:
@@ -7057,6 +7050,16 @@ class HermesCLI:
             """
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
+                return
+            # No image — try text clipboard (critical for terminals that don't
+            # send BracketedPaste, e.g., Windows Terminal with image-only clipboard)
+            try:
+                from hermes_cli.clipboard import get_clipboard_text
+                txt = get_clipboard_text()
+                if txt:
+                    event.current_buffer.insert_text(txt)
+            except Exception:
+                pass
 
         @kb.add('escape', 'v')
         def handle_alt_v(event):
@@ -7073,6 +7076,16 @@ class HermesCLI:
             else:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
+
+        @kb.add('s-insert')
+        def handle_shift_insert(event):
+            """Shift+Insert — paste image from clipboard.
+
+            Common Windows paste shortcut.  Works as an alternative to
+            Alt+V / Ctrl+V for image attachment.
+            """
+            if self._try_attach_clipboard_image():
+                event.app.invalidate()
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -7129,7 +7142,6 @@ class HermesCLI:
         # Paste collapsing: detect large pastes and save to temp file
         _paste_counter = [0]
         _prev_text_len = [0]
-        _prev_newline_count = [0]
         _paste_just_collapsed = [False]
 
         def _on_text_changed(buf):
@@ -7138,27 +7150,18 @@ class HermesCLI:
             When bracketed paste is available, handle_paste collapses
             large pastes directly.  This handler is a fallback for
             terminals without bracketed paste support.
-
-            Two heuristics (either triggers collapse):
-            1. Many characters added at once (chars_added > 1) — works
-               when the terminal delivers the paste in one event-loop tick.
-            2. Newline count jumped by 4+ in a single text-change event —
-               catches terminals that feed characters individually but
-               still batch newlines.  Alt+Enter only adds 1 newline per
-               event so it never triggers this.
             """
             text = buf.text
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
             if _paste_just_collapsed[0]:
                 _paste_just_collapsed[0] = False
-                _prev_newline_count[0] = text.count('\n')
                 return
             line_count = text.count('\n')
-            newlines_added = line_count - _prev_newline_count[0]
-            _prev_newline_count[0] = line_count
-            is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            # Heuristic: a real paste adds many characters at once (not just a
+            # single newline from Alt+Enter) AND the result has 5+ lines.
+            # Fallback for terminals without bracketed paste support.
+            if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"
@@ -7166,7 +7169,6 @@ class HermesCLI:
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
                 # Replace buffer with compact reference
-                _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
 
@@ -7657,7 +7659,63 @@ class HermesCLI:
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
-        
+
+        # Windows clipboard watcher: auto-attach images on Ctrl+V.
+        # On Windows Terminal, Ctrl+V is intercepted for text paste.  When the
+        # clipboard holds only a bitmap (screenshots, snipping tool), the terminal
+        # does nothing and our c-v handler never fires.
+        #
+        # Strategy: poll GetAsyncKeyState for Ctrl+V at 20Hz.  When detected,
+        # check clipboard for images and auto-attach.  A 1s cooldown prevents
+        # repeated triggers from key repeat.  The GetAsyncKeyState approach is
+        # global (not per-window), but we only act when there's actually an image
+        # in the clipboard and the agent isn't running, which limits false positives.
+        if sys.platform == "win32":
+            def _clipboard_watcher():
+                import time as _time
+                try:
+                    import ctypes
+                    import ctypes.wintypes
+                    _GetAsyncKeyState = ctypes.windll.user32.GetAsyncKeyState
+                    _GetAsyncKeyState.argtypes = [ctypes.c_int]
+                    _GetAsyncKeyState.restype = ctypes.wintypes.SHORT
+                    _VK_CONTROL = 0x11
+                    _VK_V = 0x56
+                except Exception:
+                    return  # Can't set up watcher, bail out silently
+
+                _cooldown_until = 0.0
+                while not self._should_exit:
+                    _time.sleep(0.05)  # 20Hz poll for responsive Ctrl+V detection
+                    try:
+                        now = _time.monotonic()
+                        if now < _cooldown_until:
+                            continue
+                        # Check if Ctrl+V is currently pressed (bit 15 = key is down)
+                        ctrl_down = _GetAsyncKeyState(_VK_CONTROL) & 0x8000
+                        v_down = _GetAsyncKeyState(_VK_V) & 0x8000
+                        if not (ctrl_down and v_down):
+                            continue
+                        # Ctrl+V detected — check for clipboard image
+                        from hermes_cli.clipboard import has_clipboard_image
+                        if not has_clipboard_image():
+                            continue
+                        # Don't auto-attach while agent is running
+                        if self._agent_running:
+                            _cooldown_until = _time.monotonic() + 1.0
+                            continue
+                        if self._try_attach_clipboard_image():
+                            n = len(self._attached_images)
+                            _cprint(f"\n  📎 Image #{n} attached from clipboard")
+                            self._invalidate(min_interval=0)
+                        # Cooldown: ignore repeated triggers for 1s (key repeat, etc.)
+                        _cooldown_until = _time.monotonic() + 1.0
+                    except Exception:
+                        _cooldown_until = _time.monotonic() + 2.0  # Back off on errors
+
+            clipboard_thread = threading.Thread(target=_clipboard_watcher, daemon=True, name="clipboard-watcher")
+            clipboard_thread.start()
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:

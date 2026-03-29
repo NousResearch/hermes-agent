@@ -356,40 +356,48 @@ def tick(verbose: bool = True) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
-        for job in due_jobs:
-            try:
-                success, output, final_response, error = run_job(job)
-
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
-
-                # Deliver the final response to the origin/target chat
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                if deliver_content:
-                    try:
-                        _deliver_result(job, deliver_content)
-                    except Exception as de:
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
-
-                mark_job_run(job["id"], success, error)
-                executed += 1
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
-
-        return executed
     finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
+        # Release lock after selecting due jobs — run_job() executes outside
+        # the lock so slow jobs cannot block unrelated scheduler ticks.
+        if lock_fd is not None:
+            if fcntl:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
+            lock_fd.close()
+            lock_fd = None
+
+    executed = 0
+    for job in due_jobs:
+        try:
+            success, output, final_response, error = run_job(job)
+
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            # Deliver the final response to the origin/target chat
+            deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+            if deliver_content:
+                try:
+                    _deliver_result(job, deliver_content)
+                except Exception as de:
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            mark_job_run(job["id"], success, error)
+            executed += 1
+
+        except Exception as e:
+            logger.error("Error processing job %s: %s", job['id'], e)
+            mark_job_run(job["id"], False, str(e))
+
+    return executed
 
 
 if __name__ == "__main__":

@@ -160,7 +160,7 @@ Regenerates the shell alias script at `~/.local/bin/hermes-<name>`. Useful if th
 
 ```bash
 hermes profile alias work
-# Creates/updates ~/.local/bin/hermes-work
+# Creates/updates ~/.local/bin/work
 ```
 
 ## `hermes profile rename`
@@ -181,7 +181,7 @@ Renames a profile. Updates the directory and shell alias.
 ```bash
 hermes profile rename mybot assistant
 # ~/.hermes/profiles/mybot → ~/.hermes/profiles/assistant
-# ~/.local/bin/hermes-mybot → ~/.local/bin/hermes-assistant
+# ~/.local/bin/mybot → ~/.local/bin/assistant
 ```
 
 ## `hermes profile export`

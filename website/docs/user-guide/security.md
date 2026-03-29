@@ -278,7 +278,11 @@ required_environment_variables:
     help: Get a key from https://developers.google.com/tenor
 ```
 
-After loading this skill, `TENOR_API_KEY` passes through to both `execute_code` and `terminal` subprocesses — no manual configuration needed.
+After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends (Docker, Modal)** — no manual configuration needed.
+
+:::info Docker & Modal
+Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into Docker containers and Modal sandboxes without needing to add them to `docker_forward_env` manually.
+:::
 
 **2. Config-based passthrough (manual)**
 
@@ -291,17 +295,49 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
+
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` in `~/.hermes/`. Skills declare these in frontmatter:
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+When loaded, Hermes checks if these files exist in `~/.hermes/` and registers them for mounting:
+
+- **Docker**: Read-only bind mounts (`-v host:container:ro`)
+- **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)
+- **Local**: No action needed (files already accessible)
+
+You can also list credential files manually in `config.yaml`:
+
+```yaml
+terminal:
+  credential_files:
+    - google_token.json
+    - my_custom_oauth_token.json
+```
+
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container.
+
 ### What Each Sandbox Filters
 
 | Sandbox | Default Filter | Passthrough Override |
 |---------|---------------|---------------------|
 | **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
 | **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
+| **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
 | **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
 
 ### Security Considerations
 
 - The passthrough only affects vars you or your skills explicitly declare — the default security posture is unchanged for arbitrary LLM-generated code
+- Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
 - Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms

@@ -550,6 +550,22 @@ class DiscordAdapter(BasePlatformAdapter):
                             return
                     # "all" falls through to handle_message
                 
+                # If the message @mentions other users but NOT the bot, the
+                # sender is talking to someone else — stay silent.  Only
+                # applies in server channels; in DMs the user is always
+                # talking to the bot (mentions are just references).
+                # Controlled by DISCORD_IGNORE_NO_MENTION (default: true).
+                _ignore_no_mention = os.getenv(
+                    "DISCORD_IGNORE_NO_MENTION", "true"
+                ).lower() in ("true", "1", "yes")
+                if _ignore_no_mention and message.mentions and not isinstance(message.channel, discord.DMChannel):
+                    _bot_mentioned = (
+                        self._client.user is not None
+                        and self._client.user in message.mentions
+                    )
+                    if not _bot_mentioned:
+                        return  # Talking to someone else, don't interrupt
+
                 await self._handle_message(message)
 
             @self._client.event

@@ -5,6 +5,8 @@ import importlib
 import logging
 import sys
 
+import pytest
+
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
@@ -194,7 +196,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
@@ -232,9 +234,6 @@ class TestPromptBuilderImports:
 # =========================================================================
 # Skills system prompt builder
 # =========================================================================
-
-
-import pytest
 
 
 class TestBuildSkillsSystemPrompt:
@@ -296,7 +295,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
@@ -574,6 +573,10 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Lowercase claude rules" in result
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path",
+    )
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("From uppercase.")
         (tmp_path / "claude.md").write_text("From lowercase.")

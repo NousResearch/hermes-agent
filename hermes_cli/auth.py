@@ -125,6 +125,38 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "google": ProviderConfig(
+        id="google",
+        name="Google",
+        auth_type="api_key",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        base_url_env_var="GOOGLE_BASE_URL",
+    ),
+    "xai": ProviderConfig(
+        id="xai",
+        name="xAI",
+        auth_type="api_key",
+        inference_base_url="https://api.x.ai/v1",
+        api_key_env_vars=("XAI_API_KEY",),
+        base_url_env_var="XAI_BASE_URL",
+    ),
+    "ollama-cloud": ProviderConfig(
+        id="ollama-cloud",
+        name="Ollama Cloud",
+        auth_type="api_key",
+        inference_base_url="https://ollama.com",
+        api_key_env_vars=("OLLAMA_CLOUD_API_KEY",),
+        base_url_env_var="OLLAMA_CLOUD_BASE_URL",
+    ),
+    "ollama-local": ProviderConfig(
+        id="ollama-local",
+        name="Ollama (Local)",
+        auth_type="api_key",
+        inference_base_url="http://localhost:11434/v1",
+        api_key_env_vars=("OLLAMA_API_KEY",),
+        base_url_env_var="OLLAMA_HOST",
+    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",
@@ -696,6 +728,9 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "gemini": "google", "google-ai": "google", "googleai": "google",
+        "grok": "xai",
+        "ollama_cloud": "ollama-cloud", "ollama-cloud-api": "ollama-cloud",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 

@@ -526,7 +526,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
+            # Register handlers for regular messages
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -542,6 +542,26 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app.add_handler(TelegramMessageHandler(
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
+            ))
+            
+            # Register handlers for channel posts (messages in Telegram channels)
+            # Channel posts come through update.channel_post instead of update.message
+            self._app.add_handler(TelegramMessageHandler(
+                filters.UpdateType.CHANNEL_POST & filters.TEXT & ~filters.COMMAND,
+                self._handle_channel_text_message
+            ))
+            self._app.add_handler(TelegramMessageHandler(
+                filters.UpdateType.CHANNEL_POST & filters.COMMAND,
+                self._handle_channel_command
+            ))
+            self._app.add_handler(TelegramMessageHandler(
+                filters.UpdateType.CHANNEL_POST & (filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL),
+                self._handle_channel_media_message
+            ))
+            # Also handle edited channel posts
+            self._app.add_handler(TelegramMessageHandler(
+                filters.UpdateType.EDITED_CHANNEL_POST & filters.TEXT,
+                self._handle_channel_text_message
             ))
             
             # Start polling — retry initialize() for transient TLS resets
@@ -1552,6 +1572,175 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(update.message, MessageType.COMMAND)
         await self.handle_message(event)
     
+    async def _handle_channel_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming text messages from channels.
+        
+        Channel posts come through update.channel_post (or update.edited_channel_post)
+        instead of update.message.
+        """
+        msg = update.channel_post or update.edited_channel_post
+        if not msg or not msg.text:
+            return
+
+        event = self._build_message_event(msg, MessageType.TEXT)
+        self._enqueue_text_event(event)
+    
+    async def _handle_channel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming command messages from channels."""
+        msg = update.channel_post or update.edited_channel_post
+        if not msg or not msg.text:
+            return
+        
+        event = self._build_message_event(msg, MessageType.COMMAND)
+        await self.handle_message(event)
+    
+    async def _handle_channel_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming media messages from channels.
+        
+        Downloads images/audio/documents to local cache, same as regular messages.
+        """
+        msg = update.channel_post or update.edited_channel_post
+        if not msg:
+            return
+        
+        # Determine media type
+        if msg.photo:
+            msg_type = MessageType.PHOTO
+        elif msg.video:
+            msg_type = MessageType.VIDEO
+        elif msg.audio:
+            msg_type = MessageType.AUDIO
+        elif msg.voice:
+            msg_type = MessageType.VOICE
+        elif msg.document:
+            msg_type = MessageType.DOCUMENT
+        else:
+            msg_type = MessageType.DOCUMENT
+        
+        event = self._build_message_event(msg, msg_type)
+        
+        # Add caption as text
+        if msg.caption:
+            event.text = msg.caption
+        
+        # Download photo to local image cache
+        if msg.photo:
+            try:
+                photo = msg.photo[-1]
+                file_obj = await photo.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                ext = ".jpg"
+                if file_obj.file_path:
+                    for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                event.media_urls = [cached_path]
+                event.media_types = [f"image/{ext.lstrip('.')}" ]
+                logger.info("[Telegram] Cached channel photo at %s", cached_path)
+                
+                media_group_id = getattr(msg, "media_group_id", None)
+                if media_group_id:
+                    await self._queue_media_group_event(str(media_group_id), event)
+                else:
+                    batch_key = self._photo_batch_key(event, msg)
+                    self._enqueue_photo_event(batch_key, event)
+                return
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache channel photo: %s", e, exc_info=True)
+
+        # Download voice/audio messages
+        if msg.voice:
+            try:
+                file_obj = await msg.voice.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                event.media_urls = [cached_path]
+                event.media_types = ["audio/ogg"]
+                logger.info("[Telegram] Cached channel voice at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache channel voice: %s", e, exc_info=True)
+        elif msg.audio:
+            try:
+                file_obj = await msg.audio.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                event.media_urls = [cached_path]
+                event.media_types = ["audio/mp3"]
+                logger.info("[Telegram] Cached channel audio at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache channel audio: %s", e, exc_info=True)
+
+        # Download document files
+        elif msg.document:
+            doc = msg.document
+            try:
+                ext = ""
+                original_filename = doc.file_name or ""
+                if original_filename:
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+
+                if not ext and doc.mime_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(doc.mime_type, "")
+
+                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                    event.text = (
+                        f"Unsupported document type '{ext or 'unknown'}'. "
+                        f"Supported types: {supported_list}"
+                    )
+                    logger.info("[Telegram] Unsupported channel document type: %s", ext or "unknown")
+                    await self.handle_message(event)
+                    return
+
+                MAX_DOC_BYTES = 20 * 1024 * 1024
+                if not doc.file_size or doc.file_size > MAX_DOC_BYTES:
+                    event.text = (
+                        "The document is too large or its size could not be verified. "
+                        "Maximum: 20 MB."
+                    )
+                    logger.info("[Telegram] Channel document too large: %s bytes", doc.file_size)
+                    await self.handle_message(event)
+                    return
+
+                file_obj = await doc.get_file()
+                doc_bytes = await file_obj.download_as_bytearray()
+                raw_bytes = bytes(doc_bytes)
+                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
+                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+                event.media_urls = [cached_path]
+                event.media_types = [mime_type]
+                logger.info("[Telegram] Cached channel document at %s", cached_path)
+
+                MAX_TEXT_INJECT_BYTES = 100 * 1024
+                if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    try:
+                        text_content = raw_bytes.decode("utf-8")
+                        display_name = original_filename or f"document{ext}"
+                        display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                        injection = f"[Content of {display_name}]:\n{text_content}"
+                        if event.text:
+                            event.text = f"{injection}\n\n{event.text}"
+                        else:
+                            event.text = injection
+                    except UnicodeDecodeError:
+                        logger.warning(
+                            "[Telegram] Could not decode channel text file as UTF-8",
+                            exc_info=True,
+                        )
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache channel document: %s", e, exc_info=True)
+
+        media_group_id = getattr(msg, "media_group_id", None)
+        if media_group_id:
+            await self._queue_media_group_event(str(media_group_id), event)
+            return
+
+        await self.handle_message(event)
+    
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         if not update.message:
@@ -2066,9 +2255,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
-        """Build a MessageEvent from a Telegram message."""
+        """Build a MessageEvent from a Telegram message.
+        
+        Handles both regular messages (from users in DMs/groups) and channel posts
+        (where from_user is None but sender_chat indicates the channel).
+        """
         chat = message.chat
         user = message.from_user
+        sender_chat = getattr(message, "sender_chat", None)
         
         # Determine chat type
         chat_type = "dm"
@@ -2076,6 +2270,17 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type = "group"
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
+        
+        # For channel posts, extract sender info from sender_chat if no from_user
+        user_id = None
+        user_name = None
+        if user:
+            user_id = str(user.id)
+            user_name = user.full_name
+        elif sender_chat:
+            # Channel posts: use the channel ID as the "user" and channel title as name
+            user_id = str(sender_chat.id)
+            user_name = sender_chat.title or f"Channel {sender_chat.id}"
 
         # Resolve DM topic name and skill binding
         thread_id_raw = message.message_thread_id
@@ -2102,8 +2307,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else None,
-            user_name=user.full_name if user else None,
+            user_id=user_id,
+            user_name=user_name,
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )

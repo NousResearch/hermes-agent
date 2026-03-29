@@ -149,6 +149,15 @@ class ToolRegistry:
         """Return sorted list of all registered tool names."""
         return sorted(self._tools.keys())
 
+    def get_schema(self, name: str) -> Optional[dict]:
+        """Return a tool's raw schema dict, bypassing check_fn filtering.
+
+        Useful for token estimation and introspection where availability
+        doesn't matter — only the schema content does.
+        """
+        entry = self._tools.get(name)
+        return entry.schema if entry else None
+
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""
         entry = self._tools.get(name)

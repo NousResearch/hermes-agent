@@ -56,7 +56,7 @@ def _honcho_is_configured_for_doctor() -> bool:
         from honcho_integration.client import HonchoClientConfig
 
         cfg = HonchoClientConfig.from_global_config()
-        return bool(cfg.enabled and cfg.api_key)
+        return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
     except Exception:
         return False
 
@@ -708,8 +708,8 @@ def run_doctor(args):
             check_warn("Honcho config not found", "run: hermes honcho setup")
         elif not hcfg.enabled:
             check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
-        elif not hcfg.api_key:
-            check_fail("Honcho API key not set", "run: hermes honcho setup")
+        elif not (hcfg.api_key or hcfg.base_url):
+            check_fail("Honcho API key or base URL not set", "run: hermes honcho setup")
             issues.append("No Honcho API key — run 'hermes honcho setup'")
         else:
             from honcho_integration.client import get_honcho_client, reset_honcho_client

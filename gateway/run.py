@@ -432,7 +432,7 @@ class GatewayRunner:
             from honcho_integration.session import HonchoSessionManager
 
             hcfg = HonchoClientConfig.from_global_config()
-            if not hcfg.enabled or not hcfg.api_key:
+            if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
                 return None, hcfg
 
             client = get_honcho_client(hcfg)

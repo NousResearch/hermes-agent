@@ -518,10 +518,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
                 
-                # Sync slash commands with Discord
+                # Sync slash commands with Discord (global + per-guild for instant availability)
                 try:
                     synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    logger.info("[%s] Synced %d global slash command(s)", adapter_self.name, len(synced))
+                    for guild in adapter_self._client.guilds:
+                        try:
+                            guild_synced = await adapter_self._client.tree.sync(guild=guild)
+                            logger.info("[%s] Synced %d guild command(s) for %s", adapter_self.name, len(guild_synced), guild.name)
+                        except Exception as ge:
+                            logger.warning("[%s] Guild sync failed for %s: %s", adapter_self.name, guild.name, ge)
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()
@@ -1519,6 +1525,31 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_provider(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/provider")
 
+        @tree.command(name="models", description="Open the interactive model picker")
+        async def slash_models(interaction: discord.Interaction):
+            from hermes_cli.model_picker_config import (
+                get_current_model_selection,
+                get_default_model_selection,
+            )
+            current_provider, current_model = get_current_model_selection()
+            default_provider, default_model = get_default_model_selection()
+            view = ModelPickerView(
+                adapter=self,
+                current_provider=current_provider,
+                current_model=current_model,
+                default_provider=default_provider,
+                default_model=default_model,
+            )
+            await interaction.response.send_message(
+                embed=view.build_embed(),
+                view=view,
+                ephemeral=True,
+            )
+
+        @tree.command(name="model-status", description="Show configured vs actual model")
+        async def slash_model_status(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/model-status")
+
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -2146,6 +2177,213 @@ class DiscordAdapter(BasePlatformAdapter):
 # ---------------------------------------------------------------------------
 
 if DISCORD_AVAILABLE:
+
+    class _ProviderSelect(discord.ui.Select):
+        def __init__(self, picker: "ModelPickerView"):
+            self.picker = picker
+            options = []
+            for provider in picker.catalog:
+                is_current = provider["id"] == picker.selected_provider
+                options.append(
+                    discord.SelectOption(
+                        label=provider["label"][:100],
+                        value=provider["id"],
+                        description=(provider.get("note") or ("Configured" if provider.get("configured") else ""))[:100] or None,
+                        default=is_current,
+                    )
+                )
+            super().__init__(placeholder="Select provider", min_values=1, max_values=1, options=options[:25], row=0)
+
+        async def callback(self, interaction: discord.Interaction):
+            self.picker.selected_provider = self.values[0]
+            models = self.picker.models_for_selected_provider()
+            self.picker.selected_model = models[0]["id"] if models else ""
+            self.picker.refresh_items()
+            await interaction.response.edit_message(embed=self.picker.build_embed(), view=self.picker)
+
+    class _ModelSelect(discord.ui.Select):
+        def __init__(self, picker: "ModelPickerView"):
+            self.picker = picker
+            models = picker.models_for_selected_provider()
+            options = []
+            for model in models:
+                options.append(
+                    discord.SelectOption(
+                        label=(model.get("label") or model["id"])[:100],
+                        value=model["id"],
+                        description=(model.get("description") or model["id"])[:100] or None,
+                        default=model["id"] == picker.selected_model,
+                    )
+                )
+            if not options:
+                options = [discord.SelectOption(label="No models configured", value="")]
+            super().__init__(placeholder="Select model", min_values=1, max_values=1, options=options[:25], row=1, disabled=not models)
+
+        async def callback(self, interaction: discord.Interaction):
+            self.picker.selected_model = self.values[0]
+            self.picker.refresh_items()
+            await interaction.response.edit_message(embed=self.picker.build_embed(), view=self.picker)
+
+    class _ReasoningSelect(discord.ui.Select):
+        LEVELS = [
+            ("none", "None — no reasoning"),
+            ("low", "Low — minimal thinking"),
+            ("medium", "Medium — balanced (default)"),
+            ("high", "High — deep analysis"),
+            ("xhigh", "Extra High — maximum reasoning"),
+        ]
+
+        def __init__(self, picker: "ModelPickerView"):
+            self.picker = picker
+            options = []
+            for value, label in self.LEVELS:
+                options.append(
+                    discord.SelectOption(
+                        label=label,
+                        value=value,
+                        default=value == picker.selected_reasoning,
+                    )
+                )
+            super().__init__(placeholder="Reasoning effort", min_values=1, max_values=1, options=options, row=2)
+
+        async def callback(self, interaction: discord.Interaction):
+            self.picker.selected_reasoning = self.values[0]
+            self.picker.refresh_items()
+            await interaction.response.edit_message(embed=self.picker.build_embed(), view=self.picker)
+
+    class ModelPickerView(discord.ui.View):
+        def __init__(self, *, adapter, current_provider: str, current_model: str, default_provider: str, default_model: str):
+            super().__init__(timeout=300)
+            from hermes_cli.model_picker_config import get_curated_model_catalog
+            self.adapter = adapter
+            self.catalog = get_curated_model_catalog()
+            self.current_provider = current_provider
+            self.current_model = current_model
+            self.default_provider = default_provider
+            self.default_model = default_model
+            self.selected_provider = self._pick_initial_provider()
+            self.selected_model = self._pick_initial_model()
+            self.selected_reasoning = self._load_current_reasoning()
+            self.refresh_items()
+
+        def _pick_initial_provider(self) -> str:
+            provider_ids = [p["id"] for p in self.catalog]
+            if self.current_provider in provider_ids:
+                return self.current_provider
+            if self.default_provider in provider_ids:
+                return self.default_provider
+            return provider_ids[0] if provider_ids else ""
+
+        def _pick_initial_model(self) -> str:
+            for model in self.models_for_selected_provider():
+                if model["id"] == self.current_model:
+                    return model["id"]
+            for model in self.models_for_selected_provider():
+                if model["id"] == self.default_model:
+                    return model["id"]
+            models = self.models_for_selected_provider()
+            return models[0]["id"] if models else ""
+
+        def provider_entry(self, provider_id=None):
+            pid = provider_id or self.selected_provider
+            for entry in self.catalog:
+                if entry["id"] == pid:
+                    return entry
+            return None
+
+        def models_for_selected_provider(self):
+            entry = self.provider_entry()
+            return list(entry.get("models", [])) if entry else []
+
+        def _load_current_reasoning(self) -> str:
+            try:
+                import yaml
+                config_path = Path.home() / ".hermes" / "config.yaml"
+                if config_path.exists():
+                    with open(config_path) as f:
+                        cfg = yaml.safe_load(f) or {}
+                    return str(cfg.get("agent", {}).get("reasoning_effort", "high")).strip() or "high"
+            except Exception:
+                pass
+            return "high"
+
+        def refresh_items(self):
+            self.clear_items()
+            self.add_item(_ProviderSelect(self))
+            self.add_item(_ModelSelect(self))
+            self.add_item(_ReasoningSelect(self))
+            self.add_item(_CancelButton(self))
+            self.add_item(_ResetDefaultButton(self))
+            self.add_item(_SubmitButton(self))
+
+        def build_embed(self):
+            from hermes_cli.model_picker_config import format_model_selection
+            provider = self.provider_entry()
+            note = provider.get("note", "") if provider else ""
+            embed = discord.Embed(title="Model Picker", description="Select provider, model, reasoning level, then Submit.", color=discord.Color.blurple())
+            embed.add_field(name="Current", value=f"`{format_model_selection(self.current_provider, self.current_model)}`", inline=True)
+            embed.add_field(name="Default", value=f"`{format_model_selection(self.default_provider, self.default_model)}`", inline=True)
+            embed.add_field(name="Selected", value=f"`{format_model_selection(self.selected_provider, self.selected_model)}` | reasoning: `{self.selected_reasoning}`", inline=False)
+            if note:
+                embed.set_footer(text=note[:200])
+            return embed
+
+        async def apply_selection(self, interaction: discord.Interaction):
+            from hermes_cli.model_picker_config import apply_model_selection, format_model_selection
+            if not self.selected_provider or not self.selected_model:
+                await interaction.response.send_message("No model selected.", ephemeral=True)
+                return
+            ok, message, _details = apply_model_selection(self.selected_provider, self.selected_model)
+            # Also save reasoning effort to config.yaml
+            reasoning_msg = ""
+            try:
+                import yaml
+                config_path = Path.home() / ".hermes" / "config.yaml"
+                if config_path.exists():
+                    with open(config_path) as f:
+                        cfg = yaml.safe_load(f) or {}
+                    if "agent" not in cfg:
+                        cfg["agent"] = {}
+                    cfg["agent"]["reasoning_effort"] = self.selected_reasoning
+                    with open(config_path, "w") as f:
+                        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+                    reasoning_msg = f"\nReasoning: `{self.selected_reasoning}`"
+            except Exception as e:
+                reasoning_msg = f"\nReasoning update failed: {e}"
+            if ok:
+                desc = f"Switched to `{format_model_selection(self.selected_provider, self.selected_model)}`{reasoning_msg}\n\n{message}\n\nStart a `/new` session to use the new settings."
+                color = discord.Color.green()
+            else:
+                desc = f"Failed: {message}"
+                color = discord.Color.red()
+            await interaction.response.edit_message(
+                embed=discord.Embed(title="Model Picker", description=desc, color=color),
+                view=None,
+            )
+
+    class _CancelButton(discord.ui.Button):
+        def __init__(self, picker):
+            self.picker = picker
+            super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=2)
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.edit_message(embed=discord.Embed(title="Model Picker", description="Cancelled.", color=discord.Color.dark_grey()), view=None)
+
+    class _ResetDefaultButton(discord.ui.Button):
+        def __init__(self, picker):
+            self.picker = picker
+            super().__init__(label="Reset to default", style=discord.ButtonStyle.secondary, row=2)
+        async def callback(self, interaction: discord.Interaction):
+            self.picker.selected_provider = self.picker.default_provider
+            self.picker.selected_model = self.picker.default_model
+            self.picker.refresh_items()
+            await interaction.response.edit_message(embed=self.picker.build_embed(), view=self.picker)
+
+    class _SubmitButton(discord.ui.Button):
+        def __init__(self, picker):
+            self.picker = picker
+            super().__init__(label="Submit", style=discord.ButtonStyle.primary, row=2)
+        async def callback(self, interaction: discord.Interaction):
+            await self.picker.apply_selection(interaction)
 
     class ExecApprovalView(discord.ui.View):
         """

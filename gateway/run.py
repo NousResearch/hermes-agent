@@ -1745,7 +1745,13 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
-        
+
+        if canonical == "models":
+            return await self._handle_models_command(event)
+
+        if canonical == "model-status":
+            return await self._handle_model_status_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -3038,7 +3044,126 @@ class GatewayRunner:
         lines.append("Switch: `/model provider:model-name`")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
-    
+
+    async def _handle_models_command(self, event: MessageEvent) -> str:
+        """Handle /models command — interactive provider→model picker."""
+        import yaml
+        from hermes_cli.models import (
+            _PROVIDER_MODELS, _PROVIDER_LABELS, normalize_provider,
+        )
+
+        args = event.get_command_args().strip()
+
+        # Load current config
+        current_model = ""
+        current_provider = ""
+        config_path = _hermes_home / "config.yaml"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", "")
+                    current_provider = model_cfg.get("provider", "")
+                elif isinstance(model_cfg, str):
+                    current_model = model_cfg
+        except Exception:
+            pass
+
+        # If user passed a provider name, show models for that provider
+        if args:
+            provider_id = normalize_provider(args)
+            models = _PROVIDER_MODELS.get(provider_id, [])
+            label = _PROVIDER_LABELS.get(provider_id, provider_id)
+            if not models:
+                return f"No curated models for `{provider_id}`. Use `/model {provider_id}:model-name` to set manually."
+            lines = [f"🎯 **Models for {label}** (`{provider_id}`):", ""]
+            for m in models:
+                marker = " ← current" if m == current_model and provider_id == current_provider else ""
+                lines.append(f"  `{m}`{marker}")
+            lines.append("")
+            lines.append(f"Switch: `/model {provider_id}:<model-name>`")
+            return "\n".join(lines)
+
+        # No args — show providers with model counts
+        lines = [
+            f"📋 **Model Picker** (current: `{current_model}` via `{current_provider}`)",
+            "",
+        ]
+        for pid, models in _PROVIDER_MODELS.items():
+            if not models:
+                continue
+            label = _PROVIDER_LABELS.get(pid, pid)
+            marker = " ← active" if pid == current_provider else ""
+            lines.append(f"  `{pid}` — {label} ({len(models)} models){marker}")
+        lines.append("")
+        lines.append("Pick a provider: `/models <provider>`")
+        lines.append("Quick switch: `/model provider:model-name`")
+        return "\n".join(lines)
+
+    async def _handle_model_status_command(self, event: MessageEvent) -> str:
+        """Handle /model-status — show configured vs actual model."""
+        import yaml
+
+        # What is CONFIGURED
+        config_model = "(not set)"
+        config_provider = "(not set)"
+        config_path = _hermes_home / "config.yaml"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    config_model = model_cfg.get("default", "(not set)")
+                    config_provider = model_cfg.get("provider", "(auto)")
+                elif isinstance(model_cfg, str):
+                    config_model = model_cfg
+        except Exception:
+            pass
+
+        # What ACTUALLY ran last
+        # _effective_model is set only when fallback activates (primary model failed)
+        # If None, the configured model is what ran
+        if self._effective_model:
+            last_model = f"{self._effective_model} (fallback)"
+        else:
+            last_model = f"{config_model} (primary)" if config_model != "(not set)" else "no response yet"
+
+        # Cron model
+        cron_model = "(check jobs.json)"
+        try:
+            import json
+            jobs_path = _hermes_home / "cron" / "jobs.json"
+            if jobs_path.exists():
+                with open(jobs_path) as f:
+                    jobs_data = json.load(f)
+                cron_models = set()
+                for job in jobs_data.get("jobs", []):
+                    jm = job.get("model")
+                    if jm:
+                        cron_models.add(f"{jm} ({job.get('name', '?')})")
+                if cron_models:
+                    cron_model = ", ".join(sorted(cron_models))
+        except Exception:
+            pass
+
+        lines = [
+            "🔍 **Model Status**",
+            "",
+            "**Configured (config.yaml):**",
+            f"  Model: `{config_model}`",
+            f"  Provider: `{config_provider}`",
+            "",
+            "**Last used (this session):**",
+            f"  Model: `{last_model}`",
+            "",
+            "**Cron jobs:**",
+            f"  {cron_model}",
+        ]
+        return "\n".join(lines)
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         import yaml

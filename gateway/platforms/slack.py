@@ -95,6 +95,7 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             # Acquire scoped lock to prevent duplicate app token usage
             from gateway.status import acquire_scoped_lock
+            self._token_lock_identity = app_token
             acquired, existing = acquire_scoped_lock('slack-app-token', app_token, metadata={'platform': 'slack'})
             if not acquired:
                 owner_pid = existing.get('pid') if isinstance(existing, dict) else None
@@ -149,12 +150,12 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
         self._running = False
 
-        # Release the token lock
+        # Release the token lock (use stored identity, not re-read env)
         try:
             from gateway.status import release_scoped_lock
-            app_token = os.getenv("SLACK_APP_TOKEN")
-            if app_token:
-                release_scoped_lock('slack-app-token', app_token)
+            if getattr(self, '_token_lock_identity', None):
+                release_scoped_lock('slack-app-token', self._token_lock_identity)
+                self._token_lock_identity = None
         except Exception:
             pass
 

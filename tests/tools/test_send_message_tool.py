@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import _send_matrix, _send_telegram, _send_to_platform, send_message_tool
 
 
 def _run_async_immediately(coro):
@@ -415,6 +415,48 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+
+class TestSendToPlatformMatrix:
+    def test_send_matrix_connects_sends_and_disconnects(self):
+        adapter = MagicMock()
+        adapter.connect = AsyncMock(return_value=True)
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="$event123", error=None))
+        adapter.disconnect = AsyncMock()
+        pconfig = SimpleNamespace(enabled=True, token="***", extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"})
+
+        with patch("gateway.platforms.matrix.MatrixAdapter", return_value=adapter):
+            result = asyncio.run(_send_matrix(pconfig, "!room:example.org", "hello matrix", thread_id="$thread123"))
+
+        assert result == {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": "!room:example.org",
+            "message_id": "$event123",
+        }
+        adapter.connect.assert_awaited_once()
+        adapter.send.assert_awaited_once_with(
+            "!room:example.org",
+            "hello matrix",
+            reply_to=None,
+            metadata={"thread_id": "$thread123"},
+        )
+        adapter.disconnect.assert_awaited_once()
+
+    def test_send_matrix_returns_clear_error_when_connect_fails(self):
+        adapter = MagicMock()
+        adapter.connect = AsyncMock(return_value=False)
+        adapter.send = AsyncMock()
+        adapter.disconnect = AsyncMock()
+        pconfig = SimpleNamespace(enabled=True, token="***", extra={"homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"})
+
+        with patch("gateway.platforms.matrix.MatrixAdapter", return_value=adapter):
+            result = asyncio.run(_send_matrix(pconfig, "!room:example.org", "hello matrix"))
+
+        assert result == {"error": "Matrix send failed: could not connect adapter"}
+        adapter.connect.assert_awaited_once()
+        adapter.send.assert_not_awaited()
+        adapter.disconnect.assert_not_awaited()
 
 
 class TestSendTelegramHtmlDetection:

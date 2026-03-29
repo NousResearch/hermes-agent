@@ -335,6 +335,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_discord(pconfig.token, chat_id, chunk)
         elif platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
+        elif platform == Platform.MATRIX:
+            result = await _send_matrix(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -476,6 +478,36 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {"error": "python-telegram-bot not installed. Run: pip install python-telegram-bot"}
     except Exception as e:
         return {"error": f"Telegram send failed: {e}"}
+
+
+async def _send_matrix(pconfig, chat_id, message, thread_id=None):
+    """Send via a one-shot Matrix adapter connection."""
+    try:
+        from gateway.platforms.matrix import MatrixAdapter
+
+        adapter = MatrixAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return {"error": "Matrix send failed: could not connect adapter"}
+
+        try:
+            metadata = {"thread_id": thread_id} if thread_id else None
+            result = await adapter.send(chat_id, message, reply_to=None, metadata=metadata)
+        finally:
+            await adapter.disconnect()
+
+        if not getattr(result, "success", False):
+            error = getattr(result, "error", None) or "unknown error"
+            return {"error": f"Matrix send failed: {error}"}
+
+        return {
+            "success": True,
+            "platform": "matrix",
+            "chat_id": chat_id,
+            "message_id": getattr(result, "message_id", None),
+        }
+    except Exception as e:
+        return {"error": f"Matrix send failed: {e}"}
 
 
 async def _send_discord(token, chat_id, message):

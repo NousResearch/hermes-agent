@@ -681,6 +681,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    # Mark this as a cron session so the approval system can apply cron_mode.
+    # This env var is process-wide and persists for the lifetime of the
+    # scheduler process — every job this process runs is a cron job.
+    os.environ["HERMES_CRON_SESSION"] = "1"
+
     try:
         # Inject origin context so the agent's send_message tool knows the chat.
         # Must be INSIDE the try block so the finally cleanup always runs.

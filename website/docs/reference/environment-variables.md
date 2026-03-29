@@ -200,6 +200,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |
 | `MATTERMOST_HOME_CHANNEL` | Channel ID for proactive message delivery (cron, notifications) |
+| `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
+| `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |

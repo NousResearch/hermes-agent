@@ -817,6 +817,20 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "MATTERMOST_REQUIRE_MENTION": {
+        "description": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in channels",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_FREE_RESPONSE_CHANNELS": {
+        "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
+        "prompt": "Free-response channel IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "MATRIX_HOMESERVER": {
         "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
         "prompt": "Matrix homeserver URL",

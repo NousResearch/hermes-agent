@@ -284,11 +284,11 @@ class KawaiiSpinner:
         The CLI already drives a TUI widget (_spinner_text) for spinner display,
         so KawaiiSpinner's \\r-based animation is redundant under StdoutProxy.
         """
-        out = self._out
-        # StdoutProxy has a 'raw' attribute (bool) that plain file objects lack.
-        if hasattr(out, 'raw') and type(out).__name__ == 'StdoutProxy':
-            return True
-        return False
+        try:
+            from prompt_toolkit.patch_stdout import StdoutProxy
+            return isinstance(self._out, StdoutProxy)
+        except ImportError:
+            return False
 
     def _animate(self):
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),

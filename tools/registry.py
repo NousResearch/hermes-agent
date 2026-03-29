@@ -115,7 +115,9 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            result.append({"type": "function", "function": entry.schema})
+            # Ensure schema always has a "name" field — use entry.name as fallback
+            schema_with_name = {**entry.schema, "name": entry.name}
+            result.append({"type": "function", "function": schema_with_name})
         return result
 
     # ------------------------------------------------------------------

@@ -398,6 +398,7 @@ def _make_update_side_effect(
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
+    rebase_fails=False,
 ):
     """Build a subprocess.run side_effect for cmd_update tests."""
     recorded = []
@@ -413,6 +414,10 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rebase" in joined and "origin/main" in joined:
+            if rebase_fails:
+                return SimpleNamespace(stdout="", stderr="conflict during rebase\n", returncode=1)
+            return SimpleNamespace(stdout="Successfully rebased\n", stderr="", returncode=0)
         if "rev-list" in joined:
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "--ff-only" in joined:
@@ -468,8 +473,8 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 # Non-main branch → auto-checkout main
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
-    """When on a feature branch, update checks out main before pulling."""
+def test_cmd_update_rebases_feature_branch_onto_main(monkeypatch, tmp_path, capsys):
+    """When on a feature branch, update rebases branch onto origin/main."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -478,12 +483,15 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
 
     hermes_main.cmd_update(SimpleNamespace())
 
+    rebase_calls = [c for c in recorded if "rebase" in c and "origin/main" in c]
+    assert len(rebase_calls) == 1
+
     checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
-    assert len(checkout_calls) == 1
+    assert len(checkout_calls) == 0
 
     out = capsys.readouterr().out
     assert "fix/something" in out
-    assert "switching to main" in out
+    assert "will rebase this branch onto latest main" in out
 
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):
@@ -501,6 +509,25 @@ def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, c
 
     out = capsys.readouterr().out
     assert "detached HEAD" in out
+
+
+def test_cmd_update_rebase_failure_exits_with_guidance(monkeypatch, tmp_path, capsys):
+    """When rebase on feature branch fails, update exits with conflict guidance."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="fix/something", rebase_fails=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    rebase_calls = [c for c in recorded if "rebase" in c and "origin/main" in c]
+    assert len(rebase_calls) == 1
+
+    out = capsys.readouterr().out
+    assert "Rebase failed while updating branch 'fix/something'" in out
+    assert "git rebase --continue" in out
 
 
 def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):

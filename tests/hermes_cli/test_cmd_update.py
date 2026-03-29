@@ -9,7 +9,7 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
-def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
+def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0", rebase_ok=True):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 
     def side_effect(cmd, **kwargs):
@@ -27,6 +27,12 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
         # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+
+        # git rebase origin/main for feature branches
+        if "rebase" in joined and "origin/main" in joined:
+            rc = 0 if rebase_ok else 1
+            stderr = "" if rebase_ok else "conflict during rebase\n"
+            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr=stderr)
 
         # Fallback: return a successful CompletedProcess with empty stdout
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -61,10 +67,13 @@ class TestCmdUpdateBranchFallback:
         assert "origin/main" in rev_list_cmds[0]
         assert "origin/fix/stoicneko" not in rev_list_cmds[0]
 
-        # pull should use main, not fix/stoicneko
+        # non-main branch should rebase onto origin/main instead of pulling on main
+        rebase_cmds = [c for c in commands if "rebase" in c]
+        assert len(rebase_cmds) == 1
+        assert "origin/main" in rebase_cmds[0]
+
         pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
+        assert len(pull_cmds) == 0
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

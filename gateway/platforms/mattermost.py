@@ -603,9 +603,19 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
-        # Mention-only mode: skip channel messages that don't @mention the bot.
-        # DMs (type "D") are always processed.
+        # Mention-gating for non-DM channels.
+        # Config (env vars):
+        #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
+        #   MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
         if channel_type_raw != "D":
+            require_mention = os.getenv(
+                "MATTERMOST_REQUIRE_MENTION", "true"
+            ).lower() not in ("false", "0", "no")
+
+            free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
+            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            is_free_channel = channel_id in free_channels
+
             mention_patterns = [
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
@@ -614,12 +624,20 @@ class MattermostAdapter(BasePlatformAdapter):
                 pattern.lower() in message_text.lower()
                 for pattern in mention_patterns
             )
-            if not has_mention:
+
+            if require_mention and not is_free_channel and not has_mention:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
                 )
                 return
+
+            # Strip @mention from the message text so the agent sees clean input.
+            if has_mention:
+                for pattern in mention_patterns:
+                    message_text = re.sub(
+                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
+                    ).strip()
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")

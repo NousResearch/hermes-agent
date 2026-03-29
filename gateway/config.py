@@ -647,14 +647,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.SLACK] = PlatformConfig()
         config.platforms[Platform.SLACK].enabled = True
         config.platforms[Platform.SLACK].token = slack_token
-        # Home channel
-        slack_home = os.getenv("SLACK_HOME_CHANNEL")
-        if slack_home:
-            config.platforms[Platform.SLACK].home_channel = HomeChannel(
-                platform=Platform.SLACK,
-                chat_id=slack_home,
-                name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
-            )
+    slack_home = os.getenv("SLACK_HOME_CHANNEL")
+    if slack_home and Platform.SLACK in config.platforms:
+        config.platforms[Platform.SLACK].home_channel = HomeChannel(
+            platform=Platform.SLACK,
+            chat_id=slack_home,
+            name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
+        )
     
     # Signal
     signal_url = os.getenv("SIGNAL_HTTP_URL")
@@ -668,13 +667,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "account": signal_account,
             "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
         })
-        signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
-        if signal_home:
-            config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
-                platform=Platform.SIGNAL,
-                chat_id=signal_home,
-                name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
-            )
+    signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
+    if signal_home and Platform.SIGNAL in config.platforms:
+        config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
+            platform=Platform.SIGNAL,
+            chat_id=signal_home,
+            name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Mattermost
     mattermost_token = os.getenv("MATTERMOST_TOKEN")
@@ -687,13 +686,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.MATTERMOST].enabled = True
         config.platforms[Platform.MATTERMOST].token = mattermost_token
         config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
-        mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
-        if mattermost_home:
-            config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
-                platform=Platform.MATTERMOST,
-                chat_id=mattermost_home,
-                name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
-            )
+    mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+    if mattermost_home and Platform.MATTERMOST in config.platforms:
+        config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
+            platform=Platform.MATTERMOST,
+            chat_id=mattermost_home,
+            name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Matrix
     matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
@@ -715,13 +714,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.MATRIX].extra["password"] = matrix_password
         matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
         config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
-        matrix_home = os.getenv("MATRIX_HOME_ROOM")
-        if matrix_home:
-            config.platforms[Platform.MATRIX].home_channel = HomeChannel(
-                platform=Platform.MATRIX,
-                chat_id=matrix_home,
-                name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
-            )
+    matrix_home = os.getenv("MATRIX_HOME_ROOM")
+    if matrix_home and Platform.MATRIX in config.platforms:
+        config.platforms[Platform.MATRIX].home_channel = HomeChannel(
+            platform=Platform.MATRIX,
+            chat_id=matrix_home,
+            name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
+        )
 
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
@@ -748,13 +747,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
-        email_home = os.getenv("EMAIL_HOME_ADDRESS")
-        if email_home:
-            config.platforms[Platform.EMAIL].home_channel = HomeChannel(
-                platform=Platform.EMAIL,
-                chat_id=email_home,
-                name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
-            )
+    email_home = os.getenv("EMAIL_HOME_ADDRESS")
+    if email_home and Platform.EMAIL in config.platforms:
+        config.platforms[Platform.EMAIL].home_channel = HomeChannel(
+            platform=Platform.EMAIL,
+            chat_id=email_home,
+            name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+        )
 
     # SMS (Twilio)
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -763,13 +762,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
         config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
-        sms_home = os.getenv("SMS_HOME_CHANNEL")
-        if sms_home:
-            config.platforms[Platform.SMS].home_channel = HomeChannel(
-                platform=Platform.SMS,
-                chat_id=sms_home,
-                name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
-            )
+    sms_home = os.getenv("SMS_HOME_CHANNEL")
+    if sms_home and Platform.SMS in config.platforms:
+        config.platforms[Platform.SMS].home_channel = HomeChannel(
+            platform=Platform.SMS,
+            chat_id=sms_home,
+            name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")

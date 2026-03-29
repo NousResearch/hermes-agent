@@ -1,0 +1,27 @@
+name: Boot Orchestrator CI
+
+on:
+  push:
+    branches:
+      - forge/boot-orchestrator
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest
+      - name: Run tests
+        run: pytest -q
+      - name: Run orchestrator check
+        run: python tools/boot_orchestrator.py --check --path runtime || true

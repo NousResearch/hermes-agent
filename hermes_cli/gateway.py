@@ -15,7 +15,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
-from hermes_constants import display_hermes_home
+# display_hermes_home is imported lazily at call sites to avoid ImportError
+# when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -936,7 +937,8 @@ def launchd_install(force: bool = False):
     print()
     print("Next steps:")
     print("  hermes gateway status             # Check status")
-    print(f"  tail -f {display_hermes_home()}/logs/gateway.log  # View logs")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()

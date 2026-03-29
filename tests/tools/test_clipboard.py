@@ -654,6 +654,12 @@ class TestHasClipboardImage:
 class TestPreprocessImagesWithVision:
     """Test vision-based image pre-processing for the CLI."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_cprint(self):
+        """Suppress _cprint to avoid prompt_toolkit Win32Output crash in non-interactive tests."""
+        with patch("cli._cprint"):
+            yield
+
     @pytest.fixture
     def cli(self):
         """Minimal HermesCLI with mocked internals."""

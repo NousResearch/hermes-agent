@@ -417,9 +417,18 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     else:
         logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
+    # Local Honcho instances don't require an API key, but the SDK
+    # expects a non-empty string.  Use a placeholder for local URLs.
+    _is_local = resolved_base_url and (
+        "localhost" in resolved_base_url
+        or "127.0.0.1" in resolved_base_url
+        or "::1" in resolved_base_url
+    )
+    effective_api_key = config.api_key or ("local" if _is_local else None)
+
     kwargs: dict = {
         "workspace_id": config.workspace_id,
-        "api_key": config.api_key,
+        "api_key": effective_api_key,
         "environment": config.environment,
     }
     if resolved_base_url:

@@ -261,6 +261,14 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # Log the model/provider the subagent is running on
+    _child_model = getattr(child, "model", None)
+    _child_provider = getattr(child, "provider", None)
+    if _child_model:
+        provider_tag = f" ({_child_provider})" if _child_provider else ""
+        logger.info("[subagent-%d] spawning with model=%s%s", task_index, _child_model, provider_tag)
+        print(f"  [subagent-{task_index}] model={_child_model}{provider_tag}")
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
 

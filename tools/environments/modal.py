@@ -137,6 +137,28 @@ class ModalEnvironment(BaseEnvironment):
                 ],
             )
 
+        # Mount credential files (OAuth tokens, etc.) declared by skills.
+        # These are read-only copies so the sandbox can authenticate with
+        # external services but can't modify the host's credentials.
+        cred_mounts = []
+        try:
+            from tools.credential_files import get_credential_file_mounts
+
+            for mount_entry in get_credential_file_mounts():
+                cred_mounts.append(
+                    _modal.Mount.from_local_file(
+                        mount_entry["host_path"],
+                        remote_path=mount_entry["container_path"],
+                    )
+                )
+                logger.info(
+                    "Modal: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Modal: could not load credential file mounts: %s", e)
+
         # Start the async worker thread and create sandbox on it
         # so all gRPC channels are bound to the worker's event loop.
         self._worker.start()
@@ -145,23 +167,90 @@ class ModalEnvironment(BaseEnvironment):
             app = await _modal.App.lookup.aio(
                 "hermes-agent", create_if_missing=True
             )
+            create_kwargs = dict(sandbox_kwargs)
+            if cred_mounts:
+                existing_mounts = list(create_kwargs.pop("mounts", []))
+                existing_mounts.extend(cred_mounts)
+                create_kwargs["mounts"] = existing_mounts
             sandbox = await _modal.Sandbox.create.aio(
                 "sleep", "infinity",
                 image=effective_image,
                 app=app,
-                timeout=int(sandbox_kwargs.pop("timeout", 3600)),
-                **sandbox_kwargs,
+                timeout=int(create_kwargs.pop("timeout", 3600)),
+                **create_kwargs,
             )
             return app, sandbox
 
         self._app, self._sandbox = self._worker.run_coroutine(
             _create_sandbox(), timeout=300
         )
+        # Track synced credential files to avoid redundant pushes.
+        # Key: container_path, Value: (mtime, size) of last synced version.
+        self._synced_creds: Dict[str, tuple] = {}
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
+
+    def _sync_credential_files(self) -> None:
+        """Push credential files into the running sandbox.
+
+        Mounts are set at sandbox creation, but credentials may be created
+        later (e.g. OAuth setup mid-session).  This writes the current file
+        content into the sandbox via exec(), so new/updated credentials are
+        available without recreating the sandbox.
+        """
+        try:
+            from tools.credential_files import get_credential_file_mounts
+
+            mounts = get_credential_file_mounts()
+            if not mounts:
+                return
+
+            for entry in mounts:
+                host_path = entry["host_path"]
+                container_path = entry["container_path"]
+                hp = Path(host_path)
+                try:
+                    stat = hp.stat()
+                    file_key = (stat.st_mtime, stat.st_size)
+                except OSError:
+                    continue
+
+                # Skip if already synced with same mtime+size
+                if self._synced_creds.get(container_path) == file_key:
+                    continue
+
+                try:
+                    content = hp.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                # Write via base64 to avoid shell escaping issues with JSON
+                import base64
+                b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+                container_dir = str(Path(container_path).parent)
+                cmd = (
+                    f"mkdir -p {shlex.quote(container_dir)} && "
+                    f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
+                )
+
+                _cp = container_path  # capture for closure
+
+                async def _write():
+                    proc = await self._sandbox.exec.aio("bash", "-c", cmd)
+                    await proc.wait.aio()
+
+                self._worker.run_coroutine(_write(), timeout=15)
+                self._synced_creds[container_path] = file_key
+                logger.debug("Modal: synced credential %s -> %s", host_path, container_path)
+        except Exception as e:
+            logger.debug("Modal: credential file sync failed: %s", e)
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
+        # Sync credential files before each command so mid-session
+        # OAuth setups are picked up without requiring a restart.
+        self._sync_credential_files()
+
         if stdin_data is not None:
             marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
             while marker in stdin_data:

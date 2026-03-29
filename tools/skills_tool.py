@@ -1106,6 +1106,27 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
+        # Register credential files for mounting into remote sandboxes
+        # (Modal, Docker).  Files that exist on the host are registered;
+        # missing ones are added to the setup_needed indicators.
+        required_cred_files_raw = frontmatter.get("required_credential_files", [])
+        if not isinstance(required_cred_files_raw, list):
+            required_cred_files_raw = []
+        missing_cred_files: list = []
+        if required_cred_files_raw:
+            try:
+                from tools.credential_files import register_credential_files
+
+                missing_cred_files = register_credential_files(required_cred_files_raw)
+                if missing_cred_files:
+                    setup_needed = True
+            except Exception:
+                logger.debug(
+                    "Could not register credential files for skill %s",
+                    skill_name,
+                    exc_info=True,
+                )
+
         result = {
             "success": True,
             "name": skill_name,
@@ -1121,6 +1142,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             "required_environment_variables": required_env_vars,
             "required_commands": [],
             "missing_required_environment_variables": remaining_missing_required_envs,
+            "missing_credential_files": missing_cred_files,
             "missing_required_commands": [],
             "setup_needed": setup_needed,
             "setup_skipped": capture_result["setup_skipped"],
@@ -1139,6 +1161,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         if setup_needed:
             missing_items = [
                 f"env ${env_name}" for env_name in remaining_missing_required_envs
+            ] + [
+                f"file {path}" for path in missing_cred_files
             ]
             setup_note = _build_setup_note(
                 SkillReadinessStatus.SETUP_NEEDED,

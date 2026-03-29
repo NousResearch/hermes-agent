@@ -135,6 +135,7 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
+    "fallback_providers": [],
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,

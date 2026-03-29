@@ -896,16 +896,30 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Provider fallback — a single backup model/provider tried when the
-        # primary is exhausted (rate-limit, overload, connection failure).
-        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
-        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        # Provider fallback chain — ordered list of backup providers tried
+        # when the primary is exhausted (rate-limit, overload, connection
+        # failure).  Supports both legacy single-dict ``fallback_model`` and
+        # new list ``fallback_providers`` format.
+        if isinstance(fallback_model, list):
+            self._fallback_chain = [
+                f for f in fallback_model
+                if isinstance(f, dict) and f.get("provider") and f.get("model")
+            ]
+        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+            self._fallback_chain = [fallback_model]
+        else:
+            self._fallback_chain = []
+        self._fallback_index = 0
         self._fallback_activated = False
-        if self._fallback_model:
-            fb_p = self._fallback_model.get("provider", "")
-            fb_m = self._fallback_model.get("model", "")
-            if fb_p and fb_m and not self.quiet_mode:
-                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+        # Legacy attribute kept for backward compat (tests, external callers)
+        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        if self._fallback_chain and not self.quiet_mode:
+            if len(self._fallback_chain) == 1:
+                fb = self._fallback_chain[0]
+                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            else:
+                print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
+                      " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -4318,25 +4332,26 @@ class AIAgent:
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self) -> bool:
-        """Switch to the configured fallback model/provider.
+        """Switch to the next fallback model/provider in the chain.
 
-        Called when the primary model is failing after retries.  Swaps the
+        Called when the current model is failing after retries.  Swaps the
         OpenAI client, model slug, and provider in-place so the retry loop
-        can continue with the new backend.  One-shot: returns False if
-        already activated or not configured.
+        can continue with the new backend.  Advances through the chain on
+        each call; returns False when exhausted.
 
         Uses the centralized provider router (resolve_provider_client) for
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if self._fallback_activated or not self._fallback_model:
+        if self._fallback_index >= len(self._fallback_chain):
             return False
 
-        fb = self._fallback_model
+        fb = self._fallback_chain[self._fallback_index]
+        self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
-            return False
+            return self._try_activate_fallback()  # skip invalid, try next
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -4349,7 +4364,7 @@ class AIAgent:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
-                return False
+                return self._try_activate_fallback()  # try next in chain
 
             # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"
@@ -4424,8 +4439,8 @@ class AIAgent:
             )
             return True
         except Exception as e:
-            logging.error("Failed to activate fallback model: %s", e)
-            return False
+            logging.error("Failed to activate fallback %s: %s", fb_model, e)
+            return self._try_activate_fallback()  # try next in chain
 
     # ── End provider fallback ──────────────────────────────────────────────
 
@@ -6528,9 +6543,9 @@ class AIAgent:
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
-                        if not self._fallback_activated:
+                        if self._fallback_index < len(self._fallback_chain):
                             self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                        if not self._fallback_activated and self._try_activate_fallback():
+                        if self._try_activate_fallback():
                             retry_count = 0
                             continue
 
@@ -6993,7 +7008,7 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
-                    if is_rate_limited and not self._fallback_activated:
+                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if self._try_activate_fallback():
                             retry_count = 0

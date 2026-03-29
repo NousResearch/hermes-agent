@@ -1182,9 +1182,13 @@ class HermesCLI:
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
         
-        # Fallback model config — tried when primary provider fails after retries
-        fb = CLI_CONFIG.get("fallback_model") or {}
-        self._fallback_model = fb if fb.get("provider") and fb.get("model") else None
+        # Fallback provider chain — tried in order when primary fails after retries.
+        # Supports new list format (fallback_providers) and legacy single-dict (fallback_model).
+        fb = CLI_CONFIG.get("fallback_providers") or CLI_CONFIG.get("fallback_model") or []
+        # Normalize legacy single-dict to a one-element list
+        if isinstance(fb, dict):
+            fb = [fb] if fb.get("provider") and fb.get("model") else []
+        self._fallback_model = fb
 
         # Optional cheap-vs-strong routing for simple turns
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}

@@ -2507,6 +2507,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_sets_api_mode(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2528,6 +2530,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2545,6 +2549,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_openrouter_uses_openai_client(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://openrouter.ai/api/v1"
@@ -3238,6 +3244,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -3259,6 +3267,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"

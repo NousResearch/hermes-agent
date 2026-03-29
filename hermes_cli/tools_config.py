@@ -9,6 +9,8 @@ Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
 """
 
+import json as _json
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -18,6 +20,8 @@ from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -653,9 +657,61 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
             return default
 
 
+# ─── Token Estimation ────────────────────────────────────────────────────────
+
+# Module-level cache so discovery + tokenization runs at most once per process.
+_tool_token_cache: Optional[Dict[str, int]] = None
+
+
+def _estimate_tool_tokens() -> Dict[str, int]:
+    """Return estimated token counts per individual tool name.
+
+    Uses tiktoken (cl100k_base) to count tokens in the JSON-serialised
+    OpenAI-format tool schema.  Triggers tool discovery on first call,
+    then caches the result for the rest of the process.
+
+    Returns an empty dict when tiktoken or the registry is unavailable.
+    """
+    global _tool_token_cache
+    if _tool_token_cache is not None:
+        return _tool_token_cache
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        logger.debug("tiktoken unavailable; skipping tool token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    try:
+        # Trigger full tool discovery (imports all tool modules).
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+    except Exception:
+        logger.debug("Tool registry unavailable; skipping token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    counts: Dict[str, int] = {}
+    for name in registry.get_all_tool_names():
+        schema = registry.get_schema(name)
+        if schema:
+            # Mirror what gets sent to the API:
+            # {"type": "function", "function": <schema>}
+            text = _json.dumps({"type": "function", "function": schema})
+            counts[name] = len(enc.encode(text))
+    _tool_token_cache = counts
+    return _tool_token_cache
+
+
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
+    from toolsets import resolve_toolset
+
+    # Pre-compute per-tool token counts (cached after first call).
+    tool_tokens = _estimate_tool_tokens()
 
     effective = _get_effective_configurable_toolsets()
 
@@ -671,11 +727,27 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         if ts_key in enabled
     }
 
+    # Build a live status function that shows deduplicated total token cost.
+    status_fn = None
+    if tool_tokens:
+        ts_keys = [ts_key for ts_key, _, _ in effective]
+
+        def status_fn(chosen: set) -> str:
+            # Collect unique tool names across all selected toolsets
+            all_tools: set = set()
+            for idx in chosen:
+                all_tools.update(resolve_toolset(ts_keys[idx]))
+            total = sum(tool_tokens.get(name, 0) for name in all_tools)
+            if total >= 1000:
+                return f"Est. tool context: ~{total / 1000:.1f}k tokens"
+            return f"Est. tool context: ~{total} tokens"
+
     chosen = curses_checklist(
         f"Tools for {platform_label}",
         labels,
         pre_selected,
         cancel_returns=pre_selected,
+        status_fn=status_fn,
     )
     return {effective[i][0] for i in chosen}
 

@@ -354,6 +354,78 @@ class TestErrorLoggingExcInfo:
             assert warning_records[0].exc_info is not None
 
 
+class TestVisionSafetyGuards:
+    @pytest.mark.asyncio
+    async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET=1\n", encoding="utf-8")
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
+
+        assert result["success"] is False
+        assert "Only real image files are supported" in result["error"]
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blocked_remote_url_short_circuits_before_download(self):
+        blocked = {
+            "host": "blocked.test",
+            "rule": "blocked.test",
+            "source": "config",
+            "message": "Blocked by website policy",
+        }
+
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=blocked),
+            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
+        ):
+            result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
+
+        assert result["success"] is False
+        assert "Blocked by website policy" in result["error"]
+        mock_download.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_download_blocks_redirected_final_url(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        def fake_check(url):
+            if url == "https://allowed.test/cat.png":
+                return None
+            if url == "https://blocked.test/final.png":
+                return {
+                    "host": "blocked.test",
+                    "rule": "blocked.test",
+                    "source": "config",
+                    "message": "Blocked by website policy",
+                }
+            raise AssertionError(f"unexpected URL checked: {url}")
+
+        class FakeResponse:
+            url = "https://blocked.test/final.png"
+            content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+            def raise_for_status(self):
+                return None
+
+        with (
+            patch("tools.vision_tools.check_website_access", side_effect=fake_check),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(PermissionError, match="Blocked by website policy"),
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=FakeResponse())
+            mock_client_cls.return_value = mock_client
+
+            await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
+
+        assert not (tmp_path / "cat.png").exists()
+
+
 # ---------------------------------------------------------------------------
 # check_vision_requirements & get_debug_session_info
 # ---------------------------------------------------------------------------

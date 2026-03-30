@@ -424,6 +424,7 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
 
     monkeypatch.setattr("hermes_cli.auth.resolve_provider", _resolve_provider)
     monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices: len(choices) - 1)
+    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: True})())
 
     hermes_main.cmd_model(SimpleNamespace())
     output = capsys.readouterr().out

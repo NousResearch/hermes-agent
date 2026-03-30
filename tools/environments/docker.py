@@ -83,7 +83,14 @@ def find_docker() -> Optional[str]:
     if _docker_executable is not None:
         return _docker_executable
 
-    found = shutil.which("docker")
+    # Allow explicit override via env var (e.g. HERMES_DOCKER_BINARY=/usr/local/bin/podman)
+    override = os.getenv("HERMES_DOCKER_BINARY")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        _docker_executable = override
+        logger.info("Using HERMES_DOCKER_BINARY override: %s", override)
+        return override
+
+    found = shutil.which("docker") or shutil.which("podman")
     if found:
         _docker_executable = found
         return found

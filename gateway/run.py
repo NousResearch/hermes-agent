@@ -412,6 +412,12 @@ class GatewayRunner:
         self._agent_cache: Dict[str, tuple] = {}
         self._agent_cache_lock = _threading.Lock()
 
+        # Per-session model/provider overrides set via /model in a specific thread.
+        # Key: session_key, Value: model string or provider string.
+        # These take precedence over config.yaml for that session only.
+        self._session_model_overrides: Dict[str, str] = {}
+        self._session_provider_overrides: Dict[str, str] = {}
+
         # Track active fallback model/provider when primary is rate-limited.
         # Set after an agent run where fallback was activated; cleared when
         # the primary model succeeds again or the user switches via /model.
@@ -5051,7 +5057,16 @@ class GatewayRunner:
             """Callback invoked by agent when a tool is called."""
             if not progress_queue:
                 return
-            
+
+            # Special: delegate_tool injects model info after the delegate_task
+            # progress line was already sent — append it to the last line.
+            if tool_name == "_delegate_model" and preview:
+                if last_progress_msg[0]:
+                    patched = f"{last_progress_msg[0]} ({preview})"
+                    last_progress_msg[0] = patched
+                    progress_queue.put(("__patch_last__", patched))
+                return
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
@@ -5131,6 +5146,12 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    # Handle patch_last: replace last line (e.g. add model to delegate_task line)
+                    elif isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__patch_last__":
+                        _, patched_msg = raw
+                        if progress_lines:
+                            progress_lines[-1] = patched_msg
+                        msg = patched_msg
                     else:
                         msg = raw
                         progress_lines.append(msg)
@@ -5267,6 +5288,11 @@ class GatewayRunner:
 
             model = _resolve_gateway_model(user_config)
 
+            # Apply per-session model/provider override if set via /model in this thread
+            _session_model_ov = getattr(self, "_session_model_overrides", {}).get(session_key)
+            if _session_model_ov:
+                model = _session_model_ov
+
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
@@ -5276,6 +5302,12 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # Apply per-session provider override if set via /model in this thread
+            _session_provider_ov = getattr(self, "_session_provider_overrides", {}).get(session_key)
+            if _session_provider_ov:
+                runtime_kwargs = dict(runtime_kwargs)
+                runtime_kwargs["provider"] = _session_provider_ov
 
             pr = self._provider_routing
             honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
@@ -5332,6 +5364,31 @@ class GatewayRunner:
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
+                # If the old cached agent had fallback active, notify the user
+                # that the fallback has been cleared (fresh agent = primary model).
+                if _cache_lock and _cache is not None:
+                    with _cache_lock:
+                        _old_cached = _cache.get(session_key)
+                    _old_agent = _old_cached[0] if _old_cached else None
+                    if _old_agent and getattr(_old_agent, "_fallback_activated", False):
+                        try:
+                            _old_primary = getattr(_old_agent, "_original_model", None) or turn_route["model"]
+                            _cleared_msg = (
+                                f"✅ Fallback cleared — resuming with primary model: {_old_primary}"
+                            )
+                            _status_adapter_clr = self.adapters.get(source.platform)
+                            if _status_adapter_clr:
+                                asyncio.run_coroutine_threadsafe(
+                                    _status_adapter_clr.send(
+                                        _status_chat_id,
+                                        _cleared_msg,
+                                        metadata=_status_thread_metadata,
+                                    ),
+                                    _loop_for_step,
+                                )
+                        except Exception as _clr_e:
+                            logger.debug("fallback_cleared notify error: %s", _clr_e)
+
                 # Config changed or first message — create fresh agent
                 agent = AIAgent(
                     model=turn_route["model"],

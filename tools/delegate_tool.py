@@ -75,7 +75,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1, model_name: Optional[str] = None) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -127,8 +127,9 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             _batch.append(tool_name)
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
+                model_suffix = f" [{model_name}]" if model_name else ""
                 try:
-                    parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
+                    parent_cb("subagent_progress", f"🔀 {prefix}{summary}{model_suffix}")
                 except Exception as e:
                     logger.debug("Parent callback failed: %s", e)
                 _batch.clear()
@@ -137,8 +138,9 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
             summary = ", ".join(_batch)
+            model_suffix = f" [{model_name}]" if model_name else ""
             try:
-                parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
+                parent_cb("subagent_progress", f"🔀 {prefix}{summary}{model_suffix}")
             except Exception as e:
                 logger.debug("Parent callback flush failed: %s", e)
             _batch.clear()
@@ -199,6 +201,9 @@ def _build_child_agent(
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
+
+    # Build progress callback to relay tool calls to parent display
+    child_progress_cb = _build_child_progress_callback(task_index, parent_agent, model_name=effective_model)
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
@@ -494,6 +499,18 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
+
+    # Patch the already-sent delegate_task progress message with the model name.
+    # run_agent fires tool_progress_callback(tool_name, preview, args) just before
+    # calling this function, so the gateway already sent "🔀 delegate_task: ...".
+    # We send one more progress event that the gateway appends to that same message.
+    effective_model_name = creds["model"] or getattr(parent_agent, "model", None) or "unknown"
+    parent_progress_cb = getattr(parent_agent, "tool_progress_callback", None)
+    if parent_progress_cb is not None:
+        try:
+            parent_progress_cb("_delegate_model", f"model: {effective_model_name}", {})
+        except Exception as _e:
+            logger.debug("parent progress_callback model hint failed: %s", _e)
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)

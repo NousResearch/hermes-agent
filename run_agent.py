@@ -4437,6 +4437,15 @@ class AIAgent:
                 "Fallback activated: %s → %s (%s)",
                 old_model, fb_model, fb_provider,
             )
+            if self.status_callback:
+                try:
+                    _fb_msg = (
+                        f"⚠️ Primary model ({old_model}) failed — "
+                        f"switched to fallback: {fb_model} ({fb_provider})"
+                    )
+                    self.status_callback("fallback_activated", _fb_msg)
+                except Exception:
+                    pass
             return True
         except Exception as e:
             logging.error("Failed to activate fallback %s: %s", fb_model, e)

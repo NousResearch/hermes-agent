@@ -248,6 +248,7 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
 
 
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
+    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
@@ -258,6 +259,20 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
 
     assert providers[0]["name"].startswith("Nous Subscription")
+
+
+def test_visible_providers_hide_nous_subscription_when_feature_flag_is_off(monkeypatch):
+    monkeypatch.delenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", raising=False)
+    config = {"model": {"provider": "nous"}}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_auth_status",
+        lambda: {"logged_in": True},
+    )
+
+    providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
+
+    assert all(not provider["name"].startswith("Nous Subscription") for provider in providers)
 
 
 def test_local_browser_provider_is_saved_explicitly(monkeypatch):
@@ -275,6 +290,7 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
+    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
     config = {
         "model": {"provider": "nous"},
         "platform_toolsets": {"cli": []},

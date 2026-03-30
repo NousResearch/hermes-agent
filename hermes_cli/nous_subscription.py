@@ -11,6 +11,7 @@ from hermes_cli.config import get_env_value, load_config
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from tools.tool_backend_helpers import (
     has_direct_modal_credentials,
+    managed_nous_tools_enabled,
     normalize_browser_cloud_provider,
     normalize_modal_mode,
     resolve_openai_audio_api_key,
@@ -156,6 +157,7 @@ def get_nous_subscription_features(
     except Exception:
         nous_status = {}
 
+    managed_tools_flag = managed_nous_tools_enabled()
     nous_auth_present = bool(nous_status.get("logged_in"))
     subscribed = provider_is_nous or nous_auth_present
 
@@ -193,11 +195,11 @@ def get_nous_subscription_features(
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
     direct_modal = has_direct_modal_credentials()
 
-    managed_web_available = nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
-    managed_image_available = nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
-    managed_tts_available = nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
-    managed_browser_available = nous_auth_present and is_managed_tool_gateway_ready("browserbase")
-    managed_modal_available = nous_auth_present and is_managed_tool_gateway_ready("modal")
+    managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
+    managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
+    managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
+    managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browserbase")
+    managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
 
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
@@ -355,6 +357,9 @@ def get_nous_subscription_features(
 
 
 def get_nous_subscription_explainer_lines() -> list[str]:
+    if not managed_nous_tools_enabled():
+        return []
+
     return [
         "Nous subscription enables managed web tools, image generation, OpenAI TTS, and browser automation by default.",
         "Those managed tools bill to your Nous subscription. Modal execution is optional and can bill to your subscription too.",
@@ -364,6 +369,9 @@ def get_nous_subscription_explainer_lines() -> list[str]:
 
 def apply_nous_provider_defaults(config: Dict[str, object]) -> set[str]:
     """Apply provider-level Nous defaults shared by `hermes setup` and `hermes model`."""
+    if not managed_nous_tools_enabled():
+        return set()
+
     features = get_nous_subscription_features(config)
     if not features.provider_is_nous:
         return set()
@@ -386,6 +394,9 @@ def apply_nous_managed_defaults(
     *,
     enabled_toolsets: Optional[Iterable[str]] = None,
 ) -> set[str]:
+    if not managed_nous_tools_enabled():
+        return set()
+
     features = get_nous_subscription_features(config)
     if not features.provider_is_nous:
         return set()

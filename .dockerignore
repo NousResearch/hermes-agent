@@ -3,73 +3,13 @@
 .gitignore
 .gitmodules
 
-# GitHub
-.github
-
-# Python
-__pycache__
-*.py[cod]
-*$py.class
-*.so
-.Python
-.pytest_cache
-.mypy_cache
-.ruff_cache
-*.egg-info
-.eggs
-
-# Virtual environments
-.venv
-venv/
-ENV/
-env/
-
-# IDE
-.vscode
-.idea
-*.swp
-*.swo
-*~
-
-# Environment files (secrets)
-.env
-.env.*
-!.env.example
-
-# Logs and data
-logs/
-data/
-tmp/
-temp_vision_images/
-testlogs
-wandb/
-
-# Test files
-tests/
-*.test.py
-*.spec.py
-
-# Documentation
-*.md
-!README.md
+# Dependencies
+node_modules
 
 # CI/CD
-*.yml
-!package.json
+.github
 
-# Development files
-examples/
-result
-.direnv/
+# Environment files
+.env
 
-# Release scripts
-.release_notes.md
-mini-swe-agent/
-
-# Nix
-.direnv/
-result
-
-# Skills hub
-skills/.hub/
-ignored/
+*.md

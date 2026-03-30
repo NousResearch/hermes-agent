@@ -58,6 +58,7 @@ class Platform(Enum):
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
     FEISHU = "feishu"
+    WECOM = "wecom"
 
 
 @dataclass
@@ -277,6 +278,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Feishu uses extra dict for app credentials
             elif platform == Platform.FEISHU and config.extra.get("app_id"):
+                connected.append(platform)
+            # WeCom uses extra dict for bot credentials
+            elif platform == Platform.WECOM and config.extra.get("bot_id"):
                 connected.append(platform)
         return connected
     
@@ -839,6 +843,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.FEISHU,
                 chat_id=feishu_home,
                 name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # WeCom (Enterprise WeChat)
+    wecom_bot_id = os.getenv("WECOM_BOT_ID")
+    wecom_secret = os.getenv("WECOM_SECRET")
+    if wecom_bot_id and wecom_secret:
+        if Platform.WECOM not in config.platforms:
+            config.platforms[Platform.WECOM] = PlatformConfig()
+        config.platforms[Platform.WECOM].enabled = True
+        config.platforms[Platform.WECOM].extra.update({
+            "bot_id": wecom_bot_id,
+            "secret": wecom_secret,
+        })
+        wecom_ws_url = os.getenv("WECOM_WEBSOCKET_URL", "")
+        if wecom_ws_url:
+            config.platforms[Platform.WECOM].extra["websocket_url"] = wecom_ws_url
+        wecom_home = os.getenv("WECOM_HOME_CHANNEL")
+        if wecom_home:
+            config.platforms[Platform.WECOM].home_channel = HomeChannel(
+                platform=Platform.WECOM,
+                chat_id=wecom_home,
+                name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

@@ -163,6 +163,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
+        "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }

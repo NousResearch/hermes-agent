@@ -254,6 +254,9 @@ def show_status(args):
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

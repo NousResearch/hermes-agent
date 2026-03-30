@@ -1351,6 +1351,30 @@ _PLATFORMS = [
              "help": "Chat ID for scheduled results and notifications."},
         ],
     },
+    {
+        "key": "wecom",
+        "label": "WeCom (Enterprise WeChat)",
+        "emoji": "💬",
+        "token_var": "WECOM_BOT_ID",
+        "setup_instructions": [
+            "1. Go to WeCom Admin Console → Applications → Create AI Bot",
+            "2. Copy the Bot ID and Secret from the bot's credentials page",
+            "3. The bot connects via WebSocket — no public endpoint needed",
+            "4. Add the bot to a group chat or message it directly in WeCom",
+            "5. Restrict access with WECOM_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
+             "help": "The Bot ID from your WeCom AI Bot."},
+            {"name": "WECOM_SECRET", "prompt": "Secret", "password": True,
+             "help": "The secret from your WeCom AI Bot."},
+            {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WeCom users can interact with the bot."},
+            {"name": "WECOM_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
 ]
 
 

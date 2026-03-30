@@ -77,20 +77,18 @@ def _get_backend() -> str:
     if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
 
-    # Fallback for manual / legacy config — use whichever key is present.
-    has_firecrawl = _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")
-    has_parallel = _has_env("PARALLEL_API_KEY")
-    has_tavily = _has_env("TAVILY_API_KEY")
-    has_exa = _has_env("EXA_API_KEY")
-    if has_exa and not has_firecrawl and not has_parallel and not has_tavily:
-        return "exa"
-    if has_tavily and not has_firecrawl and not has_parallel:
-        return "tavily"
-    if has_parallel and not has_firecrawl:
-        return "parallel"
+    # Fallback for manual / legacy config — pick highest-priority backend
+    # that has a key configured.  Order: firecrawl > parallel > tavily > exa.
+    for backend, keys in [
+        ("firecrawl", ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL")),
+        ("parallel",  ("PARALLEL_API_KEY",)),
+        ("tavily",    ("TAVILY_API_KEY",)),
+        ("exa",       ("EXA_API_KEY",)),
+    ]:
+        if any(_has_env(k) for k in keys):
+            return backend
 
-    # Default to firecrawl (backward compat, or when both are set)
-    return "firecrawl"
+    return "firecrawl"  # default (backward compat)
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 

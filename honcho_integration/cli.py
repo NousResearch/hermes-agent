@@ -190,42 +190,6 @@ def cmd_sync(args) -> None:
     print()
 
 
-def cmd_sync(args) -> None:
-    """Sync Honcho config to all existing profiles.
-
-    Scans all Hermes profiles and creates host blocks for any that don't
-    have one yet. Inherits settings from the default host block.
-    Also called automatically during `hermes update`.
-    """
-    try:
-        from hermes_cli.profiles import list_profiles
-        profiles = list_profiles()
-    except Exception as e:
-        print(f"  Could not list profiles: {e}\n")
-        return
-
-    cfg = _read_config()
-    if not cfg:
-        return
-
-    default_block = cfg.get("hosts", {}).get(HOST, {})
-    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
-
-    if not default_block and not has_key:
-        return
-
-    created = 0
-    for p in profiles:
-        if p.name == "default":
-            continue
-        if clone_honcho_for_profile(p.name):
-            print(f"  Honcho: + {p.name} -> hermes.{p.name}")
-            created += 1
-
-    if created:
-        print(f"  Honcho: {created} profile(s) synced.")
-
-
 def sync_honcho_profiles_quiet() -> int:
     """Sync Honcho host blocks for all profiles. Returns count of newly created blocks.
 
@@ -600,12 +564,17 @@ def cmd_status(args) -> None:
 
 
 def _show_peer_cards(hcfg, client) -> None:
-    """Fetch and display peer cards for the active profile."""
+    """Fetch and display peer cards for the active profile.
+
+    Uses get_or_create to ensure the session exists with peers configured.
+    This is idempotent -- if the session already exists on the server it's
+    just retrieved, not duplicated.
+    """
     try:
         from honcho_integration.session import HonchoSessionManager
         mgr = HonchoSessionManager(honcho=client, config=hcfg)
         session_key = hcfg.resolve_session_name()
-        session = mgr.get_or_create(session_key)
+        mgr.get_or_create(session_key)
 
         # User peer card
         card = mgr.get_peer_card(session_key)

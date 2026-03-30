@@ -3,7 +3,7 @@
 import json
 from unittest.mock import patch
 
-from honcho_integration.cli import _resolve_api_key, clone_honcho_for_profile
+from honcho_integration.cli import _resolve_api_key, clone_honcho_for_profile, sync_honcho_profiles_quiet
 
 
 class TestResolveApiKey:
@@ -114,4 +114,59 @@ class TestCloneHonchoForProfile:
         cfg = json.loads(config_file.read_text())
         assert cfg["hosts"]["hermes.coder"]["aiPeer"] == "hermes.coder"
         assert cfg["hosts"]["hermes.coder"]["workspace"] == "hermes"  # shared
+
+
+class TestSyncHonchoProfilesQuiet:
+    def test_syncs_missing_profiles(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "hosts": {"hermes": {"peerName": "alice", "memoryMode": "honcho"}},
+        }))
+
+        class FakeProfile:
+            def __init__(self, name):
+                self.name = name
+                self.is_default = name == "default"
+
+        profiles = [FakeProfile("default"), FakeProfile("coder"), FakeProfile("dreamer")]
+
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("hermes_cli.profiles.list_profiles", return_value=profiles):
+            count = sync_honcho_profiles_quiet()
+
+        assert count == 2
+        cfg = json.loads(config_file.read_text())
+        assert "hermes.coder" in cfg["hosts"]
+        assert "hermes.dreamer" in cfg["hosts"]
+
+    def test_returns_zero_when_no_honcho(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}")
+
+        with patch("honcho_integration.cli._config_path", return_value=config_file):
+            count = sync_honcho_profiles_quiet()
+
+        assert count == 0
+
+    def test_skips_already_synced(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "hosts": {
+                "hermes": {"peerName": "alice"},
+                "hermes.coder": {"peerName": "existing"},
+            },
+        }))
+
+        class FakeProfile:
+            def __init__(self, name):
+                self.name = name
+                self.is_default = name == "default"
+
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("hermes_cli.profiles.list_profiles", return_value=[FakeProfile("default"), FakeProfile("coder")]):
+            count = sync_honcho_profiles_quiet()
+
+        assert count == 0
 

@@ -166,12 +166,9 @@ class HonchoClientConfig:
         resolved_host = host or resolve_active_host()
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
-        effective_workspace = workspace_id
-        if effective_workspace == HOST and resolved_host != HOST:
-            effective_workspace = resolved_host
         return cls(
             host=resolved_host,
-            workspace_id=effective_workspace,
+            workspace_id=workspace_id,
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,

@@ -403,7 +403,6 @@ class TestResolveActiveHost:
                 assert resolve_active_host() == "hermes"
 
     def test_profiles_import_failure_falls_back(self):
-        import importlib
         import sys
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HONCHO_HOST", None)
@@ -424,7 +423,7 @@ class TestProfileScopedConfig:
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
             config = HonchoClientConfig.from_env(host="hermes.coder")
         assert config.host == "hermes.coder"
-        assert config.workspace_id == "hermes.coder"
+        assert config.workspace_id == "hermes"  # shared workspace
         assert config.ai_peer == "hermes.coder"
 
     def test_from_env_default_workspace_preserved_for_default_host(self):

@@ -10,14 +10,25 @@ import os
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
 from honcho_integration.client import resolve_config_path, GLOBAL_CONFIG_PATH
 
 HOST = "hermes"
 
 
 def _config_path() -> Path:
-    """Return the active Honcho config path (instance-local or global)."""
+    """Return the active Honcho config path for reading (instance-local or global)."""
     return resolve_config_path()
+
+
+def _local_config_path() -> Path:
+    """Return the instance-local Honcho config path for writing.
+
+    Always returns $HERMES_HOME/honcho.json so each profile/instance gets
+    its own config file.  The global ~/.honcho/config.json is only used as
+    a read fallback (via resolve_config_path) for cross-app interop.
+    """
+    return get_hermes_home() / "honcho.json"
 
 
 def _read_config() -> dict:
@@ -31,7 +42,7 @@ def _read_config() -> dict:
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:
-    path = path or _config_path()
+    path = path or _local_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
@@ -95,13 +106,13 @@ def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
     cfg = _read_config()
 
-    active_path = _config_path()
+    write_path = _local_config_path()
+    read_path = _config_path()
     print("\nHoncho memory setup\n" + "─" * 40)
     print("  Honcho gives Hermes persistent cross-session memory.")
-    if active_path != GLOBAL_CONFIG_PATH:
-        print(f"  Instance config: {active_path}")
-    else:
-        print("  Config is shared with other hosts at ~/.honcho/config.json")
+    print(f"  Config: {write_path}")
+    if read_path != write_path and read_path.exists():
+        print(f"  (seeding from existing config at {read_path})")
     print()
 
     if not _ensure_sdk_installed():
@@ -189,7 +200,7 @@ def cmd_setup(args) -> None:
     hermes_host.setdefault("saveMessages", True)
 
     _write_config(cfg)
-    print(f"\n  Config written to {active_path}")
+    print(f"\n  Config written to {write_path}")
 
     # Test connection
     print("  Testing connection... ", end="", flush=True)
@@ -237,6 +248,7 @@ def cmd_status(args) -> None:
     cfg = _read_config()
 
     active_path = _config_path()
+    write_path = _local_config_path()
 
     if not cfg:
         print(f"  No Honcho config found at {active_path}")
@@ -259,6 +271,8 @@ def cmd_status(args) -> None:
     print(f"  Workspace:      {hcfg.workspace_id}")
     print(f"  Host:           {hcfg.host}")
     print(f"  Config path:    {active_path}")
+    if write_path != active_path:
+        print(f"  Write path:     {write_path}  (instance-local)")
     print(f"  AI peer:        {hcfg.ai_peer}")
     print(f"  User peer:      {hcfg.peer_name or 'not set'}")
     print(f"  Session key:    {hcfg.resolve_session_name()}")

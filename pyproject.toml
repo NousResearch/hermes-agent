@@ -71,6 +71,7 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
+  "hermes-agent[matrix]",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",

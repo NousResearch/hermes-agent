@@ -921,8 +921,9 @@ class TestHTTPConfig:
 
         async def _test():
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
-                with pytest.raises(ImportError, match="HTTP transport"):
-                    await server._run_http(config)
+                with patch("tools.mcp_tool._MCP_SSE_AVAILABLE", False):
+                    with pytest.raises(ImportError, match="HTTP transport"):
+                        await server._run_http(config)
 
         asyncio.run(_test())
 

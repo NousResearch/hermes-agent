@@ -89,6 +89,7 @@ logger = logging.getLogger(__name__)
 
 _MCP_AVAILABLE = False
 _MCP_HTTP_AVAILABLE = False
+_MCP_SSE_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
@@ -101,6 +102,11 @@ try:
         _MCP_HTTP_AVAILABLE = True
     except ImportError:
         _MCP_HTTP_AVAILABLE = False
+    try:
+        from mcp.client.sse import sse_client
+        _MCP_SSE_AVAILABLE = True
+    except ImportError:
+        _MCP_SSE_AVAILABLE = False
     # Prefer the non-deprecated API (mcp >= 1.24.0); fall back to the
     # deprecated wrapper for older SDK versions.
     try:
@@ -851,12 +857,16 @@ class MCPServerTask:
                 await self._shutdown_event.wait()
 
     async def _run_http(self, config: dict):
-        """Run the server using HTTP/StreamableHTTP transport."""
-        if not _MCP_HTTP_AVAILABLE:
+        """Run the server using HTTP transport.
+
+        Tries Streamable HTTP first; if that fails (e.g. server only
+        supports the legacy SSE protocol), falls back to SSE transport.
+        """
+        if not _MCP_HTTP_AVAILABLE and not _MCP_SSE_AVAILABLE:
             raise ImportError(
                 f"MCP server '{self.name}' requires HTTP transport but "
-                "mcp.client.streamable_http is not available. "
-                "Upgrade the mcp package to get HTTP support."
+                "neither mcp.client.streamable_http nor mcp.client.sse "
+                "is available. Upgrade the mcp package to get HTTP support."
             )
 
         url = config["url"]
@@ -876,6 +886,44 @@ class MCPServerTask:
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
 
+        # Try Streamable HTTP first
+        if _MCP_HTTP_AVAILABLE:
+            try:
+                await self._run_http_streamable(
+                    url, headers, connect_timeout, _oauth_auth, sampling_kwargs
+                )
+                return
+            except Exception as exc:
+                from mcp.shared.exceptions import McpError
+                if isinstance(exc, McpError) and "Session terminated" in str(exc):
+                    logger.info(
+                        "MCP server '%s': Streamable HTTP failed with "
+                        "'Session terminated' — attempting SSE fallback",
+                        self.name,
+                    )
+                elif _MCP_SSE_AVAILABLE:
+                    logger.info(
+                        "MCP server '%s': Streamable HTTP failed (%s) — "
+                        "attempting SSE fallback",
+                        self.name, exc,
+                    )
+                else:
+                    raise
+
+        # Fall back to SSE transport
+        if _MCP_SSE_AVAILABLE:
+            await self._run_http_sse(
+                url, headers, connect_timeout, _oauth_auth, sampling_kwargs
+            )
+        else:
+            raise ImportError(
+                f"MCP server '{self.name}' Streamable HTTP failed and "
+                "SSE transport (mcp.client.sse) is not available."
+            )
+
+    async def _run_http_streamable(self, url, headers, connect_timeout,
+                                   _oauth_auth, sampling_kwargs):
+        """Connect via Streamable HTTP transport."""
         if _MCP_NEW_HTTP:
             # New API (mcp >= 1.24.0): build an explicit httpx.AsyncClient
             # matching the SDK's own create_mcp_http_client defaults.
@@ -919,6 +967,74 @@ class MCPServerTask:
                     await self._discover_tools()
                     self._ready.set()
                     await self._shutdown_event.wait()
+
+    async def _sse_keepalive(self, session, interval: float = 60.0):
+        """Send periodic pings to keep the SSE connection alive.
+
+        Some SSE MCP servers (e.g. Supermemory on Cloudflare Workers) close
+        idle connections after a few minutes of silence.  This coroutine sends
+        a lightweight MCP ping every *interval* seconds so the server sees the
+        client as active.  On failure the loop exits silently — the main
+        ``_run_http_sse`` coroutine will notice the dead session on the next
+        tool call or when the SSE stream raises.
+        """
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await session.send_ping()
+                except Exception:
+                    logger.debug(
+                        "MCP server '%s': SSE keepalive ping failed",
+                        self.name,
+                    )
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    async def _run_http_sse(self, url, headers, connect_timeout,
+                            _oauth_auth, sampling_kwargs):
+        """Connect via legacy SSE transport (GET-based connect + POST messages).
+
+        Some MCP servers (e.g. Supermemory V4 on Cloudflare Workers) use the
+        SSE protocol where the client opens a GET SSE stream to receive an
+        ``endpoint`` event, then POSTs messages to that endpoint URL.
+
+        A background keepalive task sends periodic pings to prevent the server
+        from closing idle SSE connections.
+        """
+        from mcp.client.sse import sse_client
+
+        sse_kwargs: dict = {
+            "timeout": float(connect_timeout),
+            "sse_read_timeout": 300.0,
+        }
+        if headers:
+            sse_kwargs["headers"] = headers
+        if _oauth_auth is not None:
+            sse_kwargs["auth"] = _oauth_auth
+
+        async with sse_client(url, **sse_kwargs) as (
+            read_stream, write_stream,
+        ):
+            async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                await session.initialize()
+                self.session = session
+                await self._discover_tools()
+                self._ready.set()
+
+                # Start keepalive to prevent idle disconnect
+                keepalive = asyncio.ensure_future(
+                    self._sse_keepalive(session)
+                )
+                try:
+                    await self._shutdown_event.wait()
+                finally:
+                    keepalive.cancel()
+                    try:
+                        await keepalive
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
     async def _discover_tools(self):
         """Discover tools from the connected session."""

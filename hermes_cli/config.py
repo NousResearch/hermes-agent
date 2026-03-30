@@ -706,6 +706,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "FIRECRAWL_BROWSER_TTL": {
+        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
+        "prompt": "Browser session TTL (seconds)",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
     "FAL_KEY": {
         "description": "FAL API key for image generation",
         "prompt": "FAL API key",

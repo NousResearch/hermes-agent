@@ -78,6 +78,7 @@ except Exception:
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
+from tools.browser_providers.firecrawl import FirecrawlProvider
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,7 @@ def _get_cdp_override() -> str:
 _PROVIDER_REGISTRY: Dict[str, type] = {
     "browserbase": BrowserbaseProvider,
     "browser-use": BrowserUseProvider,
+    "firecrawl": FirecrawlProvider,
 }
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
@@ -1795,12 +1797,12 @@ def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
 
-    In **local mode** (no Browserbase credentials): only the ``agent-browser``
-    CLI must be findable.
+    In **local mode** (no cloud provider configured): only the
+    ``agent-browser`` CLI must be findable.
 
-    In **cloud mode** (BROWSERBASE_API_KEY set): the CLI *and* both
-    ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` must be present.
-    
+    In **cloud mode** (Browserbase, Browser Use, or Firecrawl): the CLI
+    *and* the provider's required credentials must be present.
+
     Returns:
         True if all requirements are met, False otherwise
     """

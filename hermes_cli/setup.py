@@ -603,6 +603,8 @@ def _print_setup_summary(config: dict, hermes_home):
     )
     if get_env_value("BROWSERBASE_API_KEY"):
         tool_status.append(("Browser Automation (Browserbase)", True, None))
+    elif get_env_value("FIRECRAWL_API_KEY") and _ab_found:
+        tool_status.append(("Browser Automation (Firecrawl)", True, None))
     elif _ab_found:
         tool_status.append(("Browser Automation (local)", True, None))
     else:

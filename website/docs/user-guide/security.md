@@ -43,6 +43,8 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `bash -c`, `python -e` | Shell/script execution via flags |
 | `find -exec rm`, `find -delete` | Find with destructive actions |
 | Fork bomb patterns | Fork bombs |
+| `pkill`/`killall` hermes/gateway | Self-termination prevention |
+| `gateway run` with `&`/`disown`/`nohup` | Prevents starting gateway outside service manager |
 
 :::info
 **Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -276,7 +278,11 @@ required_environment_variables:
     help: Get a key from https://developers.google.com/tenor
 ```
 
-After loading this skill, `TENOR_API_KEY` passes through to both `execute_code` and `terminal` subprocesses — no manual configuration needed.
+After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends (Docker, Modal)** — no manual configuration needed.
+
+:::info Docker & Modal
+Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into Docker containers and Modal sandboxes without needing to add them to `docker_forward_env` manually.
+:::
 
 **2. Config-based passthrough (manual)**
 
@@ -289,17 +295,49 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
+
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` in `~/.hermes/`. Skills declare these in frontmatter:
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+When loaded, Hermes checks if these files exist in `~/.hermes/` and registers them for mounting:
+
+- **Docker**: Read-only bind mounts (`-v host:container:ro`)
+- **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)
+- **Local**: No action needed (files already accessible)
+
+You can also list credential files manually in `config.yaml`:
+
+```yaml
+terminal:
+  credential_files:
+    - google_token.json
+    - my_custom_oauth_token.json
+```
+
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container.
+
 ### What Each Sandbox Filters
 
 | Sandbox | Default Filter | Passthrough Override |
 |---------|---------------|---------------------|
 | **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
 | **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
+| **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
 | **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
 
 ### Security Considerations
 
 - The passthrough only affects vars you or your skills explicitly declare — the default security posture is unchanged for arbitrary LLM-generated code
+- Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
 - Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
@@ -392,7 +430,7 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
-Tirith's verdict integrates with the approval flow: safe commands pass through, suspicious commands trigger user approval, and dangerous commands are blocked.
+Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
 ### Context File Injection Protection
 

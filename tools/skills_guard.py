@@ -948,9 +948,9 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
 
     # Call the LLM via the centralized provider router
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
-        response = call_llm(
+        call_kwargs = dict(
             provider="openrouter",
             model=model,
             messages=[{
@@ -960,7 +960,13 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
             temperature=0,
             max_tokens=1000,
         )
-        llm_text = response.choices[0].message.content.strip()
+        response = call_llm(**call_kwargs)
+        llm_text = extract_content_or_reasoning(response)
+
+        # Retry once on empty content (reasoning-only response)
+        if not llm_text:
+            response = call_llm(**call_kwargs)
+            llm_text = extract_content_or_reasoning(response)
     except Exception:
         # LLM audit is best-effort — don't block install if the call fails
         return static_result

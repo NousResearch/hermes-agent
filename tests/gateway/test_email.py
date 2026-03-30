@@ -1057,5 +1057,122 @@ class TestSendEmailStandalone(unittest.TestCase):
         self.assertIn("not configured", result["error"])
 
 
+class TestSmtpConnectionCleanup(unittest.TestCase):
+    """Verify SMTP connections are closed even when send_message raises."""
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+        return EmailAdapter(PlatformConfig(enabled=True))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_smtp_quit_called_on_send_message_failure(self):
+        """SMTP quit() must be called even when send_message() raises."""
+        adapter = self._make_adapter()
+        mock_smtp = MagicMock()
+        mock_smtp.send_message.side_effect = Exception("send failed")
+
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with self.assertRaises(Exception):
+                adapter._send_email("user@test.com", "Hello")
+
+        mock_smtp.quit.assert_called_once()
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def test_smtp_close_called_when_quit_also_fails(self):
+        """If both send_message() and quit() fail, close() is the fallback."""
+        adapter = self._make_adapter()
+        mock_smtp = MagicMock()
+        mock_smtp.send_message.side_effect = Exception("send failed")
+        mock_smtp.quit.side_effect = Exception("quit failed")
+
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            with self.assertRaises(Exception):
+                adapter._send_email("user@test.com", "Hello")
+
+        mock_smtp.close.assert_called_once()
+
+
+class TestImapConnectionCleanup(unittest.TestCase):
+    """Verify IMAP connections are closed even when fetch raises."""
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+        return EmailAdapter(PlatformConfig(enabled=True))
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_imap_logout_called_on_uid_fetch_failure(self):
+        """IMAP logout() must be called even when uid fetch raises."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                raise Exception("fetch failed")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        mock_imap.logout.assert_called_once()
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_IMAP_PORT": "993",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }, clear=False)
+    def test_imap_logout_called_on_early_return(self):
+        """IMAP logout() must be called even when returning early (no unseen)."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        mock_imap.logout.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

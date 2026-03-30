@@ -220,13 +220,13 @@ class TestFirecrawlClientConfig:
         response = MagicMock()
         response.choices = [MagicMock(message=MagicMock(content="summary text"))]
 
-        fake_client = MagicMock(base_url="https://api.openrouter.ai/v1")
-        fake_client.chat.completions.create = AsyncMock(return_value=response)
-
         with patch(
-            "tools.web_tools.get_async_text_auxiliary_client",
-            side_effect=[(None, None), (fake_client, "test-model")],
-        ):
+            "tools.web_tools._resolve_web_extract_auxiliary",
+            side_effect=[(None, None, {}), (MagicMock(base_url="https://api.openrouter.ai/v1"), "test-model", {})],
+        ), patch(
+            "tools.web_tools.async_call_llm",
+            new=AsyncMock(return_value=response),
+        ) as mock_async_call:
             assert tools.web_tools.check_auxiliary_model() is False
             result = await tools.web_tools._call_summarizer_llm(
                 "Some content worth summarizing",
@@ -235,7 +235,7 @@ class TestFirecrawlClientConfig:
             )
 
         assert result == "summary text"
-        fake_client.chat.completions.create.assert_awaited_once()
+        mock_async_call.assert_awaited_once()
 
     # ── Singleton caching ────────────────────────────────────────────
 
@@ -299,6 +299,7 @@ class TestBackendSelection:
 
     _ENV_KEYS = (
         "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
+        "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -326,6 +327,13 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
             assert _get_backend() == "parallel"
+
+    def test_config_exa(self):
+        """web.backend=exa in config → 'exa' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            assert _get_backend() == "exa"
 
     def test_config_firecrawl(self):
         """web.backend=firecrawl in config → 'firecrawl' even if Parallel key set."""
@@ -366,6 +374,20 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            assert _get_backend() == "parallel"
+
+    def test_fallback_exa_only_key(self):
+        """Only EXA_API_KEY set → 'exa'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+            assert _get_backend() == "exa"
+
+    def test_fallback_parallel_takes_priority_over_exa(self):
+        """Exa should only win the fallback path when it is the only configured backend."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "PARALLEL_API_KEY": "par-test"}):
             assert _get_backend() == "parallel"
 
     def test_fallback_tavily_only_key(self):
@@ -502,6 +524,7 @@ class TestCheckWebApiKey:
 
     _ENV_KEYS = (
         "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
+        "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -524,6 +547,11 @@ class TestCheckWebApiKey:
 
     def test_parallel_key_only(self):
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_exa_key_only(self):
+        with patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -581,3 +609,9 @@ class TestCheckWebApiKey:
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
+
+
+def test_web_requires_env_includes_exa_key():
+    from tools.web_tools import _web_requires_env
+
+    assert "EXA_API_KEY" in _web_requires_env()

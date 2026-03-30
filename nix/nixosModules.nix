@@ -10,6 +10,12 @@
 # container recreation. Environment variables are written to $HERMES_HOME/.env
 # and read by hermes at startup — no container recreation needed for env changes.
 #
+# Tool resolution: the hermes wrapper uses --suffix PATH for nix store tools,
+# so apt/uv-installed versions take priority. The container entrypoint provisions
+# extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
+# 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
+# writable tool prefixes for npm i -g, pip install, uv tool install, etc.
+#
 # Usage:
 #   services.hermes-agent = {
 #     enable = true;
@@ -105,20 +111,50 @@
       fi
       mkdir -p "$TARGET_HOME"
       chown "$HERMES_UID:$HERMES_GID" "$TARGET_HOME"
+      chmod 0750 "$TARGET_HOME"
 
       # Ensure HERMES_HOME is owned by the target user
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
         chown -R "$HERMES_UID:$HERMES_GID" "$HERMES_HOME"
       fi
 
-      # Install sudo on Debian/Ubuntu if missing (first boot only, cached in writable layer)
-      if command -v apt-get >/dev/null 2>&1 && ! command -v sudo >/dev/null 2>&1; then
-        apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq sudo >/dev/null 2>&1 || true
+      # ── Provision apt packages (first boot only, cached in writable layer) ──
+      # sudo: agent self-modification
+      # nodejs/npm: writable node so npm i -g works (nix store copies are read-only)
+      # curl: needed for uv installer
+      if [ ! -f /var/lib/hermes-tools-provisioned ] && command -v apt-get >/dev/null 2>&1; then
+        echo "First boot: provisioning agent tools..."
+        apt-get update -qq
+        apt-get install -y -qq sudo nodejs npm curl
+        touch /var/lib/hermes-tools-provisioned
       fi
+
       if command -v sudo >/dev/null 2>&1 && [ ! -f /etc/sudoers.d/hermes ]; then
         mkdir -p /etc/sudoers.d
         echo "$TARGET_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/hermes
         chmod 0440 /etc/sudoers.d/hermes
+      fi
+
+      # uv (Python manager) — not in Ubuntu repos, retry-safe outside the sentinel
+      if ! command -v uv >/dev/null 2>&1 && [ ! -x "$TARGET_HOME/.local/bin/uv" ] && command -v curl >/dev/null 2>&1; then
+        su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
+      fi
+
+      # Python 3.11 venv — gives the agent a writable Python with pip.
+      # Uses uv to install Python 3.11 (Ubuntu 24.04 ships 3.12).
+      # --seed includes pip/setuptools so bare `pip install` works.
+      _UV_BIN="$TARGET_HOME/.local/bin/uv"
+      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
+        su -s /bin/sh "$TARGET_USER" -c "
+          export PATH=\"\$HOME/.local/bin:\$PATH\"
+          uv python install 3.11
+          uv venv --python 3.11 --seed \"\$HOME/.venv\"
+        " || true
+      fi
+
+      # Put the agent venv first on PATH so python/pip resolve to writable copies
+      if [ -d "$TARGET_HOME/.venv/bin" ]; then
+        export PATH="$TARGET_HOME/.venv/bin:$PATH"
       fi
 
       if command -v setpriv >/dev/null 2>&1; then
@@ -516,8 +552,8 @@
       # ── Directories ───────────────────────────────────────────────────
       {
         systemd.tmpfiles.rules = [
-          "d ${cfg.stateDir}                0755 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes        0755 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}                0750 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes        0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.workingDirectory}         0750 ${cfg.user} ${cfg.group} - -"
         ];
@@ -531,21 +567,23 @@
           mkdir -p ${cfg.stateDir}/home
           mkdir -p ${cfg.workingDirectory}
           chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
+          chmod 0750 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
 
           # Merge Nix settings into existing config.yaml.
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
           # If configFile is user-provided (not generated), overwrite instead of merge.
           ${if cfg.configFile != null then ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0644 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
           '' else ''
             ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
             chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
-            chmod 0644 ${cfg.stateDir}/.hermes/config.yaml
+            chmod 0640 ${cfg.stateDir}/.hermes/config.yaml
           ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)
           touch ${cfg.stateDir}/.hermes/.managed
           chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
+          chmod 0644 ${cfg.stateDir}/.hermes/.managed
 
           # Seed auth file if provided
           ${lib.optionalString (cfg.authFile != null) ''
@@ -577,7 +615,7 @@ HERMES_NIX_ENV_EOF
 
           # Link documents into workspace
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0644 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
+            install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
           '') cfg.documents)}
         '';
       }

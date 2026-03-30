@@ -13,6 +13,7 @@ Available tools:
 - web_crawl_tool: Crawl websites with specific instructions
 
 Backend compatibility:
+- Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
@@ -47,7 +48,11 @@ import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
 from firecrawl import Firecrawl
-from agent.auxiliary_client import get_async_text_auxiliary_client
+from agent.auxiliary_client import (
+    async_call_llm,
+    extract_content_or_reasoning,
+    get_async_text_auxiliary_client,
+)
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import (
     build_vendor_gateway_url,
@@ -82,8 +87,8 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily"):
+    configured = (_load_web_config().get("backend") or "").lower().strip()
+    if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
 
     # Fallback for manual / legacy config — use whichever key is present.
@@ -94,6 +99,9 @@ def _get_backend() -> str:
     )
     has_parallel = _has_env("PARALLEL_API_KEY")
     has_tavily = _has_env("TAVILY_API_KEY")
+    has_exa = _has_env("EXA_API_KEY")
+    if has_exa and not has_firecrawl and not has_parallel and not has_tavily:
+        return "exa"
     if has_tavily and not has_firecrawl and not has_parallel:
         return "tavily"
     if has_parallel and not has_firecrawl:
@@ -105,6 +113,8 @@ def _get_backend() -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "exa":
+        return _has_env("EXA_API_KEY")
     if backend == "parallel":
         return _has_env("PARALLEL_API_KEY")
     if backend == "firecrawl":
@@ -178,6 +188,7 @@ def _firecrawl_backend_help_suffix() -> str:
 def _web_requires_env() -> list[str]:
     """Return tool metadata env vars for the currently enabled web backends."""
     requires = [
+        "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
@@ -621,18 +632,32 @@ Create a markdown summary that captures all key information in a well-organized,
             if aux_client is None or not effective_model:
                 logger.warning("No auxiliary model available for web content processing")
                 return None
-            from agent.auxiliary_client import auxiliary_max_tokens_param
-            response = await aux_client.chat.completions.create(
-                model=effective_model,
-                messages=[
+            call_kwargs = {
+                "task": "web_extract",
+                "model": effective_model,
+                "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.1,
-                **auxiliary_max_tokens_param(max_tokens),
-                **({} if not extra_body else {"extra_body": extra_body}),
-            )
-            return response.choices[0].message.content.strip()
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+            }
+            if extra_body:
+                call_kwargs["extra_body"] = extra_body
+            response = await async_call_llm(**call_kwargs)
+            content = extract_content_or_reasoning(response)
+            if content:
+                return content
+            # Reasoning-only / empty response — let the retry loop handle it
+            logger.warning("LLM returned empty content (attempt %d/%d), retrying", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+                continue
+            return content  # Return whatever we got after exhausting retries
+        except RuntimeError:
+            logger.warning("No auxiliary model available for web content processing")
+            return None
         except Exception as api_error:
             last_error = api_error
             if attempt < max_retries - 1:
@@ -744,19 +769,26 @@ Create a single, unified markdown summary."""
                 fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
             return fallback
 
-        from agent.auxiliary_client import auxiliary_max_tokens_param
-        response = await aux_client.chat.completions.create(
-            model=effective_model,
-            messages=[
+        call_kwargs = {
+            "task": "web_extract",
+            "model": effective_model,
+            "messages": [
                 {"role": "system", "content": "You synthesize multiple summaries into one cohesive, comprehensive summary. Be thorough but concise."},
-                {"role": "user", "content": synthesis_prompt}
+                {"role": "user", "content": synthesis_prompt},
             ],
-            temperature=0.1,
-            **auxiliary_max_tokens_param(20000),
-            **({} if not extra_body else {"extra_body": extra_body}),
-        )
-        final_summary = response.choices[0].message.content.strip()
-        
+            "temperature": 0.1,
+            "max_tokens": 20000,
+        }
+        if extra_body:
+            call_kwargs["extra_body"] = extra_body
+        response = await async_call_llm(**call_kwargs)
+        final_summary = extract_content_or_reasoning(response)
+
+        # Retry once on empty content (reasoning-only response)
+        if not final_summary:
+            logger.warning("Synthesis LLM returned empty content, retrying once")
+            response = await async_call_llm(**call_kwargs)
+            final_summary = extract_content_or_reasoning(response)
         # Enforce hard cap
         if len(final_summary) > max_output_size:
             final_summary = final_summary[:max_output_size] + "\n\n[... summary truncated for context management ...]"
@@ -808,6 +840,91 @@ def clean_base64_images(text: str) -> str:
     cleaned_text = re.sub(base64_pattern, '[BASE64_IMAGE_REMOVED]', cleaned_text)
     
     return cleaned_text
+
+
+# ─── Exa Client ──────────────────────────────────────────────────────────────
+
+_exa_client = None
+
+def _get_exa_client():
+    """Get or create the Exa client (lazy initialization).
+
+    Requires EXA_API_KEY environment variable.
+    """
+    from exa_py import Exa
+    global _exa_client
+    if _exa_client is None:
+        api_key = os.getenv("EXA_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "EXA_API_KEY environment variable not set. "
+                "Get your API key at https://exa.ai"
+            )
+        _exa_client = Exa(api_key=api_key)
+        _exa_client.headers["x-exa-integration"] = "hermes-agent"
+    return _exa_client
+
+
+# ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
+
+def _exa_search(query: str, limit: int = 10) -> dict:
+    """Search using the Exa SDK and return results as a dict."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("Exa search: '%s' (limit=%d)", query, limit)
+    response = _get_exa_client().search(
+        query,
+        num_results=limit,
+        contents={
+            "highlights": True,
+        },
+    )
+
+    web_results = []
+    for i, result in enumerate(response.results or []):
+        highlights = result.highlights or []
+        web_results.append({
+            "url": result.url or "",
+            "title": result.title or "",
+            "description": " ".join(highlights) if highlights else "",
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the Exa SDK.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    logger.info("Exa extract: %d URL(s)", len(urls))
+    response = _get_exa_client().get_contents(
+        urls,
+        text=True,
+    )
+
+    results = []
+    for result in response.results or []:
+        content = result.text or ""
+        url = result.url or ""
+        title = result.title or ""
+        results.append({
+            "url": url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": {"sourceURL": url, "title": title},
+        })
+
+    return results
 
 
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
@@ -947,6 +1064,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "exa":
+            response_data = _exa_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "tavily":
             logger.info("Tavily search: '%s' (limit: %d)", query, limit)
             raw = _tavily_request("search", {
@@ -1074,6 +1200,8 @@ async def web_extract_tool(
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
+            elif backend == "exa":
+                results = _exa_extract(safe_urls)
             elif backend == "tavily":
                 logger.info("Tavily extract: %d URL(s)", len(safe_urls))
                 raw = _tavily_request("extract", {
@@ -1737,9 +1865,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1771,7 +1899,9 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "parallel":
+        if backend == "exa":
+            print("   Using Exa API (https://exa.ai)")
+        elif backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
@@ -1787,7 +1917,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

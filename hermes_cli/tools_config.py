@@ -9,6 +9,8 @@ Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
 """
 
+import json as _json
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -23,6 +25,8 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -113,7 +117,8 @@ def _get_effective_configurable_toolsets():
     """
     result = list(CONFIGURABLE_TOOLSETS)
     try:
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()  # idempotent — ensures plugins are loaded
         result.extend(get_plugin_toolsets())
     except Exception:
         pass
@@ -123,7 +128,8 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()  # idempotent — ensures plugins are loaded
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
@@ -138,7 +144,12 @@ PLATFORMS = {
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
-    "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
+    "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
+ "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
+    "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
+    "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
+    "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
+    "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
 }
 
 
@@ -206,6 +217,14 @@ TOOL_CATEGORIES = {
                 "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
+                ],
+            },
+            {
+                "name": "Exa",
+                "tag": "AI-native search and contents",
+                "web_backend": "exa",
+                "env_vars": [
+                    {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://exa.ai"},
                 ],
             },
             {
@@ -354,7 +373,8 @@ def _run_post_setup(post_setup_key: str):
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
             else:
-                _print_warning("    npm install failed - run manually: cd ~/.hermes/hermes-agent && npm install")
+                from hermes_constants import display_hermes_home
+                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
 
@@ -689,9 +709,61 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
             return default
 
 
+# ─── Token Estimation ────────────────────────────────────────────────────────
+
+# Module-level cache so discovery + tokenization runs at most once per process.
+_tool_token_cache: Optional[Dict[str, int]] = None
+
+
+def _estimate_tool_tokens() -> Dict[str, int]:
+    """Return estimated token counts per individual tool name.
+
+    Uses tiktoken (cl100k_base) to count tokens in the JSON-serialised
+    OpenAI-format tool schema.  Triggers tool discovery on first call,
+    then caches the result for the rest of the process.
+
+    Returns an empty dict when tiktoken or the registry is unavailable.
+    """
+    global _tool_token_cache
+    if _tool_token_cache is not None:
+        return _tool_token_cache
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        logger.debug("tiktoken unavailable; skipping tool token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    try:
+        # Trigger full tool discovery (imports all tool modules).
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+    except Exception:
+        logger.debug("Tool registry unavailable; skipping token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    counts: Dict[str, int] = {}
+    for name in registry.get_all_tool_names():
+        schema = registry.get_schema(name)
+        if schema:
+            # Mirror what gets sent to the API:
+            # {"type": "function", "function": <schema>}
+            text = _json.dumps({"type": "function", "function": schema})
+            counts[name] = len(enc.encode(text))
+    _tool_token_cache = counts
+    return _tool_token_cache
+
+
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
+    from toolsets import resolve_toolset
+
+    # Pre-compute per-tool token counts (cached after first call).
+    tool_tokens = _estimate_tool_tokens()
 
     effective = _get_effective_configurable_toolsets()
 
@@ -707,11 +779,27 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         if ts_key in enabled
     }
 
+    # Build a live status function that shows deduplicated total token cost.
+    status_fn = None
+    if tool_tokens:
+        ts_keys = [ts_key for ts_key, _, _ in effective]
+
+        def status_fn(chosen: set) -> str:
+            # Collect unique tool names across all selected toolsets
+            all_tools: set = set()
+            for idx in chosen:
+                all_tools.update(resolve_toolset(ts_keys[idx]))
+            total = sum(tool_tokens.get(name, 0) for name in all_tools)
+            if total >= 1000:
+                return f"Est. tool context: ~{total / 1000:.1f}k tokens"
+            return f"Est. tool context: ~{total} tokens"
+
     chosen = curses_checklist(
         f"Tools for {platform_label}",
         labels,
         pre_selected,
         cancel_returns=pre_selected,
+        status_fn=status_fn,
     )
     return {effective[i][0] for i in chosen}
 
@@ -1399,7 +1487,8 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         platform_choices[idx] = f"Configure {pinfo['label']}  ({new_count}/{total} enabled)"
 
     print()
-    print(color("  Tool configuration saved to ~/.hermes/config.yaml", Colors.DIM))
+    from hermes_constants import display_hermes_home
+    print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()
 

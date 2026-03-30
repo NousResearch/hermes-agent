@@ -4,6 +4,8 @@ import types
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -24,13 +26,32 @@ def _reset_modules(prefixes: tuple[str, ...]):
             sys.modules.pop(name, None)
 
 
+@pytest.fixture(autouse=True)
+def _restore_tool_modules():
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "tools"
+        or name.startswith("tools.")
+        or name == "hermes_cli"
+        or name.startswith("hermes_cli.")
+        or name == "modal"
+        or name.startswith("modal.")
+    }
+    try:
+        yield
+    finally:
+        _reset_modules(("tools", "hermes_cli", "modal"))
+        sys.modules.update(original_modules)
+
+
 def _install_modal_test_modules(
     tmp_path: Path,
     *,
     fail_on_snapshot_ids: set[str] | None = None,
     snapshot_id: str = "im-fresh",
 ):
-    _reset_modules(("tools", "hermes_cli", "swerex", "modal"))
+    _reset_modules(("tools", "hermes_cli", "modal"))
 
     hermes_cli = types.ModuleType("hermes_cli")
     hermes_cli.__path__ = []  # type: ignore[attr-defined]
@@ -62,7 +83,7 @@ def _install_modal_test_modules(
 
     from_id_calls: list[str] = []
     registry_calls: list[tuple[str, list[str] | None]] = []
-    deployment_calls: list[dict] = []
+    create_calls: list[dict] = []
 
     class _FakeImage:
         @staticmethod
@@ -75,53 +96,55 @@ def _install_modal_test_modules(
             registry_calls.append((image, setup_dockerfile_commands))
             return {"kind": "registry", "image": image}
 
-    class _FakeRuntime:
-        async def execute(self, _command):
-            return types.SimpleNamespace(stdout="ok", exit_code=0)
+    async def _lookup_aio(_name: str, create_if_missing: bool = False):
+        return types.SimpleNamespace(name="hermes-agent", create_if_missing=create_if_missing)
 
-    class _FakeModalDeployment:
-        def __init__(self, **kwargs):
-            deployment_calls.append(dict(kwargs))
-            self.image = kwargs["image"]
-            self.runtime = _FakeRuntime()
+    class _FakeSandboxInstance:
+        def __init__(self, image):
+            self.image = image
 
             async def _snapshot_aio():
                 return types.SimpleNamespace(object_id=snapshot_id)
 
-            self._sandbox = types.SimpleNamespace(
-                snapshot_filesystem=types.SimpleNamespace(aio=_snapshot_aio),
-            )
+            async def _terminate_aio():
+                return None
 
-        async def start(self):
-            image = self.image if isinstance(self.image, dict) else {}
-            image_id = image.get("image_id")
-            if fail_on_snapshot_ids and image_id in fail_on_snapshot_ids:
-                raise RuntimeError(f"cannot restore {image_id}")
+            self.snapshot_filesystem = types.SimpleNamespace(aio=_snapshot_aio)
+            self.terminate = types.SimpleNamespace(aio=_terminate_aio)
 
-        async def stop(self):
-            return None
+    async def _create_aio(*_args, image=None, app=None, timeout=None, **kwargs):
+        create_calls.append({
+            "image": image,
+            "app": app,
+            "timeout": timeout,
+            **kwargs,
+        })
+        image_id = image.get("image_id") if isinstance(image, dict) else None
+        if fail_on_snapshot_ids and image_id in fail_on_snapshot_ids:
+            raise RuntimeError(f"cannot restore {image_id}")
+        return _FakeSandboxInstance(image)
 
-    class _FakeRexCommand:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+    class _FakeMount:
+        @staticmethod
+        def from_local_file(host_path: str, remote_path: str):
+            return {"host_path": host_path, "remote_path": remote_path}
 
-    sys.modules["modal"] = types.SimpleNamespace(Image=_FakeImage)
+    class _FakeApp:
+        lookup = types.SimpleNamespace(aio=_lookup_aio)
 
-    swerex = types.ModuleType("swerex")
-    swerex.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["swerex"] = swerex
-    swerex_deployment = types.ModuleType("swerex.deployment")
-    swerex_deployment.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["swerex.deployment"] = swerex_deployment
-    sys.modules["swerex.deployment.modal"] = types.SimpleNamespace(ModalDeployment=_FakeModalDeployment)
-    swerex_runtime = types.ModuleType("swerex.runtime")
-    swerex_runtime.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["swerex.runtime"] = swerex_runtime
-    sys.modules["swerex.runtime.abstract"] = types.SimpleNamespace(Command=_FakeRexCommand)
+    class _FakeSandbox:
+        create = types.SimpleNamespace(aio=_create_aio)
+
+    sys.modules["modal"] = types.SimpleNamespace(
+        Image=_FakeImage,
+        App=_FakeApp,
+        Sandbox=_FakeSandbox,
+        Mount=_FakeMount,
+    )
 
     return {
         "snapshot_store": hermes_home / "modal_snapshots.json",
-        "deployment_calls": deployment_calls,
+        "create_calls": create_calls,
         "from_id_calls": from_id_calls,
         "registry_calls": registry_calls,
     }
@@ -138,7 +161,7 @@ def test_modal_environment_migrates_legacy_snapshot_key_and_uses_snapshot_id(tmp
 
     try:
         assert state["from_id_calls"] == ["im-legacy123"]
-        assert state["deployment_calls"][0]["image"] == {"kind": "snapshot", "image_id": "im-legacy123"}
+        assert state["create_calls"][0]["image"] == {"kind": "snapshot", "image_id": "im-legacy123"}
         assert json.loads(snapshot_store.read_text()) == {"direct:task-legacy": "im-legacy123"}
     finally:
         env.cleanup()
@@ -154,7 +177,7 @@ def test_modal_environment_prunes_stale_direct_snapshot_and_retries_base_image(t
     env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-stale")
 
     try:
-        assert [call["image"] for call in state["deployment_calls"]] == [
+        assert [call["image"] for call in state["create_calls"]] == [
             {"kind": "snapshot", "image_id": "im-stale123"},
             {"kind": "registry", "image": "python:3.11"},
         ]

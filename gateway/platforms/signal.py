@@ -22,7 +22,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
 
@@ -184,6 +184,8 @@ class SignalAdapter(BasePlatformAdapter):
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
 
+        self._phone_lock_identity: Optional[str] = None
+
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, _redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
@@ -197,6 +199,29 @@ class SignalAdapter(BasePlatformAdapter):
         if not self.http_url or not self.account:
             logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
             return False
+
+        # Acquire scoped lock to prevent duplicate Signal listeners for the same phone
+        try:
+            from gateway.status import acquire_scoped_lock
+
+            self._phone_lock_identity = self.account
+            acquired, existing = acquire_scoped_lock(
+                "signal-phone",
+                self._phone_lock_identity,
+                metadata={"platform": self.platform.value},
+            )
+            if not acquired:
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+                message = (
+                    "Another local Hermes gateway is already using this Signal account"
+                    + (f" (PID {owner_pid})." if owner_pid else ".")
+                    + " Stop the other gateway before starting a second Signal listener."
+                )
+                logger.error("Signal: %s", message)
+                self._set_fatal_error("signal_phone_lock", message, retryable=False)
+                return False
+        except Exception as e:
+            logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
         self.client = httpx.AsyncClient(timeout=30.0)
 
@@ -245,6 +270,14 @@ class SignalAdapter(BasePlatformAdapter):
             await self.client.aclose()
             self.client = None
 
+        if self._phone_lock_identity:
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("signal-phone", self._phone_lock_identity)
+            except Exception as e:
+                logger.warning("Signal: Error releasing phone lock: %s", e, exc_info=True)
+            self._phone_lock_identity = None
+
         logger.info("Signal: disconnected")
 
     # ------------------------------------------------------------------
@@ -253,7 +286,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from signal-cli daemon."""
-        url = f"{self.http_url}/api/v1/events?account={self.account}"
+        url = f"{self.http_url}/api/v1/events?account={quote(self.account, safe='')}"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
@@ -278,6 +311,12 @@ class SignalAdapter(BasePlatformAdapter):
                             line, buffer = buffer.split("\n", 1)
                             line = line.strip()
                             if not line:
+                                continue
+                            # SSE keepalive comments (":") prove the connection
+                            # is alive — update activity so the health monitor
+                            # doesn't report false idle warnings.
+                            if line.startswith(":"):
+                                self._last_sse_activity = time.time()
                                 continue
                             # Parse SSE data lines
                             if line.startswith("data:"):
@@ -515,7 +554,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
-            "attachmentId": attachment_id,
+            "id": attachment_id,
         })
 
         if not result:

@@ -128,7 +128,11 @@ def _build_skill_message(
                         supporting.append(rel)
 
     if supporting and skill_dir:
-        skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
+        try:
+            skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
+        except ValueError:
+            # Skill is from an external dir — use the skill name instead
+            skill_view_target = skill_dir.name
         parts.append("")
         parts.append("[This skill has supporting files you can load with the skill_view tool:]")
         for sf in supporting:
@@ -158,38 +162,49 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        if not SKILLS_DIR.exists():
-            return _skill_commands
+        from agent.skill_utils import get_external_skills_dirs
         disabled = _get_disabled_skill_names()
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
-                continue
-            try:
-                content = skill_md.read_text(encoding='utf-8')
-                frontmatter, body = _parse_frontmatter(content)
-                # Skip skills incompatible with the current OS platform
-                if not skill_matches_platform(frontmatter):
+        seen_names: set = set()
+
+        # Scan local dir first, then external dirs
+        dirs_to_scan = []
+        if SKILLS_DIR.exists():
+            dirs_to_scan.append(SKILLS_DIR)
+        dirs_to_scan.extend(get_external_skills_dirs())
+
+        for scan_dir in dirs_to_scan:
+            for skill_md in scan_dir.rglob("SKILL.md"):
+                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                     continue
-                name = frontmatter.get('name', skill_md.parent.name)
-                # Respect user's disabled skills config
-                if name in disabled:
+                try:
+                    content = skill_md.read_text(encoding='utf-8')
+                    frontmatter, body = _parse_frontmatter(content)
+                    # Skip skills incompatible with the current OS platform
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    name = frontmatter.get('name', skill_md.parent.name)
+                    if name in seen_names:
+                        continue
+                    # Respect user's disabled skills config
+                    if name in disabled:
+                        continue
+                    description = frontmatter.get('description', '')
+                    if not description:
+                        for line in body.strip().split('\n'):
+                            line = line.strip()
+                            if line and not line.startswith('#'):
+                                description = line[:80]
+                                break
+                    seen_names.add(name)
+                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+                    _skill_commands[f"/{cmd_name}"] = {
+                        "name": name,
+                        "description": description or f"Invoke the {name} skill",
+                        "skill_md_path": str(skill_md),
+                        "skill_dir": str(skill_md.parent),
+                    }
+                except Exception:
                     continue
-                description = frontmatter.get('description', '')
-                if not description:
-                    for line in body.strip().split('\n'):
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            description = line[:80]
-                            break
-                cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                _skill_commands[f"/{cmd_name}"] = {
-                    "name": name,
-                    "description": description or f"Invoke the {name} skill",
-                    "skill_md_path": str(skill_md),
-                    "skill_dir": str(skill_md.parent),
-                }
-            except Exception:
-                continue
     except Exception:
         pass
     return _skill_commands

@@ -339,6 +339,16 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_custom_hermes_home_env(self):
+        dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
+        assert dangerous is True
+        assert key is not None
+
+    def test_tee_quoted_custom_hermes_home_env(self):
+        dangerous, key, desc = detect_dangerous_command('echo x | tee "$HERMES_HOME/.env"')
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_tmp_safe(self):
         dangerous, key, desc = detect_dangerous_command("echo hello | tee /tmp/output.txt")
         assert dangerous is False
@@ -370,6 +380,30 @@ class TestFindExecFullPathRm:
 
     def test_find_print_safe(self):
         dangerous, key, desc = detect_dangerous_command("find . -name '*.py' -print")
+        assert dangerous is False
+        assert key is None
+
+
+class TestSensitiveRedirectPattern:
+    """Detect shell redirection writes to sensitive user-managed paths."""
+
+    def test_redirect_to_custom_hermes_home_env(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > $HERMES_HOME/.env")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append_to_home_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cat key >> $HOME/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_append_to_tilde_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_safe_tmp_file(self):
+        dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")
         assert dangerous is False
         assert key is None
 
@@ -512,6 +546,30 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    def test_pkill_hermes_detected(self):
+        """pkill targeting hermes/gateway processes must be caught."""
+        cmd = 'pkill -f "cli.py --gateway"'
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_killall_hermes_detected(self):
+        cmd = "killall hermes"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_pkill_gateway_detected(self):
+        cmd = "pkill -f gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pkill_unrelated_not_flagged(self):
+        """pkill targeting unrelated processes should not be flagged."""
+        cmd = "pkill -f nginx"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
 
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""
@@ -581,4 +639,5 @@ class TestNormalizationBypass:
         cmd = "\uff4c\uff53 -\uff4c\uff41 /tmp"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
+
 

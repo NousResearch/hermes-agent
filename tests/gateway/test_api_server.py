@@ -28,6 +28,7 @@ from gateway.platforms.api_server import (
     _CORS_HEADERS,
     check_api_server_requirements,
     cors_middleware,
+    security_headers_middleware,
 )
 
 
@@ -214,9 +215,11 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    app = web.Application(middlewares=[cors_middleware])
+    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
@@ -242,10 +245,31 @@ def auth_adapter():
 
 class TestHealthEndpoint:
     @pytest.mark.asyncio
+    async def test_security_headers_present(self, adapter):
+        """Responses should include basic security headers."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("Referrer-Policy") == "no-referrer"
+
+    @pytest.mark.asyncio
     async def test_health_returns_ok(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+            assert data["platform"] == "hermes-agent"
+
+    @pytest.mark.asyncio
+    async def test_v1_health_alias_returns_ok(self, adapter):
+        """GET /v1/health should return the same response as /health."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/health")
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "ok"
@@ -1301,6 +1325,31 @@ class TestCORS:
             assert "DELETE" in resp.headers.get("Access-Control-Allow-Methods", "")
 
     @pytest.mark.asyncio
+    async def test_cors_allows_idempotency_key_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Idempotency-Key",
+                },
+            )
+            assert resp.status == 200
+            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    @pytest.mark.asyncio
+    async def test_cors_sets_vary_origin_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health", headers={"Origin": "http://localhost:3000"})
+            assert resp.status == 200
+            assert resp.headers.get("Vary") == "Origin"
+
+    @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
@@ -1319,6 +1368,21 @@ class TestCORS:
             assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
 
 
+    @pytest.mark.asyncio
+    async def test_cors_preflight_sets_max_age(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Max-Age") == "600"
 # ---------------------------------------------------------------------------
 # Conversation parameter
 # ---------------------------------------------------------------------------

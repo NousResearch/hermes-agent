@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 _DEFAULT_TOOL_GATEWAY_DOMAIN = "nousresearch.com"

@@ -219,6 +219,9 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null; then
   echo "AUTH_METHOD=gh"
 elif [ -n "$GITHUB_TOKEN" ]; then
   echo "AUTH_METHOD=curl"
+elif [ -f ~/.hermes/.env ] && grep -q "^GITHUB_TOKEN=" ~/.hermes/.env; then
+  export GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" ~/.hermes/.env | head -1 | cut -d= -f2 | tr -d '\n\r')
+  echo "AUTH_METHOD=curl"
 elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
   export GITHUB_TOKEN=$(grep "github.com" ~/.git-credentials | head -1 | sed 's|https://[^:]*:\([^@]*\)@.*|\1|')
   echo "AUTH_METHOD=curl"

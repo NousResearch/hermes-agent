@@ -7,17 +7,33 @@
 # =============================================================================
 model:
   # Default model to use (can be overridden with --model flag)
+  # Both "default" and "model" work as the key name here.
   default: "anthropic/claude-opus-4.6"
   
   # Inference provider selection:
-  #   "auto"       - Use Nous Portal if logged in, otherwise OpenRouter/env vars (default)
-  #   "nous-api"   - Use Nous Portal via API key (requires: NOUS_API_KEY)
-  #   "openrouter" - Always use OpenRouter API key from OPENROUTER_API_KEY
-  #   "nous"       - Always use Nous Portal (requires: hermes login)
-  #   "zai"        - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
-  #   "kimi-coding"- Use Kimi / Moonshot AI models (requires: KIMI_API_KEY)
-  #   "minimax"    - Use MiniMax global endpoint (requires: MINIMAX_API_KEY)
-  #   "minimax-cn" - Use MiniMax China endpoint (requires: MINIMAX_CN_API_KEY)
+  #   "auto"         - Auto-detect from credentials (default)
+  #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY or OPENAI_API_KEY)
+  #   "nous"         - Nous Portal OAuth (requires: hermes login)
+  #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
+  #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
+  #   "openai-codex" - OpenAI Codex (requires: hermes login --provider openai-codex)
+  #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
+  #   "zai"          - z.ai / ZhipuAI GLM (requires: GLM_API_KEY)
+  #   "kimi-coding"  - Kimi / Moonshot AI (requires: KIMI_API_KEY)
+  #   "minimax"      - MiniMax global (requires: MINIMAX_API_KEY)
+  #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
+  #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
+  #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
+  #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #
+  # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
+  #   "custom"       - Any OpenAI-compatible endpoint. Set base_url below.
+  #   Aliases: "lmstudio", "ollama", "vllm", "llamacpp" all map to "custom".
+  #   Example for LM Studio:
+  #     provider: "lmstudio"
+  #     base_url: "http://localhost:1234/v1"
+  #   No API key needed — local servers typically ignore auth.
+  #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   
@@ -401,6 +417,15 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # External skill directories — share skills across tools/agents without
+  # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
+  # and resolved to an absolute path.  External dirs are read-only: skill
+  # creation always writes to ~/.hermes/skills/.  Local skills take precedence
+  # when names collide.
+  # external_dirs:
+  #   - ~/.agents/skills
+  #   - /home/shared/team-skills
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================
@@ -687,6 +712,12 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
+
+  # What Enter does when Hermes is already busy in the CLI.
+  #   interrupt: Interrupt the current run and redirect Hermes (default)
+  #   queue:     Queue your message for the next turn
+  # Ctrl+C always interrupts regardless of this setting.
+  busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use

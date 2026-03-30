@@ -14,6 +14,7 @@ from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     normalize_browser_cloud_provider,
     normalize_modal_mode,
+    resolve_modal_backend_state,
     resolve_openai_audio_api_key,
 )
 
@@ -185,6 +186,7 @@ def get_nous_subscription_features(
         else None
     )
 
+    direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
@@ -200,19 +202,25 @@ def get_nous_subscription_features(
     managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
     managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browserbase")
     managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
+    modal_state = resolve_modal_backend_state(
+        modal_mode,
+        has_direct=direct_modal,
+        managed_ready=managed_modal_available,
+    )
 
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
         web_tool_enabled
         and (
             web_managed
+            or (web_backend == "exa" and direct_exa)
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
         )
     )
     web_available = bool(
-        managed_web_available or direct_firecrawl or direct_parallel or direct_tavily
+        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
@@ -260,25 +268,31 @@ def get_nous_subscription_features(
         modal_available = True
         modal_active = bool(modal_tool_enabled)
         modal_direct_override = False
+    elif modal_state["selected_backend"] == "managed":
+        modal_managed = bool(modal_tool_enabled)
+        modal_available = True
+        modal_active = bool(modal_tool_enabled)
+        modal_direct_override = False
+    elif modal_state["selected_backend"] == "direct":
+        modal_managed = False
+        modal_available = True
+        modal_active = bool(modal_tool_enabled)
+        modal_direct_override = bool(modal_tool_enabled)
     elif modal_mode == "managed":
-        modal_managed = bool(modal_tool_enabled and managed_modal_available)
+        modal_managed = False
         modal_available = bool(managed_modal_available)
-        modal_active = bool(modal_tool_enabled and managed_modal_available)
+        modal_active = False
         modal_direct_override = False
     elif modal_mode == "direct":
         modal_managed = False
         modal_available = bool(direct_modal)
-        modal_active = bool(modal_tool_enabled and direct_modal)
-        modal_direct_override = bool(direct_modal)
+        modal_active = False
+        modal_direct_override = False
     else:
-        modal_managed = bool(
-            modal_tool_enabled
-            and managed_modal_available
-            and not direct_modal
-        )
+        modal_managed = False
         modal_available = bool(managed_modal_available or direct_modal)
-        modal_active = bool(modal_tool_enabled and (direct_modal or managed_modal_available))
-        modal_direct_override = bool(direct_modal)
+        modal_active = False
+        modal_direct_override = False
 
     tts_explicit_configured = False
     raw_tts_cfg = config.get("tts")

@@ -101,6 +101,69 @@ class TestLaunchdPlistReplace:
         assert replace_idx == run_idx + 1
 
 
+class TestLaunchdPlistPath:
+    def test_plist_contains_environment_variables(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>EnvironmentVariables</key>" in plist
+        assert "<key>PATH</key>" in plist
+        assert "<key>VIRTUAL_ENV</key>" in plist
+        assert "<key>HERMES_HOME</key>" in plist
+
+    def test_plist_path_includes_venv_bin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        detected = gateway_cli._detect_venv_dir()
+        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        assert venv_bin in plist
+
+    def test_plist_path_starts_with_venv_bin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                detected = gateway_cli._detect_venv_dir()
+                venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+                assert path_value.startswith(venv_bin + ":")
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
+
+    def test_plist_path_includes_node_modules_bin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        node_bin = str(gateway_cli.PROJECT_ROOT / "node_modules" / ".bin")
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                assert node_bin in path_value.split(":")
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
+
+    def test_plist_path_includes_current_env_path(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        plist = gateway_cli.generate_launchd_plist()
+        assert "/custom/bin" in plist
+
+    def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
+        detected = gateway_cli._detect_venv_dir()
+        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        plist = gateway_cli.generate_launchd_plist()
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                parts = path_value.split(":")
+                assert parts.count(venv_bin) == 1
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
+
+
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection
 # ---------------------------------------------------------------------------
@@ -176,6 +239,33 @@ class TestLaunchdPlistRefresh:
         cmd_strs = [" ".join(c) for c in calls]
         assert any("unload" in s for s in cmd_strs)
         assert any("start" in s for s in cmd_strs)
+
+    def test_launchd_start_recreates_missing_plist_and_loads_service(self, tmp_path, monkeypatch):
+        """launchd_start self-heals when the plist file is missing entirely."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        assert not plist_path.exists()
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        # Should have created the plist
+        assert plist_path.exists()
+        assert "--replace" in plist_path.read_text()
+
+        cmd_strs = [" ".join(c) for c in calls]
+        # Should load the new plist, then start
+        assert any("load" in s for s in cmd_strs)
+        assert any("start" in s for s in cmd_strs)
+        # Should NOT call unload (nothing to unload)
+        assert not any("unload" in s for s in cmd_strs)
 
 
 class TestCmdUpdateLaunchdRestart:

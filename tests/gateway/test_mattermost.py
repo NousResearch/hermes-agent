@@ -1,5 +1,6 @@
 """Tests for Mattermost platform adapter."""
 import json
+import os
 import time
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -269,6 +270,7 @@ class TestMattermostWebSocketParsing:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
         # Mock handle_message to capture the MessageEvent without processing
         self.adapter.handle_message = AsyncMock()
 
@@ -293,7 +295,8 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "@bot_user_id Hello from Matrix!"
+        # @mention is stripped from the message text
+        assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
 
     @pytest.mark.asyncio
@@ -408,6 +411,87 @@ class TestMattermostWebSocketParsing:
 
         await self.adapter._handle_ws_event(event)
         assert not self.adapter.handle_message.called
+
+
+# ---------------------------------------------------------------------------
+# Mention behavior (require_mention + free_response_channels)
+# ---------------------------------------------------------------------------
+
+class TestMattermostMentionBehavior:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, message, channel_type="O", channel_id="chan_456"):
+        post_data = {
+            "id": "post_mention",
+            "user_id": "user_123",
+            "channel_id": channel_id,
+            "message": message,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_require_mention_true_skips_without_mention(self):
+        """Default: messages without @mention in channels are skipped."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
+            await self.adapter._handle_ws_event(self._make_event("hello"))
+            assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_require_mention_false_responds_to_all(self):
+        """MATTERMOST_REQUIRE_MENTION=false: respond to all channel messages."""
+        with patch.dict(os.environ, {"MATTERMOST_REQUIRE_MENTION": "false"}):
+            await self.adapter._handle_ws_event(self._make_event("hello"))
+            assert self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_free_response_channel_responds_without_mention(self):
+        """Messages in free-response channels don't need @mention."""
+        with patch.dict(os.environ, {"MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_456,chan_789"}):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
+            assert self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_non_free_channel_still_requires_mention(self):
+        """Channels NOT in free-response list still require @mention."""
+        with patch.dict(os.environ, {"MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_789"}):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
+            assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_dm_always_responds(self):
+        """DMs (channel_type=D) always respond regardless of mention settings."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("hello", channel_type="D"))
+            assert self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_mention_stripped_from_text(self):
+        """@mention is stripped from message text."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot what is 2+2")
+            )
+            assert self.adapter.handle_message.called
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert "@hermes-bot" not in msg.text
+            assert "2+2" in msg.text
 
 
 # ---------------------------------------------------------------------------

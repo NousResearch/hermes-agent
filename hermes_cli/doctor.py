@@ -10,9 +10,11 @@ import subprocess
 import shutil
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
+_DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
 # Load environment variables from ~/.hermes/.env so API key checks work
 from dotenv import load_dotenv
@@ -56,7 +58,7 @@ def _honcho_is_configured_for_doctor() -> bool:
         from honcho_integration.client import HonchoClientConfig
 
         cfg = HonchoClientConfig.from_global_config()
-        return bool(cfg.enabled and cfg.api_key)
+        return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
     except Exception:
         return False
 
@@ -209,14 +211,14 @@ def run_doctor(args):
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
-        check_ok("~/.hermes/.env file exists")
+        check_ok(f"{_DHH}/.env file exists")
         
         # Check for common issues
         content = env_path.read_text()
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:
-            check_warn("No API key found in ~/.hermes/.env")
+            check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")
     else:
         # Also check project root as fallback
@@ -224,11 +226,11 @@ def run_doctor(args):
         if fallback_env.exists():
             check_ok(".env file exists (in project directory)")
         else:
-            check_fail("~/.hermes/.env file missing")
+            check_fail(f"{_DHH}/.env file missing")
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 env_path.touch()
-                check_ok("Created empty ~/.hermes/.env")
+                check_ok(f"Created empty {_DHH}/.env")
                 check_info("Run 'hermes setup' to configure API keys")
                 fixed_count += 1
             else:
@@ -238,7 +240,7 @@ def run_doctor(args):
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
-        check_ok("~/.hermes/config.yaml exists")
+        check_ok(f"{_DHH}/config.yaml exists")
     else:
         fallback_config = PROJECT_ROOT / 'cli-config.yaml'
         if fallback_config.exists():
@@ -248,11 +250,11 @@ def run_doctor(args):
             if should_fix and example_config.exists():
                 config_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(str(example_config), str(config_path))
-                check_ok("Created ~/.hermes/config.yaml from cli-config.yaml.example")
+                check_ok(f"Created {_DHH}/config.yaml from cli-config.yaml.example")
                 fixed_count += 1
             elif should_fix:
                 check_warn("config.yaml not found and no example to copy from")
-                manual_issues.append("Create ~/.hermes/config.yaml manually")
+                manual_issues.append(f"Create {_DHH}/config.yaml manually")
             else:
                 check_warn("config.yaml not found", "(using defaults)")
     
@@ -294,28 +296,28 @@ def run_doctor(args):
     
     hermes_home = HERMES_HOME
     if hermes_home.exists():
-        check_ok("~/.hermes directory exists")
+        check_ok(f"{_DHH} directory exists")
     else:
         if should_fix:
             hermes_home.mkdir(parents=True, exist_ok=True)
-            check_ok("Created ~/.hermes directory")
+            check_ok(f"Created {_DHH} directory")
             fixed_count += 1
         else:
-            check_warn("~/.hermes not found", "(will be created on first use)")
+            check_warn(f"{_DHH} not found", "(will be created on first use)")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
     for subdir_name in expected_subdirs:
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
-            check_ok(f"~/.hermes/{subdir_name}/ exists")
+            check_ok(f"{_DHH}/{subdir_name}/ exists")
         else:
             if should_fix:
                 subdir_path.mkdir(parents=True, exist_ok=True)
-                check_ok(f"Created ~/.hermes/{subdir_name}/")
+                check_ok(f"Created {_DHH}/{subdir_name}/")
                 fixed_count += 1
             else:
-                check_warn(f"~/.hermes/{subdir_name}/ not found", "(will be created on first use)")
+                check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -324,11 +326,11 @@ def run_doctor(args):
         # Check if it's just the template comments (no real content)
         lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
         if lines:
-            check_ok("~/.hermes/SOUL.md exists (persona configured)")
+            check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
         else:
-            check_info("~/.hermes/SOUL.md exists but is empty — edit it to customize personality")
+            check_info(f"{_DHH}/SOUL.md exists but is empty — edit it to customize personality")
     else:
-        check_warn("~/.hermes/SOUL.md not found", "(create it to give Hermes a custom personality)")
+        check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Hermes a custom personality)")
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
             soul_path.write_text(
@@ -337,13 +339,13 @@ def run_doctor(args):
                 "You are Hermes, a helpful AI assistant.\n",
                 encoding="utf-8",
             )
-            check_ok("Created ~/.hermes/SOUL.md with basic template")
+            check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
     # Check memory directory
     memories_dir = hermes_home / "memories"
     if memories_dir.exists():
-        check_ok("~/.hermes/memories/ directory exists")
+        check_ok(f"{_DHH}/memories/ directory exists")
         memory_file = memories_dir / "MEMORY.md"
         user_file = memories_dir / "USER.md"
         if memory_file.exists():
@@ -357,10 +359,10 @@ def run_doctor(args):
         else:
             check_info("USER.md not created yet (will be created when the agent first writes a memory)")
     else:
-        check_warn("~/.hermes/memories/ not found", "(will be created on first use)")
+        check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:
             memories_dir.mkdir(parents=True, exist_ok=True)
-            check_ok("Created ~/.hermes/memories/")
+            check_ok(f"Created {_DHH}/memories/")
             fixed_count += 1
     
     # Check SQLite session store
@@ -372,11 +374,11 @@ def run_doctor(args):
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
             conn.close()
-            check_ok(f"~/.hermes/state.db exists ({count} sessions)")
+            check_ok(f"{_DHH}/state.db exists ({count} sessions)")
         except Exception as e:
-            check_warn(f"~/.hermes/state.db exists but has issues: {e}")
+            check_warn(f"{_DHH}/state.db exists but has issues: {e}")
     else:
-        check_info("~/.hermes/state.db not created yet (will be created on first session)")
+        check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
     _check_gateway_service_linger(issues)
     
@@ -691,7 +693,7 @@ def run_doctor(args):
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")
     else:
-        check_warn("No GITHUB_TOKEN", "(60 req/hr rate limit — set in ~/.hermes/.env for better rates)")
+        check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     # =========================================================================
     # Honcho memory
@@ -708,8 +710,8 @@ def run_doctor(args):
             check_warn("Honcho config not found", "run: hermes honcho setup")
         elif not hcfg.enabled:
             check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
-        elif not hcfg.api_key:
-            check_fail("Honcho API key not set", "run: hermes honcho setup")
+        elif not (hcfg.api_key or hcfg.base_url):
+            check_fail("Honcho API key or base URL not set", "run: hermes honcho setup")
             issues.append("No Honcho API key — run 'hermes honcho setup'")
         else:
             from honcho_integration.client import get_honcho_client, reset_honcho_client
@@ -727,6 +729,53 @@ def run_doctor(args):
         check_warn("honcho-ai not installed", "pip install honcho-ai")
     except Exception as _e:
         check_warn("Honcho check failed", str(_e))
+
+    # =========================================================================
+    # Profiles
+    # =========================================================================
+    try:
+        from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+        import re as _re
+
+        named_profiles = [p for p in list_profiles() if not p.is_default]
+        if named_profiles:
+            print()
+            print(color("◆ Profiles", Colors.CYAN, Colors.BOLD))
+            check_ok(f"{len(named_profiles)} profile(s) found")
+            wrapper_dir = _get_wrapper_dir()
+            for p in named_profiles:
+                parts = []
+                if p.gateway_running:
+                    parts.append("gateway running")
+                if p.model:
+                    parts.append(p.model[:30])
+                if not (p.path / "config.yaml").exists():
+                    parts.append("⚠ missing config")
+                if not (p.path / ".env").exists():
+                    parts.append("no .env")
+                wrapper = wrapper_dir / p.name
+                if not wrapper.exists():
+                    parts.append("no alias")
+                status = ", ".join(parts) if parts else "configured"
+                check_ok(f"  {p.name}: {status}")
+
+            # Check for orphan wrappers
+            if wrapper_dir.is_dir():
+                for wrapper in wrapper_dir.iterdir():
+                    if not wrapper.is_file():
+                        continue
+                    try:
+                        content = wrapper.read_text()
+                        if "hermes -p" in content:
+                            _m = _re.search(r"hermes -p (\S+)", content)
+                            if _m and not profile_exists(_m.group(1)):
+                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                    except Exception:
+                        pass
+    except ImportError:
+        pass
+    except Exception as _e:
+        logger.debug("Profile health check failed: %s", _e)
 
     # =========================================================================
     # Summary

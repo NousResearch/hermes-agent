@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
+_DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
 
 def check_webhook_requirements() -> bool:
@@ -68,7 +70,10 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: str = config.extra.get("host", DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
-        self._routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._dynamic_routes: Dict[str, dict] = {}
+        self._dynamic_routes_mtime: float = 0.0
+        self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
 
         # Delivery info keyed by session chat_id — consumed by send()
@@ -96,6 +101,9 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
+        # Load agent-created subscriptions before validating
+        self._reload_dynamic_routes()
+
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
             secret = route.get("secret", self._global_secret)
@@ -109,6 +117,17 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+
+        # Port conflict detection — fail fast if port is already in use
+        import socket as _socket
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                _s.settimeout(1)
+                _s.connect(('127.0.0.1', self._port))
+            logger.error('[webhook] Port %d already in use. Set a different port in config.yaml: platforms.webhook.port', self._port)
+            return False
+        except (ConnectionRefusedError, OSError):
+            pass  # port is free
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -182,8 +201,46 @@ class WebhookAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
+    def _reload_dynamic_routes(self) -> None:
+        """Reload agent-created subscriptions from disk if the file changed."""
+        from pathlib import Path as _Path
+        hermes_home = _Path(
+            os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
+        ).expanduser()
+        subs_path = hermes_home / _DYNAMIC_ROUTES_FILENAME
+        if not subs_path.exists():
+            if self._dynamic_routes:
+                self._dynamic_routes = {}
+                self._routes = dict(self._static_routes)
+                logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
+            return
+        try:
+            mtime = subs_path.stat().st_mtime
+            if mtime <= self._dynamic_routes_mtime:
+                return  # No change
+            data = json.loads(subs_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            # Merge: static routes take precedence over dynamic ones
+            self._dynamic_routes = {
+                k: v for k, v in data.items()
+                if k not in self._static_routes
+            }
+            self._routes = {**self._dynamic_routes, **self._static_routes}
+            self._dynamic_routes_mtime = mtime
+            logger.info(
+                "[webhook] Reloaded %d dynamic route(s): %s",
+                len(self._dynamic_routes),
+                ", ".join(self._dynamic_routes.keys()) or "(none)",
+            )
+        except Exception as e:
+            logger.warning("[webhook] Failed to reload dynamic routes: %s", e)
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
+        # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
+        self._reload_dynamic_routes()
+
         route_name = request.match_info.get("route_name", "")
         route_config = self._routes.get(route_name)
 

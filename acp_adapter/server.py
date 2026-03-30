@@ -25,6 +25,9 @@ from acp.schema import (
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
+    SetSessionConfigOptionResponse,
+    SetSessionModelResponse,
+    SetSessionModeResponse,
     ResourceContentBlock,
     SessionCapabilities,
     SessionForkCapabilities,
@@ -94,11 +97,14 @@ class HermesACPAgent(acp.Agent):
 
     async def initialize(
         self,
-        protocol_version: int,
+        protocol_version: int | None = None,
         client_capabilities: ClientCapabilities | None = None,
         client_info: Implementation | None = None,
         **kwargs: Any,
     ) -> InitializeResponse:
+        resolved_protocol_version = (
+            protocol_version if isinstance(protocol_version, int) else acp.PROTOCOL_VERSION
+        )
         provider = detect_provider()
         auth_methods = None
         if provider:
@@ -111,7 +117,11 @@ class HermesACPAgent(acp.Agent):
             ]
 
         client_name = client_info.name if client_info else "unknown"
-        logger.info("Initialize from %s (protocol v%s)", client_name, protocol_version)
+        logger.info(
+            "Initialize from %s (protocol v%s)",
+            client_name,
+            resolved_protocol_version,
+        )
 
         return InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
@@ -471,7 +481,7 @@ class HermesACPAgent(acp.Agent):
 
     async def set_session_model(
         self, model_id: str, session_id: str, **kwargs: Any
-    ):
+    ) -> SetSessionModelResponse | None:
         """Switch the model for a session (called by ACP protocol)."""
         state = self.session_manager.get_session(session_id)
         if state:
@@ -489,4 +499,37 @@ class HermesACPAgent(acp.Agent):
             )
             self.session_manager.save_session(session_id)
             logger.info("Session %s: model switched to %s", session_id, model_id)
+            return SetSessionModelResponse()
+        logger.warning("Session %s: model switch requested for missing session", session_id)
         return None
+
+    async def set_session_mode(
+        self, mode_id: str, session_id: str, **kwargs: Any
+    ) -> SetSessionModeResponse | None:
+        """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
+        state = self.session_manager.get_session(session_id)
+        if state is None:
+            logger.warning("Session %s: mode switch requested for missing session", session_id)
+            return None
+        setattr(state, "mode", mode_id)
+        self.session_manager.save_session(session_id)
+        logger.info("Session %s: mode switched to %s", session_id, mode_id)
+        return SetSessionModeResponse()
+
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse | None:
+        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        state = self.session_manager.get_session(session_id)
+        if state is None:
+            logger.warning("Session %s: config update requested for missing session", session_id)
+            return None
+
+        options = getattr(state, "config_options", None)
+        if not isinstance(options, dict):
+            options = {}
+        options[str(config_id)] = value
+        setattr(state, "config_options", options)
+        self.session_manager.save_session(session_id)
+        logger.info("Session %s: config option %s updated", session_id, config_id)
+        return SetSessionConfigOptionResponse(config_options=[])

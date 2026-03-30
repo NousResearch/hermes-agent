@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted
 

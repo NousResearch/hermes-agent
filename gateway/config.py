@@ -66,6 +66,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    NTFY = "ntfy"
 
 
 @dataclass
@@ -288,6 +289,11 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # ntfy uses extra dict for server/topic or env vars
+            elif platform == Platform.NTFY and (
+                config.extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+            ):
                 connected.append(platform)
         return connected
     
@@ -891,6 +897,30 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # ntfy
+    ntfy_topic = os.getenv("NTFY_TOPIC")
+    if ntfy_topic:
+        if Platform.NTFY not in config.platforms:
+            config.platforms[Platform.NTFY] = PlatformConfig()
+        config.platforms[Platform.NTFY].enabled = True
+        config.platforms[Platform.NTFY].extra["topic"] = ntfy_topic
+        ntfy_server = os.getenv("NTFY_SERVER_URL", "")
+        if ntfy_server:
+            config.platforms[Platform.NTFY].extra["server"] = ntfy_server
+        ntfy_token = os.getenv("NTFY_TOKEN", "")
+        if ntfy_token:
+            config.platforms[Platform.NTFY].extra["token"] = ntfy_token
+        ntfy_publish_topic = os.getenv("NTFY_PUBLISH_TOPIC", "")
+        if ntfy_publish_topic:
+            config.platforms[Platform.NTFY].extra["publish_topic"] = ntfy_publish_topic
+    ntfy_home = os.getenv("NTFY_HOME_CHANNEL")
+    if ntfy_home and Platform.NTFY in config.platforms:
+        config.platforms[Platform.NTFY].home_channel = HomeChannel(
+            platform=Platform.NTFY,
+            chat_id=ntfy_home,
+            name=os.getenv("NTFY_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

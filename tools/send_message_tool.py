@@ -133,6 +133,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "ntfy": Platform.NTFY,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -371,6 +372,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.NTFY:
+            result = await _send_ntfy(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -822,6 +825,47 @@ async def _send_wecom(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return {"error": f"WeCom send failed: {e}"}
+
+
+async def _send_ntfy(extra, chat_id, message):
+    """Publish a message to an ntfy topic via HTTP POST."""
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed"}
+
+    server = (extra.get("server") or os.getenv("NTFY_SERVER_URL", "https://ntfy.sh")).rstrip("/")
+    publish_topic = (
+        extra.get("publish_topic")
+        or os.getenv("NTFY_PUBLISH_TOPIC", "")
+        or extra.get("topic")
+        or os.getenv("NTFY_TOPIC", "")
+        or chat_id
+    )
+    token = extra.get("token") or os.getenv("NTFY_TOKEN", "")
+
+    if not publish_topic:
+        return {"error": "ntfy not configured. Set NTFY_TOPIC env var or topic in ntfy platform extra config."}
+
+    headers: dict = {"Content-Type": "text/plain; charset=utf-8"}
+    if token:
+        if ":" in token:
+            import base64
+            encoded = base64.b64encode(token.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded}"
+        else:
+            headers["Authorization"] = f"Bearer {token}"
+
+    url = f"{server}/{publish_topic}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, content=message.encode("utf-8"), headers=headers)
+            resp.raise_for_status()
+        return {"success": True, "platform": "ntfy", "chat_id": publish_topic}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"ntfy HTTP {e.response.status_code}: {e.response.text[:200]}"}
+    except Exception as e:
+        return {"error": f"ntfy send failed: {e}"}
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

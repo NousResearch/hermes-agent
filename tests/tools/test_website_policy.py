@@ -240,6 +240,16 @@ def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypa
 
 
 def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
+    from tools import website_policy
+
+    website_policy.invalidate_cache()
+    # Seed the cache with a disabled policy for a different HERMES_HOME to
+    # prove the default-path cache key follows runtime HERMES_HOME changes.
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(other_home))
+    assert check_website_access("https://dynamic.example/path") is None
+
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(

@@ -14,6 +14,59 @@ from hermes_constants import get_hermes_home
 from honcho_integration.client import resolve_active_host, resolve_config_path, GLOBAL_CONFIG_PATH, HOST
 
 
+def clone_honcho_for_profile(profile_name: str) -> bool:
+    """Auto-clone Honcho config for a new profile from the default host block.
+
+    Called during profile creation. If Honcho is configured on the default
+    host, creates a new host block for the profile with inherited settings
+    and auto-derived workspace/aiPeer.
+
+    Returns True if a host block was created, False if Honcho isn't configured.
+    """
+    cfg = _read_config()
+    if not cfg:
+        return False
+
+    hosts = cfg.get("hosts", {})
+    default_block = hosts.get(HOST, {})
+
+    # No default host block and no root-level API key = Honcho not configured
+    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
+    if not default_block and not has_key:
+        return False
+
+    new_host = f"{HOST}.{profile_name}"
+    if new_host in hosts:
+        return False  # already exists
+
+    # Clone settings from default block, override identity fields
+    new_block = {}
+    for key in ("memoryMode", "recallMode", "writeFrequency", "sessionStrategy",
+                "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
+                "dialecticMaxChars", "saveMessages"):
+        val = default_block.get(key)
+        if val is not None:
+            new_block[key] = val
+
+    # Inherit peer name from default
+    peer_name = default_block.get("peerName") or cfg.get("peerName")
+    if peer_name:
+        new_block["peerName"] = peer_name
+
+    # AI peer is profile-specific; workspace is shared so all profiles
+    # see the same user context, sessions, and project history.
+    new_block["aiPeer"] = new_host
+    new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
+    new_block["enabled"] = default_block.get("enabled", True)
+
+    cfg.setdefault("hosts", {})[new_host] = new_block
+    _write_config(cfg)
+
+    # Eagerly create the peer in Honcho so it exists before first message
+    _ensure_peer_exists(new_host)
+    return True
+
+
 def _host_key() -> str:
     """Return the active Honcho host key, derived from the current Hermes profile."""
     return resolve_active_host()

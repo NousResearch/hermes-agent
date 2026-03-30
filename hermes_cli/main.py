@@ -4584,6 +4584,8 @@ For more help on a command:
         "migrate",
         help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
     )
+    honcho_subparsers.add_parser("enable", help="Enable Honcho for the active profile")
+    honcho_subparsers.add_parser("disable", help="Disable Honcho for the active profile")
 
     def cmd_honcho(args):
         from honcho_integration.cli import honcho_command

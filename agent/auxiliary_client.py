@@ -627,14 +627,19 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     custom_key = runtime.get("api_key")
     if not isinstance(custom_base, str) or not custom_base.strip():
         return None, None
-    if not isinstance(custom_key, str) or not custom_key.strip():
-        return None, None
 
     custom_base = custom_base.strip().rstrip("/")
     if "openrouter.ai" in custom_base.lower():
         # requested='custom' falls back to OpenRouter when no custom endpoint is
         # configured. Treat that as "no custom endpoint" for auxiliary routing.
         return None, None
+
+    # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
+    # Use a placeholder key — the OpenAI SDK requires a non-empty string but
+    # local servers ignore the Authorization header.  Same fix as cli.py
+    # _ensure_runtime_credentials() (PR #2556).
+    if not isinstance(custom_key, str) or not custom_key.strip():
+        custom_key = "no-key-required"
 
     return custom_base, custom_key.strip()
 
@@ -897,11 +902,12 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
+                or "no-key-required"  # local servers don't need auth
             )
-            if not custom_base or not custom_key:
+            if not custom_base:
                 logger.warning(
                     "resolve_provider_client: explicit custom endpoint requested "
-                    "but no API key was found (set explicit_api_key or OPENAI_API_KEY)"
+                    "but base_url is empty"
                 )
                 return None, None
             final_model = model or _read_main_model() or "gpt-4o-mini"

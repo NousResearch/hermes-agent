@@ -491,15 +491,17 @@ class TestGetTextAuxiliaryClient:
         assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "task-key"
 
-    def test_task_direct_endpoint_without_openai_key_does_not_fall_back(self, monkeypatch):
+    def test_task_direct_endpoint_without_openai_key_uses_placeholder(self, monkeypatch):
+        """Local endpoints without an API key should use 'no-key-required' placeholder."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
         monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client("web_extract")
-        assert client is None
-        assert model is None
-        mock_openai.assert_not_called()
+        assert client is not None
+        assert model == "task-model"
+        assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
 
     def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
         config = {
@@ -696,15 +698,16 @@ class TestVisionClientFallback:
         assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:4567/v1"
         assert mock_openai.call_args.kwargs["api_key"] == "vision-key"
 
-    def test_vision_direct_endpoint_requires_openai_api_key(self, monkeypatch):
+    def test_vision_direct_endpoint_without_key_uses_placeholder(self, monkeypatch):
+        """Vision endpoint without API key should use 'no-key-required' placeholder."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
-        assert client is None
-        assert model is None
-        mock_openai.assert_not_called()
+        assert client is not None
+        assert model == "vision-model"
+        assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
 
     def test_vision_uses_openrouter_when_available(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

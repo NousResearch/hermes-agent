@@ -51,6 +51,21 @@ function Write-Ok($msg)      { Write-Host "      $msg" -ForegroundColor Green }
 function Write-Dim($msg)     { Write-Host "      $msg" -ForegroundColor DarkGray }
 function Write-Err($msg)     { Write-Host "      $msg" -ForegroundColor Red }
 function Fail($msg)          { Write-Err $msg; exit 1 }
+function Invoke-GitQuiet {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $null = & git @Arguments 2>&1
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
 
 # -- Banner ------------------------------------------------------------------
 Write-Host ""
@@ -139,25 +154,22 @@ if ($FROM_REPO) {
         $clonedOk = $false
         if (Test-Path "$INSTALL_DIR\.git") {
             Write-Dim "Updating existing clone at $INSTALL_DIR..."
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
             Push-Location $INSTALL_DIR
-            $null = & git fetch origin $BRANCH --depth 1 2>&1
-            $null = & git checkout $BRANCH 2>&1
-            $null = & git reset --hard "origin/$BRANCH" 2>&1
-            Pop-Location
-            $clonedOk = ($LASTEXITCODE -eq 0)
-            $ErrorActionPreference = $prevEAP
+            try {
+                $fetchExit = Invoke-GitQuiet @('fetch', 'origin', $BRANCH, '--depth', '1')
+                $checkoutExit = Invoke-GitQuiet @('checkout', $BRANCH)
+                $resetExit = Invoke-GitQuiet @('reset', '--hard', "origin/$BRANCH")
+                $clonedOk = ($fetchExit -eq 0 -and $checkoutExit -eq 0 -and $resetExit -eq 0)
+            } finally {
+                Pop-Location
+            }
         } else {
             Write-Dim "Shallow-cloning $REPO_URL ($BRANCH) to $INSTALL_DIR..."
             if (Test-Path $INSTALL_DIR) {
                 Remove-Item $INSTALL_DIR -Recurse -Force
             }
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            $cloneOut = & git clone --depth 1 --branch $BRANCH $REPO_URL $INSTALL_DIR 2>&1
-            $clonedOk = ($LASTEXITCODE -eq 0)
-            $ErrorActionPreference = $prevEAP
+            $cloneExit = Invoke-GitQuiet @('clone', '--depth', '1', '--branch', $BRANCH, $REPO_URL, $INSTALL_DIR)
+            $clonedOk = ($cloneExit -eq 0)
         }
         if ($clonedOk) {
             Write-Ok "Source ready via shallow clone ($BRANCH)"
@@ -172,12 +184,17 @@ if ($FROM_REPO) {
                 Fail "robocopy sync failed with exit code $robocopyCode"
             }
             Push-Location $INSTALL_DIR
-            if (-not (Test-Path ".git")) {
-                & git init --quiet 2>&1 | Out-Null
-                & git add -A 2>&1 | Out-Null
-                & git commit -m "install snapshot from $BRANCH" --quiet 2>&1 | Out-Null
+            try {
+                if (-not (Test-Path ".git")) {
+                    $initExit = Invoke-GitQuiet @('init', '--quiet')
+                    if ($initExit -eq 0) {
+                        $addExit = Invoke-GitQuiet @('add', '-A')
+                        $commitExit = Invoke-GitQuiet @('commit', '-m', "install snapshot from $BRANCH", '--quiet')
+                    }
+                }
+            } finally {
+                Pop-Location
             }
-            Pop-Location
             Write-Ok "Source synced via robocopy ($BRANCH)"
         }
     } else {
@@ -188,30 +205,30 @@ if ($FROM_REPO) {
     if (Test-Path "$INSTALL_DIR\.git") {
         Write-Dim "Updating existing clone..."
         Push-Location $INSTALL_DIR
-        & git fetch origin $BRANCH 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        try {
+            $fetchExit = Invoke-GitQuiet @('fetch', 'origin', $BRANCH)
+            if ($fetchExit -ne 0) {
+                Fail "git fetch failed for branch $BRANCH"
+            }
+            $checkoutExit = Invoke-GitQuiet @('checkout', $BRANCH)
+            if ($checkoutExit -ne 0) {
+                Fail "git checkout failed for branch $BRANCH"
+            }
+            $pullExit = Invoke-GitQuiet @('pull', 'origin', $BRANCH)
+            if ($pullExit -ne 0) {
+                Fail "git pull failed for branch $BRANCH"
+            }
+        } finally {
             Pop-Location
-            Fail "git fetch failed for branch $BRANCH"
         }
-        & git checkout $BRANCH 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Pop-Location
-            Fail "git checkout failed for branch $BRANCH"
-        }
-        & git pull origin $BRANCH 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Pop-Location
-            Fail "git pull failed for branch $BRANCH"
-        }
-        Pop-Location
         Write-Ok "Updated to latest $BRANCH"
     } else {
         if (Test-Path $INSTALL_DIR) {
             Remove-Item $INSTALL_DIR -Recurse -Force
         }
         Write-Dim "Cloning..."
-        & git clone --depth 1 --branch $BRANCH $REPO_URL $INSTALL_DIR 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        $cloneExit = Invoke-GitQuiet @('clone', '--depth', '1', '--branch', $BRANCH, $REPO_URL, $INSTALL_DIR)
+        if ($cloneExit -ne 0) {
             Write-Err "Clone failed"; exit 1
         }
         Write-Ok "Cloned $BRANCH"

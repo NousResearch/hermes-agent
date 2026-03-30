@@ -4,6 +4,7 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import builtins
 import os
 import sys
 import subprocess
@@ -29,6 +30,50 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
+
+
+def _safe_print(*args, **kwargs):
+    """Print without crashing when stdout can't encode Unicode glyphs."""
+    try:
+        builtins.print(*args, **kwargs)
+        return
+    except UnicodeEncodeError:
+        pass
+
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    file = kwargs.get("file", sys.stdout)
+    flush = kwargs.get("flush", False)
+    text = sep.join(str(arg) for arg in args)
+
+    substitutions = {
+        "✓": "[OK]",
+        "⚠": "[!]",
+        "✗": "[X]",
+        "→": "->",
+        "◆": "*",
+        "┌": "+",
+        "┐": "+",
+        "└": "+",
+        "┘": "+",
+        "│": "|",
+        "─": "-",
+        "🩺": "",
+        "🎉": "",
+    }
+    for old, new in substitutions.items():
+        text = text.replace(old, new)
+
+    encoding = getattr(file, "encoding", None) or "utf-8"
+    try:
+        sanitized = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except Exception:
+        sanitized = text.encode("ascii", errors="replace").decode("ascii")
+
+    builtins.print(sanitized, end=end, file=file, flush=flush)
+
+
+print = _safe_print
 
 
 _PROVIDER_ENV_HINTS = (

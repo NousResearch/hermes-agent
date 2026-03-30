@@ -16,6 +16,36 @@ function Write-Step($n, $msg) { Write-Host "`n[$n] $msg" -ForegroundColor Yellow
 function Write-Ok($msg) { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Dim($msg) { Write-Host "    $msg" -ForegroundColor DarkGray }
 function Test-Command($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+function Invoke-GitQuiet {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $null = & git @Arguments 2>&1
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
+function Invoke-GitPassthrough {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & git @Arguments
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+}
 
 Write-Host ""
 Write-Host "CPython Windows AF_UNIX builder" -ForegroundColor Yellow
@@ -36,8 +66,8 @@ $buildBat = Join-Path $SourceDir "PCbuild\build.bat"
 
 Write-Step 2 "Cloning CPython"
 if (-not (Test-Path $SourceDir)) {
-    git clone --branch "v$PythonVersion" --depth 1 https://github.com/python/cpython.git $SourceDir
-    if ($LASTEXITCODE -ne 0) {
+    $cloneExit = Invoke-GitQuiet @('clone', '--branch', "v$PythonVersion", '--depth', '1', 'https://github.com/python/cpython.git', $SourceDir)
+    if ($cloneExit -ne 0) {
         throw "git clone failed"
     }
     Write-Ok "Cloned CPython v$PythonVersion"
@@ -48,20 +78,23 @@ if (-not (Test-Path $SourceDir)) {
 Write-Step 3 "Applying AF_UNIX patch"
 Push-Location $SourceDir
 try {
-    & git apply --check $PatchFile
-    if ($LASTEXITCODE -eq 0) {
-        & git apply $PatchFile
-        if ($LASTEXITCODE -ne 0) {
+    $checkExit = Invoke-GitQuiet @('apply', '--check', $PatchFile)
+    if ($checkExit -eq 0) {
+        $applyExit = Invoke-GitQuiet @('apply', $PatchFile)
+        if ($applyExit -ne 0) {
             throw "git apply failed"
         }
         Write-Ok "Patch applied"
     } else {
-        & git apply --reverse --check $PatchFile
-        if ($LASTEXITCODE -eq 0) {
+        $reverseCheckExit = Invoke-GitQuiet @('apply', '--reverse', '--check', $PatchFile)
+        if ($reverseCheckExit -eq 0) {
             Write-Dim "Patch already applied; continuing"
         } else {
             Write-Dim "Patch context did not match cleanly; current diff follows"
-            git diff -- PC/pyconfig.h.in Modules/socketmodule.h Modules/socketmodule.c | Out-Host
+            $diffExit = Invoke-GitPassthrough @('diff', '--', 'PC/pyconfig.h.in', 'Modules/socketmodule.h', 'Modules/socketmodule.c')
+            if ($diffExit -ne 0) {
+                Write-Dim "git diff returned exit code $diffExit"
+            }
             throw "Patch could not be applied cleanly"
         }
     }

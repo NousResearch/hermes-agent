@@ -11,6 +11,7 @@ from honcho_integration.client import (
     HonchoClientConfig,
     get_honcho_client,
     reset_honcho_client,
+    resolve_active_host,
     resolve_config_path,
     GLOBAL_CONFIG_PATH,
     HOST,
@@ -370,6 +371,101 @@ class TestResolveConfigPath:
             config = HonchoClientConfig.from_global_config()
         assert config.api_key == "local-key"
         assert config.workspace_id == "local-ws"
+
+
+class TestResolveActiveHost:
+    def test_default_returns_hermes(self):
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            os.environ.pop("HERMES_HOME", None)
+            assert resolve_active_host() == "hermes"
+
+    def test_explicit_env_var_wins(self):
+        with patch.dict(os.environ, {"HERMES_HONCHO_HOST": "hermes.coder"}):
+            assert resolve_active_host() == "hermes.coder"
+
+    def test_profile_name_derives_host(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+                assert resolve_active_host() == "hermes.coder"
+
+    def test_default_profile_returns_hermes(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+                assert resolve_active_host() == "hermes"
+
+    def test_custom_profile_returns_hermes(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            with patch("hermes_cli.profiles.get_active_profile_name", return_value="custom"):
+                assert resolve_active_host() == "hermes"
+
+    def test_profiles_import_failure_falls_back(self):
+        import importlib
+        import sys
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_HONCHO_HOST", None)
+            # Temporarily remove hermes_cli.profiles to simulate import failure
+            saved = sys.modules.get("hermes_cli.profiles")
+            sys.modules["hermes_cli.profiles"] = None  # type: ignore
+            try:
+                assert resolve_active_host() == "hermes"
+            finally:
+                if saved is not None:
+                    sys.modules["hermes_cli.profiles"] = saved
+                else:
+                    sys.modules.pop("hermes_cli.profiles", None)
+
+
+class TestProfileScopedConfig:
+    def test_from_env_uses_profile_host(self):
+        with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
+            config = HonchoClientConfig.from_env(host="hermes.coder")
+        assert config.host == "hermes.coder"
+        assert config.workspace_id == "hermes.coder"
+        assert config.ai_peer == "hermes.coder"
+
+    def test_from_env_default_workspace_preserved_for_default_host(self):
+        with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
+            config = HonchoClientConfig.from_env(host="hermes")
+        assert config.host == "hermes"
+        assert config.workspace_id == "hermes"
+
+    def test_from_global_config_reads_profile_host_block(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "shared-key",
+            "hosts": {
+                "hermes": {"aiPeer": "hermes", "peerName": "alice"},
+                "hermes.coder": {
+                    "aiPeer": "hermes.coder",
+                    "peerName": "alice-coder",
+                    "workspace": "coder-ws",
+                },
+            },
+        }))
+        config = HonchoClientConfig.from_global_config(
+            host="hermes.coder", config_path=config_file,
+        )
+        assert config.host == "hermes.coder"
+        assert config.workspace_id == "coder-ws"
+        assert config.ai_peer == "hermes.coder"
+        assert config.peer_name == "alice-coder"
+
+    def test_from_global_config_auto_resolves_host(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "apiKey": "key",
+            "hosts": {
+                "hermes.dreamer": {"peerName": "dreamer-user"},
+            },
+        }))
+        with patch("honcho_integration.client.resolve_active_host", return_value="hermes.dreamer"):
+            config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.host == "hermes.dreamer"
+        assert config.peer_name == "dreamer-user"
 
 
 class TestResetHonchoClient:

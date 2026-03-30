@@ -4621,8 +4621,15 @@ class AIAgent:
                 elif self.reasoning_config.get("effort"):
                     reasoning_effort = self.reasoning_config["effort"]
 
+            # Codex Responses contract requires a non-empty `model` field.
+            # Some callers (notably tests and runtime-provider resolution)
+            # may omit `model` even when the provider is `openai-codex`.
+            model = self.model
+            if not isinstance(model, str) or not model.strip():
+                model = "gpt-5.3-codex"
+
             kwargs = {
-                "model": self.model,
+                "model": model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
                 "tools": self._responses_tools(),

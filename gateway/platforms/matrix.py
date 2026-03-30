@@ -820,8 +820,9 @@ class MatrixAdapter(BasePlatformAdapter):
         elif event_mimetype:
             media_type = event_mimetype
 
-        # For images, download and cache locally so vision tools can access them.
-        # Matrix MXC URLs require authentication, so direct URL access fails.
+        # Download and cache locally so tools (vision/audio-STT) can access
+        # the media by filesystem path. Matrix MXC URLs require authentication,
+        # so direct HTTP URL access may fail for the webhook/STT runners.
         cached_path = None
         if msg_type == MessageType.PHOTO and url:
             try:
@@ -837,6 +838,23 @@ class MatrixAdapter(BasePlatformAdapter):
                     logger.info("[Matrix] Cached user image at %s", cached_path)
             except Exception as e:
                 logger.warning("[Matrix] Failed to cache image: %s", e)
+        elif msg_type == MessageType.AUDIO and url:
+            try:
+                ext_map = {
+                    "audio/ogg": ".ogg",
+                    "audio/mp3": ".mp3",
+                    "audio/mpeg": ".mp3",
+                    "audio/wav": ".wav",
+                    "audio/x-wav": ".wav",
+                }
+                ext = ext_map.get(event_mimetype, ".ogg")
+                download_resp = await self._client.download(url)
+                if isinstance(download_resp, nio.DownloadResponse):
+                    from gateway.platforms.base import cache_audio_from_bytes
+                    cached_path = cache_audio_from_bytes(download_resp.body, ext=ext)
+                    logger.info("[Matrix] Cached user voice/audio at %s", cached_path)
+            except Exception as e:
+                logger.warning("[Matrix] Failed to cache audio: %s", e)
 
         is_dm = self._dm_rooms.get(room.room_id, False)
         if not is_dm and room.member_count == 2:

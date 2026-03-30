@@ -696,6 +696,10 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        # Local server aliases — route through the generic custom provider
+        "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
+        "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+        "llama.cpp": "custom", "llama-cpp": "custom",
     }
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -742,7 +746,12 @@ def resolve_provider(
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
 
-    return "openrouter"
+    raise AuthError(
+        "No inference provider configured. Run 'hermes model' to choose a "
+        "provider and model, or set an API key (OPENROUTER_API_KEY, "
+        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
+        code="no_provider_configured",
+    )
 
 
 # =============================================================================

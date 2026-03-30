@@ -597,7 +597,9 @@ def _toolset_has_keys(ts_key: str) -> bool:
     if cat:
         for provider in cat.get("providers", []):
             env_vars = provider.get("env_vars", [])
-            if env_vars and all(get_env_value(e["key"]) for e in env_vars):
+            if not env_vars:
+                return True  # No-key provider (e.g. Local Browser, Edge TTS)
+            if all(get_env_value(e["key"]) for e in env_vars):
                 return True
         return False
 

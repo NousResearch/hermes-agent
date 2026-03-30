@@ -5221,17 +5221,24 @@ class AIAgent:
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
-        # Reset context pressure warning and token estimate — usage drops
-        # after compaction.  Without this, the stale last_prompt_tokens from
-        # the previous API call causes the pressure calculation to stay at
-        # >1000% and spam warnings / re-trigger compression in a loop.
-        self._context_pressure_warned = False
+        # Update token estimate after compaction so pressure calculations
+        # use the post-compression count, not the stale pre-compression one.
         _compressed_est = (
             estimate_tokens_rough(new_system_prompt)
             + estimate_messages_tokens_rough(compressed)
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
+
+        # Only reset the pressure warning if compression actually brought
+        # us below the warning level (85% of threshold).  When compression
+        # can't reduce enough (e.g. threshold is very low, or system prompt
+        # alone exceeds the warning level), keep the flag set to prevent
+        # spamming the user with repeated warnings every loop iteration.
+        if self.context_compressor.threshold_tokens > 0:
+            _post_progress = _compressed_est / self.context_compressor.threshold_tokens
+            if _post_progress < 0.85:
+                self._context_pressure_warned = False
 
         return compressed, new_system_prompt
 

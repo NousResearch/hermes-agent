@@ -4941,6 +4941,14 @@ class GatewayRunner:
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 
+        # Apply tool preview length config (0 = no limit)
+        try:
+            from agent.display import set_tool_preview_max_len
+            _tpl = user_config.get("display", {}).get("tool_preview_length", 0)
+            set_tool_preview_max_len(int(_tpl) if _tpl else 0)
+        except Exception:
+            pass
+
         # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
         # Falls back to env vars for backward compatibility.
         # YAML 1.1 parses bare `off` as boolean False — normalise before
@@ -4986,9 +4994,11 @@ class GatewayRunner:
                 return
             
             if preview:
-                # Truncate preview to keep messages clean
-                if len(preview) > 80:
-                    preview = preview[:77] + "..."
+                # Truncate preview unless config says unlimited
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                if _pl > 0 and len(preview) > _pl:
+                    preview = preview[:_pl - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."

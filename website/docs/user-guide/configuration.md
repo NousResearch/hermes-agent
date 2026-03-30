@@ -1018,7 +1018,8 @@ auxiliary:
     model: ""                  # e.g. "openai/gpt-4o", "google/gemini-2.5-flash"
     base_url: ""               # Custom OpenAI-compatible endpoint (overrides provider)
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
-    timeout: 30                # seconds — increase for slow local vision models
+    timeout: 30                # seconds — LLM API call; increase for slow local vision models
+    download_timeout: 30       # seconds — image HTTP download; increase for slow connections
 
   # Web page summarization + browser page text extraction
   web_extract:
@@ -1042,7 +1043,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 30s, web_extract 30s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 30s, web_extract 30s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
 :::
 
 :::info

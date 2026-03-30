@@ -20,6 +20,7 @@ PLATFORMS = {
     "cli":      "🖥️  CLI",
     "telegram": "📱 Telegram",
     "discord":  "💬 Discord",
+    "webhook":  "🪝 Webhooks",
     "slack":    "💼 Slack",
     "whatsapp": "📱 WhatsApp",
     "signal":   "📡 Signal",

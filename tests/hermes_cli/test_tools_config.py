@@ -18,6 +18,14 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled
 
 
+def test_get_platform_tools_uses_webhook_default_when_platform_not_configured():
+    config = {}
+
+    enabled = _get_platform_tools(config, "webhook")
+
+    assert enabled
+
+
 def test_get_platform_tools_preserves_explicit_empty_selection():
     config = {"platform_toolsets": {"cli": []}}
 

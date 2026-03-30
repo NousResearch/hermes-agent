@@ -2396,7 +2396,11 @@ class GatewayRunner:
             )
         
         # One-time prompt if no home channel is set for this platform
-        if not history and source.platform and source.platform != Platform.LOCAL:
+        if (
+            not history
+            and source.platform
+            and source.platform not in {Platform.LOCAL, Platform.WEBHOOK}
+        ):
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):

@@ -134,6 +134,7 @@ PLATFORMS = {
     "cli":      {"label": "🖥️  CLI",       "default_toolset": "hermes-cli"},
     "telegram": {"label": "📱 Telegram",   "default_toolset": "hermes-telegram"},
     "discord":  {"label": "💬 Discord",    "default_toolset": "hermes-discord"},
+    "webhook":  {"label": "🪝 Webhooks",   "default_toolset": "hermes-webhook"},
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},

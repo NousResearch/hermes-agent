@@ -3298,7 +3298,7 @@ def cmd_profile(args):
         list_profiles, create_profile, delete_profile, seed_profile_skills,
         get_active_profile, set_active_profile, get_active_profile_name,
         check_alias_collision, create_wrapper_script, remove_wrapper_script,
-        _is_wrapper_dir_in_path, _get_wrapper_dir,
+        validate_alias_name, _is_wrapper_dir_in_path, _get_wrapper_dir,
     )
     from hermes_constants import display_hermes_home
 
@@ -3469,6 +3469,11 @@ def cmd_profile(args):
             sys.exit(1)
 
         alias_name = custom_name or name
+        try:
+            validate_alias_name(alias_name)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
         if remove:
             if remove_wrapper_script(alias_name):

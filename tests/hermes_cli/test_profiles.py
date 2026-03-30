@@ -17,6 +17,7 @@ from hermes_cli.profiles import (
     validate_profile_name,
     get_profile_dir,
     create_profile,
+    create_wrapper_script,
     delete_profile,
     list_profiles,
     set_active_profile,
@@ -24,6 +25,7 @@ from hermes_cli.profiles import (
     get_active_profile_name,
     resolve_profile_env,
     check_alias_collision,
+    remove_wrapper_script,
     rename_profile,
     export_profile,
     import_profile,
@@ -355,6 +357,36 @@ class TestAliasCollision:
         result = check_alias_collision("default")
         assert result is not None
         assert "reserved" in result.lower()
+
+    def test_invalid_alias_name_returns_message(self, profile_env):
+        result = check_alias_collision("../escape")
+        assert result is not None
+        assert "invalid alias name" in result.lower()
+
+
+class TestWrapperScripts:
+    def test_create_wrapper_rejects_traversal_name(self, profile_env):
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script("../escape")
+
+        assert not (profile_env / ".local" / "escape").exists()
+
+    def test_create_wrapper_rejects_absolute_path(self, profile_env, tmp_path):
+        target = tmp_path / "abs-wrapper"
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            create_wrapper_script(str(target))
+
+        assert not target.exists()
+
+    def test_remove_wrapper_rejects_traversal_name(self, profile_env):
+        escape_path = profile_env / ".local" / "escape"
+        escape_path.parent.mkdir(parents=True, exist_ok=True)
+        escape_path.write_text('#!/bin/sh\nexec hermes -p coder "$@"\n')
+
+        with pytest.raises(ValueError, match="Invalid alias name"):
+            remove_wrapper_script("../escape")
+
+        assert escape_path.exists()
 
 
 # ===================================================================

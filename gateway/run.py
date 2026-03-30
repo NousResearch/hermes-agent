@@ -301,6 +301,50 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _check_unavailable_skill(command_name: str) -> str | None:
+    """Check if a command matches a known-but-inactive skill.
+
+    Returns a helpful message if the skill exists but is disabled or only
+    available as an optional install. Returns None if no match found.
+    """
+    # Normalize: command uses hyphens, skill names may use hyphens or underscores
+    normalized = command_name.lower().replace("_", "-")
+    try:
+        from tools.skills_tool import SKILLS_DIR, _get_disabled_skill_names
+        disabled = _get_disabled_skill_names()
+
+        # Check disabled built-in skills
+        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                continue
+            name = skill_md.parent.name.lower().replace("_", "-")
+            if name == normalized and name in disabled:
+                return (
+                    f"The **{command_name}** skill is installed but disabled.\n"
+                    f"Enable it with: `hermes skills config`"
+                )
+
+        # Check optional skills (shipped with repo but not installed)
+        from hermes_constants import get_hermes_home
+        repo_root = Path(__file__).resolve().parent.parent
+        optional_dir = repo_root / "optional-skills"
+        if optional_dir.exists():
+            for skill_md in optional_dir.rglob("SKILL.md"):
+                name = skill_md.parent.name.lower().replace("_", "-")
+                if name == normalized:
+                    # Build install path: official/<category>/<name>
+                    rel = skill_md.parent.relative_to(optional_dir)
+                    parts = list(rel.parts)
+                    install_path = f"official/{'/'.join(parts)}"
+                    return (
+                        f"The **{command_name}** skill is available but not installed.\n"
+                        f"Install it with: `hermes skills install {install_path}`"
+                    )
+    except Exception:
+        pass
+    return None
+
+
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
@@ -1817,6 +1861,9 @@ class GatewayRunner:
         
         if canonical == "help":
             return await self._handle_help_command(event)
+
+        if canonical == "commands":
+            return await self._handle_commands_command(event)
         
         if canonical == "status":
             return await self._handle_status_command(event)
@@ -1974,6 +2021,12 @@ class GatewayRunner:
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
+                else:
+                    # Not an active skill — check if it's a known-but-disabled or
+                    # uninstalled skill and give actionable guidance.
+                    _unavail_msg = _check_unavailable_skill(command)
+                    if _unavail_msg:
+                        return _unavail_msg
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
@@ -3065,11 +3118,68 @@ class GatewayRunner:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
-                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} installed):")
-                for cmd in sorted(skill_cmds):
+                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} active):")
+                # Show first 10, then point to /commands for the rest
+                sorted_cmds = sorted(skill_cmds)
+                for cmd in sorted_cmds[:10]:
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+                if len(sorted_cmds) > 10:
+                    lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
         except Exception:
             pass
+        return "\n".join(lines)
+
+    async def _handle_commands_command(self, event: MessageEvent) -> str:
+        """Handle /commands [page] - paginated list of all commands and skills."""
+        from hermes_cli.commands import gateway_help_lines
+
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                requested_page = int(raw_args)
+            except ValueError:
+                return "Usage: `/commands [page]`"
+        else:
+            requested_page = 1
+
+        # Build combined entry list: built-in commands + skill commands
+        entries = list(gateway_help_lines())
+        try:
+            from agent.skill_commands import get_skill_commands
+            skill_cmds = get_skill_commands()
+            if skill_cmds:
+                entries.append("")
+                entries.append("⚡ **Skill Commands**:")
+                for cmd in sorted(skill_cmds):
+                    desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
+                    entries.append(f"`{cmd}` — {desc}")
+        except Exception:
+            pass
+
+        if not entries:
+            return "No commands available."
+
+        from gateway.config import Platform
+        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        page = max(1, min(requested_page, total_pages))
+        start = (page - 1) * page_size
+        page_entries = entries[start:start + page_size]
+
+        lines = [
+            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
+            "",
+            *page_entries,
+        ]
+        if total_pages > 1:
+            nav_parts = []
+            if page > 1:
+                nav_parts.append(f"`/commands {page - 1}` ← prev")
+            if page < total_pages:
+                nav_parts.append(f"next → `/commands {page + 1}`")
+            lines.extend(["", " | ".join(nav_parts)])
+        if page != requested_page:
+            lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
     
     async def _handle_provider_command(self, event: MessageEvent) -> str:

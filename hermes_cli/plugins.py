@@ -152,6 +152,34 @@ class PluginContext:
         self._manager._plugin_tool_names.add(name)
         logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
 
+    # -- message injection --------------------------------------------------
+
+    def inject_message(self, content: str, role: str = "user") -> bool:
+        """Inject a message into the active conversation.
+
+        If the agent is idle (waiting for user input), this starts a new turn.
+        If the agent is running, this interrupts and injects the message.
+
+        This enables plugins (e.g. remote control viewers, messaging bridges)
+        to send messages into the conversation from external sources.
+
+        Returns True if the message was queued successfully.
+        """
+        cli = self._manager._cli_ref
+        if cli is None:
+            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if getattr(cli, "_agent_running", False):
+            # Agent is mid-turn — interrupt with the message
+            cli._interrupt_queue.put(msg)
+        else:
+            # Agent is idle — queue as next input
+            cli._pending_input.put(msg)
+        return True
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -184,6 +212,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._discovered: bool = False
+        self._cli_ref = None  # Set by CLI after plugin discovery
 
     # -----------------------------------------------------------------------
     # Public

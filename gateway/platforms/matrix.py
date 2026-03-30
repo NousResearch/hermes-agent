@@ -17,6 +17,8 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import logging
 import mimetypes
 import os
@@ -512,8 +514,11 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file as a voice message."""
-        return await self._send_local_file(chat_id, audio_path, "m.audio", caption, reply_to, metadata=metadata)
+        """Upload an audio file as a voice message (MSC3245 native voice)."""
+        return await self._send_local_file(
+            chat_id, audio_path, "m.audio", caption, reply_to, 
+            metadata=metadata, is_voice=True
+        )
 
     async def send_video(
         self,
@@ -546,13 +551,16 @@ class MatrixAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
         import nio
 
         # Upload to homeserver.
-        resp = await self._client.upload(
-            data,
+        # nio expects a DataProvider (callable) or file-like object, not raw bytes.
+        # nio.upload() returns a tuple (UploadResponse|UploadError, Optional[Dict])
+        resp, maybe_encryption_info = await self._client.upload(
+            io.BytesIO(data),
             content_type=content_type,
             filename=filename,
         )
@@ -573,6 +581,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 "size": len(data),
             },
         }
+
+        # Add MSC3245 voice flag for native voice messages.
+        if is_voice:
+            msg_content["org.matrix.msc3245.voice"] = {}
 
         if reply_to:
             msg_content["m.relates_to"] = {
@@ -601,6 +613,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         file_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False,
     ) -> SendResult:
         """Read a local file and upload it."""
         p = Path(file_path)
@@ -613,7 +626,7 @@ class MatrixAdapter(BasePlatformAdapter):
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         data = p.read_bytes()
 
-        return await self._upload_and_send(room_id, data, fname, ct, msgtype, caption, reply_to, metadata)
+        return await self._upload_and_send(room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice)
 
     # ------------------------------------------------------------------
     # Sync loop
@@ -808,11 +821,19 @@ class MatrixAdapter(BasePlatformAdapter):
         event_mimetype = (content_info.get("info") or {}).get("mimetype", "")
         media_type = "application/octet-stream"
         msg_type = MessageType.DOCUMENT
+        is_voice_message = False
+        
         if isinstance(event, nio.RoomMessageImage):
             msg_type = MessageType.PHOTO
             media_type = event_mimetype or "image/png"
         elif isinstance(event, nio.RoomMessageAudio):
-            msg_type = MessageType.AUDIO
+            # Check for MSC3245 voice flag: org.matrix.msc3245.voice: {}
+            source_content = getattr(event, "source", {}).get("content", {})
+            if source_content.get("org.matrix.msc3245.voice") is not None:
+                is_voice_message = True
+                msg_type = MessageType.VOICE
+            else:
+                msg_type = MessageType.AUDIO
             media_type = event_mimetype or "audio/ogg"
         elif isinstance(event, nio.RoomMessageVideo):
             msg_type = MessageType.VIDEO
@@ -849,6 +870,31 @@ class MatrixAdapter(BasePlatformAdapter):
         thread_id = None
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
+
+        # For voice messages, cache audio locally for transcription tools.
+        # Use the authenticated nio client to download (Matrix requires auth for media).
+        media_urls = [http_url] if http_url else None
+        media_types = [media_type] if http_url else None
+        
+        if is_voice_message and url and url.startswith("mxc://"):
+            try:
+                import nio
+                from gateway.platforms.base import cache_audio_from_bytes
+                
+                resp = await self._client.download(mxc=url)
+                if isinstance(resp, nio.MemoryDownloadResponse):
+                    # Extract extension from mimetype or default to .ogg
+                    ext = ".ogg"
+                    if media_type and "/" in media_type:
+                        subtype = media_type.split("/")[1]
+                        ext = f".{subtype}" if subtype else ".ogg"
+                    local_path = cache_audio_from_bytes(resp.body, ext)
+                    media_urls = [local_path]
+                    logger.debug("Matrix: cached voice message to %s", local_path)
+                else:
+                    logger.warning("Matrix: failed to download voice: %s", getattr(resp, "message", resp))
+            except Exception as e:
+                logger.warning("Matrix: failed to cache voice message, using HTTP URL: %s", e)
 
         source = self.build_source(
             chat_id=room.room_id,

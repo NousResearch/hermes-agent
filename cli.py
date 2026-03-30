@@ -7475,6 +7475,21 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+            # Plugin hook: on_session_end
+            # Fired when CLI exits (including Ctrl+C) so plugins can cleanup.
+            if self.agent:
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_session_end",
+                        session_id=self.agent.session_id,
+                        completed=False,
+                        interrupted=True,
+                        model=getattr(self.agent, 'model', None),
+                        platform=getattr(self.agent, 'platform', None) or "cli",
+                    )
+                except Exception as exc:
+                    logger.debug("on_session_end hook failed during CLI exit: %s", exc)
             _run_cleanup()
             self._print_exit_summary()
 

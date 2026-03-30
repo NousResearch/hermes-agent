@@ -2342,11 +2342,15 @@ if DISCORD_AVAILABLE:
             try:
                 runtime = resolve_runtime_provider(requested=self.selected_provider)
                 base_url = (runtime.get("base_url") or "").rstrip("/")
-                # Strip provider prefix from model ID (models.yaml uses "ollama-cloud/glm-5"
-                # but the API expects just "glm-5")
+                # Strip provider prefix from model ID only when the prefix
+                # matches the selected provider (e.g. "ollama-cloud/glm-5" → "glm-5").
+                # Nous/OpenRouter models keep their vendor prefix
+                # (e.g. "google/gemini-3.1-pro-preview" stays as-is under nous).
                 model_name = self.selected_model
                 if "/" in model_name:
-                    model_name = model_name.split("/", 1)[1]
+                    prefix, rest = model_name.split("/", 1)
+                    if prefix == self.selected_provider:
+                        model_name = rest
                 from gateway.run import set_session_model
                 set_session_model(self.selected_provider, model_name, base_url)
                 ok = True

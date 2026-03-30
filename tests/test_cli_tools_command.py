@@ -60,34 +60,43 @@ class TestToolsSlashList:
 
 class TestToolsSlashDisableWithReset:
 
-    def test_disable_confirms_then_resets_session(self):
+    def test_disable_applies_directly_and_resets_session(self):
+        """Disable applies immediately (no confirmation prompt) and resets session."""
         cli_obj = _make_cli(["web", "memory"])
         with patch("hermes_cli.tools_config.load_config",
                    return_value={"platform_toolsets": {"cli": ["web", "memory"]}}), \
              patch("hermes_cli.tools_config.save_config"), \
              patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
              patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(cli_obj, "new_session") as mock_reset, \
-             patch("builtins.input", return_value="y"):
+             patch.object(cli_obj, "new_session") as mock_reset:
             cli_obj._handle_tools_command("/tools disable web")
         mock_reset.assert_called_once()
         assert "web" not in cli_obj.enabled_toolsets
 
-    def test_disable_cancelled_does_not_reset(self):
+    def test_disable_does_not_prompt_for_confirmation(self):
+        """Disable no longer uses input() — it applies directly."""
         cli_obj = _make_cli(["web", "memory"])
-        with patch.object(cli_obj, "new_session") as mock_reset, \
-             patch("builtins.input", return_value="n"):
+        with patch("hermes_cli.tools_config.load_config",
+                   return_value={"platform_toolsets": {"cli": ["web", "memory"]}}), \
+             patch("hermes_cli.tools_config.save_config"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(cli_obj, "new_session"), \
+             patch("builtins.input") as mock_input:
             cli_obj._handle_tools_command("/tools disable web")
-        mock_reset.assert_not_called()
-        # Toolsets unchanged
-        assert cli_obj.enabled_toolsets == {"web", "memory"}
+        mock_input.assert_not_called()
 
-    def test_disable_eof_cancels(self):
+    def test_disable_always_resets_session(self):
+        """Even without a confirmation prompt, disable always resets the session."""
         cli_obj = _make_cli(["web", "memory"])
-        with patch.object(cli_obj, "new_session") as mock_reset, \
-             patch("builtins.input", side_effect=EOFError):
+        with patch("hermes_cli.tools_config.load_config",
+                   return_value={"platform_toolsets": {"cli": ["web", "memory"]}}), \
+             patch("hermes_cli.tools_config.save_config"), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.config.load_config", return_value={}), \
+             patch.object(cli_obj, "new_session") as mock_reset:
             cli_obj._handle_tools_command("/tools disable web")
-        mock_reset.assert_not_called()
+        mock_reset.assert_called_once()
 
     def test_disable_missing_name_prints_usage(self, capsys):
         cli_obj = _make_cli()
@@ -101,15 +110,15 @@ class TestToolsSlashDisableWithReset:
 
 class TestToolsSlashEnableWithReset:
 
-    def test_enable_confirms_then_resets_session(self):
+    def test_enable_applies_directly_and_resets_session(self):
+        """Enable applies immediately (no confirmation prompt) and resets session."""
         cli_obj = _make_cli(["memory"])
         with patch("hermes_cli.tools_config.load_config",
                    return_value={"platform_toolsets": {"cli": ["memory"]}}), \
              patch("hermes_cli.tools_config.save_config"), \
              patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory", "web"}), \
              patch("hermes_cli.config.load_config", return_value={}), \
-             patch.object(cli_obj, "new_session") as mock_reset, \
-             patch("builtins.input", return_value="y"):
+             patch.object(cli_obj, "new_session") as mock_reset:
             cli_obj._handle_tools_command("/tools enable web")
         mock_reset.assert_called_once()
         assert "web" in cli_obj.enabled_toolsets

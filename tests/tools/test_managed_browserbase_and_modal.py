@@ -45,6 +45,11 @@ def _restore_tool_and_agent_modules():
         sys.modules.update(original_modules)
 
 
+@pytest.fixture(autouse=True)
+def _enable_managed_nous_tools(monkeypatch):
+    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+
+
 def _install_fake_tools_package():
     _reset_modules(("tools", "agent"))
 

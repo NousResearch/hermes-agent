@@ -725,9 +725,9 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
   - If either value is missing, Hermes will log a clear error and refuse to use the SSH backend.
 
 - **Modal backend**
-  - Hermes can use either direct Modal credentials (`MODAL_TOKEN_ID` plus `MODAL_TOKEN_SECRET`, or `~/.modal.toml`) or a configured managed tool gateway with a Nous user token.
+  - You need either a `MODAL_TOKEN_ID` environment variable or a `~/.modal.toml` config file.
   - Modal persistence is resumable filesystem state, not durable process continuity. If you need something to stay continuously up, use a deployment-oriented tool instead of the terminal sandbox.
-  - If neither direct credentials nor a managed gateway is present, Hermes will report that the Modal backend is not available.
+  - If neither is present, the backend check fails and Hermes will report that the Modal backend is not available.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 

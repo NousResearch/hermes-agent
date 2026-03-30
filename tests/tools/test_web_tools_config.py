@@ -11,6 +11,8 @@ Coverage:
 import importlib
 import json
 import os
+import sys
+import types
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -24,6 +26,7 @@ class TestFirecrawlClientConfig:
         tools.web_tools._firecrawl_client = None
         tools.web_tools._firecrawl_client_config = None
         for key in (
+            "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
@@ -32,6 +35,7 @@ class TestFirecrawlClientConfig:
             "TOOL_GATEWAY_USER_TOKEN",
         ):
             os.environ.pop(key, None)
+        os.environ["HERMES_ENABLE_NOUS_MANAGED_TOOLS"] = "1"
 
     def teardown_method(self):
         """Reset client after each test."""
@@ -39,6 +43,7 @@ class TestFirecrawlClientConfig:
         tools.web_tools._firecrawl_client = None
         tools.web_tools._firecrawl_client_config = None
         for key in (
+            "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
             "FIRECRAWL_GATEWAY_URL",
@@ -293,6 +298,7 @@ class TestBackendSelection:
     """
 
     _ENV_KEYS = (
+        "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -304,8 +310,10 @@ class TestBackendSelection:
     )
 
     def setup_method(self):
+        os.environ["HERMES_ENABLE_NOUS_MANAGED_TOOLS"] = "1"
         for key in self._ENV_KEYS:
-            os.environ.pop(key, None)
+            if key != "HERMES_ENABLE_NOUS_MANAGED_TOOLS":
+                os.environ.pop(key, None)
 
     def teardown_method(self):
         for key in self._ENV_KEYS:
@@ -417,11 +425,25 @@ class TestParallelClientConfig:
         import tools.web_tools
         tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
+        fake_parallel = types.ModuleType("parallel")
+
+        class Parallel:
+            def __init__(self, api_key):
+                self.api_key = api_key
+
+        class AsyncParallel:
+            def __init__(self, api_key):
+                self.api_key = api_key
+
+        fake_parallel.Parallel = Parallel
+        fake_parallel.AsyncParallel = AsyncParallel
+        sys.modules["parallel"] = fake_parallel
 
     def teardown_method(self):
         import tools.web_tools
         tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
+        sys.modules.pop("parallel", None)
 
     def test_creates_client_with_key(self):
         """PARALLEL_API_KEY set → creates Parallel client."""
@@ -479,6 +501,7 @@ class TestCheckWebApiKey:
     """Test suite for check_web_api_key() unified availability check."""
 
     _ENV_KEYS = (
+        "HERMES_ENABLE_NOUS_MANAGED_TOOLS",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -490,8 +513,10 @@ class TestCheckWebApiKey:
     )
 
     def setup_method(self):
+        os.environ["HERMES_ENABLE_NOUS_MANAGED_TOOLS"] = "1"
         for key in self._ENV_KEYS:
-            os.environ.pop(key, None)
+            if key != "HERMES_ENABLE_NOUS_MANAGED_TOOLS":
+                os.environ.pop(key, None)
 
     def teardown_method(self):
         for key in self._ENV_KEYS:

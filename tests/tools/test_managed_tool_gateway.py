@@ -16,7 +16,14 @@ resolve_managed_tool_gateway = managed_tool_gateway.resolve_managed_tool_gateway
 
 
 def test_resolve_managed_tool_gateway_derives_vendor_origin_from_shared_domain():
-    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {
+            "HERMES_ENABLE_NOUS_MANAGED_TOOLS": "1",
+            "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
+        },
+        clear=False,
+    ):
         result = resolve_managed_tool_gateway(
             "firecrawl",
             token_reader=lambda: "nous-token",
@@ -29,7 +36,14 @@ def test_resolve_managed_tool_gateway_derives_vendor_origin_from_shared_domain()
 
 
 def test_resolve_managed_tool_gateway_uses_vendor_specific_override():
-    with patch.dict(os.environ, {"BROWSERBASE_GATEWAY_URL": "http://browserbase-gateway.localhost:3009/"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {
+            "HERMES_ENABLE_NOUS_MANAGED_TOOLS": "1",
+            "BROWSERBASE_GATEWAY_URL": "http://browserbase-gateway.localhost:3009/",
+        },
+        clear=False,
+    ):
         result = resolve_managed_tool_gateway(
             "browserbase",
             token_reader=lambda: "nous-token",
@@ -40,10 +54,27 @@ def test_resolve_managed_tool_gateway_uses_vendor_specific_override():
 
 
 def test_resolve_managed_tool_gateway_is_inactive_without_nous_token():
-    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False):
+    with patch.dict(
+        os.environ,
+        {
+            "HERMES_ENABLE_NOUS_MANAGED_TOOLS": "1",
+            "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
+        },
+        clear=False,
+    ):
         result = resolve_managed_tool_gateway(
             "firecrawl",
             token_reader=lambda: None,
+        )
+
+    assert result is None
+
+
+def test_resolve_managed_tool_gateway_is_disabled_without_feature_flag():
+    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False):
+        result = resolve_managed_tool_gateway(
+            "firecrawl",
+            token_reader=lambda: "nous-token",
         )
 
     assert result is None

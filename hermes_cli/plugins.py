@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from utils import env_var_enabled
+
 try:
     import yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
@@ -65,7 +67,7 @@ _NS_PARENT = "hermes_plugins"
 
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_var_enabled(name)
 
 
 # ---------------------------------------------------------------------------

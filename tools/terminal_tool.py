@@ -65,7 +65,12 @@ def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
-from tools.tool_backend_helpers import has_direct_modal_credentials, normalize_modal_mode
+from tools.tool_backend_helpers import (
+    coerce_modal_mode,
+    has_direct_modal_credentials,
+    managed_nous_tools_enabled,
+    normalize_modal_mode,
+)
 
 
 # Disk usage warning threshold (in GB)
@@ -506,7 +511,7 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": normalize_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
+        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
@@ -541,9 +546,13 @@ def _get_env_config() -> Dict[str, Any]:
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     """Resolve direct vs managed Modal backend selection."""
+    requested_mode = coerce_modal_mode(modal_mode)
     normalized_mode = normalize_modal_mode(modal_mode)
     has_direct = has_direct_modal_credentials()
     managed_ready = is_managed_tool_gateway_ready("modal")
+    managed_mode_blocked = (
+        requested_mode == "managed" and not managed_nous_tools_enabled()
+    )
 
     if normalized_mode == "managed":
         selected_backend = "managed" if managed_ready else None
@@ -553,9 +562,11 @@ def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
         selected_backend = "direct" if has_direct else "managed" if managed_ready else None
 
     return {
+        "requested_mode": requested_mode,
         "mode": normalized_mode,
         "has_direct": has_direct,
         "managed_ready": managed_ready,
+        "managed_mode_blocked": managed_mode_blocked,
         "selected_backend": selected_backend,
     }
 
@@ -636,6 +647,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             )
 
         if modal_state["selected_backend"] != "direct":
+            if modal_state["managed_mode_blocked"]:
+                raise ValueError(
+                    "Modal backend is configured for managed mode, but "
+                    "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
+                    "Modal credentials/config were found. Enable the feature flag or "
+                    "choose TERMINAL_MODAL_MODE=direct/auto."
+                )
             if modal_state["mode"] == "managed":
                 raise ValueError(
                     "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
@@ -644,9 +662,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 raise ValueError(
                     "Modal backend is configured for direct mode, but no direct Modal credentials/config were found."
                 )
-            raise ValueError(
-                "Modal backend selected but no direct Modal credentials/config or managed tool gateway was found."
-            )
+            message = "Modal backend selected but no direct Modal credentials/config was found."
+            if managed_nous_tools_enabled():
+                message = (
+                    "Modal backend selected but no direct Modal credentials/config or managed tool gateway was found."
+                )
+            raise ValueError(message)
 
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
@@ -1283,25 +1304,48 @@ def check_terminal_requirements() -> bool:
                 return True
 
             if modal_state["selected_backend"] != "direct":
+                if modal_state["managed_mode_blocked"]:
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
+                        "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
+                        "Modal credentials/config were found. Enable the feature flag "
+                        "or choose TERMINAL_MODAL_MODE=direct/auto."
+                    )
+                    return False
                 if modal_state["mode"] == "managed":
                     logger.error(
                         "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
                         "tool gateway is unavailable. Configure the managed gateway or choose "
                         "TERMINAL_MODAL_MODE=direct/auto."
                     )
+                    return False
                 elif modal_state["mode"] == "direct":
-                    logger.error(
-                        "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
-                        "Modal credentials/config were found. Configure Modal or choose "
-                        "TERMINAL_MODAL_MODE=managed/auto."
-                    )
+                    if managed_nous_tools_enabled():
+                        logger.error(
+                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                            "Modal credentials/config were found. Configure Modal or choose "
+                            "TERMINAL_MODAL_MODE=managed/auto."
+                        )
+                    else:
+                        logger.error(
+                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                            "Modal credentials/config were found. Configure Modal or choose "
+                            "TERMINAL_MODAL_MODE=auto."
+                        )
+                    return False
                 else:
-                    logger.error(
-                        "Modal backend selected but no direct Modal credentials/config or managed "
-                        "tool gateway was found. Configure Modal, set up the managed gateway, "
-                        "or choose a different TERMINAL_ENV."
-                    )
-                return False
+                    if managed_nous_tools_enabled():
+                        logger.error(
+                            "Modal backend selected but no direct Modal credentials/config or managed "
+                            "tool gateway was found. Configure Modal, set up the managed gateway, "
+                            "or choose a different TERMINAL_ENV."
+                        )
+                    else:
+                        logger.error(
+                            "Modal backend selected but no direct Modal credentials/config was found. "
+                            "Configure Modal or choose a different TERMINAL_ENV."
+                        )
+                    return False
 
             if importlib.util.find_spec("swerex") is None:
                 logger.error("swe-rex is required for direct modal terminal backend: pip install 'swe-rex[modal]'")

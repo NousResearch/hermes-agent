@@ -40,7 +40,7 @@ from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import resolve_openai_audio_api_key
+from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -565,9 +565,10 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
-        raise ValueError(
-            "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set, and the managed OpenAI audio gateway is unavailable"
-        )
+        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        if managed_nous_tools_enabled():
+            message += ", and the managed OpenAI audio gateway is unavailable"
+        raise ValueError(message)
 
     return managed_gateway.nous_user_token, urljoin(
         f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"

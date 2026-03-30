@@ -28,6 +28,7 @@ class TestTerminalRequirements:
         assert {"read_file", "write_file", "patch", "search_files"}.issubset(names)
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)

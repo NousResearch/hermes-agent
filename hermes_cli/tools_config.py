@@ -22,6 +22,7 @@ from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -737,6 +738,8 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     features = get_nous_subscription_features(config)
     visible = []
     for provider in cat.get("providers", []):
+        if provider.get("managed_nous_feature") and not managed_nous_tools_enabled():
+            continue
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
         visible.append(provider)
@@ -1234,9 +1237,10 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 config,
                 enabled_toolsets=new_enabled,
             )
-            for ts_key in sorted(auto_configured):
-                label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
-                print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
+            if managed_nous_tools_enabled():
+                for ts_key in sorted(auto_configured):
+                    label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
+                    print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
 
             # Walk through ALL selected tools that have provider options or
             # need API keys.  This ensures browser (Local vs Browserbase),

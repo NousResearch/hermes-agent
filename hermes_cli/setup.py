@@ -23,6 +23,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_explainer_lines,
     get_nous_subscription_features,
 )
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,13 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
 
 
 def _print_nous_subscription_guidance() -> None:
+    lines = get_nous_subscription_explainer_lines()
+    if not lines:
+        return
+
     print()
     print_header("Nous Subscription Tools")
-    for line in get_nous_subscription_explainer_lines():
+    for line in lines:
         print_info(line)
 
 
@@ -663,7 +668,7 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Modal Execution (direct Modal)", True, None))
         else:
             tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
-    elif subscription_features.nous_auth_present:
+    elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
     # Tinker + WandB (RL training)
@@ -1912,7 +1917,7 @@ def _setup_tts_provider(config: dict):
 
     choices = []
     providers = []
-    if subscription_features.nous_auth_present:
+    if managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         choices.append("Nous Subscription (managed OpenAI TTS, billed to your subscription)")
         providers.append("nous-openai")
     choices.extend(
@@ -2137,6 +2142,8 @@ def setup_terminal_backend(config: dict):
         from tools.tool_backend_helpers import normalize_modal_mode
 
         managed_modal_available = bool(
+            managed_nous_tools_enabled()
+            and
             get_nous_subscription_features(config).nous_auth_present
             and is_managed_tool_gateway_ready("modal")
         )

@@ -5,10 +5,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from utils import env_var_enabled
 
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
+
+
+def managed_nous_tools_enabled() -> bool:
+    """Return True when the hidden Nous-managed tools feature flag is enabled."""
+    return env_var_enabled("HERMES_ENABLE_NOUS_MANAGED_TOOLS")
 
 
 def normalize_browser_cloud_provider(value: object | None) -> str:
@@ -17,12 +23,20 @@ def normalize_browser_cloud_provider(value: object | None) -> str:
     return provider or _DEFAULT_BROWSER_PROVIDER
 
 
-def normalize_modal_mode(value: object | None) -> str:
-    """Return a normalized modal execution mode."""
+def coerce_modal_mode(value: object | None) -> str:
+    """Return the requested modal mode when valid, else the default."""
     mode = str(value or _DEFAULT_MODAL_MODE).strip().lower()
     if mode in _VALID_MODAL_MODES:
         return mode
     return _DEFAULT_MODAL_MODE
+
+
+def normalize_modal_mode(value: object | None) -> str:
+    """Return a normalized modal execution mode."""
+    mode = coerce_modal_mode(value)
+    if mode == "managed" and not managed_nous_tools_enabled():
+        return "direct"
+    return mode
 
 
 def has_direct_modal_credentials() -> bool:

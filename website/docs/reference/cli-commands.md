@@ -466,7 +466,7 @@ hermes insights [--days N] [--source platform]
 hermes claw migrate [options]
 ```
 
-Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`.
+Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moldbot`) and config filenames (`clawdbot.json`, `moldbot.json`).
 
 | Option | Description |
 |--------|-------------|
@@ -497,6 +497,8 @@ The migration covers your entire OpenClaw footprint. Items are either **directly
 | **MCP servers** | MCP server definitions | `config.yaml` mcp\_servers |
 | **User skills** | Workspace skills | `~/.hermes/skills/openclaw-imports/` |
 | **Shared skills** | `~/.openclaw/skills/` | `~/.hermes/skills/openclaw-imports/` |
+| **Personal skills** | `~/.agents/skills/` (cross-project) | `~/.hermes/skills/openclaw-imports/` |
+| **Project skills** | `workspace/.agents/skills/` | `~/.hermes/skills/openclaw-imports/` |
 | **Command allowlist** | Exec approval patterns | `config.yaml` command\_allowlist |
 | **Messaging settings** | Allowlists, working directory | `config.yaml` messaging section |
 | **Session policies** | Daily/idle reset policies | `config.yaml` session\_reset |
@@ -513,7 +515,7 @@ The migration covers your entire OpenClaw footprint. Items are either **directly
 | **WhatsApp settings** | Allowlist | `~/.hermes/.env` |
 | **Signal settings** | Account, HTTP URL, allowlist | `~/.hermes/.env` |
 | **Channel config** | Matrix, Mattermost, IRC, group settings | `config.yaml` + archive |
-| **Provider API keys** | OPENROUTER\_API\_KEY, OPENAI\_API\_KEY, ANTHROPIC\_API\_KEY, etc. | `~/.hermes/.env` (requires `--migrate-secrets`) |
+| **Provider API keys** | Config, `~/.openclaw/.env`, and `auth-profiles.json` | `~/.hermes/.env` (requires `--migrate-secrets`) |
 
 #### Archived for manual review
 
@@ -531,7 +533,7 @@ These OpenClaw features don't have direct Hermes equivalents. They're saved to a
 
 ### Security
 
-API keys are **not migrated by default**. The `--preset full` preset enables secret migration, but only for an allowlist of known keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `VOICE_TOOLS_OPENAI_KEY`. All other secrets are skipped.
+API keys are **not migrated by default**. The `--preset full` preset enables secret migration. Keys are collected from three sources (config values take priority, then `.env`, then `auth-profiles.json`) for these targets: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `ELEVENLABS_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `VOICE_TOOLS_OPENAI_KEY`. All other secrets are skipped.
 
 ### Examples
 

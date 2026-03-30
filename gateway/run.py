@@ -1702,6 +1702,11 @@ class GatewayRunner:
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
+                # Rate-limit ALL pairing responses (code or rejection) to
+                # prevent spamming the user with repeated messages when
+                # multiple DMs arrive in quick succession.
+                if self.pairing_store._is_rate_limited(platform_name, source.user_id):
+                    return None
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
                 )
@@ -1723,6 +1728,8 @@ class GatewayRunner:
                             "Too many pairing requests right now~ "
                             "Please try again later!"
                         )
+                    # Record rate limit so subsequent messages are silently ignored
+                    self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
         # PRIORITY handling when an agent is already running for this session.

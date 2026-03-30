@@ -476,6 +476,13 @@ class GatewayRunner:
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
 
+        # Rate-limit compression warning messages sent to users.
+        # Keyed by chat_id — value is the timestamp of the last warning sent.
+        # Prevents the warning from firing on every message when a session
+        # remains above the threshold after compression.
+        self._compression_warn_sent: Dict[str, float] = {}
+        self._compression_warn_cooldown: int = 3600  # seconds (1 hour)
+
         # Ensure tirith security scanner is available (downloads if needed)
         try:
             from tools.tirith_security import ensure_installed
@@ -1865,6 +1872,9 @@ class GatewayRunner:
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
+        if canonical == "profile":
+            return await self._handle_profile_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
         
@@ -2400,13 +2410,18 @@ class GatewayRunner:
                                         pass
 
                                 # Still too large after compression — warn user
+                                # Rate-limited to once per cooldown period per
+                                # chat to avoid spamming on every message.
                                 if _new_tokens >= _warn_token_threshold:
                                     logger.warning(
                                         "Session hygiene: still ~%s tokens after "
                                         "compression — suggesting /reset",
                                         f"{_new_tokens:,}",
                                     )
-                                    if _hyg_adapter:
+                                    _now = time.time()
+                                    _last_warn = self._compression_warn_sent.get(source.chat_id, 0)
+                                    if _hyg_adapter and _now - _last_warn >= self._compression_warn_cooldown:
+                                        self._compression_warn_sent[source.chat_id] = _now
                                         try:
                                             await _hyg_adapter.send(
                                                 source.chat_id,
@@ -2428,7 +2443,10 @@ class GatewayRunner:
                         if _approx_tokens >= _warn_token_threshold:
                             _hyg_adapter = self.adapters.get(source.platform)
                             _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                            if _hyg_adapter:
+                            _now = time.time()
+                            _last_warn = self._compression_warn_sent.get(source.chat_id, 0)
+                            if _hyg_adapter and _now - _last_warn >= self._compression_warn_cooldown:
+                                self._compression_warn_sent[source.chat_id] = _now
                                 try:
                                     await _hyg_adapter.send(
                                         source.chat_id,
@@ -3055,6 +3073,36 @@ class GatewayRunner:
             return f"{header}\n\n{session_info}"
         return header
     
+    async def _handle_profile_command(self, event: MessageEvent) -> str:
+        """Handle /profile — show active profile name and home directory."""
+        from hermes_constants import get_hermes_home, display_hermes_home
+        from pathlib import Path
+
+        home = get_hermes_home()
+        display = display_hermes_home()
+
+        # Detect profile name from HERMES_HOME path
+        # Profile paths look like: ~/.hermes/profiles/<name>
+        profiles_parent = Path.home() / ".hermes" / "profiles"
+        try:
+            rel = home.relative_to(profiles_parent)
+            profile_name = str(rel).split("/")[0]
+        except ValueError:
+            profile_name = None
+
+        if profile_name:
+            lines = [
+                f"👤 **Profile:** `{profile_name}`",
+                f"📂 **Home:** `{display}`",
+            ]
+        else:
+            lines = [
+                "👤 **Profile:** default",
+                f"📂 **Home:** `{display}`",
+            ]
+
+        return "\n".join(lines)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source

@@ -1126,6 +1126,8 @@ class GatewayRunner:
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+            if hasattr(self, "hooks"):
+                adapter.set_hooks(self.hooks)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -1358,6 +1360,8 @@ class GatewayRunner:
 
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+                    if hasattr(self, "hooks"):
+                        adapter.set_hooks(self.hooks)
 
                     success = await adapter.connect()
                     if success:

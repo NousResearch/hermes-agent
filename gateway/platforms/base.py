@@ -431,6 +431,8 @@ class BasePlatformAdapter(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
+        # Gateway hook registry for message lifecycle events (set by GatewayRunner)
+        self._hooks: Optional["HookRegistry"] = None
 
     @property
     def has_fatal_error(self) -> bool:
@@ -514,6 +516,33 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_hooks(self, hooks: "HookRegistry") -> None:
+        """
+        Attach the gateway hook registry for message lifecycle events.
+
+        The hooks are used to fire message:received (before processing) and
+        message:processed (after response) events. External handlers in
+        ~/.hermes/hooks/ can use these to implement gating, analytics, or
+        post-response actions.
+        """
+        self._hooks = hooks
+
+    def _build_hook_metadata(self, event: MessageEvent) -> dict:
+        """
+        Build platform metadata dict for hook context.
+
+        Subclasses may override to add platform-specific fields. The default
+        implementation extracts the most common fields available to all adapters.
+        """
+        source = event.source
+        return {
+            "chat_id": source.chat_id if source else None,
+            "user_id": source.user_id if source else None,
+            "chat_type": source.chat_type if source else None,
+            "thread_id": source.thread_id if source else None,
+            "message_id": event.message_id,
+        }
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -1013,7 +1042,44 @@ class BasePlatformAdapter(ABC):
         """
         if not self._message_handler:
             return
-        
+
+        # --- message:received hook ---
+        # Fires before session registration. Hooks can set should_process=False to drop.
+        if self._hooks is not None and self._hooks._handlers.get("message:received"):
+            hook_ctx = {
+                "event": event,
+                "platform": self.platform.value,
+                "chat_type": event.source.chat_type if event.source else None,
+                "should_process": True,
+                "metadata": self._build_hook_metadata(event),
+            }
+            try:
+                await asyncio.wait_for(
+                    self._hooks.emit("message:received", hook_ctx),
+                    timeout=float(os.getenv("HERMES_HOOK_TIMEOUT", "5")),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "message:received hook timed out for %s in %s — processing message (fail-open)",
+                    event.source.user_name if event.source else "unknown",
+                    event.source.chat_id if event.source else "unknown",
+                )
+            except Exception:
+                logger.warning(
+                    "message:received hook error for %s in %s — processing message (fail-open)",
+                    event.source.user_name if event.source else "unknown",
+                    event.source.chat_id if event.source else "unknown",
+                    exc_info=True,
+                )
+            if hook_ctx.get("should_process") is False:
+                logger.debug(
+                    "message:received hook dropped message from %s in %s",
+                    event.source.user_name if event.source else "unknown",
+                    event.source.chat_id if event.source else "unknown",
+                )
+                return
+        # --- end hook ---
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -1092,6 +1158,11 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
+        # Track hook state for message:processed
+        _hook_response: Optional[str] = None
+        _hook_success: bool = False
+        _hook_error: Optional[str] = None
+
         # Create interrupt event for this session
         interrupt_event = asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -1105,6 +1176,8 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            _hook_response = response
+            _hook_success = True
             
             # Send response if any
             if not response:
@@ -1297,6 +1370,7 @@ class BasePlatformAdapter(ABC):
             raise
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, False)
+            _hook_error = str(e)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
@@ -1315,6 +1389,29 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # --- message:processed hook ---
+            if self._hooks is not None and self._hooks._handlers.get("message:processed"):
+                processed_ctx = {
+                    "event": event,
+                    "platform": self.platform.value,
+                    "response": _hook_response,
+                    "success": _hook_success,
+                    "error": _hook_error,
+                    "metadata": self._build_hook_metadata(event),
+                }
+                try:
+                    await asyncio.wait_for(
+                        self._hooks.emit("message:processed", processed_ctx),
+                        timeout=float(os.getenv("HERMES_HOOK_TIMEOUT", "5")),
+                    )
+                except Exception:
+                    logger.debug(
+                        "message:processed hook error for %s (non-critical)",
+                        event.source.chat_id if event.source else "unknown",
+                        exc_info=True,
+                    )
+            # --- end hook ---
+
             # Stop typing indicator
             typing_task.cancel()
             try:

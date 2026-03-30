@@ -380,6 +380,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        tool_progress_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -412,6 +413,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            tool_progress_callback=tool_progress_callback,
         )
         return agent
 
@@ -514,6 +516,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_tool_progress(name, preview, args, status=None, duration=None, result=None):
+                # Stream tool progress messages for visibility in Open WebUI
+                # The 'preview' already contains the cute formatted message
+                logger.debug("Tool progress callback: name=%s status=%s", name, status)
+                if status == "complete":
+                    # Format: add newlines before and after for visibility in the UI
+                    msg = f"\n{preview}\n"
+                    logger.debug("Putting tool message in queue: %s", msg[:50])
+                    _stream_q.put(msg)
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -523,6 +535,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
             ))
 
@@ -647,6 +660,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is None:  # End of stream sentinel
                     break
 
+                logger.debug("SSE writing delta: %s", repr(delta)[:100])
                 content_chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
                     "created": created, "model": model,
@@ -692,6 +706,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 except (asyncio.CancelledError, Exception):
                     pass
             logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
+        except Exception as e:
+            # Log any other unexpected errors in the streaming loop
+            logger.error("Unexpected error in SSE streaming for %s: %s", completion_id, e, exc_info=True)
+            # Try to send an error chunk before closing
+            try:
+                error_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": f"\n[Error: {e}]\n"}, "finish_reason": "stop"}],
+                }
+                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(b"data: [DONE]\n\n")
+            except Exception:
+                pass
 
         return response
 
@@ -1194,6 +1222,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        tool_progress_callback=None,
         agent_ref: Optional[list] = None,
     ) -> tuple:
         """
@@ -1214,6 +1243,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                tool_progress_callback=tool_progress_callback,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

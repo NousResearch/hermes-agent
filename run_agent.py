@@ -5467,6 +5467,12 @@ class AIAgent:
             if self.quiet_mode:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 self._safe_print(f"  {cute_msg}")
+                # Also notify progress callback for API server streaming
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback(name, cute_msg, args, "complete", tool_duration, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
             elif not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
@@ -5597,8 +5603,14 @@ class AIAgent:
                     store=self._todo_store,
                 )
                 tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)
                 if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                    self._vprint(f"  {cute_msg}")
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback('todo', cute_msg, function_args, "complete", tool_duration, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
             elif function_name == "session_search":
                 if not self._session_db:
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
@@ -5612,8 +5624,14 @@ class AIAgent:
                         current_session_id=self.session_id,
                     )
                 tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)
                 if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+                    self._vprint(f"  {cute_msg}")
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback('session_search', cute_msg, function_args, "complete", tool_duration, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
                 from tools.memory_tool import memory_tool as _memory_tool
@@ -5628,8 +5646,14 @@ class AIAgent:
                 if self._honcho and target == "user" and function_args.get("action") == "add":
                     self._honcho_save_user_observation(function_args.get("content", ""))
                 tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)
                 if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+                    self._vprint(f"  {cute_msg}")
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback('memory', cute_msg, function_args, "complete", tool_duration, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
@@ -5638,8 +5662,14 @@ class AIAgent:
                     callback=self.clarify_callback,
                 )
                 tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)
                 if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+                    self._vprint(f"  {cute_msg}")
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback('clarify', cute_msg, function_args, "complete", tool_duration, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")
@@ -5673,6 +5703,11 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
+                    if self.tool_progress_callback:
+                        try:
+                            self.tool_progress_callback('delegate_task', cute_msg, function_args, "complete", tool_duration, _delegate_result)
+                        except Exception as cb_err:
+                            logging.debug(f"Tool progress callback error: {cb_err}")
             elif self.quiet_mode:
                 spinner = None
                 if not self.tool_progress_callback:
@@ -5700,6 +5735,11 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     else:
                         self._vprint(f"  {cute_msg}")
+                    if self.tool_progress_callback:
+                        try:
+                            self.tool_progress_callback(function_name, cute_msg, function_args, "complete", tool_duration, _spinner_result)
+                        except Exception as cb_err:
+                            logging.debug(f"Tool progress callback error: {cb_err}")
             else:
                 try:
                     function_result = handle_function_call(
@@ -5712,6 +5752,12 @@ class AIAgent:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback(function_name, cute_msg, function_args, "complete", tool_duration, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
 
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result

@@ -2789,22 +2789,12 @@ class HermesCLI:
             print(f"  MCP tool:          /tools {subcommand} github:create_issue")
             return
 
-        # Confirm session reset before applying
-        verb = "Disable" if subcommand == "disable" else "Enable"
+        # Apply the change directly — the user typing the command is implicit
+        # consent.  Do NOT use input() here; it hangs inside prompt_toolkit's
+        # TUI event loop (known pitfall).
+        verb = "Disabling" if subcommand == "disable" else "Enabling"
         label = ", ".join(names)
-        _cprint(f"{_GOLD}{verb} {label}?{_RST}")
-        _cprint(f"{_DIM}This will save to config and reset your session so the "
-                f"change takes effect cleanly.{_RST}")
-        try:
-            answer = input("  Continue? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            _cprint(f"{_DIM}Cancelled.{_RST}")
-            return
-
-        if answer not in ("y", "yes"):
-            _cprint(f"{_DIM}Cancelled.{_RST}")
-            return
+        _cprint(f"{_GOLD}{verb} {label}...{_RST}")
 
         tools_disable_enable_command(
             Namespace(tools_action=subcommand, names=names, platform="cli"))

@@ -1556,7 +1556,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 import yaml, json
                 from pathlib import Path
-                from gateway.run import get_session_model
+                from gateway.run import get_session_model, get_last_reply_model
 
                 _home = Path.home() / ".hermes"
 
@@ -1602,10 +1602,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
 
+                last_model, was_fallback = get_last_reply_model()
+                if last_model:
+                    last_reply = f"`{last_model}`" + (" (fallback)" if was_fallback else "")
+                else:
+                    last_reply = "no reply yet"
+
                 text = (
                     "**Model Status**\n\n"
                     f"**Default** (config.yaml): `{config_provider}/{config_model}`\n"
                     f"**Active**: `{active_provider}/{active_model}` ({active_source})\n"
+                    f"**Last reply**: {last_reply}\n"
                     f"**Cron**: {cron_model}"
                 )
                 await interaction.followup.send(text, ephemeral=True)

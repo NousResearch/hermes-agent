@@ -314,6 +314,22 @@ def get_session_model() -> dict | None:
     return _session_model_override
 
 
+# Last model that actually replied (set by runner after each turn)
+_last_reply_model: str | None = None
+_last_reply_was_fallback: bool = False
+
+
+def set_last_reply_model(model: str, is_fallback: bool = False) -> None:
+    global _last_reply_model, _last_reply_was_fallback
+    _last_reply_model = model
+    _last_reply_was_fallback = is_fallback
+
+
+def get_last_reply_model() -> tuple[str | None, bool]:
+    """Return (model_name, was_fallback)."""
+    return _last_reply_model, _last_reply_was_fallback
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
@@ -5725,6 +5741,7 @@ class GatewayRunner:
                 if _agent.model != _cfg_model:
                     self._effective_model = _agent.model
                     self._effective_provider = getattr(_agent, 'provider', None)
+                    set_last_reply_model(_agent.model, is_fallback=True)
                     # Fallback activated — evict cached agent so the next
                     # message starts fresh and retries the primary model.
                     self._evict_cached_agent(session_key)
@@ -5732,6 +5749,7 @@ class GatewayRunner:
                     # Primary model worked — clear any stale fallback state
                     self._effective_model = None
                     self._effective_provider = None
+                    set_last_reply_model(_agent.model, is_fallback=False)
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]

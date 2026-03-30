@@ -762,6 +762,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 )
                                 effective_thread_id = None
                                 continue
+                            if "message to be replied not found" in err_lower and reply_to_id is not None:
+                                # Original message was deleted before we
+                                # could reply — clear reply target and retry
+                                # so the response is still delivered.
+                                logger.warning(
+                                    "[%s] Reply target deleted, retrying without reply_to: %s",
+                                    self.name, send_err,
+                                )
+                                reply_to_id = None
+                                continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
                         if _send_attempt < 2:

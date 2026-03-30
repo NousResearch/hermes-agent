@@ -623,9 +623,10 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 from telegram import BotCommand
                 from hermes_cli.commands import telegram_menu_commands
-                # Telegram docs say 100, but setMyCommands returns
-                # BOT_COMMANDS_TOO_MUCH above ~60 due to metadata overhead.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=50)
+                # Telegram allows up to 100 commands but has an undocumented
+                # payload size limit.  Skill descriptions are truncated to 40
+                # chars in telegram_menu_commands() to fit 100 commands safely.
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
                 await self._bot.set_my_commands([
                     BotCommand(name, desc) for name, desc in menu_commands
                 ])

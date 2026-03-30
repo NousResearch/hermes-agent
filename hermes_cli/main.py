@@ -18,6 +18,9 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
+    hermes memory              # List persistent memory entries
+    hermes memory show user    # Show full user profile entries
+    hermes memory delete memory 'Docker'  # Remove a memory entry
     hermes honcho setup                    # Configure Honcho AI memory integration
     hermes honcho status                   # Show Honcho config and connection status
     hermes honcho sessions                 # List directory → session name mappings
@@ -2429,6 +2432,12 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_memory(args):
+    """Review and manage persistent memory."""
+    from hermes_cli.memory_cmd import memory_command
+    memory_command(args)
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -4276,6 +4285,38 @@ For more help on a command:
         honcho_command(args)
 
     honcho_parser.set_defaults(func=cmd_honcho)
+
+    # =========================================================================
+    # memory command — review and manage persistent memory (MEMORY.md / USER.md)
+    # =========================================================================
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Review and manage persistent memory",
+        description=(
+            "View, inspect, and delete entries from the agent's persistent memory stores.\n\n"
+            "Two stores exist:\n"
+            "  memory  — agent's personal notes (environment facts, conventions, lessons)\n"
+            "  user    — what the agent knows about you (preferences, role, style)\n\n"
+            "Examples:\n"
+            "  hermes memory                      # list both stores\n"
+            "  hermes memory show user             # full entries from USER.md\n"
+            "  hermes memory delete memory 'Docker' # remove entry matching 'Docker'"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_action")
+
+    memory_subparsers.add_parser("list", help="List all memory entries with usage stats")
+
+    memory_show = memory_subparsers.add_parser("show", help="Show full entries from a specific store")
+    memory_show.add_argument("target", choices=["memory", "user"], help="Which store to show")
+
+    memory_delete = memory_subparsers.add_parser("delete", help="Delete an entry by substring match")
+    memory_delete.add_argument("target", choices=["memory", "user"], help="Which store to delete from")
+    memory_delete.add_argument("substring", help="Unique substring identifying the entry to remove")
+    memory_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+
+    memory_parser.set_defaults(func=cmd_memory)
 
     # =========================================================================
     # tools command

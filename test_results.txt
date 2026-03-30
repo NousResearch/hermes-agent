@@ -1,0 +1,124 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-9.0.2, pluggy-1.6.0 -- /home/leo_dwelon_com/.openclaw/workspace/hermes-agent/.venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/leo_dwelon_com/.openclaw/workspace/hermes-agent
+configfile: pyproject.toml
+plugins: xdist-3.8.0, anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+created: 2/2 workers
+2 workers [55 items]
+
+scheduling tests via LoadScheduling
+
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_plain_model_keeps_current_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_colon_at_start_keeps_current 
+[gw1] [  1%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_colon_at_start_keeps_current 
+[gw0] [  3%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_plain_model_keeps_current_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_provider_colon_model_switches_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_unknown_prefix_colon_not_treated_as_provider 
+[gw1] [  5%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_unknown_prefix_colon_not_treated_as_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_http_url_not_treated_as_provider 
+[gw0] [  7%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_provider_colon_model_switches_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_provider_alias_resolved 
+[gw1] [  9%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_http_url_not_treated_as_provider 
+[gw0] [ 10%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_provider_alias_resolved 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_no_slash_no_colon_keeps_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_colon_model_single 
+[gw1] [ 12%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_colon_model_single 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_triple_syntax 
+[gw1] [ 14%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_triple_syntax 
+[gw0] [ 16%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_no_slash_no_colon_keeps_provider 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_triple_spaces 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_nous_provider_switch 
+[gw1] [ 18%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_triple_spaces 
+[gw0] [ 20%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_nous_provider_switch 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_triple_empty_model_falls_back 
+tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_empty_model_after_colon_keeps_current 
+[gw1] [ 21%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_custom_triple_empty_model_falls_back 
+[gw0] [ 23%] PASSED tests/hermes_cli/test_model_validation.py::TestParseModelInput::test_empty_model_after_colon_keeps_current 
+tests/hermes_cli/test_model_validation.py::TestCuratedModelsForProvider::test_openrouter_returns_curated_list 
+tests/hermes_cli/test_model_validation.py::TestNormalizeProvider::test_case_insensitive 
+[gw1] [ 25%] PASSED tests/hermes_cli/test_model_validation.py::TestCuratedModelsForProvider::test_openrouter_returns_curated_list 
+[gw0] [ 27%] PASSED tests/hermes_cli/test_model_validation.py::TestNormalizeProvider::test_case_insensitive 
+tests/hermes_cli/test_model_validation.py::TestCuratedModelsForProvider::test_zai_returns_glm_models 
+tests/hermes_cli/test_model_validation.py::TestProviderLabel::test_known_labels_and_auto 
+[gw1] [ 29%] PASSED tests/hermes_cli/test_model_validation.py::TestCuratedModelsForProvider::test_zai_returns_glm_models 
+[gw0] [ 30%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderLabel::test_known_labels_and_auto 
+tests/hermes_cli/test_model_validation.py::TestProviderLabel::test_unknown_provider_preserves_original_name 
+tests/hermes_cli/test_model_validation.py::TestCuratedModelsForProvider::test_unknown_provider_returns_empty 
+[gw0] [ 32%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderLabel::test_unknown_provider_preserves_original_name 
+tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_openrouter_returns_curated_list 
+[gw1] [ 34%] PASSED tests/hermes_cli/test_model_validation.py::TestCuratedModelsForProvider::test_unknown_provider_returns_empty 
+tests/hermes_cli/test_model_validation.py::TestNormalizeProvider::test_defaults_to_openrouter 
+[gw1] [ 36%] PASSED tests/hermes_cli/test_model_validation.py::TestNormalizeProvider::test_defaults_to_openrouter 
+tests/hermes_cli/test_model_validation.py::TestNormalizeProvider::test_known_aliases 
+[gw0] [ 38%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_openrouter_returns_curated_list 
+tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_unknown_provider_returns_empty 
+[gw1] [ 40%] PASSED tests/hermes_cli/test_model_validation.py::TestNormalizeProvider::test_known_aliases 
+tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_copilot_prefers_live_catalog 
+[gw0] [ 41%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_unknown_provider_returns_empty 
+tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_zai_returns_glm_models 
+[gw0] [ 43%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_zai_returns_glm_models 
+tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_probe_api_models_tries_v1_fallback 
+[gw0] [ 45%] PASSED tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_probe_api_models_tries_v1_fallback 
+tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_probe_api_models_uses_copilot_catalog 
+[gw0] [ 47%] PASSED tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_probe_api_models_uses_copilot_catalog 
+tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_fetch_github_model_catalog_filters_non_chat_models 
+[gw0] [ 49%] PASSED tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_fetch_github_model_catalog_filters_non_chat_models 
+tests/hermes_cli/test_model_validation.py::TestGithubReasoningEfforts::test_gpt5_supports_minimal_to_high 
+[gw0] [ 50%] PASSED tests/hermes_cli/test_model_validation.py::TestGithubReasoningEfforts::test_gpt5_supports_minimal_to_high 
+tests/hermes_cli/test_model_validation.py::TestGithubReasoningEfforts::test_legacy_catalog_reasoning_still_supported 
+[gw0] [ 52%] PASSED tests/hermes_cli/test_model_validation.py::TestGithubReasoningEfforts::test_legacy_catalog_reasoning_still_supported 
+tests/hermes_cli/test_model_validation.py::TestGithubReasoningEfforts::test_non_reasoning_model_returns_empty 
+[gw0] [ 54%] PASSED tests/hermes_cli/test_model_validation.py::TestGithubReasoningEfforts::test_non_reasoning_model_returns_empty 
+tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_normalize_old_github_models_slug 
+[gw0] [ 56%] PASSED tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_normalize_old_github_models_slug 
+tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_gpt5_uses_responses 
+[gw0] [ 58%] PASSED tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_gpt5_uses_responses 
+tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_gpt5_mini_uses_chat 
+[gw0] [ 60%] PASSED tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_gpt5_mini_uses_chat 
+tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_non_gpt5_uses_chat 
+[gw0] [ 61%] PASSED tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_non_gpt5_uses_chat 
+tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_with_catalog_both_endpoints 
+[gw0] [ 63%] PASSED tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_with_catalog_both_endpoints 
+tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_with_catalog_only_responses 
+[gw0] [ 65%] PASSED tests/hermes_cli/test_model_validation.py::TestCopilotNormalization::test_copilot_api_mode_with_catalog_only_responses 
+tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_empty_model_rejected 
+[gw0] [ 67%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_empty_model_rejected 
+tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_whitespace_only_rejected 
+[gw0] [ 69%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_whitespace_only_rejected 
+tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_model_with_spaces_rejected 
+[gw0] [ 70%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_model_with_spaces_rejected 
+tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_no_slash_model_still_probes_api 
+[gw0] [ 72%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_no_slash_model_still_probes_api 
+tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_no_slash_model_rejected_if_not_in_api 
+[gw0] [ 74%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateFormatChecks::test_no_slash_model_rejected_if_not_in_api 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFound::test_model_found_in_api 
+[gw0] [ 76%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFound::test_model_found_in_api 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFound::test_model_found_for_custom_endpoint 
+[gw0] [ 78%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFound::test_model_found_for_custom_endpoint 
+tests/hermes_cli/test_model_validation.py::TestValidateApiNotFound::test_model_not_in_api_accepted_with_warning 
+[gw0] [ 80%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiNotFound::test_model_not_in_api_accepted_with_warning 
+tests/hermes_cli/test_model_validation.py::TestValidateApiNotFound::test_warning_includes_suggestions 
+[gw0] [ 81%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiNotFound::test_warning_includes_suggestions 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_any_model_accepted_when_api_down 
+[gw0] [ 83%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_any_model_accepted_when_api_down 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_unknown_model_also_accepted_when_api_down 
+[gw0] [ 85%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_unknown_model_also_accepted_when_api_down 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_zai_model_accepted_when_api_down 
+[gw0] [ 87%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_zai_model_accepted_when_api_down 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_unknown_provider_accepted_when_api_down 
+[gw0] [ 89%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_unknown_provider_accepted_when_api_down 
+tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_custom_endpoint_warns_with_probed_url_and_v1_hint 
+[gw0] [ 90%] PASSED tests/hermes_cli/test_model_validation.py::TestValidateApiFallback::test_custom_endpoint_warns_with_probed_url_and_v1_hint 
+[gw1] [ 92%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_copilot_prefers_live_catalog 
+tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_copilot_acp_reuses_copilot_catalog 
+[gw1] [ 94%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_copilot_acp_reuses_copilot_catalog 
+tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_copilot_acp_falls_back_to_copilot_defaults 
+[gw1] [ 96%] PASSED tests/hermes_cli/test_model_validation.py::TestProviderModelIds::test_copilot_acp_falls_back_to_copilot_defaults 
+tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_returns_none_when_no_base_url 
+[gw1] [ 98%] PASSED tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_returns_none_when_no_base_url 
+tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_returns_none_on_network_error 
+[gw1] [100%] PASSED tests/hermes_cli/test_model_validation.py::TestFetchApiModels::test_returns_none_on_network_error 
+
+============================== 55 passed in 1.49s ==============================

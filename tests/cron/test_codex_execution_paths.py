@@ -95,6 +95,7 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
 
 def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
@@ -124,8 +125,28 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"
 
 
+def test_ai_agent_defaults_empty_codex_model(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
+
+    agent = run_agent.AIAgent(
+        model="",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="test-token",
+        skip_context_files=True,
+        skip_memory=True,
+        max_iterations=1,
+        quiet_mode=True,
+    )
+
+    assert agent.model == "gpt-5.3-codex"
+
+
 def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(

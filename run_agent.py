@@ -1355,6 +1355,17 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
 
+        # Some non-CLI entry points (gateway, cron, tests) can legitimately
+        # reach AIAgent with provider credentials resolved but no explicit model
+        # selected. Codex Responses requests require a non-empty model string,
+        # so normalize that here instead of relying on caller-specific CLI logic.
+        if not isinstance(self.model, str) or not self.model.strip():
+            if self.provider == "openai-codex" or (
+                self.api_mode == "codex_responses"
+                and "chatgpt.com/backend-api/codex" in self._base_url_lower
+            ):
+                self.model = "gpt-5.3-codex"
+
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.

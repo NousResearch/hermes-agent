@@ -17,6 +17,23 @@ _RESET = "\033[0m"
 
 logger = logging.getLogger(__name__)
 
+# =========================================================================
+# Configurable tool preview length (0 = no limit)
+# Set once at startup by CLI or gateway from display.tool_preview_length config.
+# =========================================================================
+_tool_preview_max_len: int = 0  # 0 = unlimited
+
+
+def set_tool_preview_max_len(n: int) -> None:
+    """Set the global max length for tool call previews. 0 = no limit."""
+    global _tool_preview_max_len
+    _tool_preview_max_len = max(int(n), 0) if n else 0
+
+
+def get_tool_preview_max_len() -> int:
+    """Return the configured max preview length (0 = unlimited)."""
+    return _tool_preview_max_len
+
 
 # =========================================================================
 # Skin-aware helpers (lazy import to avoid circular deps)
@@ -94,8 +111,14 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | None:
-    """Build a short preview of a tool call's primary argument for display."""
+def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    """Build a short preview of a tool call's primary argument for display.
+
+    *max_len* controls truncation.  ``None`` (default) defers to the global
+    ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+    """
+    if max_len is None:
+        max_len = _tool_preview_max_len
     if not args:
         return None
     primary_args = {
@@ -190,7 +213,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | N
     preview = _oneline(str(value))
     if not preview:
         return None
-    if len(preview) > max_len:
+    if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
 
@@ -484,10 +507,14 @@ def get_cute_tool_message(
 
     def _trunc(s, n=40):
         s = str(s)
+        if _tool_preview_max_len == 0:
+            return s  # no limit
         return (s[:n-3] + "...") if len(s) > n else s
 
     def _path(p, n=35):
         p = str(p)
+        if _tool_preview_max_len == 0:
+            return p  # no limit
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:

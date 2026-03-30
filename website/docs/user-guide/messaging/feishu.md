@@ -32,8 +32,8 @@ Set it to `false` only if you explicitly want one shared conversation per chat.
 ## Step 1: Create a Feishu / Lark App
 
 1. Open the Feishu or Lark developer console:
-   - Feishu: <https://open.feishu.cn/>
-   - Lark: <https://open.larksuite.com/>
+   - Feishu: [https://open.feishu.cn/](https://open.feishu.cn/)
+   - Lark: [https://open.larksuite.com/](https://open.larksuite.com/)
 2. Create a new app.
 3. In **Credentials & Basic Info**, copy the **App ID** and **App Secret**.
 4. Enable the **Bot** capability for the app.

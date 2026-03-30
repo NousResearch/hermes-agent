@@ -39,6 +39,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
 )
+from hermes_constants import get_hermes_home
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,61 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
 
+    def _channel_routes_path(self) -> _Path:
+        return get_hermes_home() / "slack_channel_teams.json"
+
+    def _load_channel_team_routes(self) -> None:
+        """Load persisted channel->team routing learned from previous traffic."""
+        try:
+            path = self._channel_routes_path()
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                self._channel_team.update(
+                    {
+                        str(channel_id): str(team_id)
+                        for channel_id, team_id in data.items()
+                        if channel_id and team_id
+                    }
+                )
+        except Exception as e:
+            logger.warning("[Slack] Failed to load %s: %s", self._channel_routes_path(), e)
+
+    def _persist_channel_team_routes(self) -> None:
+        """Persist channel->team routing so outbound sends survive restarts."""
+        try:
+            path = self._channel_routes_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(self._channel_team, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to write %s: %s", self._channel_routes_path(), e)
+
+    def _record_channel_team(self, channel_id: str, team_id: str) -> None:
+        """Remember which workspace owns a Slack channel."""
+        if not channel_id or not team_id:
+            return
+        previous = self._channel_team.get(channel_id)
+        if previous == team_id:
+            return
+        self._channel_team[channel_id] = team_id
+        self._persist_channel_team_routes()
+
+    def _resolve_team_id(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Resolve the owning workspace for an outbound Slack channel."""
+        if metadata:
+            team_id = metadata.get("team_id")
+            if team_id:
+                return str(team_id)
+        return self._channel_team.get(chat_id, "")
+
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
         if not SLACK_AVAILABLE:
@@ -101,7 +157,6 @@ class SlackAdapter(BasePlatformAdapter):
         bot_tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
 
         # Also load tokens from OAuth token file
-        from hermes_constants import get_hermes_home
         tokens_file = get_hermes_home() / "slack_tokens.json"
         if tokens_file.exists():
             try:
@@ -127,18 +182,26 @@ class SlackAdapter(BasePlatformAdapter):
                 self._set_fatal_error('slack_token_lock', message, retryable=False)
                 return False
 
-            # First token is the primary — used for AsyncApp / Socket Mode
-            primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
+            self._load_channel_team_routes()
 
-            # Register each bot token and map team_id → client
+            valid_clients: list[tuple[str, AsyncWebClient, dict[str, Any]]] = []
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
-                auth_response = await client.auth_test()
+                try:
+                    auth_response = await client.auth_test()
+                except Exception as e:
+                    logger.warning("[Slack] Skipping Slack bot token after auth_test failed: %s", e)
+                    continue
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
                 bot_name = auth_response.get("user", "unknown")
                 team_name = auth_response.get("team", "unknown")
+
+                if not team_id or not bot_user_id:
+                    logger.warning("[Slack] Skipping Slack bot token with incomplete auth_test response")
+                    continue
+
+                valid_clients.append((token, client, auth_response))
 
                 self._team_clients[team_id] = client
                 self._team_bot_user_ids[team_id] = bot_user_id
@@ -151,6 +214,14 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Authenticated as @%s in workspace %s (team: %s)",
                     bot_name, team_name, team_id,
                 )
+
+            if not valid_clients:
+                logger.error("[Slack] No valid Slack bot tokens were available")
+                return False
+
+            # First valid token is the primary — used for AsyncApp / Socket Mode
+            primary_token = valid_clients[0][0]
+            self._app = AsyncApp(token=primary_token)
 
             # Register message event handler
             @self._app.event("message")
@@ -205,9 +276,13 @@ class SlackAdapter(BasePlatformAdapter):
 
         logger.info("[Slack] Disconnected")
 
-    def _get_client(self, chat_id: str) -> AsyncWebClient:
+    def _get_client(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AsyncWebClient:
         """Return the workspace-specific WebClient for a channel."""
-        team_id = self._channel_team.get(chat_id)
+        team_id = self._resolve_team_id(chat_id, metadata)
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
@@ -248,7 +323,7 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                last_result = await self._get_client(chat_id, metadata).chat_postMessage(**kwargs)
 
             return SendResult(
                 success=True,
@@ -304,7 +379,7 @@ class SlackAdapter(BasePlatformAdapter):
             return  # Can only set status in a thread context
 
         try:
-            await self._get_client(chat_id).assistant_threads_setStatus(
+            await self._get_client(chat_id, metadata).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
                 status="is thinking...",
@@ -346,7 +421,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        result = await self._get_client(chat_id).files_upload_v2(
+        result = await self._get_client(chat_id, metadata).files_upload_v2(
             channel=chat_id,
             file=file_path,
             filename=os.path.basename(file_path),
@@ -550,7 +625,7 @@ class SlackAdapter(BasePlatformAdapter):
                 response = await client.get(image_url)
                 response.raise_for_status()
 
-            result = await self._get_client(chat_id).files_upload_v2(
+            result = await self._get_client(chat_id, metadata).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
                 filename="image.png",
@@ -610,7 +685,7 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Video file not found: {video_path}")
 
         try:
-            result = await self._get_client(chat_id).files_upload_v2(
+            result = await self._get_client(chat_id, metadata).files_upload_v2(
                 channel=chat_id,
                 file=video_path,
                 filename=os.path.basename(video_path),
@@ -651,7 +726,7 @@ class SlackAdapter(BasePlatformAdapter):
         display_name = file_name or os.path.basename(file_path)
 
         try:
-            result = await self._get_client(chat_id).files_upload_v2(
+            result = await self._get_client(chat_id, metadata).files_upload_v2(
                 channel=chat_id,
                 file=file_path,
                 filename=display_name,
@@ -716,7 +791,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._record_channel_team(channel_id, team_id)
 
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
@@ -870,7 +945,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Track which workspace owns this channel
         if team_id and channel_id:
-            self._channel_team[channel_id] = team_id
+            self._record_channel_team(channel_id, team_id)
 
         # Map subcommands to gateway commands — derived from central registry.
         # Also keep "compact" as a Slack-specific alias for /compress.

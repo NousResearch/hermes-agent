@@ -10,6 +10,7 @@ We mock the slack modules at import time to avoid collection errors.
 
 import asyncio
 import os
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -121,12 +122,17 @@ class TestAppMentionHandler:
         mock_app.event = mock_event
         mock_app.command = mock_command
         mock_app.client = AsyncMock()
-        mock_app.client.auth_test = AsyncMock(return_value={
+        web_client = AsyncMock()
+        web_client.token = "xoxb-fake"
+        web_client.auth_test = AsyncMock(return_value={
+            "team_id": "T_BOT",
             "user_id": "U_BOT",
             "user": "testbot",
+            "team": "Test Team",
         })
 
         with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=web_client), \
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("asyncio.create_task"):
@@ -135,6 +141,119 @@ class TestAppMentionHandler:
         assert "message" in registered_events
         assert "app_mention" in registered_events
         assert "/hermes" in registered_commands
+
+    def test_connect_skips_stale_saved_tokens(self, tmp_path, monkeypatch):
+        """A revoked saved token should not block startup if another token works."""
+        config = PlatformConfig(enabled=True, token="xoxb-primary")
+        adapter = SlackAdapter(config)
+
+        tokens_file = tmp_path / "slack_tokens.json"
+        tokens_file.write_text(json.dumps({
+            "TSTALE": {"token": "xoxb-stale", "team_name": "Stale"},
+            "TGOOD2": {"token": "xoxb-good2", "team_name": "Good Two"},
+        }), encoding="utf-8")
+
+        mock_app = MagicMock()
+        mock_app.event = lambda _event_type: (lambda fn: fn)
+        mock_app.command = lambda _cmd: (lambda fn: fn)
+
+        primary_client = AsyncMock()
+        primary_client.auth_test = AsyncMock(return_value={
+            "team_id": "TPRIMARY",
+            "user_id": "U_PRIMARY",
+            "user": "primarybot",
+            "team": "Primary Team",
+        })
+        mock_app.client = primary_client
+
+        good_client = AsyncMock()
+        good_client.token = "xoxb-good2"
+        good_client.auth_test = AsyncMock(return_value={
+            "team_id": "TGOOD2",
+            "user_id": "U_GOOD2",
+            "user": "goodbot",
+            "team": "Good Team Two",
+        })
+
+        def _web_client_factory(*, token):
+            if token == "xoxb-primary":
+                client = AsyncMock()
+                client.token = token
+                client.auth_test = AsyncMock(return_value={
+                    "team_id": "TPRIMARY",
+                    "user_id": "U_PRIMARY",
+                    "user": "primarybot",
+                    "team": "Primary Team",
+                })
+                return client
+            if token == "xoxb-stale":
+                client = AsyncMock()
+                client.token = token
+                client.auth_test = AsyncMock(side_effect=Exception("invalid_auth"))
+                return client
+            if token == "xoxb-good2":
+                return good_client
+            raise AssertionError(f"unexpected token: {token}")
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=_web_client_factory), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
+             patch("gateway.platforms.slack.get_hermes_home", return_value=tmp_path), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("asyncio.create_task"), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)):
+            assert asyncio.run(adapter.connect()) is True
+
+        assert set(adapter._team_clients.keys()) == {"TPRIMARY", "TGOOD2"}
+        assert adapter._bot_user_id == "U_PRIMARY"
+
+
+class TestMultiWorkspaceRouting:
+    @pytest.mark.asyncio
+    async def test_send_uses_persisted_channel_team_route(self, tmp_path):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-primary"))
+        primary_client = AsyncMock()
+        secondary_client = AsyncMock()
+        secondary_client.chat_postMessage = AsyncMock(return_value={"ts": "2.0"})
+
+        adapter._app = MagicMock()
+        adapter._app.client = primary_client
+        adapter._team_clients = {"TSECONDARY": secondary_client}
+
+        routes_path = tmp_path / "slack_channel_teams.json"
+        routes_path.write_text(json.dumps({"C999": "TSECONDARY"}), encoding="utf-8")
+
+        with patch("gateway.platforms.slack.get_hermes_home", return_value=tmp_path):
+            adapter._load_channel_team_routes()
+            result = await adapter.send("C999", "hello")
+
+        assert result.success is True
+        secondary_client.chat_postMessage.assert_called_once_with(channel="C999", text="hello")
+        primary_client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_records_channel_route_on_inbound_message(self, adapter, tmp_path):
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C456",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+            "team": "T456",
+        }
+
+        with patch("gateway.platforms.slack.get_hermes_home", return_value=tmp_path):
+            await adapter._handle_slack_message(event)
+
+        routes_path = tmp_path / "slack_channel_teams.json"
+        saved = json.loads(routes_path.read_text(encoding="utf-8"))
+        assert saved["C456"] == "T456"
 
 
 # ---------------------------------------------------------------------------

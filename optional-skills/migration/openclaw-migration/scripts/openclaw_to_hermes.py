@@ -1297,7 +1297,11 @@ class Migrator:
 
         if self.execute:
             backup_path = self.maybe_backup(destination)
-            hermes_config["model"] = model_str
+            existing_model = hermes_config.get("model")
+            if isinstance(existing_model, dict):
+                existing_model["default"] = model_str
+            else:
+                hermes_config["model"] = {"default": model_str}
             dump_yaml_file(destination, hermes_config)
             self.record("model-config", source_path, destination, "migrated", backup=str(backup_path) if backup_path else "", model=model_str)
         else:

@@ -142,7 +142,7 @@ class ModalEnvironment(BaseEnvironment):
         # external services but can't modify the host's credentials.
         cred_mounts = []
         try:
-            from tools.credential_files import get_credential_file_mounts
+            from tools.credential_files import get_credential_file_mounts, iter_skills_files
 
             for mount_entry in get_credential_file_mounts():
                 cred_mounts.append(
@@ -156,6 +156,18 @@ class ModalEnvironment(BaseEnvironment):
                     mount_entry["host_path"],
                     mount_entry["container_path"],
                 )
+
+            # Mount individual skill files (symlinks filtered out).
+            skills_files = iter_skills_files()
+            for entry in skills_files:
+                cred_mounts.append(
+                    _modal.Mount.from_local_file(
+                        entry["host_path"],
+                        remote_path=entry["container_path"],
+                    )
+                )
+            if skills_files:
+                logger.info("Modal: mounting %d skill files", len(skills_files))
         except Exception as e:
             logger.debug("Modal: could not load credential file mounts: %s", e)
 
@@ -184,72 +196,69 @@ class ModalEnvironment(BaseEnvironment):
         self._app, self._sandbox = self._worker.run_coroutine(
             _create_sandbox(), timeout=300
         )
-        # Track synced credential files to avoid redundant pushes.
+        # Track synced files to avoid redundant pushes.
         # Key: container_path, Value: (mtime, size) of last synced version.
-        self._synced_creds: Dict[str, tuple] = {}
+        self._synced_files: Dict[str, tuple] = {}
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
 
-    def _sync_credential_files(self) -> None:
-        """Push credential files into the running sandbox.
+    def _push_file_to_sandbox(self, host_path: str, container_path: str) -> bool:
+        """Push a single file into the sandbox if changed. Returns True if synced."""
+        hp = Path(host_path)
+        try:
+            stat = hp.stat()
+            file_key = (stat.st_mtime, stat.st_size)
+        except OSError:
+            return False
 
-        Mounts are set at sandbox creation, but credentials may be created
-        later (e.g. OAuth setup mid-session).  This writes the current file
-        content into the sandbox via exec(), so new/updated credentials are
-        available without recreating the sandbox.
+        if self._synced_files.get(container_path) == file_key:
+            return False
+
+        try:
+            content = hp.read_bytes()
+        except Exception:
+            return False
+
+        import base64
+        b64 = base64.b64encode(content).decode("ascii")
+        container_dir = str(Path(container_path).parent)
+        cmd = (
+            f"mkdir -p {shlex.quote(container_dir)} && "
+            f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
+        )
+
+        async def _write():
+            proc = await self._sandbox.exec.aio("bash", "-c", cmd)
+            await proc.wait.aio()
+
+        self._worker.run_coroutine(_write(), timeout=15)
+        self._synced_files[container_path] = file_key
+        return True
+
+    def _sync_files(self) -> None:
+        """Push credential files and skill files into the running sandbox.
+
+        Runs before each command. Uses mtime+size caching so only changed
+        files are pushed (~13μs overhead in the no-op case).
         """
         try:
-            from tools.credential_files import get_credential_file_mounts
+            from tools.credential_files import get_credential_file_mounts, iter_skills_files
 
-            mounts = get_credential_file_mounts()
-            if not mounts:
-                return
+            for entry in get_credential_file_mounts():
+                if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
+                    logger.debug("Modal: synced credential %s", entry["container_path"])
 
-            for entry in mounts:
-                host_path = entry["host_path"]
-                container_path = entry["container_path"]
-                hp = Path(host_path)
-                try:
-                    stat = hp.stat()
-                    file_key = (stat.st_mtime, stat.st_size)
-                except OSError:
-                    continue
-
-                # Skip if already synced with same mtime+size
-                if self._synced_creds.get(container_path) == file_key:
-                    continue
-
-                try:
-                    content = hp.read_text(encoding="utf-8")
-                except Exception:
-                    continue
-
-                # Write via base64 to avoid shell escaping issues with JSON
-                import base64
-                b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-                container_dir = str(Path(container_path).parent)
-                cmd = (
-                    f"mkdir -p {shlex.quote(container_dir)} && "
-                    f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
-                )
-
-                _cp = container_path  # capture for closure
-
-                async def _write():
-                    proc = await self._sandbox.exec.aio("bash", "-c", cmd)
-                    await proc.wait.aio()
-
-                self._worker.run_coroutine(_write(), timeout=15)
-                self._synced_creds[container_path] = file_key
-                logger.debug("Modal: synced credential %s -> %s", host_path, container_path)
+            for entry in iter_skills_files():
+                if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
+                    logger.debug("Modal: synced skill file %s", entry["container_path"])
         except Exception as e:
-            logger.debug("Modal: credential file sync failed: %s", e)
+            logger.debug("Modal: file sync failed: %s", e)
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
         # Sync credential files before each command so mid-session
         # OAuth setups are picked up without requiring a restart.
-        self._sync_credential_files()
+        self._sync_files()
 
         if stdin_data is not None:
             marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"

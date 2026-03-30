@@ -399,10 +399,10 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
                 continue  # hub-installed, not built-in
             name = cmd_key.lstrip("/").replace("-", "_")
             desc = info.get("description", "")
-            # Keep descriptions short for the Telegram menu — long descs
-            # contribute to setMyCommands payload limits.
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
+            # Keep descriptions short — setMyCommands has an undocumented
+            # total payload limit.  40 chars fits 100 commands safely.
+            if len(desc) > 40:
+                desc = desc[:37] + "..."
             all_commands.append((name, desc))
     except Exception:
         pass

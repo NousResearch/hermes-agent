@@ -299,6 +299,41 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def send_draft(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
+        """Send a message draft via Telegram Bot API 9.5 sendMessageDraft.
+
+        Displays an "unsent" preview that the user can review before confirming.
+        Falls back to regular send() if sendMessageDraft is not supported.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            formatted = self.format_message(content)
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message_draft(
+                chat_id=int(chat_id),
+                text=formatted,
+                reply_to_message_id=int(reply_to) if reply_to else None,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+            return SendResult(
+                success=True,
+                message_id=str(msg.message_id) if msg else None,
+            )
+        except AttributeError:
+            # python-telegram-bot version does not support sendMessageDraft
+            logger.warning("[%s] sendMessageDraft not supported, falling back to send()", self.name)
+            return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        except Exception as e:
+            logger.error("[%s] Failed to send Telegram draft: %s", self.name, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def send_voice(
         self,
         chat_id: str,

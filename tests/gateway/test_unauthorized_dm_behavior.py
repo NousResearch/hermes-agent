@@ -60,6 +60,7 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.adapters = {platform: adapter}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
+    runner.pairing_store._is_rate_limited.return_value = False
     return runner, adapter
 
 

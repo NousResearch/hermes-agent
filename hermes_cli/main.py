@@ -1084,14 +1084,20 @@ def _model_flow_nous(config, current_model=""):
         # login_nous already handles model selection + config update
         return
 
-    # Already logged in — fetch models and select
-    print("Fetching models from Nous Portal...")
+    # Already logged in — use curated model list (same as OpenRouter defaults).
+    # The live /models endpoint returns hundreds of models; the curated list
+    # shows only agentic models users recognize from OpenRouter.
+    from hermes_cli.models import _PROVIDER_MODELS
+    model_ids = _PROVIDER_MODELS.get("nous", [])
+    if not model_ids:
+        print("No curated models available for Nous Portal.")
+        return
+
+    print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
+
+    # Verify credentials are still valid (catches expired sessions early)
     try:
         creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
-        model_ids = fetch_nous_models(
-            inference_base_url=creds.get("base_url", ""),
-            api_key=creds.get("api_key", ""),
-        )
     except Exception as exc:
         relogin = isinstance(exc, AuthError) and exc.relogin_required
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
@@ -1108,11 +1114,7 @@ def _model_flow_nous(config, current_model=""):
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
             return
-        print(f"Could not fetch models: {msg}")
-        return
-
-    if not model_ids:
-        print("No models returned by the inference API.")
+        print(f"Could not verify credentials: {msg}")
         return
 
     selected = _prompt_model_selection(model_ids, current_model=current_model)

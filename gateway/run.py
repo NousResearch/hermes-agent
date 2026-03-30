@@ -1872,6 +1872,9 @@ class GatewayRunner:
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
+        if canonical == "profile":
+            return await self._handle_profile_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
         
@@ -3070,6 +3073,36 @@ class GatewayRunner:
             return f"{header}\n\n{session_info}"
         return header
     
+    async def _handle_profile_command(self, event: MessageEvent) -> str:
+        """Handle /profile — show active profile name and home directory."""
+        from hermes_constants import get_hermes_home, display_hermes_home
+        from pathlib import Path
+
+        home = get_hermes_home()
+        display = display_hermes_home()
+
+        # Detect profile name from HERMES_HOME path
+        # Profile paths look like: ~/.hermes/profiles/<name>
+        profiles_parent = Path.home() / ".hermes" / "profiles"
+        try:
+            rel = home.relative_to(profiles_parent)
+            profile_name = str(rel).split("/")[0]
+        except ValueError:
+            profile_name = None
+
+        if profile_name:
+            lines = [
+                f"👤 **Profile:** `{profile_name}`",
+                f"📂 **Home:** `{display}`",
+            ]
+        else:
+            lines = [
+                "👤 **Profile:** default",
+                f"📂 **Home:** `{display}`",
+            ]
+
+        return "\n".join(lines)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source

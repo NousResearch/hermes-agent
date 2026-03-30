@@ -144,6 +144,117 @@ def cmd_disable(args) -> None:
     print(f"  Saved to {_config_path()}\n")
 
 
+def cmd_sync(args) -> None:
+    """Sync Honcho config to all existing profiles.
+
+    Scans all Hermes profiles and creates host blocks for any that don't
+    have one yet. Inherits settings from the default host block.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles
+        profiles = list_profiles()
+    except Exception as e:
+        print(f"  Could not list profiles: {e}\n")
+        return
+
+    cfg = _read_config()
+    if not cfg:
+        print("  No Honcho config found. Run 'hermes honcho setup' first.\n")
+        return
+
+    hosts = cfg.get("hosts", {})
+    default_block = hosts.get(HOST, {})
+    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
+
+    if not default_block and not has_key:
+        print("  Honcho not configured on default profile. Run 'hermes honcho setup' first.\n")
+        return
+
+    created = 0
+    skipped = 0
+    for p in profiles:
+        if p.name == "default":
+            continue
+        if clone_honcho_for_profile(p.name):
+            print(f"  + {p.name} -> hermes.{p.name}")
+            created += 1
+        else:
+            skipped += 1
+
+    if created:
+        print(f"\n  {created} profile(s) synced.")
+    else:
+        print("  All profiles already have Honcho config.")
+    if skipped:
+        print(f"  {skipped} profile(s) already configured (skipped).")
+    print()
+
+
+def cmd_sync(args) -> None:
+    """Sync Honcho config to all existing profiles.
+
+    Scans all Hermes profiles and creates host blocks for any that don't
+    have one yet. Inherits settings from the default host block.
+    Also called automatically during `hermes update`.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles
+        profiles = list_profiles()
+    except Exception as e:
+        print(f"  Could not list profiles: {e}\n")
+        return
+
+    cfg = _read_config()
+    if not cfg:
+        return
+
+    default_block = cfg.get("hosts", {}).get(HOST, {})
+    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
+
+    if not default_block and not has_key:
+        return
+
+    created = 0
+    for p in profiles:
+        if p.name == "default":
+            continue
+        if clone_honcho_for_profile(p.name):
+            print(f"  Honcho: + {p.name} -> hermes.{p.name}")
+            created += 1
+
+    if created:
+        print(f"  Honcho: {created} profile(s) synced.")
+
+
+def sync_honcho_profiles_quiet() -> int:
+    """Sync Honcho host blocks for all profiles. Returns count of newly created blocks.
+
+    Called from `hermes update` -- no output, no exceptions.
+    """
+    try:
+        from hermes_cli.profiles import list_profiles
+        profiles = list_profiles()
+    except Exception:
+        return 0
+
+    cfg = _read_config()
+    if not cfg:
+        return 0
+
+    default_block = cfg.get("hosts", {}).get(HOST, {})
+    has_key = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
+    if not default_block and not has_key:
+        return 0
+
+    created = 0
+    for p in profiles:
+        if p.name == "default":
+            continue
+        if clone_honcho_for_profile(p.name):
+            created += 1
+    return created
+
+
 _profile_override: str | None = None
 
 
@@ -1076,6 +1187,8 @@ def honcho_command(args) -> None:
         cmd_enable(args)
     elif sub == "disable":
         cmd_disable(args)
+    elif sub == "sync":
+        cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate, enable, disable\n")
+        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate, enable, disable, sync\n")

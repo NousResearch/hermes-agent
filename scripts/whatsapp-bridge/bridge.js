@@ -26,6 +26,7 @@ import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
+import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -47,7 +48,7 @@ const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'docume
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
-const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -190,10 +191,9 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others (resolve LID → phone if needed)
-      if (!msg.key.fromMe && ALLOWED_USERS.length > 0) {
-        const resolvedNumber = lidToPhone[senderNumber] || senderNumber;
-        if (!ALLOWED_USERS.includes(resolvedNumber)) continue;
+      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
+      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        continue;
       }
 
       // Extract message body
@@ -515,8 +515,8 @@ if (PAIR_ONLY) {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
-    if (ALLOWED_USERS.length > 0) {
-      console.log(`🔒 Allowed users: ${ALLOWED_USERS.join(', ')}`);
+    if (ALLOWED_USERS.size > 0) {
+      console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else {
       console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
     }

@@ -225,6 +225,49 @@ from gateway.session import (
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
+
+def _normalize_whatsapp_identifier(value: str) -> str:
+    """Strip WhatsApp JID/LID syntax down to its stable numeric identifier."""
+    return (
+        str(value or "")
+        .strip()
+        .replace("+", "", 1)
+        .split(":", 1)[0]
+        .split("@", 1)[0]
+    )
+
+
+def _expand_whatsapp_auth_aliases(identifier: str) -> set:
+    """Resolve WhatsApp phone/LID aliases using bridge session mapping files."""
+    normalized = _normalize_whatsapp_identifier(identifier)
+    if not normalized:
+        return set()
+
+    session_dir = _hermes_home / "whatsapp" / "session"
+    resolved = set()
+    queue = [normalized]
+
+    while queue:
+        current = queue.pop(0)
+        if not current or current in resolved:
+            continue
+
+        resolved.add(current)
+        for suffix in ("", "_reverse"):
+            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
+            if not mapping_path.exists():
+                continue
+            try:
+                mapped = _normalize_whatsapp_identifier(
+                    json.loads(mapping_path.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                continue
+            if mapped and mapped not in resolved:
+                queue.append(mapped)
+
+    return resolved
+
 logger = logging.getLogger(__name__)
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -1550,10 +1593,23 @@ class GatewayRunner:
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
-        # WhatsApp JIDs have @s.whatsapp.net suffix — strip it for comparison
         check_ids = {user_id}
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
+
+        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
+        if source.platform == Platform.WHATSAPP:
+            normalized_allowed_ids = set()
+            for allowed_id in allowed_ids:
+                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
+            if normalized_allowed_ids:
+                allowed_ids = normalized_allowed_ids
+
+            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
+            normalized_user_id = _normalize_whatsapp_identifier(user_id)
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
+
         return bool(check_ids & allowed_ids)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:

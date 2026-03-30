@@ -72,6 +72,7 @@ class ContextCompressor:
         api_key: str = "",
         config_context_length: int | None = None,
         provider: str = "",
+        focus_hints: str = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -82,6 +83,7 @@ class ContextCompressor:
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.focus_hints = focus_hints or ""
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -338,6 +340,11 @@ Use this exact structure:
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
 
 Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions. The goal is to prevent the next assistant from repeating work or losing important details.
+
+        # Inject focus hints if provided (e.g., "/compress preserve database schema")
+        if self.focus_hints:
+            prompt += f"\n\nIMPORTANT — the user requested that the following be prioritized in this summary:\n{self.focus_hints}\nEnsure these topics are preserved in detail even if it means being more concise elsewhere."
+
 
 Write only the summary body. Do not include any preamble or prefix."""
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import httpx
+import pytest
 
 from tools.skills_hub import (
     GitHubAuth,
@@ -648,6 +649,29 @@ class TestWellKnownSkillSource:
         assert bundle.files["SKILL.md"] == "# Code Review\n"
         assert bundle.files["references/checklist.md"] == "- [ ] security\n"
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_rejects_unsafe_file_paths_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/index.json"):
+                return MagicMock(status_code=200, json=lambda: {
+                    "skills": [{
+                        "name": "code-review",
+                        "description": "Review code",
+                        "files": ["SKILL.md", "../../../escape.txt"],
+                    }]
+                })
+            if url.endswith("/code-review/SKILL.md"):
+                return MagicMock(status_code=200, text="# Code Review\n")
+            raise AssertionError(url)
+
+        mock_get.side_effect = fake_get
+
+        bundle = self._source().fetch("well-known:https://example.com/.well-known/skills/code-review")
+
+        assert bundle is None
+
 
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
@@ -1142,6 +1166,61 @@ class TestQuarantineBundleBinaryAssets:
 
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
+
+    def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={
+                    "SKILL.md": "---\nname: demo\n---\n",
+                    "../../../escape.txt": "owned",
+                },
+                source="well-known",
+                identifier="well-known:https://example.com/.well-known/skills/demo",
+                trust_level="community",
+            )
+
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                quarantine_bundle(bundle)
+
+        assert not (tmp_path / "skills" / "escape.txt").exists()
+
+    def test_quarantine_bundle_rejects_absolute_file_paths(self, tmp_path):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        absolute_target = tmp_path / "outside.txt"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="demo",
+                files={
+                    "SKILL.md": "---\nname: demo\n---\n",
+                    str(absolute_target): "owned",
+                },
+                source="well-known",
+                identifier="well-known:https://example.com/.well-known/skills/demo",
+                trust_level="community",
+            )
+
+            with pytest.raises(ValueError, match="Unsafe bundle file path"):
+                quarantine_bundle(bundle)
+
+        assert not absolute_target.exists()
 
 
 # ---------------------------------------------------------------------------

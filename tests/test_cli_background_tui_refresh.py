@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cli import HermesCLI
+from cli import HermesCLI, BackgroundTaskInfo
 
 
 def _make_cli():
@@ -97,7 +97,11 @@ class TestBackgroundCommandTuiRefresh:
 
         # Simulate adding and removing background tasks
         task_id = "test_task_1"
-        cli_obj._background_tasks[task_id] = MagicMock()
+        cli_obj._background_tasks[task_id] = BackgroundTaskInfo(
+            thread=MagicMock(),
+            prompt_preview="mock prompt",
+            task_num=1,
+        )
         assert task_id in cli_obj._background_tasks
 
         # Clean up

@@ -25,6 +25,7 @@ import uuid
 import textwrap
 from contextlib import contextmanager
 from pathlib import Path
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -66,6 +67,17 @@ from agent.usage_pricing import (
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+_BACKGROUND_TASK_NUDGE_SECONDS = 45
+_LONG_RUNNING_PROMPT_SECONDS = 45
+
+
+@dataclass
+class BackgroundTaskInfo:
+    thread: threading.Thread
+    prompt_preview: str
+    task_num: int
+    nudge_timer: threading.Timer | None = None
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -1275,9 +1287,10 @@ class HermesCLI:
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
 
-        # Background task tracking: {task_id: threading.Thread}
-        self._background_tasks: Dict[str, threading.Thread] = {}
+        # Background task tracking: {task_id: BackgroundTaskInfo}
+        self._background_tasks: Dict[str, BackgroundTaskInfo] = {}
         self._background_task_counter = 0
+        self._long_running_tip_timer: threading.Timer | None = None
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -4066,6 +4079,7 @@ class HermesCLI:
             return
 
         prompt = parts[1].strip()
+        prompt_preview = prompt if len(prompt) <= 60 else f"{prompt[:57]}..."
         self._background_task_counter += 1
         task_num = self._background_task_counter
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -4179,7 +4193,9 @@ class HermesCLI:
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
-                self._background_tasks.pop(task_id, None)
+                info = self._background_tasks.pop(task_id, None)
+                if info and info.nudge_timer:
+                    info.nudge_timer.cancel()
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
                     self._spinner_text = ""
@@ -4187,8 +4203,67 @@ class HermesCLI:
                     self._invalidate(min_interval=0)
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
-        self._background_tasks[task_id] = thread
+        task_info = BackgroundTaskInfo(
+            thread=thread,
+            prompt_preview=prompt_preview,
+            task_num=task_num,
+        )
+        timer = threading.Timer(
+            _BACKGROUND_TASK_NUDGE_SECONDS,
+            self._notify_background_task_still_running,
+            args=(task_id,),
+        )
+        timer.daemon = True
+        task_info.nudge_timer = timer
+        self._background_tasks[task_id] = task_info
+        timer.start()
         thread.start()
+
+    def _notify_background_task_still_running(self, task_id: str) -> None:
+        """Nudge the user when a background task has been running longer than the threshold."""
+        info = self._background_tasks.get(task_id)
+        if not info or not info.thread.is_alive():
+            return
+
+        preview_text = f' Prompt preview: "{info.prompt_preview}"' if info.prompt_preview else ""
+        _cprint(
+            f"  ⏳ Background task #{info.task_num} is still running{preview_text}. "
+            f"Results will appear once it finishes (Task ID: {task_id}). "
+            "Use /stop to cancel it if you need to prioritize another task."
+        )
+
+    def _cancel_long_running_tip(self) -> None:
+        if self._long_running_tip_timer:
+            self._long_running_tip_timer.cancel()
+            self._long_running_tip_timer = None
+
+    def _schedule_long_running_tip(self, prompt: str) -> None:
+        if not prompt:
+            return
+        self._cancel_long_running_tip()
+        timer = threading.Timer(
+            _LONG_RUNNING_PROMPT_SECONDS,
+            self._notify_long_running_task,
+            args=(prompt,),
+        )
+        timer.daemon = True
+        self._long_running_tip_timer = timer
+        timer.start()
+
+    def _notify_long_running_task(self, prompt: str) -> None:
+        if not self._agent_running:
+            return
+        preview = prompt.replace("\n", " ").strip()
+        if preview:
+            preview = preview if len(preview) <= 60 else f"{preview[:57]}..."
+        else:
+            preview = "your latest request"
+        preview = _escape(preview)
+        _cprint(
+            f"  ⚠️  This turn has been running for {_LONG_RUNNING_PROMPT_SECONDS} seconds. "
+            f"Try `/bg {preview}` so the rest of the chat stays responsive."
+        )
+        self._long_running_tip_timer = None
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -7409,12 +7484,14 @@ class HermesCLI:
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
                     # Regular chat - run agent
+                    self._schedule_long_running_tip(user_input if isinstance(user_input, str) else "")
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
 
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
+                        self._cancel_long_running_tip()
                         self._agent_running = False
                         self._spinner_text = ""
                         app.invalidate()  # Refresh status line

@@ -366,27 +366,41 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
-    """Return Telegram menu commands (built-in + active skills), capped to the Bot API limit.
+    """Return Telegram menu commands capped to the Bot API limit.
 
-    Built-in commands come first, then active skill commands.  Commands beyond
-    ``max_commands`` remain callable in the gateway; they are just omitted from
-    Telegram's native slash-command picker.
+    Priority order (higher priority = never bumped by overflow):
+      1. Core CommandDef commands (always included)
+      2. Plugin slash commands (take precedence over skills)
+      3. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Skills are the only tier that gets trimmed when the cap is hit.
+    User-installed hub skills are excluded — accessible via /skills.
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
-        commands omitted due to the cap.
+        skill commands omitted due to the cap.
     """
     all_commands = list(telegram_bot_commands())
 
-    # Append active BUILT-IN skill commands only (not user-installed hub skills).
-    # User-installed skills stay accessible via /skills and by typing the command
-    # directly, but don't clutter the Telegram menu.
+    # Plugin slash commands get priority over skills
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        plugin_cmds = getattr(pm, "_plugin_commands", {})
+        for cmd_name in sorted(plugin_cmds):
+            tg_name = cmd_name.replace("-", "_")
+            desc = "Plugin command"
+            if len(desc) > 40:
+                desc = desc[:37] + "..."
+            all_commands.append((tg_name, desc))
+    except Exception:
+        pass
+
+    # Remaining slots go to built-in skill commands (not hub-installed).
+    skill_entries: list[tuple[str, str]] = []
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
-        # Built-in skills are synced to SKILLS_DIR (~/.hermes/skills/).
-        # Hub-installed skills go into SKILLS_DIR/.hub/.  Exclude .hub/ skills
-        # from the menu — they're user-installed, not repo built-in.
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve())
         skill_cmds = get_skill_commands()
@@ -396,18 +410,21 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
             if not skill_path.startswith(_skills_dir):
                 continue
             if skill_path.startswith(_hub_dir):
-                continue  # hub-installed, not built-in
+                continue
             name = cmd_key.lstrip("/").replace("-", "_")
             desc = info.get("description", "")
             # Keep descriptions short — setMyCommands has an undocumented
             # total payload limit.  40 chars fits 100 commands safely.
             if len(desc) > 40:
                 desc = desc[:37] + "..."
-            all_commands.append((name, desc))
+            skill_entries.append((name, desc))
     except Exception:
         pass
 
-    hidden_count = max(0, len(all_commands) - max_commands)
+    # Skills fill remaining slots — they're the only tier that gets trimmed
+    remaining_slots = max(0, max_commands - len(all_commands))
+    hidden_count = max(0, len(skill_entries) - remaining_slots)
+    all_commands.extend(skill_entries[:remaining_slots])
     return all_commands[:max_commands], hidden_count
 
 

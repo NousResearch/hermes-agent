@@ -481,59 +481,15 @@ Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom pat
 
 ### What gets migrated
 
-The migration covers your entire OpenClaw footprint. Items are either **directly imported** into Hermes equivalents or **archived** for manual review when there's no direct mapping.
+The migration covers 30+ categories across persona, memory, skills, model providers, messaging platforms, agent behavior, session policies, MCP servers, TTS, and more. Items are either **directly imported** into Hermes equivalents or **archived** for manual review.
 
-#### Directly imported
+**Directly imported:** SOUL.md, MEMORY.md, USER.md, AGENTS.md, skills (4 source directories), default model, custom providers, MCP servers, messaging platform tokens and allowlists (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost), agent defaults (reasoning effort, compression, human delay, timezone, sandbox), session reset policies, approval rules, TTS config, browser settings, tool settings, exec timeout, command allowlist, gateway config, and API keys from 3 sources.
 
-| Category | OpenClaw source | Hermes destination |
-|----------|----------------|-------------------|
-| **Persona** | `SOUL.md` | `~/.hermes/SOUL.md` |
-| **Workspace instructions** | `AGENTS.md` | `AGENTS.md` in target workspace |
-| **Long-term memory** | `MEMORY.md` | `~/.hermes/MEMORY.md` (merged with existing entries) |
-| **User profile** | `USER.md` | `~/.hermes/USER.md` (merged with existing entries) |
-| **Daily memory files** | `workspace/memory/` | Merged into `~/.hermes/MEMORY.md` |
-| **Default model** | Config model setting | `config.yaml` model section |
-| **Custom providers** | Provider definitions (baseUrl, apiType, headers) | `config.yaml` custom\_providers |
-| **MCP servers** | MCP server definitions | `config.yaml` mcp\_servers |
-| **User skills** | Workspace skills | `~/.hermes/skills/openclaw-imports/` |
-| **Shared skills** | `~/.openclaw/skills/` | `~/.hermes/skills/openclaw-imports/` |
-| **Personal skills** | `~/.agents/skills/` (cross-project) | `~/.hermes/skills/openclaw-imports/` |
-| **Project skills** | `workspace/.agents/skills/` | `~/.hermes/skills/openclaw-imports/` |
-| **Command allowlist** | Exec approval patterns | `config.yaml` command\_allowlist |
-| **Messaging settings** | Allowlists, working directory | `config.yaml` messaging section |
-| **Session policies** | Daily/idle reset policies | `config.yaml` session\_reset |
-| **Agent defaults** | Compaction, context, thinking settings | `config.yaml` agent section |
-| **Browser settings** | Browser automation config | `config.yaml` browser section |
-| **Tool settings** | Exec timeout, sandbox, web search | `config.yaml` tools section |
-| **Approval rules** | Approval mode and rules | `config.yaml` approvals section |
-| **TTS config** | TTS provider and voice | `config.yaml` tts section |
-| **TTS assets** | Workspace TTS files | `~/.hermes/tts/` |
-| **Gateway config** | Gateway port and auth | `config.yaml` gateway section |
-| **Telegram settings** | Bot token, allowlist | `~/.hermes/.env` |
-| **Discord settings** | Bot token, allowlist | `~/.hermes/.env` |
-| **Slack settings** | Bot/app tokens, allowlist | `~/.hermes/.env` |
-| **WhatsApp settings** | Allowlist | `~/.hermes/.env` |
-| **Signal settings** | Account, HTTP URL, allowlist | `~/.hermes/.env` |
-| **Channel config** | Matrix, Mattermost, IRC, group settings | `config.yaml` + archive |
-| **Provider API keys** | Config, `~/.openclaw/.env`, and `auth-profiles.json` | `~/.hermes/.env` (requires `--migrate-secrets`) |
+**Archived for manual review:** Cron jobs, plugins, hooks/webhooks, memory backend (QMD), skills registry config, UI/identity, logging, multi-agent setup, channel bindings, IDENTITY.md, TOOLS.md, HEARTBEAT.md, BOOTSTRAP.md.
 
-#### Archived for manual review
+**API key resolution** checks three sources in priority order: config values → `~/.openclaw/.env` → `auth-profiles.json`. All token fields handle plain strings, env templates (`${VAR}`), and SecretRef objects.
 
-These OpenClaw features don't have direct Hermes equivalents. They're saved to an archive directory for you to review and recreate manually.
-
-| Category | What's archived | How to recreate in Hermes |
-|----------|----------------|--------------------------|
-| **Cron / scheduled tasks** | Job definitions | Recreate with `hermes cron create` |
-| **Plugins** | Plugin configuration, installed extensions | Check the [plugins guide](../user-guide/features/hooks.md) |
-| **Hooks and webhooks** | Internal hooks, webhooks, Gmail integration | Use `hermes webhook` or gateway hooks |
-| **Memory backend** | QMD, vector search, citation settings | Configure Honcho via `hermes honcho` |
-| **Skills registry** | Per-skill enabled/config/env settings | Use `hermes skills config` |
-| **UI and identity** | Theme, assistant identity, display prefs | Use `/skin` command or `config.yaml` |
-| **Logging** | Diagnostics configuration | Set in `config.yaml` logging section |
-
-### Security
-
-API keys are **not migrated by default**. The `--preset full` preset enables secret migration. Keys are collected from three sources (config values take priority, then `.env`, then `auth-profiles.json`) for these targets: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `ELEVENLABS_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `VOICE_TOOLS_OPENAI_KEY`. All other secrets are skipped.
+For the complete config key mapping, SecretRef handling details, and post-migration checklist, see the **[full migration guide](../guides/migrate-from-openclaw.md)**.
 
 ### Examples
 
@@ -549,9 +505,6 @@ hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
-
-# Migrate and place AGENTS.md in a specific project
-hermes claw migrate --workspace-target /home/user/my-project
 ```
 
 ## Maintenance commands

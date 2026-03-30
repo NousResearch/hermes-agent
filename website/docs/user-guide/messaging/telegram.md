@@ -161,7 +161,7 @@ fly secrets set TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 32)
 
   [[services.ports]]
     handlers = ["tls", "http"]
-    port = "443"
+    port = 443
 ```
 
 3. Deploy:

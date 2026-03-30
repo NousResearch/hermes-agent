@@ -906,6 +906,14 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
+    @staticmethod
+    def _is_timeout_error(error: Optional[str]) -> bool:
+        """Return True if the error string indicates a timeout."""
+        if not error:
+            return False
+        lowered = error.lower()
+        return "timed out" in lowered or "timeout" in lowered
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -936,6 +944,11 @@ class BasePlatformAdapter(ABC):
 
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
+
+        # Timeout errors are not retryable (message may have been delivered)
+        # and not formatting errors — return the failure as-is.
+        if not is_network and self._is_timeout_error(error_str):
+            return result
 
         if is_network:
             # Retry with exponential backoff for transient errors

@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""
+mem — Memory Engine CLI for live session use.
+
+Usage:
+  mem store "fact text" [--source SOURCE] [--confidence 0.9]
+  mem search "query text" [--top 5]
+  mem recall "query text"          # alias for search
+  mem ingest                       # re-embed all facts missing real embeddings
+  mem stats                        # DB overview
+  mem recent [N]                   # last N facts added
+
+Designed to be called from Hermes sessions, heartbeats, and cron.
+"""
+
+import sys
+import os
+import json
+import sqlite3
+import hashlib
+import math
+import re
+import time
+import argparse
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
+
+DB_PATH = Path.home() / ".hermes/memory-engine/db/memory.db"
+
+# ── Embedding Model (lazy load) ──────────────────────────────
+
+_embedder = None
+
+def get_embedder():
+    global _embedder
+    if _embedder is None:
+        from fastembed import TextEmbedding
+        _embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _embedder
+
+def embed_text(text: str) -> List[float]:
+    """Generate real semantic embedding for text."""
+    model = get_embedder()
+    embeddings = list(model.embed([text]))
+    return embeddings[0].tolist()
+
+def cosine_similarity(a: List[float], b: List[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+# ── Domain/Tag Detection ─────────────────────────────────────
+
+DOMAIN_PATTERNS = {
+    "memory_system":   [r"memory|memoria|capas|retrieval|embedding|fact"],
+    "ai_agents":       [r"agent|hermes|katsumi|leo|nova|aria|openclaw"],
+    "deployment":      [r"deploy|hosting|hostinger|vps|ssh|server|docker"],
+    "automation":      [r"automat|pipeline|cron|script|selenium|workflow"],
+    "content":         [r"stream|video|youtube|content|publicar|post"],
+    "marketing":       [r"google.ads|marketing|campaign|ads|seo|funnel"],
+    "database":        [r"database|sqlite|postgres|schema|migration"],
+    "payments":        [r"stripe|payment|billing|subscription|checkout"],
+    "development":     [r"code|debug|error|bug|test|typescript|python"],
+    "infrastructure":  [r"tailscale|vpn|dns|domain|ssl|network"],
+    "business":        [r"business|company|revenue|client|saas|founder"],
+    "agi":             [r"agi|intelligence|reasoning|causal|meta.learn"],
+}
+
+def detect_tags(text: str) -> List[str]:
+    tags = set()
+    text_lower = text.lower()
+    for domain, patterns in DOMAIN_PATTERNS.items():
+        for p in patterns:
+            if re.search(p, text_lower):
+                tags.add(f"domain:{domain}")
+                break
+    if not tags:
+        tags.add("domain:general")
+    return sorted(list(tags))
+
+# ── DB Operations ─────────────────────────────────────────────
+
+def get_conn():
+    return sqlite3.connect(str(DB_PATH))
+
+def cmd_store(args):
+    """Store a new fact with real embedding."""
+    text = args.text
+    source = args.source or "session"
+    confidence = args.confidence or 0.9
+
+    print(f"Embedding...", end=" ", flush=True)
+    embedding = embed_text(text)
+    print(f"done ({len(embedding)}d)")
+
+    tags = detect_tags(text)
+    content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+    now = datetime.now().isoformat()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Check for duplicate
+    cur.execute("SELECT id FROM memory_facts WHERE content_hash = ?", (content_hash,))
+    existing = cur.fetchone()
+    if existing:
+        print(f"Duplicate detected (id={existing[0]}). Updating reference count.")
+        cur.execute("""UPDATE memory_facts 
+                       SET referenced_count = referenced_count + 1,
+                           last_referenced = ?,
+                           updated_at = ?
+                       WHERE id = ?""", (now, now, existing[0]))
+        conn.commit()
+        conn.close()
+        return
+
+    cur.execute("""INSERT INTO memory_facts 
+                   (content, embedding, source, confidence, tags, 
+                    content_hash, created_at, updated_at, decay_weight,
+                    freshness_tier, referenced_count, is_active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1.0, 'fresh', 0, 1)""",
+                (text, json.dumps(embedding), source, confidence,
+                 json.dumps(tags), content_hash, now, now))
+    
+    fact_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    
+    print(f"✅ Stored fact #{fact_id}")
+    print(f"   Tags: {', '.join(tags)}")
+    print(f"   Source: {source} | Confidence: {confidence}")
+
+def cmd_search(args):
+    """Semantic search over memory facts."""
+    query = args.text
+    top_k = args.top or 5
+
+    print(f"Searching...", end=" ", flush=True)
+    query_emb = embed_text(query)
+    print("done")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, content, embedding, source, confidence, 
+                          decay_weight, tags, created_at, referenced_count
+                   FROM memory_facts 
+                   WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'""")
+    
+    results = []
+    for row in cur.fetchall():
+        fid, content, emb_json, source, conf, decay, tags_json, created, refs = row
+        try:
+            fact_emb = json.loads(emb_json)
+            if len(fact_emb) != len(query_emb):
+                continue
+            sim = cosine_similarity(query_emb, fact_emb)
+            # Boost by decay and confidence
+            score = sim * 0.7 + (conf or 0.5) * 0.15 + (decay or 0.5) * 0.15
+            results.append({
+                "id": fid, "content": content, "score": score,
+                "similarity": sim, "source": source, "confidence": conf,
+                "tags": tags_json, "created": created, "refs": refs
+            })
+        except:
+            continue
+    
+    conn.close()
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    results = results[:top_k]
+
+    if not results:
+        print("No results found.")
+        return
+
+    print(f"\n{'─' * 60}")
+    print(f"  Top {len(results)} results for: \"{query}\"")
+    print(f"{'─' * 60}")
+    
+    for i, r in enumerate(results):
+        sim_bar = "█" * int(r["similarity"] * 20) + "░" * (20 - int(r["similarity"] * 20))
+        print(f"\n  #{i+1} [id:{r['id']}] score:{r['score']:.3f} sim:{r['similarity']:.3f}")
+        print(f"     {sim_bar}")
+        print(f"     {r['content'][:120]}")
+        print(f"     src:{r['source']} conf:{r['confidence']} refs:{r['refs']}")
+
+def cmd_ingest(args):
+    """Re-embed all facts with real semantic embeddings."""
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    cur.execute("SELECT id, content FROM memory_facts")
+    facts = cur.fetchall()
+    print(f"Re-embedding {len(facts)} facts with fastembed/bge-small-en-v1.5...")
+    
+    model = get_embedder()
+    
+    # Batch embed
+    texts = [f[1] for f in facts]
+    embeddings = list(model.embed(texts))
+    
+    for i, (fid, content) in enumerate(facts):
+        emb = embeddings[i].tolist()
+        tags = detect_tags(content)
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        
+        cur.execute("""UPDATE memory_facts 
+                       SET embedding = ?, tags = ?, content_hash = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (json.dumps(emb), json.dumps(tags), content_hash,
+                     datetime.now().isoformat(), fid))
+        
+        if (i + 1) % 10 == 0 or i == len(facts) - 1:
+            print(f"  [{i+1}/{len(facts)}] embedded")
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ All {len(facts)} facts re-embedded with real semantic vectors")
+
+def cmd_stats(args):
+    """Show memory engine stats."""
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    cur.execute("SELECT COUNT(*) FROM memory_facts")
+    total = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM memory_facts WHERE embedding IS NOT NULL AND LENGTH(embedding) > 100")
+    embedded = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(DISTINCT json_each.value) FROM memory_facts, json_each(memory_facts.tags)")
+    tags = cur.fetchone()[0]
+    
+    cur.execute("SELECT source, COUNT(*) FROM memory_facts GROUP BY source ORDER BY COUNT(*) DESC")
+    sources = cur.fetchall()
+    
+    cur.execute("SELECT COUNT(*) FROM fact_relationships")
+    rels = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM surface_buffer WHERE consumed = 0")
+    surfaced = cur.fetchone()[0]
+    
+    cur.execute("SELECT MIN(created_at), MAX(created_at) FROM memory_facts")
+    dates = cur.fetchone()
+    
+    conn.close()
+    
+    print(f"{'─' * 50}")
+    print(f"  MEMORY ENGINE STATUS")
+    print(f"{'─' * 50}")
+    print(f"  Facts:          {total}")
+    print(f"  Embedded:       {embedded} ({embedded/max(total,1)*100:.0f}%)")
+    print(f"  Unique tags:    {tags}")
+    print(f"  Relationships:  {rels}")
+    print(f"  Surface buffer: {surfaced}")
+    print(f"  Date range:     {dates[0][:10] if dates[0] else '?'} → {dates[1][:10] if dates[1] else '?'}")
+    print(f"  Sources:")
+    for src, cnt in sources:
+        print(f"    {src}: {cnt}")
+
+def cmd_recent(args):
+    """Show most recent facts."""
+    n = args.n or 10
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""SELECT id, content, source, confidence, created_at 
+                   FROM memory_facts ORDER BY created_at DESC LIMIT ?""", (n,))
+    rows = cur.fetchall()
+    conn.close()
+    
+    print(f"Last {len(rows)} facts:")
+    for fid, content, source, conf, created in rows:
+        ts = created[:16] if created else "?"
+        print(f"  [{fid}] {ts} ({source}, {conf}) {content[:80]}")
+
+# ── Main ──────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(prog="mem", description="Memory Engine CLI")
+    sub = parser.add_subparsers(dest="command")
+    
+    p_store = sub.add_parser("store", help="Store a new fact")
+    p_store.add_argument("text", help="Fact text")
+    p_store.add_argument("--source", default="session")
+    p_store.add_argument("--confidence", type=float, default=0.9)
+    
+    p_search = sub.add_parser("search", help="Semantic search")
+    p_search.add_argument("text", help="Query text")
+    p_search.add_argument("--top", type=int, default=5)
+    
+    p_recall = sub.add_parser("recall", help="Alias for search")
+    p_recall.add_argument("text", help="Query text")
+    p_recall.add_argument("--top", type=int, default=5)
+    
+    p_ingest = sub.add_parser("ingest", help="Re-embed all facts")
+    
+    p_stats = sub.add_parser("stats", help="Show stats")
+    
+    p_recent = sub.add_parser("recent", help="Show recent facts")
+    p_recent.add_argument("n", nargs="?", type=int, default=10)
+    
+    args = parser.parse_args()
+    
+    if args.command == "store":
+        cmd_store(args)
+    elif args.command in ("search", "recall"):
+        cmd_search(args)
+    elif args.command == "ingest":
+        cmd_ingest(args)
+    elif args.command == "stats":
+        cmd_stats(args)
+    elif args.command == "recent":
+        cmd_recent(args)
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()

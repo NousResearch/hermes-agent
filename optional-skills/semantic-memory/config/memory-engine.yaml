@@ -1,0 +1,169 @@
+---
+# Memory Engine Configuration (Fase 1-2: Semantic Retrieval + Temporal Weighting)
+# Created: 2026-03-23
+# Version: 1.0
+
+ENGINE:
+  name: "Hermes Memory Engine"
+  version: "1.0-alpha"
+  phase: "1-2"
+  mode: "production"
+
+EMBEDDINGS:
+  provider: "fastembed"
+  model: "BAAI/bge-small-en-v1.5"
+  dimensions: 384
+  batch_size: 50
+  timeout: 30
+  retry_attempts: 3
+  cache: true
+  cache_dir: ".hermes/memory-engine/db/embedding-cache"
+  local: true
+  cost: "free"
+
+VECTOR_DB:
+  engine: "sqlite-vec"
+  path: ".hermes/memory-engine/db/memory.db"
+  index_type: "hnswlib"
+  distance_metric: "cosine"
+  tables:
+    - name: "memory_facts"
+      columns:
+        - id (primary key)
+        - content (text)
+        - embedding (vector[384])
+        - source (text: memory.md, daily, skill, etc)
+        - created_at (timestamp)
+        - updated_at (timestamp)
+        - referenced_count (int)
+        - last_referenced (timestamp)
+        - decay_weight (float)
+        - confidence (float 0-1)
+        - tags (json array)
+        - metadata (json)
+
+CONTEXT_SELECTION:
+  default_token_budget: 3000
+  max_per_source: 3
+  min_score: 0.20
+  default_strategy: "auto"
+  strategies:
+    greedy: "Pick highest-scored until budget full"
+    diverse: "Source diversity cap (max 3 per source)"
+    windowed: "Include temporal neighbors for episodic recall"
+    auto: "Detect from query (episodic→windowed, short→greedy, else→diverse)"
+
+RETRIEVAL:
+  hybrid_ranking: true
+  bm25_weight: 0.4
+  semantic_weight: 0.4
+  temporal_weight: 0.2
+  
+  scoring:
+    - algorithm: "BM25"
+      weight: 0.4
+      description: "Lexical relevance"
+    
+    - algorithm: "Cosine Similarity"
+      weight: 0.4
+      description: "Semantic similarity to query"
+    
+    - algorithm: "Temporal Decay"
+      weight: 0.2
+      function: "e^(-lambda * days_old)"
+      lambda: 0.05
+      description: "Recency bonus"
+  
+  top_k: 5
+  min_score_threshold: 0.3
+  contextual_window: 3  # fetch N-1, N, N+1
+
+TEMPORAL_WEIGHTING:
+  enabled: true
+  decay_function: "exponential"
+  
+  freshness_tiers:
+    recent:
+      threshold: "7 days"
+      boost_multiplier: 2.0
+      description: "Strong recency signal"
+    
+    medium:
+      threshold: "30 days"
+      boost_multiplier: 1.0
+      description: "Normal weight"
+    
+    old:
+      threshold: ">30 days"
+      boost_multiplier: 0.5
+      description: "Deprecated, needs confirmation"
+    
+    archive:
+      threshold: ">90 days"
+      boost_multiplier: 0.1
+      description: "Archive tier, rarely used"
+  
+  reference_tracking: true
+  decay_lambda: 0.05  # controls how fast weight decays
+
+MEMORY_NOTES:
+  protocol_enabled: true
+  types:
+    - USER_FACT
+    - PREFERENCE
+    - DECISION
+    - ENTITY
+    - EPISODE
+    - AGENT_IDENTITY
+    - CONTEXT
+  
+  auto_embed: true
+  auto_tag: true
+  deduplication: "enabled"
+
+SOURCES:
+  priority_order:
+    1: "memory/YYYY-MM-DD.md"  # Daily logs (raw)
+    2: "MEMORY.md"              # Long-term curated
+    3: "obsidian-vault"         # Knowledge graph
+    4: "skills/"                # Procedural memory
+    5: "AGENTS.md"              # Operating rules
+  
+  polling:
+    enabled: true
+    interval: "3600s"  # check every hour for new files
+    on_change: "re-embed"
+
+INDEXES:
+  primary: "memory_facts"
+  secondary:
+    - "source"
+    - "created_at"
+    - "decay_weight"
+    - "tags"
+
+CACHE:
+  enabled: true
+  path: ".hermes/memory-engine/cache"
+  ttl: 3600
+  max_size: "500MB"
+
+LOGGING:
+  level: "INFO"
+  format: "json"
+  path: ".hermes/memory-engine/logs/memory-engine.log"
+  rotation: "daily"
+  retention_days: 30
+
+PERFORMANCE:
+  embedding_batch_size: 10
+  embedding_cache_hits_boost: true
+  parallel_processing: true
+  max_workers: 4
+
+QUALITY_CHECKS:
+  enabled: true
+  deduplication_check: true
+  contradiction_detection: true
+  staleness_detection: true
+  run_interval: "86400s"  # daily

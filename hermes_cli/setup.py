@@ -1002,10 +1002,9 @@ def setup_model_provider(config: dict):
                     min_key_ttl_seconds=5 * 60,
                     timeout_seconds=15.0,
                 )
-                nous_models = fetch_nous_models(
-                    inference_base_url=creds.get("base_url", ""),
-                    api_key=creds.get("api_key", ""),
-                )
+                # Use curated model list instead of full /models dump
+                from hermes_cli.models import _PROVIDER_MODELS
+                nous_models = _PROVIDER_MODELS.get("nous", [])
             except Exception as e:
                 logger.debug("Could not fetch Nous models after login: %s", e)
 

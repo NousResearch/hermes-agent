@@ -601,13 +601,15 @@ def _print_setup_summary(config: dict, hermes_home):
             Path(__file__).parent.parent / "node_modules" / ".bin" / "agent-browser"
         ).exists()
     )
-    if get_env_value("BROWSERBASE_API_KEY"):
+    if get_env_value("CAMOFOX_URL"):
+        tool_status.append(("Browser Automation (Camofox)", True, None))
+    elif get_env_value("BROWSERBASE_API_KEY"):
         tool_status.append(("Browser Automation (Browserbase)", True, None))
     elif _ab_found:
         tool_status.append(("Browser Automation (local)", True, None))
     else:
         tool_status.append(
-            ("Browser Automation", False, "npm install -g agent-browser")
+            ("Browser Automation", False, "npm install -g agent-browser or set CAMOFOX_URL")
         )
 
     # FAL (image generation)

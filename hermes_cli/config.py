@@ -706,6 +706,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "CAMOFOX_URL": {
+        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
+        "prompt": "Camofox server URL",
+        "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
     "FAL_KEY": {
         "description": "FAL API key for image generation",
         "prompt": "FAL API key",

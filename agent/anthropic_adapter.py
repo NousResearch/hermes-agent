@@ -162,6 +162,21 @@ def _is_oauth_token(key: str) -> bool:
     return True
 
 
+def _requires_bearer_auth(base_url: str | None) -> bool:
+    """Return True for Anthropic-compatible providers that require Bearer auth.
+
+    Some third-party /anthropic endpoints implement Anthropic's Messages API but
+    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
+    """
+    if not base_url:
+        return False
+    normalized = base_url.rstrip("/").lower()
+    return normalized.startswith("https://api.minimax.io/anthropic") or normalized.startswith(
+        "https://api.minimaxi.com/anthropic"
+    )
+
+
 def build_anthropic_client(api_key: str, base_url: str = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -180,7 +195,17 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     if base_url:
         kwargs["base_url"] = base_url
 
-    if _is_oauth_token(api_key):
+    if _requires_bearer_auth(base_url):
+        # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
+        # Authorization: Bearer even for regular API keys. Route those endpoints
+        # through auth_token so the SDK sends Bearer auth instead of x-api-key.
+        # Check this before OAuth token shape detection because MiniMax secrets do
+        # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
+        # Anthropic OAuth/setup tokens.
+        kwargs["auth_token"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.

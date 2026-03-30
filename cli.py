@@ -2837,6 +2837,28 @@ class HermesCLI:
         print("  Example: python cli.py --toolsets web,terminal")
         print()
     
+    def _handle_profile_command(self):
+        """Display active profile name and home directory."""
+        from hermes_constants import get_hermes_home, display_hermes_home
+
+        home = get_hermes_home()
+        display = display_hermes_home()
+
+        profiles_parent = Path.home() / ".hermes" / "profiles"
+        try:
+            rel = home.relative_to(profiles_parent)
+            profile_name = str(rel).split("/")[0]
+        except ValueError:
+            profile_name = None
+
+        print()
+        if profile_name:
+            print(f"  Profile: {profile_name}")
+        else:
+            print("  Profile: default")
+        print(f"  Home:    {display}")
+        print()
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -3679,6 +3701,8 @@ class HermesCLI:
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "profile":
+            self._handle_profile_command()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

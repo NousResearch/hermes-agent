@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -126,9 +127,12 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                 remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
                 parent_dir = str(Path(remote_path).parent)
                 mkdir_cmd = self._build_ssh_command()
-                mkdir_cmd.append(f"mkdir -p {parent_dir}")
+                mkdir_cmd.append(f"mkdir -p {shlex.quote(parent_dir)}")
                 subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
-                cmd = rsync_base + [mount_entry["host_path"], f"{dest_prefix}:{remote_path}"]
+                cmd = rsync_base + [
+                    mount_entry["host_path"],
+                    f"{dest_prefix}:{shlex.quote(remote_path)}",
+                ]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 if result.returncode == 0:
                     logger.info("SSH: synced credential %s -> %s", mount_entry["host_path"], remote_path)
@@ -140,11 +144,11 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             if skills_mount:
                 remote_path = skills_mount["container_path"]
                 mkdir_cmd = self._build_ssh_command()
-                mkdir_cmd.append(f"mkdir -p {remote_path}")
+                mkdir_cmd.append(f"mkdir -p {shlex.quote(remote_path)}")
                 subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
                 cmd = rsync_base + [
                     skills_mount["host_path"].rstrip("/") + "/",
-                    f"{dest_prefix}:{remote_path}/",
+                    f"{dest_prefix}:{shlex.quote(remote_path.rstrip('/') + '/')}",
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 if result.returncode == 0:

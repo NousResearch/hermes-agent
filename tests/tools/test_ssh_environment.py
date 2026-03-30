@@ -2,7 +2,9 @@
 
 import json
 import os
+import shlex
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -65,6 +67,63 @@ class TestBuildSSHCommand:
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
+
+    def test_sync_quotes_remote_paths(self, monkeypatch, tmp_path):
+        calls = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            stdout = "/root\n" if cmd and cmd[-1] == "echo $HOME" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        credential_file = tmp_path / "token.txt"
+        credential_file.write_text("secret", encoding="utf-8")
+        skills_dir = tmp_path / "skills dir"
+        skills_dir.mkdir()
+
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr("tools.environments.ssh.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "tools.credential_files.get_credential_file_mounts",
+            lambda: [
+                {
+                    "host_path": str(credential_file),
+                    "container_path": "/root/.hermes/skills/evil;touch /tmp/pwn/token.txt",
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            "tools.credential_files.get_skills_directory_mount",
+            lambda **kw: {
+                "host_path": str(skills_dir),
+                "container_path": "/root/.hermes/skills/dir;touch /tmp/pwn",
+            },
+        )
+        monkeypatch.setattr("tools.environments.ssh.time.sleep", lambda _: None)
+
+        ssh_env.SSHEnvironment(host="example.com", user="alice")
+
+        mkdir_credential = calls[2]
+        rsync_credential = calls[3]
+        mkdir_skills = calls[4]
+        rsync_skills = calls[5]
+
+        assert mkdir_credential[-1] == (
+            "mkdir -p "
+            + shlex.quote("/root/.hermes/skills/evil;touch /tmp/pwn")
+        )
+        assert rsync_credential[-1] == (
+            "alice@example.com:"
+            + shlex.quote("/root/.hermes/skills/evil;touch /tmp/pwn/token.txt")
+        )
+        assert mkdir_skills[-1] == (
+            "mkdir -p "
+            + shlex.quote("/root/.hermes/skills/dir;touch /tmp/pwn")
+        )
+        assert rsync_skills[-1] == (
+            "alice@example.com:"
+            + shlex.quote("/root/.hermes/skills/dir;touch /tmp/pwn/")
+        )
 
 
 class TestTerminalToolConfig:

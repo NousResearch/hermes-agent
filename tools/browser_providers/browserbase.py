@@ -10,6 +10,7 @@ import requests
 
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 _pending_create_keys: Dict[str, str] = {}
@@ -93,10 +94,15 @@ class BrowserbaseProvider(CloudBrowserProvider):
     def _get_config(self) -> Dict[str, Any]:
         config = self._get_config_or_none()
         if config is None:
-            raise ValueError(
-                "Browserbase requires either direct BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID credentials "
-                "or a managed Browserbase gateway configuration."
+            message = (
+                "Browserbase requires direct BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID credentials."
             )
+            if managed_nous_tools_enabled():
+                message = (
+                    "Browserbase requires either direct BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID "
+                    "credentials or a managed Browserbase gateway configuration."
+                )
+            raise ValueError(message)
         return config
 
     def create_session(self, task_id: str) -> Dict[str, object]:

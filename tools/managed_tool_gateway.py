@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 _DEFAULT_TOOL_GATEWAY_DOMAIN = "nousresearch.com"
 _DEFAULT_TOOL_GATEWAY_SCHEME = "https"
@@ -131,6 +132,9 @@ def resolve_managed_tool_gateway(
     token_reader: Optional[Callable[[], Optional[str]]] = None,
 ) -> Optional[ManagedToolGatewayConfig]:
     """Resolve shared managed-tool gateway config for a vendor."""
+    if not managed_nous_tools_enabled():
+        return None
+
     resolved_gateway_builder = gateway_builder or build_vendor_gateway_url
     resolved_token_reader = token_reader or read_nous_access_token
 

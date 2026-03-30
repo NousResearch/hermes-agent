@@ -54,6 +54,7 @@ from tools.managed_tool_gateway import (
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
@@ -152,12 +153,46 @@ def _has_direct_firecrawl_config() -> bool:
 
 def _raise_web_backend_configuration_error() -> None:
     """Raise a clear error for unsupported web backend configuration."""
-    raise ValueError(
+    message = (
         "Web tools are not configured. "
-        "Set FIRECRAWL_API_KEY for cloud Firecrawl, set FIRECRAWL_API_URL for a self-hosted Firecrawl instance, "
-        "or, if you are a Nous Subscriber, login to Nous (`hermes model`) and provide "
-        "FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN."
+        "Set FIRECRAWL_API_KEY for cloud Firecrawl or set FIRECRAWL_API_URL for a self-hosted Firecrawl instance."
     )
+    if managed_nous_tools_enabled():
+        message += (
+            " If you have the hidden Nous-managed tools flag enabled, you can also login to Nous "
+            "(`hermes model`) and provide FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN."
+        )
+    raise ValueError(message)
+
+
+def _firecrawl_backend_help_suffix() -> str:
+    """Return optional managed-gateway guidance for Firecrawl help text."""
+    if not managed_nous_tools_enabled():
+        return ""
+    return (
+        ", or, if you have the hidden Nous-managed tools flag enabled, login to Nous and use "
+        "FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN"
+    )
+
+
+def _web_requires_env() -> list[str]:
+    """Return tool metadata env vars for the currently enabled web backends."""
+    requires = [
+        "PARALLEL_API_KEY",
+        "TAVILY_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+    ]
+    if managed_nous_tools_enabled():
+        requires.extend(
+            [
+                "FIRECRAWL_GATEWAY_URL",
+                "TOOL_GATEWAY_DOMAIN",
+                "TOOL_GATEWAY_SCHEME",
+                "TOOL_GATEWAY_USER_TOKEN",
+            ]
+        )
+    return requires
 
 
 def _get_firecrawl_client():
@@ -1410,10 +1445,8 @@ async def web_crawl_tool(
         # web_crawl requires Firecrawl or the Firecrawl tool-gateway — Parallel has no crawl API
         if not check_firecrawl_api_key():
             return json.dumps({
-                "error": "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, FIRECRAWL_API_URL, "
-                         "or, if you are a Nous Subscriber, login to Nous and use FIRECRAWL_GATEWAY_URL, "
-                         "or TOOL_GATEWAY_DOMAIN, "
-                         "or use web_search + web_extract instead.",
+                "error": "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+                         f"{_firecrawl_backend_help_suffix()}, or use web_search + web_extract instead.",
                 "success": False,
             }, ensure_ascii=False)
 
@@ -1754,9 +1787,8 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL, "
-            "or, if you are a Nous Subscriber, login to Nous and use "
-            "FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN"
+            "Set PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            f"{_firecrawl_backend_help_suffix()}"
         )
 
     if not nous_available:
@@ -1867,16 +1899,7 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_web_api_key,
-    requires_env=[
-        "PARALLEL_API_KEY",
-        "TAVILY_API_KEY",
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
-        "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL",
-    ],
+    requires_env=_web_requires_env(),
     emoji="🔍",
 )
 registry.register(
@@ -1886,16 +1909,7 @@ registry.register(
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
     check_fn=check_web_api_key,
-    requires_env=[
-        "PARALLEL_API_KEY",
-        "TAVILY_API_KEY",
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
-        "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL",
-    ],
+    requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",
 )

@@ -1128,8 +1128,31 @@ class AIAgent:
         except Exception:
             pass
 
-        # Tool-use enforcement config: "auto" (default — matches hardcoded
-        # model list), true (always), false (never), or list of substrings.
+        # Auto-learning loop — stage candidate learnings locally and optionally
+        # promote high-confidence ones through existing memory/skill write paths.
+        self._auto_learning_enabled = False
+        self._auto_learning_config = {}
+        self._auto_learning_store = None
+        self._turns_since_auto_learning = 0
+        try:
+            auto_learning_config = _agent_cfg.get("auto_learning", {}) or {}
+            self._auto_learning_config = dict(auto_learning_config)
+            self._auto_learning_enabled = bool(auto_learning_config.get("enabled", False))
+            if self._auto_learning_enabled:
+                from tools.auto_learning_store import AutoLearningStore
+
+                store_path = auto_learning_config.get("store_path") or None
+                max_entries = int(auto_learning_config.get("candidate_max_entries", 200))
+                self._auto_learning_store = AutoLearningStore(
+                    path=Path(store_path) if store_path else None,
+                    max_entries=max_entries,
+                )
+        except Exception:
+            self._auto_learning_enabled = False
+            self._auto_learning_store = None
+
+        # Context compression settings
+
         _agent_section = _agent_cfg.get("agent", {})
         if not isinstance(_agent_section, dict):
             _agent_section = {}
@@ -1810,6 +1833,156 @@ class AIAgent:
         "Only act if there's something genuinely worth saving. "
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
+
+    def _should_run_auto_learning_review(self) -> bool:
+        if not (self._auto_learning_enabled and self._auto_learning_store):
+            return False
+        min_tool_iterations = int(self._auto_learning_config.get("min_tool_iterations", 4) or 0)
+        review_interval = int(self._auto_learning_config.get("review_interval", 10) or 0)
+        if review_interval <= 0:
+            review_interval = 1
+        self._turns_since_auto_learning += 1
+        if self._iters_since_skill < min_tool_iterations:
+            return False
+        if self._turns_since_auto_learning < review_interval:
+            return False
+        self._turns_since_auto_learning = 0
+        return True
+
+    def _promote_auto_learning_candidate(self, entry: Dict[str, Any]) -> str:
+        category = entry.get("category", "unknown")
+        payload = entry.get("payload") or {}
+        threshold = float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80)
+        from agent.auto_learning import should_promote_candidate
+
+        if not should_promote_candidate(entry, threshold):
+            return "candidate"
+
+        if category == "memory" and self._auto_learning_config.get("auto_promote_memory", True):
+            from tools.memory_tool import memory_tool as _memory_tool
+            target = entry.get("target") or "memory"
+            action = payload.get("action")
+            if action not in {"add", "replace", "remove"}:
+                return "rejected"
+            result_text = _memory_tool(
+                action=action,
+                target=target,
+                content=payload.get("content"),
+                old_text=payload.get("old_text"),
+                store=self._memory_store,
+            )
+            try:
+                result = json.loads(result_text)
+            except (TypeError, json.JSONDecodeError):
+                return "rejected"
+            if result.get("success"):
+                message = str(result.get("message", "")).lower()
+                return "superseded" if "already exists" in message else "promoted"
+            return "rejected"
+
+        if category == "skill" and self._auto_learning_config.get("auto_promote_skills", False):
+            from tools.skill_manager_tool import skill_manage as _skill_manage
+            action = payload.get("action")
+            target_name = entry.get("target") or payload.get("name") or ""
+            if action not in {"create", "patch", "edit", "delete", "write_file", "remove_file"} or not target_name:
+                return "rejected"
+            result_text = _skill_manage(
+                action=action,
+                name=target_name,
+                content=payload.get("content"),
+                category=payload.get("category"),
+                file_path=payload.get("file_path"),
+                file_content=payload.get("file_content"),
+                old_string=payload.get("old_string"),
+                new_string=payload.get("new_string"),
+                replace_all=bool(payload.get("replace_all", False)),
+            )
+            try:
+                result = json.loads(result_text)
+            except (TypeError, json.JSONDecodeError):
+                return "rejected"
+            if result.get("success"):
+                message = str(result.get("message", "")).lower()
+                return "superseded" if "already exists" in message else "promoted"
+            return "rejected"
+
+        return "candidate"
+
+    def _process_auto_learning_review_result(self, review_text: str) -> Dict[str, int]:
+        summary = {"staged": 0, "promoted": 0, "rejected": 0, "superseded": 0}
+        if not self._auto_learning_store:
+            return summary
+
+        from agent.auto_learning import parse_auto_learning_review
+
+        for candidate in parse_auto_learning_review(review_text):
+            entry = self._auto_learning_store.add_candidate(
+                category=candidate.get("category", "unknown"),
+                summary=candidate.get("summary", ""),
+                confidence=candidate.get("confidence", 0.0),
+                evidence={"reason": candidate.get("reason", "")},
+                action=(candidate.get("payload") or {}).get("action"),
+                target=candidate.get("target") or None,
+                payload=candidate.get("payload") or {},
+            )
+            summary["staged"] += 1
+            new_status = self._promote_auto_learning_candidate(entry)
+            if new_status != entry.get("status"):
+                entry = self._auto_learning_store.mark_status(entry["id"], new_status)
+            if new_status in {"promoted", "rejected", "superseded"}:
+                summary[new_status] += 1
+        return summary
+
+    def _spawn_auto_learning_review(self, messages_snapshot: List[Dict]) -> None:
+        if not self._auto_learning_store:
+            return
+        from agent.auto_learning import build_auto_learning_review_prompt
+
+        prompt = build_auto_learning_review_prompt(
+            allow_memory="memory" in self.valid_tool_names,
+            allow_skills="skill_manage" in self.valid_tool_names,
+            min_tool_iterations=int(self._auto_learning_config.get("min_tool_iterations", 4) or 4),
+            promotion_threshold=float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80),
+        )
+
+        def _run_review():
+            review_agent = None
+            try:
+                import contextlib, os as _os
+                with open(_os.devnull, "w") as _devnull, \
+                     contextlib.redirect_stdout(_devnull), \
+                     contextlib.redirect_stderr(_devnull):
+                    review_agent = AIAgent(
+                        model=self.model,
+                        max_iterations=4,
+                        quiet_mode=True,
+                        platform=self.platform,
+                        provider=self.provider,
+                        skip_memory=True,
+                    )
+                    review_agent._memory_store = self._memory_store
+                    review_agent._auto_learning_enabled = False
+                    result = review_agent.run_conversation(
+                        user_message=prompt,
+                        conversation_history=messages_snapshot,
+                    )
+                review_text = (result or {}).get("final_response", "") if isinstance(result, dict) else ""
+                if review_text:
+                    self._process_auto_learning_review_result(review_text)
+            except Exception as e:
+                logger.debug("Background auto-learning review failed: %s", e)
+            finally:
+                if review_agent is not None:
+                    client = getattr(review_agent, "client", None)
+                    if client is not None:
+                        try:
+                            review_agent._close_openai_client(client, reason="bg_auto_learning_done", shared=True)
+                            review_agent.client = None
+                        except Exception:
+                            pass
+
+        t = threading.Thread(target=_run_review, daemon=True, name="bg-auto-learning-review")
+        t.start()
 
     def _spawn_background_review(
         self,
@@ -9153,6 +9326,13 @@ class AIAgent:
             except Exception:
                 pass
 
+        _should_review_auto_learning = False
+        try:
+            if final_response and not interrupted:
+                _should_review_auto_learning = self._should_run_auto_learning_review()
+        except Exception:
+            _should_review_auto_learning = False
+
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
@@ -9162,6 +9342,12 @@ class AIAgent:
                     review_memory=_should_review_memory,
                     review_skills=_should_review_skills,
                 )
+            except Exception:
+                pass  # Background review is best-effort
+
+        if final_response and not interrupted and _should_review_auto_learning:
+            try:
+                self._spawn_auto_learning_review(messages_snapshot=list(messages))
             except Exception:
                 pass  # Background review is best-effort
 

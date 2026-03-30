@@ -73,7 +73,27 @@ def agent_with_memory_tool():
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
-            api_key="test-k...7890",
+            api_key="***",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        a.client = MagicMock()
+        return a
+
+
+@pytest.fixture()
+def agent_with_memory_and_skills_tools():
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "memory", "skill_manage"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(
+            api_key="***",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

@@ -95,6 +95,23 @@ class TestSaveAndLoadRoundtrip:
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
 
+    def test_auto_learning_defaults_present(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            assert "auto_learning" in config
+            assert config["auto_learning"] == {
+                "enabled": False,
+                "review_interval": 10,
+                "min_tool_iterations": 4,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 200,
+                "promotion_threshold": 0.80,
+                "auto_promote_memory": True,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+
     def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_config({"model": "test/custom-model", "max_turns": 37})

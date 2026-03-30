@@ -58,3 +58,25 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+
+# ── GSD baseline (auto-generated) ──
+.gsd
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+*.code-workspace
+.env.*
+!.env.example
+.next/
+dist/
+build/
+*.pyc
+venv/
+target/
+vendor/
+*.log
+coverage/
+.cache/

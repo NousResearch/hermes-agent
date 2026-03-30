@@ -2556,6 +2556,12 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_auto_learning(args):
+    """Karpathy auto-learning management."""
+    from hermes_cli.auto_learning import auto_learning_command
+    auto_learning_command(args)
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -4667,6 +4673,26 @@ For more help on a command:
     config_migrate = config_subparsers.add_parser("migrate", help="Update config with new options")
     
     config_parser.set_defaults(func=cmd_config)
+
+    # =========================================================================
+    # auto-learning command
+    # =========================================================================
+    auto_learning_parser = subparsers.add_parser(
+        "autolearning",
+        help="Manage Karpathy auto-learning",
+        description="Inspect and control Karpathy auto-learning candidates and feature state",
+    )
+    auto_learning_subparsers = auto_learning_parser.add_subparsers(dest="auto_learning_action")
+    auto_learning_subparsers.add_parser("status", help="Show Karpathy auto-learning status")
+    auto_learning_subparsers.add_parser("enable", help="Enable Karpathy auto-learning")
+    auto_learning_subparsers.add_parser("disable", help="Disable Karpathy auto-learning")
+    list_parser = auto_learning_subparsers.add_parser("list", help="List staged auto-learning candidates")
+    list_parser.add_argument("--status", default=None, help="Filter by candidate status")
+    promote_parser = auto_learning_subparsers.add_parser("promote", help="Mark a candidate as promoted")
+    promote_parser.add_argument("id", help="Candidate ID")
+    reject_parser = auto_learning_subparsers.add_parser("reject", help="Mark a candidate as rejected")
+    reject_parser.add_argument("id", help="Candidate ID")
+    auto_learning_parser.set_defaults(func=cmd_auto_learning)
     
     # =========================================================================
     # pairing command

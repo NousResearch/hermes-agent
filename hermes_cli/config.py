@@ -449,6 +449,21 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Structured post-task learning review — stage candidate learnings locally
+    # without changing durable memory/skills by default.
+    "auto_learning": {
+        "enabled": False,
+        "review_interval": 10,
+        "min_tool_iterations": 4,
+        "candidate_char_limit": 12000,
+        "candidate_max_entries": 200,
+        "promotion_threshold": 0.80,
+        "auto_promote_memory": True,
+        "auto_promote_skills": False,
+        "store_path": "",          # empty = default path under HERMES_HOME
+        "debug": False,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all

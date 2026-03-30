@@ -307,21 +307,14 @@ class TestCmdUpdateLaunchdRestart:
 
         # Mock get_running_pid to return a PID
         with patch("gateway.status.get_running_pid", return_value=12345), \
-             patch("gateway.status.remove_pid_file"):
+             patch("gateway.status.remove_pid_file"), \
+             patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         assert "Gateway restarted via launchd" in captured
         assert "Restart it with: hermes gateway run" not in captured
-        # Verify launchctl stop + start were called (not manual SIGTERM)
-        launchctl_calls = [
-            c for c in mock_run.call_args_list
-            if len(c.args[0]) > 0 and c.args[0][0] == "launchctl"
-        ]
-        stop_calls = [c for c in launchctl_calls if "stop" in c.args[0]]
-        start_calls = [c for c in launchctl_calls if "start" in c.args[0]]
-        assert len(stop_calls) >= 1
-        assert len(start_calls) >= 1
+        mock_launchd_restart.assert_called_once_with()
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

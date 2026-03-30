@@ -40,6 +40,8 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     """
     if not name:
         raise ValueError("Plugin name must not be empty.")
+    if name == ".":
+        raise ValueError("Invalid plugin name '.': must not resolve to the plugins directory itself.")
 
     # Reject obvious traversal characters
     for bad in ("/", "\\", ".."):
@@ -55,6 +57,10 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     ):
         raise ValueError(
             f"Invalid plugin name '{name}': resolves outside the plugins directory."
+        )
+    if target == plugins_resolved:
+        raise ValueError(
+            f"Invalid plugin name '{name}': must not resolve to the plugins directory itself."
         )
 
     return target

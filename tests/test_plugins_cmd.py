@@ -43,6 +43,10 @@ class TestSanitizePluginName:
         with pytest.raises(ValueError, match="must not contain"):
             _sanitize_plugin_name("..", tmp_path)
 
+    def test_rejects_single_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="plugins directory itself"):
+            _sanitize_plugin_name(".", tmp_path)
+
     def test_rejects_forward_slash(self, tmp_path):
         with pytest.raises(ValueError, match="must not contain"):
             _sanitize_plugin_name("foo/bar", tmp_path)
@@ -227,6 +231,36 @@ class TestCmdInstall:
         with pytest.raises(SystemExit) as exc_info:
             cmd_install("invalid")
         assert exc_info.value.code == 1
+
+    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd.subprocess.run")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._resolve_git_url")
+    @patch("hermes_cli.plugins_cmd._read_manifest")
+    def test_install_rejects_manifest_name_resolving_to_plugins_root(
+        self,
+        mock_read_manifest,
+        mock_resolve,
+        mock_plugins_dir,
+        mock_run,
+        mock_rmtree,
+        tmp_path,
+    ):
+        from hermes_cli.plugins_cmd import cmd_install
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        mock_plugins_dir.return_value = plugins_dir
+        mock_resolve.return_value = "https://github.com/example/plugin.git"
+        mock_read_manifest.return_value = {"name": "."}
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_install("example/plugin", force=True)
+
+        assert exc_info.value.code == 1
+        removed_paths = [str(call.args[0]) for call in mock_rmtree.call_args_list if call.args]
+        assert str(plugins_dir) not in removed_paths
 
 
 # ── cmd_update tests ─────────────────────────────────────────────────────────

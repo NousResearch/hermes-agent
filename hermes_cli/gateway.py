@@ -906,8 +906,8 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     # Unload/reload so launchd picks up the new definition
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+    subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "unload", str(plist_path)], check=False)
+    subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "load", str(plist_path)], check=False)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -929,7 +929,7 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "load", str(plist_path)], check=True)
     
     print()
     print("✓ Service installed and loaded!")
@@ -940,7 +940,7 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "unload", str(plist_path)], check=False)
     
     if plist_path.exists():
         plist_path.unlink()
@@ -957,25 +957,25 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "load", str(plist_path)], check=True)
+        subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "start", label], check=True)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "start", label], check=True)
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "load", str(plist_path)], check=True)
+        subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "start", label], check=True)
     print("✓ Service started")
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "stop", label], check=True)
+    subprocess.run([shutil.which("launchctl") or "/usr/sbin/launchctl", "stop", label], check=True)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -1032,7 +1032,7 @@ def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
     result = subprocess.run(
-        ["launchctl", "list", label],
+        [shutil.which("launchctl") or "/usr/sbin/launchctl", "list", label],
         capture_output=True,
         text=True
     )
@@ -1537,7 +1537,7 @@ def _is_service_running() -> bool:
         return False
     elif is_macos() and get_launchd_plist_path().exists():
         result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
+            [shutil.which("launchctl") or "/usr/sbin/launchctl", "list", get_launchd_label()],
             capture_output=True, text=True
         )
         return result.returncode == 0

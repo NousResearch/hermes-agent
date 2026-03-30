@@ -3,11 +3,73 @@
 .gitignore
 .gitmodules
 
-# Dependencies
-node_modules
-
-# CI/CD
+# GitHub
 .github
 
-# Environment files
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+.eggs
+
+# Virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Environment files (secrets)
 .env
+.env.*
+!.env.example
+
+# Logs and data
+logs/
+data/
+tmp/
+temp_vision_images/
+testlogs
+wandb/
+
+# Test files
+tests/
+*.test.py
+*.spec.py
+
+# Documentation
+*.md
+!README.md
+
+# CI/CD
+*.yml
+!package.json
+
+# Development files
+examples/
+result
+.direnv/
+
+# Release scripts
+.release_notes.md
+mini-swe-agent/
+
+# Nix
+.direnv/
+result
+
+# Skills hub
+skills/.hub/
+ignored/

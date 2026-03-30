@@ -54,6 +54,14 @@ def has_clipboard_image() -> bool:
     return _xclip_has_image()
 
 
+def copy_text_to_clipboard(text: str) -> bool:
+    """Copy plain text to the system clipboard."""
+    payload = str(text or "")
+    if sys.platform == "darwin":
+        return _macos_copy_text(payload)
+    return _linux_copy_text(payload)
+
+
 # ── macOS ────────────────────────────────────────────────────────────────
 
 def _macos_save(dest: Path) -> bool:
@@ -70,6 +78,22 @@ def _macos_has_image() -> bool:
         )
         return "«class PNGf»" in info.stdout or "«class TIFF»" in info.stdout
     except Exception:
+        return False
+
+
+def _macos_copy_text(text: str) -> bool:
+    """Copy text to the macOS clipboard via pbcopy."""
+    try:
+        result = subprocess.run(
+            ["pbcopy"],
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        logger.debug("pbcopy failed: %s", e)
         return False
 
 
@@ -244,6 +268,17 @@ def _linux_save(dest: Path) -> bool:
     return _xclip_save(dest)
 
 
+def _linux_copy_text(text: str) -> bool:
+    """Try text clipboard backends in priority order: WSL → Wayland → X11."""
+    if _is_wsl():
+        if _wsl_copy_text(text):
+            return True
+    if os.environ.get("WAYLAND_DISPLAY"):
+        if _wayland_copy_text(text):
+            return True
+    return _xclip_copy_text(text)
+
+
 # ── WSL2 (powershell.exe) ────────────────────────────────────────────────
 # Reuses _PS_CHECK_IMAGE / _PS_EXTRACT_IMAGE defined above.
 
@@ -260,6 +295,24 @@ def _wsl_has_image() -> bool:
         logger.debug("powershell.exe not found — WSL clipboard unavailable")
     except Exception as e:
         logger.debug("WSL clipboard check failed: %s", e)
+    return False
+
+
+def _wsl_copy_text(text: str) -> bool:
+    """Copy text to the Windows clipboard from WSL."""
+    try:
+        result = subprocess.run(
+            ["clip.exe"],
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        logger.debug("clip.exe not found — WSL clipboard unavailable")
+    except Exception as e:
+        logger.debug("WSL clipboard text copy failed: %s", e)
     return False
 
 
@@ -304,8 +357,26 @@ def _wayland_has_image() -> bool:
         )
     except FileNotFoundError:
         logger.debug("wl-paste not installed — Wayland clipboard unavailable")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Wayland clipboard check failed: %s", e)
+    return False
+
+
+def _wayland_copy_text(text: str) -> bool:
+    """Copy text to the clipboard in Wayland sessions."""
+    try:
+        result = subprocess.run(
+            ["wl-copy"],
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        logger.debug("wl-copy not installed — Wayland clipboard unavailable")
+    except Exception as e:
+        logger.debug("wl-copy failed: %s", e)
     return False
 
 
@@ -407,11 +478,31 @@ def _xclip_has_image() -> bool:
             ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
             capture_output=True, text=True, timeout=3,
         )
-        return r.returncode == 0 and "image/png" in r.stdout
+        if r.returncode != 0:
+            return False
+        return any(line.startswith("image/") for line in r.stdout.splitlines())
     except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+        logger.debug("xclip not installed — X11 clipboard unavailable")
+    except Exception as e:
+        logger.debug("xclip clipboard check failed: %s", e)
+    return False
+
+
+def _xclip_copy_text(text: str) -> bool:
+    """Copy text to the clipboard in X11 sessions."""
+    try:
+        result = subprocess.run(
+            ["xclip", "-selection", "clipboard"],
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=3,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        logger.debug("xclip not installed — X11 clipboard unavailable")
+    except Exception as e:
+        logger.debug("xclip failed: %s", e)
     return False
 
 

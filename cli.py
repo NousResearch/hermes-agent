@@ -2840,6 +2840,91 @@ class HermesCLI:
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
+    @staticmethod
+    def _strip_reasoning_blocks(text: str) -> str:
+        """Remove internal reasoning scratchpad blocks from display/copy text."""
+        import re
+        cleaned = re.sub(
+            r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
+            "",
+            text,
+            flags=re.DOTALL,
+        )
+        cleaned = re.sub(
+            r"<REASONING_SCRATCHPAD>.*$",
+            "",
+            cleaned,
+            flags=re.DOTALL,
+        )
+        return cleaned.strip()
+
+    def _last_visible_message(self) -> Optional[Dict[str, Any]]:
+        for message in reversed(self.conversation_history):
+            role = message.get("role")
+            if role in {"user", "assistant"}:
+                return message
+        return None
+
+    def _message_markdown_body(self, message: Dict[str, Any]) -> str:
+        content = message.get("content")
+        role = message.get("role", "assistant")
+        text = ""
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    parts.append(str(part.get("text", "")))
+                elif part.get("type") == "image_url":
+                    image_url = part.get("image_url") or {}
+                    url = image_url.get("url") if isinstance(image_url, dict) else ""
+                    parts.append(f"![attached image]({url})" if url and not str(url).startswith("data:") else "[attached image]")
+            text = "\n\n".join(part.strip() for part in parts if str(part).strip())
+        elif content is not None:
+            text = str(content)
+        if role == "assistant":
+            text = self._strip_reasoning_blocks(text)
+        text = text.strip()
+        if text:
+            return text
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            names = []
+            for tc in tool_calls:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                name = fn.get("name", "unknown") if isinstance(fn, dict) else "unknown"
+                if name not in names:
+                    names.append(name)
+            noun = "call" if len(tool_calls) == 1 else "calls"
+            return f"(requested {len(tool_calls)} tool {noun}: {', '.join(names)})"
+        return ""
+
+    def _format_message_as_markdown(self, message: Dict[str, Any]) -> str:
+        role = message.get("role", "assistant")
+        heading = "Hermes" if role == "assistant" else "You"
+        body = self._message_markdown_body(message)
+        return f"## {heading}\n\n{body}".strip()
+
+    def _handle_copy_command(self):
+        """Handle /copy — copy the last visible chat message as Markdown."""
+        from hermes_cli.clipboard import copy_text_to_clipboard
+
+        message = self._last_visible_message()
+        if message is None:
+            print("(._.) No visible message to copy yet.")
+            return
+
+        markdown = self._format_message_as_markdown(message)
+        if not markdown.strip():
+            print("(._.) The last visible message is empty.")
+            return
+
+        if copy_text_to_clipboard(markdown):
+            print("(^_^)b Copied the last visible message as Markdown.")
+        else:
+            print("(x_x) Couldn't copy to the system clipboard.")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -4482,6 +4567,8 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "copy":
+            self._handle_copy_command()
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "reload-mcp":

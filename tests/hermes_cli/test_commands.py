@@ -127,6 +127,10 @@ class TestDerivedDicts:
         assert "/reload_mcp" in COMMANDS
         assert "/gateway" in COMMANDS
 
+    def test_copy_command_present_with_expected_description(self):
+        assert "/copy" in COMMANDS
+        assert COMMANDS["/copy"] == "Copy the last visible message to the clipboard as Markdown"
+
     def test_commands_by_category_covers_all_categories(self):
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
         assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories

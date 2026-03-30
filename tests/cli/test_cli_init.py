@@ -331,6 +331,32 @@ class TestRootLevelProviderOverride:
         assert "provider" not in result  # root key still cleaned up
 
 
+class TestCopyCommand:
+    def test_copy_command_copies_last_visible_message_as_markdown(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Can you summarize this?"},
+            {"role": "assistant", "content": "Sure.\n\n- Item 1\n- Item 2"},
+        ]
+
+        with patch("hermes_cli.clipboard.copy_text_to_clipboard", return_value=True) as mock_copy:
+            cli._handle_copy_command()
+
+        mock_copy.assert_called_once_with("## Hermes\n\nSure.\n\n- Item 1\n- Item 2")
+
+    def test_copy_command_reports_when_there_is_no_visible_message(self, capsys):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "system", "content": "hidden"},
+            {"role": "tool", "content": "hidden"},
+        ]
+
+        cli._handle_copy_command()
+        output = capsys.readouterr().out
+
+        assert "No visible message" in output
+
+
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):
         cli = _make_cli()

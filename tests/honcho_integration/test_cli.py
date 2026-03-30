@@ -60,7 +60,7 @@ class TestCloneHonchoForProfile:
         assert new_block["recallMode"] == "tools"
         assert new_block["writeFrequency"] == "turn"
         assert new_block["aiPeer"] == "hermes.coder"
-        assert new_block["workspace"] == "hermes.coder"
+        assert new_block["workspace"] == "hermes"  # shared, not profile-derived
         assert new_block["enabled"] is True
 
     def test_skips_when_no_honcho_configured(self, tmp_path):
@@ -113,5 +113,5 @@ class TestCloneHonchoForProfile:
         assert result is True
         cfg = json.loads(config_file.read_text())
         assert cfg["hosts"]["hermes.coder"]["aiPeer"] == "hermes.coder"
-        assert cfg["hosts"]["hermes.coder"]["workspace"] == "hermes.coder"
+        assert cfg["hosts"]["hermes.coder"]["workspace"] == "hermes"  # shared
 

@@ -324,6 +324,9 @@ compression:
 #   vision:
 #     provider: "auto"
 #     model: ""              # e.g. "google/gemini-2.5-flash", "openai/gpt-4o"
+#     timeout: 30            # LLM API call timeout (seconds)
+#     download_timeout: 30   # Image HTTP download timeout (seconds)
+#                            # Increase for slow connections or self-hosted image servers
 #
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:

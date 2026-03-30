@@ -98,6 +98,62 @@ class TestRegisterCredentialFiles:
         mounts = get_credential_file_mounts()
         assert "real.json" in mounts[0]["container_path"]
 
+    def test_rejects_traversal_paths(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(["../outside.txt"])
+
+        assert missing == ["../outside.txt"]
+        assert get_credential_file_mounts() == []
+
+    def test_rejects_absolute_paths(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files([str(outside)])
+
+        assert missing == [str(outside)]
+        assert get_credential_file_mounts() == []
+
+    def test_rejects_symlink_escape_paths(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        (hermes_home / "token.json").symlink_to(outside)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(["token.json"])
+
+        assert missing == ["token.json"]
+        assert get_credential_file_mounts() == []
+
+
+class TestConfigCredentialFiles:
+    def test_ignores_unsafe_config_paths(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret")
+        config_path.write_text(
+            "terminal:\n  credential_files:\n    - ../outside.txt\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            reset_config_cache()
+            mounts = get_credential_file_mounts()
+
+        assert mounts == []
+
 
 class TestSkillsDirectoryMount:
     def test_returns_mount_when_skills_dir_exists(self, tmp_path):

@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+import re
+from pathlib import Path, PurePosixPath
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,46 @@ def _resolve_hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 
 
+def _normalize_relative_credential_path(relative_path: str) -> str:
+    """Validate a credential file path as a safe path under HERMES_HOME."""
+    if not isinstance(relative_path, str):
+        raise ValueError("Credential file path must be a string.")
+
+    raw = relative_path.strip()
+    if not raw:
+        raise ValueError("Credential file path must not be empty.")
+
+    normalized = raw.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = [part for part in path.parts if part not in ("", ".")]
+
+    if normalized.startswith("/") or path.is_absolute():
+        raise ValueError(f"Credential file path must be relative to HERMES_HOME: {relative_path}")
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Credential file path must stay within HERMES_HOME: {relative_path}")
+    if re.fullmatch(r"[A-Za-z]:", parts[0]):
+        raise ValueError(f"Credential file path must be relative to HERMES_HOME: {relative_path}")
+
+    return "/".join(parts)
+
+
+def _resolve_host_credential_path(relative_path: str) -> Path:
+    """Resolve a validated credential path and ensure it stays under HERMES_HOME."""
+    hermes_home = _resolve_hermes_home()
+    safe_rel_path = _normalize_relative_credential_path(relative_path)
+    host_path = (hermes_home / safe_rel_path).resolve()
+    hermes_root = hermes_home.resolve()
+
+    try:
+        host_path.relative_to(hermes_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Credential file path resolves outside HERMES_HOME: {relative_path}"
+        ) from exc
+
+    return host_path
+
+
 def register_credential_file(
     relative_path: str,
     container_base: str = "/root/.hermes",
@@ -56,13 +97,17 @@ def register_credential_file(
     *relative_path* is relative to ``HERMES_HOME`` (e.g. ``google_token.json``).
     Returns True if the file exists on the host and was registered.
     """
-    hermes_home = _resolve_hermes_home()
-    host_path = hermes_home / relative_path
+    try:
+        safe_rel_path = _normalize_relative_credential_path(relative_path)
+        host_path = _resolve_host_credential_path(relative_path)
+    except ValueError as exc:
+        logger.warning("credential_files: rejecting unsafe path %r (%s)", relative_path, exc)
+        return False
     if not host_path.is_file():
         logger.debug("credential_files: skipping %s (not found)", host_path)
         return False
 
-    container_path = f"{container_base.rstrip('/')}/{relative_path}"
+    container_path = f"{container_base.rstrip('/')}/{safe_rel_path}"
     _registered_files[container_path] = str(host_path)
     logger.debug("credential_files: registered %s -> %s", host_path, container_path)
     return True
@@ -112,9 +157,18 @@ def _load_config_files() -> List[Dict[str, str]]:
             if isinstance(cred_files, list):
                 for item in cred_files:
                     if isinstance(item, str) and item.strip():
-                        host_path = hermes_home / item.strip()
+                        try:
+                            safe_rel_path = _normalize_relative_credential_path(item)
+                            host_path = _resolve_host_credential_path(item)
+                        except ValueError as exc:
+                            logger.warning(
+                                "credential_files: ignoring unsafe config path %r (%s)",
+                                item,
+                                exc,
+                            )
+                            continue
                         if host_path.is_file():
-                            container_path = f"/root/.hermes/{item.strip()}"
+                            container_path = f"/root/.hermes/{safe_rel_path}"
                             result.append({
                                 "host_path": str(host_path),
                                 "container_path": container_path,

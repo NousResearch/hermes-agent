@@ -5787,10 +5787,16 @@ class GatewayRunner:
 
         providers = list_available_providers()
         for p in providers:
-            marker = " ← active" if p["id"] == current_provider else ""
+            is_active = p["id"] == current_provider
+            marker = " ← active" if is_active else ""
             auth = "✅" if p["authenticated"] else "❌"
             aliases = f"  _(also: {', '.join(p['aliases'])})_" if p["aliases"] else ""
             lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
+            # Show individual models for named custom providers
+            if p["id"].startswith("custom:"):
+                model_names = p.get("models", [])
+                for mname in model_names:
+                    lines.append(f"    `{mname}`")
 
         lines.append("")
         lines.append("Switch: `/model provider:model-name`")

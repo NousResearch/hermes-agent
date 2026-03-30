@@ -87,6 +87,22 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             chat_id, thread_id = rest.split(":", 1)
         else:
             chat_id, thread_id = rest, None
+
+        # Resolve human-friendly labels like "Alice (dm)" to real IDs.
+        # send_message(action="list") shows labels with display suffixes
+        # that aren't valid platform IDs (e.g. WhatsApp JIDs).
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            target = chat_id
+            # Strip display suffix like " (dm)" or " (group)"
+            if target.endswith(")") and " (" in target:
+                target = target.rsplit(" (", 1)[0].strip()
+            resolved = resolve_channel_name(platform_name.lower(), target)
+            if resolved:
+                chat_id = resolved
+        except Exception:
+            pass
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,

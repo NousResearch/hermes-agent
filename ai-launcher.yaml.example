@@ -1,0 +1,40 @@
+defaults:
+  tool: codex
+  profile: safe
+  workspace: ~/projects/hermes-agent
+  mode: interactive
+
+profiles:
+  safe:
+    description: Repo-scoped edits with approvals enabled
+    tool_args:
+      codex: ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+      claude: []
+
+  lab:
+    description: Trusted isolated lab host
+    tool_args:
+      codex: ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+      claude: ["--dangerously-skip-permissions"]
+
+  review:
+    description: Read-only/manual review session
+    tool_args:
+      codex: ["--sandbox", "read-only", "--ask-for-approval", "on-request"]
+      claude: []
+
+tools:
+  codex:
+    command: ["codex"]
+    one_shot_prefix: ["exec"]
+
+  claude:
+    command: ["claude"]
+    one_shot_prefix: []
+
+  aider:
+    command: ["aider"]
+    one_shot_prefix: ["--message"]
+
+env:
+  OPENAI_API_KEY: ""

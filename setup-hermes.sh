@@ -99,16 +99,22 @@ fi
 
 echo -e "${CYAN}→${NC} Setting up virtual environment..."
 
-if [ -d "venv" ]; then
-    echo -e "${CYAN}→${NC} Removing old venv..."
-    rm -rf venv
+VENV_DIR=".venv"
+
+if [ -d "venv" ] && [ ! -e "$VENV_DIR" ]; then
+    echo -e "${CYAN}→${NC} Migrating legacy venv path to $VENV_DIR..."
+    mv venv "$VENV_DIR"
 fi
 
-$UV_CMD venv venv --python "$PYTHON_VERSION"
-echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
+if [ -d "$VENV_DIR" ]; then
+    echo -e "${CYAN}→${NC} Reusing existing $VENV_DIR"
+else
+    $UV_CMD venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    echo -e "${GREEN}✓${NC} $VENV_DIR created (Python $PYTHON_VERSION)"
+fi
 
 # Tell uv to install into this venv (no activation needed for uv)
-export VIRTUAL_ENV="$SCRIPT_DIR/venv"
+export VIRTUAL_ENV="$SCRIPT_DIR/$VENV_DIR"
 
 # ============================================================================
 # Dependencies
@@ -120,7 +126,7 @@ echo -e "${CYAN}→${NC} Installing dependencies..."
 # fall back to pip install for compatibility or when lockfile is stale.
 if [ -f "uv.lock" ]; then
     echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
-    UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
+    UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/$VENV_DIR" $UV_CMD sync --all-extras --locked 2>/dev/null && \
         echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
         echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
         $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
@@ -212,7 +218,7 @@ fi
 
 echo -e "${CYAN}→${NC} Setting up hermes command..."
 
-HERMES_BIN="$SCRIPT_DIR/venv/bin/hermes"
+HERMES_BIN="$SCRIPT_DIR/$VENV_DIR/bin/hermes"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
 echo -e "${GREEN}✓${NC} Symlinked hermes → ~/.local/bin/hermes"
@@ -262,7 +268,7 @@ mkdir -p "$HERMES_SKILLS_DIR"
 
 echo ""
 echo "Syncing bundled skills to ~/.hermes/skills/ ..."
-if "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
+if "$SCRIPT_DIR/$VENV_DIR/bin/python" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Skills synced"
 else
     # Fallback: copy if sync script fails (missing deps, etc.)
@@ -303,5 +309,5 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
     echo ""
     # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    "$SCRIPT_DIR/$VENV_DIR/bin/python" -m hermes_cli.main setup
 fi

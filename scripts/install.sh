@@ -730,7 +730,7 @@ setup_path() {
     log_info "Setting up hermes command..."
 
     if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+        HERMES_BIN="$INSTALL_DIR/.venv/bin/hermes"
     else
         HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
         if [ -z "$HERMES_BIN" ]; then
@@ -861,7 +861,7 @@ SOUL_EOF
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+    if "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
         log_success "Skills synced to ~/.hermes/skills/"
     else
         # Fallback: simple directory copy if Python sync fails
@@ -950,7 +950,7 @@ run_setup_wizard() {
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        "$INSTALL_DIR/.venv/bin/python" -m hermes_cli.main setup < /dev/tty
     else
         python -m hermes_cli.main setup < /dev/tty
     fi

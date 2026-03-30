@@ -188,7 +188,7 @@ hermes config set OPENROUTER_API_KEY sk-or-v1-your-key-here
 
 ```bash
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+ln -sf "$(pwd)/.venv/bin/hermes" ~/.local/bin/hermes
 ```
 
 If `~/.local/bin` isn't on your PATH, add it to your shell config:
@@ -250,7 +250,7 @@ echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
 
 # Make hermes available globally
 mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
+ln -sf "$(pwd)/.venv/bin/hermes" ~/.local/bin/hermes
 
 # Verify
 hermes doctor

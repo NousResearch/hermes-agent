@@ -219,7 +219,7 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.3-codex"
 
     def test_default_fallback_when_api_fails(self):
-        """Default model falls back to gpt-5.3-codex when API unreachable."""
+        """Default model falls back to gpt-5.4 when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
@@ -245,4 +245,4 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.4"

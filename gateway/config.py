@@ -515,6 +515,10 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                if "require_mention" in platform_cfg:
+                    bridged["require_mention"] = platform_cfg["require_mention"]
+                if "mention_patterns" in platform_cfg:
+                    bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -539,6 +543,20 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+
+            # Telegram settings → env vars (env vars take precedence)
+            telegram_cfg = yaml_cfg.get("telegram", {})
+            if isinstance(telegram_cfg, dict):
+                if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+                    os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+                if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
+                    import json as _json
+                    os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
+                frc = telegram_cfg.get("free_response_chats")
+                if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "

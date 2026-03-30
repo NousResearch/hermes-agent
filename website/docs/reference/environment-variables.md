@@ -196,6 +196,19 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |
+| `FEISHU_APP_ID` | Feishu/Lark bot App ID from [open.feishu.cn](https://open.feishu.cn/) |
+| `FEISHU_APP_SECRET` | Feishu/Lark bot App Secret |
+| `FEISHU_DOMAIN` | `feishu` (China) or `lark` (international). Default: `feishu` |
+| `FEISHU_CONNECTION_MODE` | `websocket` (recommended) or `webhook`. Default: `websocket` |
+| `FEISHU_ENCRYPT_KEY` | Optional encryption key for webhook mode |
+| `FEISHU_VERIFICATION_TOKEN` | Optional verification token for webhook mode |
+| `FEISHU_ALLOWED_USERS` | Comma-separated Feishu user IDs allowed to message the bot |
+| `FEISHU_HOME_CHANNEL` | Feishu chat ID for cron delivery and notifications |
+| `WECOM_BOT_ID` | WeCom AI Bot ID from admin console |
+| `WECOM_SECRET` | WeCom AI Bot secret |
+| `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
+| `WECOM_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the bot |
+| `WECOM_HOME_CHANNEL` | WeCom chat ID for cron delivery and notifications |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

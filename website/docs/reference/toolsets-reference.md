@@ -22,6 +22,7 @@ Toolsets are named bundles of tools that you can enable with `hermes chat --tool
 | `hermes-api-server` | platform | _(same as hermes-cli)_ |
 | `hermes-dingtalk` | platform | _(same as hermes-cli)_ |
 | `hermes-feishu` | platform | _(same as hermes-cli)_ |
+| `hermes-wecom` | platform | _(same as hermes-cli)_ |
 | `hermes-discord` | platform | _(same as hermes-cli)_ |
 | `hermes-email` | platform | _(same as hermes-cli)_ |
 | `hermes-gateway` | composite | Union of all messaging platform toolsets |

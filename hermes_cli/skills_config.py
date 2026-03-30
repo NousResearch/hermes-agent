@@ -29,6 +29,7 @@ PLATFORMS = {
     "matrix":   "💬 Matrix",
     "dingtalk": "💬 DingTalk",
     "feishu": "🪽 Feishu",
+    "wecom": "💬 WeCom",
 }
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────

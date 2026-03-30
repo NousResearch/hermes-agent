@@ -351,6 +351,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     
     # Telegram
+    # Telegram require_mention config
+    telegram_cfg = raw.get("telegram", {}) if isinstance(raw, dict) else {}
+    if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+        os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
         if Platform.TELEGRAM not in config.platforms:

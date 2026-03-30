@@ -670,6 +670,25 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
         
+        # require_mention: in groups, only respond to @mentions or replies to bot
+        msg = update.message
+        if msg.chat.type in ("group", "supergroup"):
+            require_mention = os.getenv("TELEGRAM_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            if require_mention:
+                bot = context.bot
+                bot_username = bot.username if bot else None
+                is_mentioned = bool(
+                    bot_username and f"@{bot_username}".lower() in (msg.text or "").lower()
+                )
+                is_reply_to_bot = (
+                    msg.reply_to_message is not None
+                    and msg.reply_to_message.from_user is not None
+                    and bot is not None
+                    and msg.reply_to_message.from_user.id == bot.id
+                )
+                if not (is_mentioned or is_reply_to_bot):
+                    return
+
         event = self._build_message_event(update.message, MessageType.TEXT)
         await self.handle_message(event)
     

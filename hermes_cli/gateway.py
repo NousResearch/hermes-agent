@@ -9,6 +9,14 @@ import os
 import shutil
 import signal
 import subprocess
+
+# Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
+# when running under UV's bundled Python which ships a minimal PATH.
+_sys_dirs = {"/bin", "/usr/bin", "/usr/sbin", "/sbin"}
+_path_dirs = set(os.environ.get("PATH", "").split(os.pathsep))
+_missing = _sys_dirs - _path_dirs
+if _missing:
+    os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + os.pathsep.join(sorted(_missing))
 import sys
 from pathlib import Path
 

@@ -150,11 +150,11 @@ class TestPluginsCommandDispatch:
         plugins_command(args)
         mock_list.assert_called_once()
 
-    @patch("hermes_cli.plugins_cmd.cmd_list")
-    def test_none_falls_through_to_list(self, mock_list):
+    @patch("hermes_cli.plugins_cmd.cmd_toggle")
+    def test_none_falls_through_to_toggle(self, mock_toggle):
         args = self._make_args(None)
         plugins_command(args)
-        mock_list.assert_called_once()
+        mock_toggle.assert_called_once()
 
     @patch("hermes_cli.plugins_cmd.cmd_install")
     def test_install_dispatches(self, mock_install):

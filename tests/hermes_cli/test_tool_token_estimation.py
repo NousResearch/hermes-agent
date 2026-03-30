@@ -4,10 +4,20 @@ from unittest.mock import patch
 
 import pytest
 
+# tiktoken is not in core/[all] deps — skip estimation tests when unavailable
+_has_tiktoken = True
+try:
+    import tiktoken  # noqa: F401
+except ImportError:
+    _has_tiktoken = False
+
+_needs_tiktoken = pytest.mark.skipif(not _has_tiktoken, reason="tiktoken not installed")
+
 
 # ─── Token Estimation Tests ──────────────────────────────────────────────────
 
 
+@_needs_tiktoken
 def test_estimate_tool_tokens_returns_positive_counts():
     """_estimate_tool_tokens should return a non-empty dict with positive values."""
     from hermes_cli.tools_config import _estimate_tool_tokens, _tool_token_cache
@@ -26,6 +36,7 @@ def test_estimate_tool_tokens_returns_positive_counts():
         assert count > 0, f"Tool {name} has non-positive token count: {count}"
 
 
+@_needs_tiktoken
 def test_estimate_tool_tokens_is_cached():
     """Second call should return the same cached dict object."""
     import hermes_cli.tools_config as tc
@@ -60,6 +71,7 @@ def test_estimate_tool_tokens_returns_empty_when_tiktoken_unavailable(monkeypatc
     tc._tool_token_cache = None
 
 
+@_needs_tiktoken
 def test_estimate_tool_tokens_covers_known_tools():
     """Should include schemas for well-known tools like terminal, web_search."""
     import hermes_cli.tools_config as tc

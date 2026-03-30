@@ -114,7 +114,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
 
-        app = web.Application()
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 
@@ -270,9 +270,17 @@ class WebhookAdapter(BasePlatformAdapter):
         # Read body
         try:
             raw_body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
+        if len(raw_body) > self._max_body_bytes:
+            return web.json_response(
+                {"error": "Payload too large"}, status=413
+            )
 
         # Validate HMAC signature (skip for INSECURE_NO_AUTH testing mode)
         secret = route_config.get("secret", self._global_secret)

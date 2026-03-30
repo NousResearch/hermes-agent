@@ -67,7 +67,7 @@ def _make_adapter(routes=None, **kwargs):
 
 def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter (without starting a full server)."""
-    app = web.Application()
+    app = web.Application(client_max_size=adapter._max_body_bytes)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
@@ -515,6 +515,29 @@ class TestBodySize:
                 headers={"Content-Length": "999999"},
             )
             assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_chunked_oversized_payload_rejected(self):
+        """Chunked request bodies over the limit still return 413."""
+        routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=100)
+        adapter.handle_message = AsyncMock()
+
+        async def _chunked_body():
+            payload = json.dumps({"data": "x" * 500}).encode("utf-8")
+            for i in range(0, len(payload), 64):
+                yield payload[i : i + 64]
+                await asyncio.sleep(0)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/big",
+                data=_chunked_body(),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 413
+            adapter.handle_message.assert_not_awaited()
 
 
 # ===================================================================

@@ -1527,28 +1527,90 @@ class DiscordAdapter(BasePlatformAdapter):
 
         @tree.command(name="models", description="Open the interactive model picker")
         async def slash_models(interaction: discord.Interaction):
-            from hermes_cli.model_picker_config import (
-                get_current_model_selection,
-                get_default_model_selection,
-            )
-            current_provider, current_model = get_current_model_selection()
-            default_provider, default_model = get_default_model_selection()
-            view = ModelPickerView(
-                adapter=self,
-                current_provider=current_provider,
-                current_model=current_model,
-                default_provider=default_provider,
-                default_model=default_model,
-            )
-            await interaction.response.send_message(
-                embed=view.build_embed(),
-                view=view,
-                ephemeral=True,
-            )
+            await interaction.response.defer(ephemeral=True)
+            try:
+                from hermes_cli.model_picker_config import (
+                    get_current_model_selection,
+                    get_default_model_selection,
+                )
+                current_provider, current_model = get_current_model_selection()
+                default_provider, default_model = get_default_model_selection()
+                view = ModelPickerView(
+                    adapter=self,
+                    current_provider=current_provider,
+                    current_model=current_model,
+                    default_provider=default_provider,
+                    default_model=default_model,
+                )
+                await interaction.edit_original_response(
+                    embed=view.build_embed(),
+                    view=view,
+                )
+            except Exception as e:
+                logger.error("Model picker failed: %s", e, exc_info=True)
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
         @tree.command(name="model-status", description="Show configured vs actual model")
         async def slash_model_status(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/model-status")
+            await interaction.response.defer(ephemeral=True)
+            try:
+                import yaml, json
+                from pathlib import Path
+                from gateway.run import get_session_model
+
+                _home = Path.home() / ".hermes"
+
+                config_model = "(not set)"
+                config_provider = "(not set)"
+                try:
+                    cp = _home / "config.yaml"
+                    if cp.exists():
+                        with open(cp, encoding="utf-8") as f:
+                            cfg = yaml.safe_load(f) or {}
+                        mc = cfg.get("model", {})
+                        if isinstance(mc, dict):
+                            config_model = mc.get("default", "(not set)")
+                            config_provider = mc.get("provider", "(auto)")
+                        elif isinstance(mc, str):
+                            config_model = mc
+                except Exception:
+                    pass
+
+                _override = get_session_model()
+                if _override and _override.get("model"):
+                    active_model = _override["model"]
+                    active_provider = _override.get("provider", config_provider)
+                    active_source = "via /models picker"
+                else:
+                    active_model = config_model
+                    active_provider = config_provider
+                    active_source = "from config.yaml"
+
+                cron_model = "(check jobs.json)"
+                try:
+                    jp = _home / "cron" / "jobs.json"
+                    if jp.exists():
+                        with open(jp) as f:
+                            jd = json.load(f)
+                        cm = set()
+                        for job in jd.get("jobs", []):
+                            jm = job.get("model")
+                            if jm:
+                                cm.add(f"{jm} ({job.get('name', '?')})")
+                        if cm:
+                            cron_model = ", ".join(sorted(cm))
+                except Exception:
+                    pass
+
+                text = (
+                    "**Model Status**\n\n"
+                    f"**Default** (config.yaml): `{config_provider}/{config_model}`\n"
+                    f"**Active**: `{active_provider}/{active_model}` ({active_source})\n"
+                    f"**Cron**: {cron_model}"
+                )
+                await interaction.followup.send(text, ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):

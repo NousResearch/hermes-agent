@@ -140,7 +140,8 @@ PLATFORMS = {
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
-    "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
+ "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
+    "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
 }

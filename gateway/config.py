@@ -57,6 +57,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    FEISHU = "feishu"
 
 
 @dataclass
@@ -273,6 +274,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Webhook uses enabled flag only (secrets are per-route)
             elif platform == Platform.WEBHOOK:
+                connected.append(platform)
+            # Feishu uses extra dict for app credentials
+            elif platform == Platform.FEISHU and config.extra.get("app_id"):
                 connected.append(platform)
         return connected
     
@@ -809,6 +813,33 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Feishu / Lark
+    feishu_app_id = os.getenv("FEISHU_APP_ID")
+    feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    if feishu_app_id and feishu_app_secret:
+        if Platform.FEISHU not in config.platforms:
+            config.platforms[Platform.FEISHU] = PlatformConfig()
+        config.platforms[Platform.FEISHU].enabled = True
+        config.platforms[Platform.FEISHU].extra.update({
+            "app_id": feishu_app_id,
+            "app_secret": feishu_app_secret,
+            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+        })
+        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+        if feishu_encrypt_key:
+            config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
+        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+        if feishu_verification_token:
+            config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
+        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+        if feishu_home:
+            config.platforms[Platform.FEISHU].home_channel = HomeChannel(
+                platform=Platform.FEISHU,
+                chat_id=feishu_home,
+                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

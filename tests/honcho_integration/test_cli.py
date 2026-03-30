@@ -48,7 +48,8 @@ class TestCloneHonchoForProfile:
             },
         }))
 
-        with patch("honcho_integration.cli._config_path", return_value=config_file):
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file):
             result = clone_honcho_for_profile("coder")
 
         assert result is True
@@ -67,7 +68,8 @@ class TestCloneHonchoForProfile:
         config_file = tmp_path / "config.json"
         config_file.write_text("{}")
 
-        with patch("honcho_integration.cli._config_path", return_value=config_file):
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file):
             result = clone_honcho_for_profile("coder")
 
         assert result is False
@@ -82,7 +84,8 @@ class TestCloneHonchoForProfile:
             },
         }))
 
-        with patch("honcho_integration.cli._config_path", return_value=config_file):
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file):
             result = clone_honcho_for_profile("coder")
 
         assert result is False
@@ -97,7 +100,8 @@ class TestCloneHonchoForProfile:
             "hosts": {"hermes": {}},
         }))
 
-        with patch("honcho_integration.cli._config_path", return_value=config_file):
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file):
             clone_honcho_for_profile("dreamer")
 
         cfg = json.loads(config_file.read_text())
@@ -107,7 +111,8 @@ class TestCloneHonchoForProfile:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({"apiKey": "key"}))
 
-        with patch("honcho_integration.cli._config_path", return_value=config_file):
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file):
             result = clone_honcho_for_profile("coder")
 
         assert result is True
@@ -132,6 +137,7 @@ class TestSyncHonchoProfilesQuiet:
         profiles = [FakeProfile("default"), FakeProfile("coder"), FakeProfile("dreamer")]
 
         with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file), \
              patch("hermes_cli.profiles.list_profiles", return_value=profiles):
             count = sync_honcho_profiles_quiet()
 
@@ -144,7 +150,8 @@ class TestSyncHonchoProfilesQuiet:
         config_file = tmp_path / "config.json"
         config_file.write_text("{}")
 
-        with patch("honcho_integration.cli._config_path", return_value=config_file):
+        with patch("honcho_integration.cli._config_path", return_value=config_file), \
+             patch("honcho_integration.cli._local_config_path", return_value=config_file):
             count = sync_honcho_profiles_quiet()
 
         assert count == 0

@@ -64,6 +64,8 @@ _HERMES_CORE_TOOLS = [
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # ANIMA Intelligence Compiler — ROS2 robotics pipelines (gated on compiler availability)
+    "anima_compile", "anima_validate", "anima_deploy", "anima_status", "anima_stop", "anima_registry",
 ]
 
 
@@ -205,6 +207,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "anima": {
+        "description": "ANIMA Intelligence Compiler — compile, validate, deploy, and monitor ROS2 robotics pipelines with 96 AI modules",
+        "tools": ["anima_compile", "anima_validate", "anima_deploy", "anima_status", "anima_stop", "anima_registry"],
         "includes": []
     },
 

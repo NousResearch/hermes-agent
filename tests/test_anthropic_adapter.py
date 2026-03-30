@@ -81,6 +81,19 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
 
+    def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-secret-123",
+                base_url="https://api.minimax.io/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "minimax-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
+
 
 class TestReadClaudeCodeCredentials:
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):

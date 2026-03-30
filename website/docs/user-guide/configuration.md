@@ -699,65 +699,171 @@ Use this when you want lower latency or cost without fully changing your default
 
 ## Terminal Backend Configuration
 
-Configure which environment the agent uses for terminal commands:
+Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona
-  cwd: "."          # Working directory ("." = current dir)
-  timeout: 180      # Command timeout in seconds
-
-  # Docker-specific settings
-  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
-  docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into /workspace.
-  docker_forward_env:              # Optional explicit allowlist for env passthrough
-    - "GITHUB_TOKEN"
-  docker_volumes:                    # Additional explicit host mounts
-    - "/home/user/projects:/workspace/projects"
-    - "/home/user/data:/data:ro"     # :ro for read-only
-
-  # Container resource limits (docker, singularity, modal, daytona)
-  container_cpu: 1                   # CPU cores
-  container_memory: 5120             # MB (default 5GB)
-  container_disk: 51200              # MB (default 50GB)
-  container_persistent: true         # Persist filesystem across sessions
-
-  # Persistent shell — keep a long-lived bash process across commands
-  persistent_shell: true             # Enabled by default for SSH backend
+  backend: local    # local | docker | ssh | modal | daytona | singularity
+  cwd: "."          # Working directory ("." = current dir for local, "/root" for containers)
+  timeout: 180      # Per-command timeout in seconds
 ```
+
+### Backend Overview
+
+| Backend | Where commands run | Isolation | Best for |
+|---------|-------------------|-----------|----------|
+| **local** | Your machine directly | None | Development, personal use |
+| **docker** | Docker container | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
+| **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
+| **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
+| **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+
+### Local Backend
+
+The default. Commands run directly on your machine with no isolation. No special setup required.
+
+```yaml
+terminal:
+  backend: local
+```
+
+:::warning
+The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing.
+:::
+
+### Docker Backend
+
+Runs commands inside a Docker container with security hardening (all capabilities dropped, no privilege escalation, PID limits).
+
+```yaml
+terminal:
+  backend: docker
+  docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+  docker_mount_cwd_to_workspace: false  # Mount launch dir into /workspace
+  docker_forward_env:              # Env vars to forward into container
+    - "GITHUB_TOKEN"
+  docker_volumes:                  # Host directory mounts
+    - "/home/user/projects:/workspace/projects"
+    - "/home/user/data:/data:ro"   # :ro for read-only
+
+  # Resource limits
+  container_cpu: 1                 # CPU cores (0 = unlimited)
+  container_memory: 5120           # MB (0 = unlimited)
+  container_disk: 51200            # MB (requires overlay2 on XFS+pquota)
+  container_persistent: true       # Persist /workspace and /root across sessions
+```
+
+**Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle).
+
+**Container lifecycle:** Each session starts a long-lived container (`docker run -d ... sleep 2h`). Commands run via `docker exec` with a login shell. On cleanup, the container is stopped and removed.
+
+**Security hardening:**
+- `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back
+- `--security-opt no-new-privileges`
+- `--pids-limit 256`
+- Size-limited tmpfs for `/tmp` (512MB), `/var/tmp` (256MB), `/run` (64MB)
+
+**Credential forwarding:** Env vars listed in `docker_forward_env` are resolved from your shell environment first, then `~/.hermes/.env`. Skills can also declare `required_environment_variables` which are merged automatically.
+
+### SSH Backend
+
+Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Persistent shell is enabled by default — state (cwd, env vars) survives across commands.
+
+```yaml
+terminal:
+  backend: ssh
+  persistent_shell: true           # Keep a long-lived bash session (default: true)
+```
+
+**Required environment variables:**
+
+```bash
+TERMINAL_SSH_HOST=my-server.example.com
+TERMINAL_SSH_USER=ubuntu
+```
+
+**Optional:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TERMINAL_SSH_PORT` | `22` | SSH port |
+| `TERMINAL_SSH_KEY` | (system default) | Path to SSH private key |
+| `TERMINAL_SSH_PERSISTENT` | `true` | Enable persistent shell |
+
+**How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`. Persistent shell keeps a single `bash -l` process alive on the remote host, communicating via temporary files. Commands that need `stdin_data` or `sudo` automatically fall back to one-shot mode.
+
+### Modal Backend
+
+Runs commands in a [Modal](https://modal.com) cloud sandbox. Each task gets an isolated VM with configurable CPU, memory, and disk. Filesystem can be snapshot/restored across sessions.
+
+```yaml
+terminal:
+  backend: modal
+  container_cpu: 1                 # CPU cores
+  container_memory: 5120           # MB (5GB)
+  container_disk: 51200            # MB (50GB)
+  container_persistent: true       # Snapshot/restore filesystem
+```
+
+**Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file.
+
+**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json`.
+
+**Credential files:** Automatically mounted from `~/.hermes/` (OAuth tokens, etc.) and synced before each command.
+
+### Daytona Backend
+
+Runs commands in a [Daytona](https://daytona.io) managed workspace. Supports stop/resume for persistence.
+
+```yaml
+terminal:
+  backend: daytona
+  container_cpu: 1                 # CPU cores
+  container_memory: 5120           # MB → converted to GiB
+  container_disk: 10240            # MB → converted to GiB (max 10 GiB)
+  container_persistent: true       # Stop/resume instead of delete
+```
+
+**Required:** `DAYTONA_API_KEY` environment variable.
+
+**Persistence:** When enabled, sandboxes are stopped (not deleted) on cleanup and resumed on next session. Sandbox names follow the pattern `hermes-{task_id}`.
+
+**Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
+
+### Singularity/Apptainer Backend
+
+Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
+
+```yaml
+terminal:
+  backend: singularity
+  singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
+  container_cpu: 1                 # CPU cores
+  container_memory: 5120           # MB
+  container_persistent: true       # Writable overlay persists across sessions
+```
+
+**Requirements:** `apptainer` or `singularity` binary in `$PATH`.
+
+**Image handling:** Docker URLs (`docker://...`) are automatically converted to SIF files and cached. Existing `.sif` files are used directly.
+
+**Scratch directory:** Resolved in order: `TERMINAL_SCRATCH_DIR` → `TERMINAL_SANDBOX_DIR/singularity` → `/scratch/$USER/hermes-agent` (HPC convention) → `~/.hermes/sandboxes/singularity`.
+
+**Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
 
 ### Common Terminal Backend Issues
 
-If terminal commands fail immediately or the terminal tool is reported as disabled, check the following:
+If terminal commands fail immediately or the terminal tool is reported as disabled:
 
-- **Local backend**
-  - No special requirements. This is the safest default when you are just getting started.
+- **Local** — No special requirements. The safest default when getting started.
+- **Docker** — Run `docker version` to verify Docker is working. If it fails, fix Docker or `hermes config set terminal.backend local`.
+- **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
+- **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.
+- **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
+- **Singularity** — Needs `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 
-- **Docker backend**
-  - Ensure Docker Desktop (or the Docker daemon) is installed and running.
-  - Hermes needs to be able to find the `docker` CLI. It checks your `$PATH` first and also probes common Docker Desktop install locations on macOS. Run:
-    ```bash
-    docker version
-    ```
-    If this fails, fix your Docker installation or switch back to the local backend:
-    ```bash
-    hermes config set terminal.backend local
-    ```
-
-- **SSH backend**
-  - Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set, for example:
-    ```bash
-    export TERMINAL_ENV=ssh
-    export TERMINAL_SSH_HOST=my-server.example.com
-    export TERMINAL_SSH_USER=ubuntu
-    ```
-  - If either value is missing, Hermes will log a clear error and refuse to use the SSH backend.
-
-- **Modal backend**
-  - You need either a `MODAL_TOKEN_ID` environment variable or a `~/.modal.toml` config file.
-  - If neither is present, the backend check fails and Hermes will report that the Modal backend is not available.
-
-When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
+When in doubt, set `terminal.backend` back to `local` and verify commands run there first.
 
 ### Docker Volume Mounts
 

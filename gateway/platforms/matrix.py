@@ -904,8 +904,9 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
-        # Use cached local path for images, HTTP URL for other media types
-        media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
+        # Use cached local path for images (voice messages already handled above).
+        if cached_path:
+            media_urls = [cached_path]
         media_types = [media_type] if media_urls else None
 
         msg_event = MessageEvent(

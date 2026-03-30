@@ -4514,7 +4514,9 @@ For more help on a command:
     honcho_subparsers = honcho_parser.add_subparsers(dest="honcho_command")
 
     honcho_subparsers.add_parser("setup", help="Interactive setup wizard for Honcho integration")
-    honcho_subparsers.add_parser("status", help="Show current Honcho config and connection status")
+    honcho_status = honcho_subparsers.add_parser("status", help="Show current Honcho config and connection status")
+    honcho_status.add_argument("--all", action="store_true", help="Show config overview across all profiles")
+    honcho_subparsers.add_parser("peers", help="Show peer identities across all profiles")
     honcho_subparsers.add_parser("sessions", help="List known Honcho session mappings")
 
     honcho_map = honcho_subparsers.add_parser(

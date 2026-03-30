@@ -41,8 +41,8 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),
+    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
+    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
@@ -71,6 +71,10 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # File copy/move/edit into sensitive system paths
+    (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
+    (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
+    (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
 ]
 
 

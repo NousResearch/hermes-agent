@@ -407,6 +407,7 @@ DEFAULT_CONFIG = {
     #   off    — skip all approval prompts (equivalent to --yolo)
     "approvals": {
         "mode": "manual",
+        "timeout": 60,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

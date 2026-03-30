@@ -12,10 +12,10 @@ WORKDIR /opt/hermes
 # Install Python and Node dependencies in one layer, no cache
 RUN pip install --no-cache-dir -e ".[all]" --break-system-packages && \
     npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium
-
-WORKDIR /opt/hermes/scripts/whatsapp-bridge
-RUN npm install --prefer-offline --no-audit
+    npx playwright install --with-deps chromium && \
+    cd /opt/hermes/scripts/whatsapp-bridge && \
+    npm install --prefer-offline --no-audit && \
+    npm cache clean --force
 
 WORKDIR /opt/hermes
 RUN chmod +x /opt/hermes/docker/entrypoint.sh

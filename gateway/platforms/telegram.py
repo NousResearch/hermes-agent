@@ -520,8 +520,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     ", ".join(fallback_ips),
                 )
                 transport = TelegramFallbackTransport(fallback_ips)
-                request = HTTPXRequest(httpx_kwargs={"transport": transport})
-                get_updates_request = HTTPXRequest(httpx_kwargs={"transport": transport})
+                # Explicit timeouts are required here because passing a
+                # pre-built HTTPXRequest to ApplicationBuilder bypasses
+                # the builder's default timeout configuration. The
+                # fallback transport adds latency (DoH discovery + IP
+                # rotation), so these values must be generous enough to
+                # absorb that overhead. Without them the library's 5s
+                # defaults cause frequent TimedOut errors which the
+                # retry logic then compounds into duplicate deliveries.
+                request = HTTPXRequest(
+                    read_timeout=20.0,
+                    write_timeout=20.0,
+                    connect_timeout=10.0,
+                    pool_timeout=5.0,
+                    httpx_kwargs={"transport": transport},
+                )
+                get_updates_request = HTTPXRequest(
+                    read_timeout=30.0,
+                    write_timeout=5.0,
+                    connect_timeout=10.0,
+                    pool_timeout=5.0,
+                    httpx_kwargs={"transport": transport},
+                )
                 builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot

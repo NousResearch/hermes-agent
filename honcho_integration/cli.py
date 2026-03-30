@@ -144,8 +144,15 @@ def cmd_disable(args) -> None:
     print(f"  Saved to {_config_path()}\n")
 
 
+_profile_override: str | None = None
+
+
 def _host_key() -> str:
     """Return the active Honcho host key, derived from the current Hermes profile."""
+    if _profile_override:
+        if _profile_override in ("default", "custom"):
+            return HOST
+        return f"{HOST}.{_profile_override}"
     return resolve_active_host()
 
 
@@ -371,7 +378,9 @@ def cmd_setup(args) -> None:
 
 
 def _active_profile_name() -> str:
-    """Return the active Hermes profile name."""
+    """Return the active Hermes profile name (respects --target-profile override)."""
+    if _profile_override:
+        return _profile_override
     try:
         from hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name()
@@ -469,13 +478,48 @@ def cmd_status(args) -> None:
     if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
         print("\n  Connection... ", end="", flush=True)
         try:
-            get_honcho_client(hcfg)
-            print("OK\n")
+            client = get_honcho_client(hcfg)
+            print("OK")
+            _show_peer_cards(hcfg, client)
         except Exception as e:
             print(f"FAILED ({e})\n")
     else:
         reason = "disabled" if not hcfg.enabled else "no API key or base URL"
         print(f"\n  Not connected ({reason})\n")
+
+
+def _show_peer_cards(hcfg, client) -> None:
+    """Fetch and display peer cards for the active profile."""
+    try:
+        from honcho_integration.session import HonchoSessionManager
+        mgr = HonchoSessionManager(honcho=client, config=hcfg)
+        session_key = hcfg.resolve_session_name()
+        session = mgr.get_or_create(session_key)
+
+        # User peer card
+        card = mgr.get_peer_card(session_key)
+        if card:
+            print(f"\n  User peer card ({len(card)} facts):")
+            for fact in card[:10]:
+                print(f"    - {fact}")
+            if len(card) > 10:
+                print(f"    ... and {len(card) - 10} more")
+
+        # AI peer representation
+        ai_rep = mgr.get_ai_representation(session_key)
+        ai_text = ai_rep.get("representation", "")
+        if ai_text:
+            # Truncate to first 200 chars
+            display = ai_text[:200] + ("..." if len(ai_text) > 200 else "")
+            print(f"\n  AI peer representation:")
+            print(f"    {display}")
+
+        if not card and not ai_text:
+            print("\n  No peer data yet (accumulates after first conversation)")
+
+        print()
+    except Exception as e:
+        print(f"\n  Peer data unavailable: {e}\n")
 
 
 def _cmd_status_all() -> None:
@@ -1004,6 +1048,9 @@ def cmd_migrate(args) -> None:
 
 def honcho_command(args) -> None:
     """Route honcho subcommands."""
+    global _profile_override
+    _profile_override = getattr(args, "target_profile", None)
+
     sub = getattr(args, "honcho_command", None)
     if sub == "setup" or sub is None:
         cmd_setup(args)

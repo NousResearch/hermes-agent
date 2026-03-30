@@ -4519,6 +4519,10 @@ For more help on a command:
         ),
         formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
     )
+    honcho_parser.add_argument(
+        "--target-profile", metavar="NAME", dest="target_profile",
+        help="Target a specific profile's Honcho config without switching",
+    )
     honcho_subparsers = honcho_parser.add_subparsers(dest="honcho_command")
 
     honcho_subparsers.add_parser("setup", help="Interactive setup wizard for Honcho integration")

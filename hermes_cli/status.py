@@ -339,6 +339,18 @@ def show_status(args):
             is_loaded = False
         print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
         print("  Manager:      launchd")
+    elif sys.platform == 'win32':
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+            gw_pids = find_gateway_pids()
+            is_running = len(gw_pids) > 0
+            print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
+            if gw_pids:
+                print(f"  PIDs:         {', '.join(str(p) for p in gw_pids)}")
+            print("  Manager:      Windows process")
+        except Exception:
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      Windows process")
     else:
         print(f"  Status:       {color('N/A', Colors.DIM)}")
         print("  Manager:      (not supported on this platform)")

@@ -235,7 +235,9 @@ class TestConfigWindowsSecurity:
 
     def test_get_env_value_checks_keyring(self):
         source = (PROJECT_ROOT / "hermes_cli" / "config.py").read_text(encoding="utf-8")
-        assert "_keyring_get" in source, "config.py: get_env_value doesn't check keyring"
+        assert (
+            "get_secret_keyring" in source or "_keyring_get" in source
+        ), "config.py: get_env_value doesn't check keyring"
 
 
 # ═════════════════════════════════════════════════════════════════════════

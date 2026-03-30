@@ -1,0 +1,50 @@
+diff --git a/PC/pyconfig.h.in b/PC/pyconfig.h.in
+index 4220f9f..0000000 100644
+--- a/PC/pyconfig.h.in
++++ b/PC/pyconfig.h.in
+@@ -665,6 +665,12 @@
+ /* Define if you have the <sys/un.h> header file.  */
+ /* #define HAVE_SYS_UN_H 1 */
+ 
++/* Windows SDK AF_UNIX support */
++#if defined(__has_include) && __has_include(<afunix.h>)
++#  define HAVE_AFUNIX_H 1
++#else
++#  define HAVE_AFUNIX_H 0
++#endif
++
+ /* Define if you have the <sys/utime.h> header file.  */
+ 
+diff --git a/Modules/socketmodule.h b/Modules/socketmodule.h
+index fd0f90d..0000000 100644
+--- a/Modules/socketmodule.h
++++ b/Modules/socketmodule.h
+@@ -1,7 +1,9 @@
+ #ifdef HAVE_SYS_UN_H
+ #  include <sys/un.h>
++#elif HAVE_AFUNIX_H
++#  include <afunix.h>
+ #else
+-#  undef AF_UNIX
++#undef AF_UNIX
+ #endif
+ 
+diff --git a/Modules/socketmodule.c b/Modules/socketmodule.c
+index 61f5bcc..0000000 100644
+--- a/Modules/socketmodule.c
++++ b/Modules/socketmodule.c
+@@ -329,6 +329,8 @@ static FlagRuntimeInfo win_runtime_flags[] = {
++    /* available starting with Windows 10 1803 */
++    {17134, "AF_UNIX"},
+     /* available starting with Windows 10 1709 */
+     {16299, "TCP_KEEPIDLE"},
+     {16299, "TCP_KEEPINTVL"},
+@@ -8931,7 +8933,7 @@ getsockaddrarg(PySocketSockObject *s, PyObject *args,
+             goto unix_out;
+         }
+ 
+-        *len_ret = path.len + offsetof(struct sockaddr_un, sun_path) + 1;
++        *len_ret = (int)path.len + offsetof(struct sockaddr_un, sun_path) + 1;
+         return 1;
+     }
+ #endif

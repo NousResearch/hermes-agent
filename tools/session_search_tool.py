@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional, Union
 
-from agent.auxiliary_client import async_call_llm
+from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
@@ -161,7 +161,15 @@ async def _summarize_session(
                 temperature=0.1,
                 max_tokens=MAX_SUMMARY_TOKENS,
             )
-            return response.choices[0].message.content.strip()
+            content = extract_content_or_reasoning(response)
+            if content:
+                return content
+            # Reasoning-only / empty — let the retry loop handle it
+            logging.warning("Session search LLM returned empty content (attempt %d/%d)", attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1 * (attempt + 1))
+                continue
+            return content
         except RuntimeError:
             logging.warning("No auxiliary model available for session summarization")
             return None
@@ -384,23 +392,30 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, _, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
-                    session_id,
-                    result,
-                    exc_info=True,
+                    session_id, result, exc_info=True,
                 )
-                continue
+                result = None
+
+            entry = {
+                "session_id": session_id,
+                "when": _format_timestamp(match_info.get("session_started")),
+                "source": match_info.get("source", "unknown"),
+                "model": match_info.get("model"),
+            }
+
             if result:
-                summaries.append({
-                    "session_id": session_id,
-                    "when": _format_timestamp(match_info.get("session_started")),
-                    "source": match_info.get("source", "unknown"),
-                    "model": match_info.get("model"),
-                    "summary": result,
-                })
+                entry["summary"] = result
+            else:
+                # Fallback: raw preview so matched sessions aren't silently
+                # dropped when the summarizer is unavailable (fixes #3409).
+                preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
+                entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
+
+            summaries.append(entry)
 
         return json.dumps({
             "success": True,

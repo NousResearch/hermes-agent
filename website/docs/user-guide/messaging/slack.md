@@ -114,7 +114,22 @@ Without these events, Slack simply never delivers channel messages to the bot.
 
 ---
 
-## Step 5: Install App to Workspace
+## Step 5: Enable the Messages Tab
+
+This step enables direct messages to the bot. Without it, users see **"Sending messages to this app has been turned off"** when trying to DM the bot.
+
+1. In the sidebar, go to **Features → App Home**
+2. Scroll to **Show Tabs**
+3. Toggle **Messages Tab** to ON
+4. Check **"Allow users to send Slash commands and messages from the messages tab"**
+
+:::danger Without this step, DMs are completely blocked
+Even with all the correct scopes and event subscriptions, Slack will not allow users to send direct messages to the bot unless the Messages Tab is enabled. This is a Slack platform requirement, not a Hermes configuration issue.
+:::
+
+---
+
+## Step 6: Install App to Workspace
 
 1. In the sidebar, go to **Settings → Install App**
 2. Click **Install to Workspace**
@@ -129,7 +144,7 @@ to take effect. The Install App page will show a banner prompting you to do so.
 
 ---
 
-## Step 6: Find User IDs for the Allowlist
+## Step 7: Find User IDs for the Allowlist
 
 Hermes uses Slack **Member IDs** (not usernames or display names) for the allowlist.
 
@@ -144,7 +159,7 @@ Member IDs look like `U01ABC2DEF3`. You need your own Member ID at minimum.
 
 ---
 
-## Step 7: Configure Hermes
+## Step 8: Configure Hermes
 
 Add the following to your `~/.hermes/.env` file:
 
@@ -175,7 +190,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 ---
 
-## Step 8: Invite the Bot to Channels
+## Step 9: Invite the Bot to Channels
 
 After starting the gateway, you need to **invite the bot** to any channel where you want it to respond:
 
@@ -239,6 +254,7 @@ Hermes supports voice on Slack:
 | Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
 | Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
 | Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
+| "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
 | "missing_scope" error | Add the required scope in OAuth & Permissions, then **reinstall** the app |

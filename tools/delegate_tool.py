@@ -289,7 +289,10 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
-        elif completed and summary:
+        elif summary:
+            # A summary means the subagent produced usable output.
+            # exit_reason ("completed" vs "max_iterations") already
+            # tells the parent *how* the task ended.
             status = "completed"
         else:
             status = "failed"

@@ -149,6 +149,12 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: reply mode (thread or off, default: off)
 # MATTERMOST_REPLY_MODE=thread
+
+# Optional: respond without @mention (default: true = require mention)
+# MATTERMOST_REQUIRE_MENTION=false
+
+# Optional: channels where bot responds without @mention (comma-separated channel IDs)
+# MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -205,6 +211,19 @@ Set it in your `~/.hermes/.env`:
 ```bash
 MATTERMOST_REPLY_MODE=thread
 ```
+
+## Mention Behavior
+
+By default, the bot only responds in channels when `@mentioned`. You can change this:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
+| `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
+
+To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
+
+When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
 ## Troubleshooting
 

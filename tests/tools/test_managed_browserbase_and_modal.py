@@ -357,7 +357,7 @@ def test_terminal_tool_prefers_managed_modal_when_gateway_ready_and_no_direct_cr
     assert not direct_ctor.called
 
 
-def test_terminal_tool_keeps_direct_modal_when_direct_credentials_exist():
+def test_terminal_tool_auto_mode_prefers_managed_modal_when_available():
     _install_fake_tools_package()
     env = os.environ.copy()
     env.update({
@@ -385,7 +385,43 @@ def test_terminal_tool_keeps_direct_modal_when_direct_credentials_exist():
                     "container_persistent": True,
                     "modal_mode": "auto",
                 },
-                task_id="task-modal-direct",
+                task_id="task-modal-auto",
+            )
+
+    assert result == "managed-modal-env"
+    assert managed_ctor.called
+    assert not direct_ctor.called
+
+
+def test_terminal_tool_auto_mode_falls_back_to_direct_modal_when_managed_unavailable():
+    _install_fake_tools_package()
+    env = os.environ.copy()
+    env.update({
+        "MODAL_TOKEN_ID": "tok-id",
+        "MODAL_TOKEN_SECRET": "tok-secret",
+    })
+
+    with patch.dict(os.environ, env, clear=True):
+        terminal_tool = _load_tool_module("tools.terminal_tool", "terminal_tool.py")
+
+        with (
+            patch.object(terminal_tool, "is_managed_tool_gateway_ready", return_value=False),
+            patch.object(terminal_tool, "_ManagedModalEnvironment", return_value="managed-modal-env") as managed_ctor,
+            patch.object(terminal_tool, "_ModalEnvironment", return_value="direct-modal-env") as direct_ctor,
+        ):
+            result = terminal_tool._create_environment(
+                env_type="modal",
+                image="python:3.11",
+                cwd="/root",
+                timeout=60,
+                container_config={
+                    "container_cpu": 1,
+                    "container_memory": 2048,
+                    "container_disk": 1024,
+                    "container_persistent": True,
+                    "modal_mode": "auto",
+                },
+                task_id="task-modal-direct-fallback",
             )
 
     assert result == "direct-modal-env"

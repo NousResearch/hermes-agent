@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import hermes_cli.gateway as gateway_cli
@@ -152,12 +153,13 @@ class TestLaunchdServiceRecovery:
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
 
         calls = []
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
-            if cmd == ["launchctl", "start", "ai.hermes.gateway"] and calls.count(cmd) == 1:
+            if cmd == ["launchctl", "start", label] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -167,9 +169,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
-            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "start", label],
             ["launchctl", "load", str(plist_path)],
-            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "start", label],
         ]
 
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):
@@ -352,6 +354,20 @@ class TestGeneratedUnitUsesDetectedVenv:
         assert f"{dot_venv}/bin" in unit
         # Must NOT contain a hardcoded /venv/ path
         assert "/venv/" not in unit or "/.venv/" in unit
+
+
+class TestGeneratedUnitIncludesLocalBin:
+    """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
+
+    def test_user_unit_includes_local_bin_in_path(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        home = str(Path.home())
+        assert f"{home}/.local/bin" in unit
+
+    def test_system_unit_includes_local_bin_in_path(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+        # System unit uses the resolved home dir from _system_service_identity
+        assert "/.local/bin" in unit
 
 
 class TestEnsureUserSystemdEnv:

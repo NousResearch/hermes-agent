@@ -286,12 +286,16 @@ def _expand_git_reference(
     args: list[str],
     label: str,
 ) -> tuple[str | None, str | None]:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return f"{ref.raw}: git command timed out (30s)", None
     if result.returncode != 0:
         stderr = (result.stderr or "").strip() or "git command failed"
         return f"{ref.raw}: {stderr}", None
@@ -449,8 +453,11 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             cwd=cwd,
             capture_output=True,
             text=True,
+            timeout=10,
         )
     except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None

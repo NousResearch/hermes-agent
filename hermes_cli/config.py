@@ -36,6 +36,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
+    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
+    "WECOM_BOT_ID", "WECOM_SECRET",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
@@ -136,9 +138,16 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
+    "fallback_providers": [],
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Tool-use enforcement: injects system prompt guidance that tells the
+        # model to actually call tools instead of describing intended actions.
+        # Values: "auto" (default — applies to gpt/codex models), true/false
+        # (force on/off for all models), or a list of model-name substrings
+        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        "tool_use_enforcement": "auto",
     },
     
     "terminal": {
@@ -223,42 +232,49 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,         # seconds — increase for slow local models
         },
         "compression": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "skills_hub": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "mcp": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "flush_memories": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
     },
     
@@ -266,12 +282,14 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
+        "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
+        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
     },
 
     # Privacy settings
@@ -354,6 +372,13 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Skills — external skill directories for sharing skills across tools/agents.
+    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
+    # always goes to ~/.hermes/skills/.
+    "skills": {
+        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
@@ -407,6 +432,12 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+    },
+
+    "cron": {
+        # Wrap delivered cron responses with a header (task name) and footer
+        # ("The agent cannot see this message").  Set to false for clean output.
+        "wrap_response": True,
     },
 
     # Config schema version - bump this when adding new required fields
@@ -549,14 +580,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
     },
     "DASHSCOPE_API_KEY": {
-        "description": "Alibaba Cloud DashScope API key for Qwen models",
+        "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
         "prompt": "DashScope API Key",
         "url": "https://modelstudio.console.alibabacloud.com/",
         "password": True,
         "category": "provider",
     },
     "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: international endpoint)",
+        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
         "prompt": "DashScope Base URL",
         "url": "",
         "password": False,
@@ -595,8 +626,31 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "HF_TOKEN": {
+        "description": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
+        "prompt": "Hugging Face Token",
+        "url": "https://huggingface.co/settings/tokens",
+        "password": True,
+        "category": "provider",
+    },
+    "HF_BASE_URL": {
+        "description": "Hugging Face Inference Providers base URL override",
+        "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
+    "EXA_API_KEY": {
+        "description": "Exa API key for AI-native web search and contents",
+        "prompt": "Exa API key",
+        "url": "https://exa.ai/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "PARALLEL_API_KEY": {
         "description": "Parallel API key for AI-native web search and extract",
         "prompt": "Parallel API key",
@@ -811,6 +865,20 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_ALLOWED_USERS": {
         "description": "Comma-separated Mattermost user IDs allowed to use the bot",
         "prompt": "Allowed Mattermost user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_REQUIRE_MENTION": {
+        "description": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in channels",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_FREE_RESPONSE_CHANNELS": {
+        "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
+        "prompt": "Free-response channel IDs (comma-separated)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -1694,6 +1762,7 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
@@ -1853,7 +1922,7 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
         'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
         'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',

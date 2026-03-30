@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from utils import atomic_json_write
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -64,12 +66,10 @@ def _load_disk_cache() -> Dict[str, Any]:
 
 
 def _save_disk_cache(data: Dict[str, Any]) -> None:
-    """Save models.dev data to disk cache."""
+    """Save models.dev data to disk cache atomically."""
     try:
         cache_path = _get_cache_path()
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, separators=(",", ":"))
+        atomic_json_write(cache_path, data, indent=None, separators=(",", ":"))
     except Exception as e:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 

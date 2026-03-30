@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+# display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
 def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
@@ -69,7 +70,7 @@ from tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
-    normalize_modal_mode,
+    resolve_modal_backend_state,
 )
 
 
@@ -172,7 +173,8 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     for failure in sudo_failures:
         if failure in output:
-            return output + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.hermes/.env on the agent machine."
+            from hermes_constants import display_hermes_home as _dhh
+            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
     
     return output
 
@@ -546,29 +548,11 @@ def _get_env_config() -> Dict[str, Any]:
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     """Resolve direct vs managed Modal backend selection."""
-    requested_mode = coerce_modal_mode(modal_mode)
-    normalized_mode = normalize_modal_mode(modal_mode)
-    has_direct = has_direct_modal_credentials()
-    managed_ready = is_managed_tool_gateway_ready("modal")
-    managed_mode_blocked = (
-        requested_mode == "managed" and not managed_nous_tools_enabled()
+    return resolve_modal_backend_state(
+        modal_mode,
+        has_direct=has_direct_modal_credentials(),
+        managed_ready=is_managed_tool_gateway_ready("modal"),
     )
-
-    if normalized_mode == "managed":
-        selected_backend = "managed" if managed_ready else None
-    elif normalized_mode == "direct":
-        selected_backend = "direct" if has_direct else None
-    else:
-        selected_backend = "direct" if has_direct else "managed" if managed_ready else None
-
-    return {
-        "requested_mode": requested_mode,
-        "mode": normalized_mode,
-        "has_direct": has_direct,
-        "managed_ready": managed_ready,
-        "managed_mode_blocked": managed_mode_blocked,
-        "selected_backend": selected_backend,
-    }
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
@@ -1347,8 +1331,8 @@ def check_terminal_requirements() -> bool:
                         )
                     return False
 
-            if importlib.util.find_spec("swerex") is None:
-                logger.error("swe-rex is required for direct modal terminal backend: pip install 'swe-rex[modal]'")
+            if importlib.util.find_spec("modal") is None:
+                logger.error("modal is required for direct modal terminal backend: pip install modal")
                 return False
 
             return True
@@ -1406,7 +1390,8 @@ if __name__ == "__main__":
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 

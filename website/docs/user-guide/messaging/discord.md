@@ -95,11 +95,15 @@ You'll land on the **General Information** page. Note the **Application ID** —
 1. In the left sidebar, click **Bot**.
 2. Discord automatically creates a bot user for your application. You'll see the bot's username, which you can customize.
 3. Under **Authorization Flow**:
-   - Set **Public Bot** to **OFF** — this prevents other people from inviting your bot to their servers.
+   - Set **Public Bot** to **ON** — required to use the Discord-provided invite link (recommended). This allows the Installation tab to generate a default authorization URL.
    - Leave **Require OAuth2 Code Grant** set to **OFF**.
 
 :::tip
 You can set a custom avatar and banner for your bot on this page. This is what users will see in Discord.
+:::
+
+:::info[Private Bot Alternative]
+If you prefer to keep your bot private (Public Bot = OFF), you **must** use the **Manual URL** method in Step 5 instead of the Installation tab. The Discord-provided link requires Public Bot to be enabled.
 :::
 
 ## Step 3: Enable Privileged Gateway Intents
@@ -148,6 +152,10 @@ Store the token somewhere safe (a password manager, for example). You'll need it
 You need an OAuth2 URL to invite the bot to your server. There are two ways to do this:
 
 ### Option A: Using the Installation Tab (Recommended)
+
+:::note[Requires Public Bot]
+This method requires **Public Bot** to be set to **ON** in Step 2. If you set Public Bot to OFF, use the Manual URL method below instead.
+:::
 
 1. In the left sidebar, click **Installation**.
 2. Under **Installation Contexts**, enable **Guild Install**.
@@ -361,3 +369,6 @@ Always set `DISCORD_ALLOWED_USERS` to restrict who can interact with the bot. Wi
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
+
+
+

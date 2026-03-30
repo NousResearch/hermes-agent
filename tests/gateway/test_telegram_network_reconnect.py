@@ -27,13 +27,21 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
-    for name in ("telegram", "telegram.ext", "telegram.constants"):
+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
 
 
 _ensure_telegram_mock()
 
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_auto_discovery(monkeypatch):
+    """Disable DoH auto-discovery so connect() uses the plain builder chain."""
+    async def _noop():
+        return []
+    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
 
 
 def _make_adapter() -> TelegramAdapter:

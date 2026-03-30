@@ -17,6 +17,23 @@ _RESET = "\033[0m"
 
 logger = logging.getLogger(__name__)
 
+# =========================================================================
+# Configurable tool preview length (0 = no limit)
+# Set once at startup by CLI or gateway from display.tool_preview_length config.
+# =========================================================================
+_tool_preview_max_len: int = 0  # 0 = unlimited
+
+
+def set_tool_preview_max_len(n: int) -> None:
+    """Set the global max length for tool call previews. 0 = no limit."""
+    global _tool_preview_max_len
+    _tool_preview_max_len = max(int(n), 0) if n else 0
+
+
+def get_tool_preview_max_len() -> int:
+    """Return the configured max preview length (0 = unlimited)."""
+    return _tool_preview_max_len
+
 
 # =========================================================================
 # Skin-aware helpers (lazy import to avoid circular deps)
@@ -94,8 +111,14 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | None:
-    """Build a short preview of a tool call's primary argument for display."""
+def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    """Build a short preview of a tool call's primary argument for display.
+
+    *max_len* controls truncation.  ``None`` (default) defers to the global
+    ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+    """
+    if max_len is None:
+        max_len = _tool_preview_max_len
     if not args:
         return None
     primary_args = {
@@ -190,7 +213,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | N
     preview = _oneline(str(value))
     if not preview:
         return None
-    if len(preview) > max_len:
+    if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
 
@@ -231,7 +254,7 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
-    def __init__(self, message: str = "", spinner_type: str = 'dots'):
+    def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
         self.running = False
@@ -239,12 +262,26 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
+        # Optional callable to route all output through (e.g. a no-op for silent
+        # background agents).  When set, bypasses self._out entirely so that
+        # agents with _print_fn overridden remain fully silent.
+        self._print_fn = print_fn
         # Capture stdout NOW, before any redirect_stdout(devnull) from
         # child agents can replace sys.stdout with a black hole.
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to the stdout captured at spinner creation time."""
+        """Write to the stdout captured at spinner creation time.
+
+        If a print_fn was supplied at construction, all output is routed through
+        it instead — allowing callers to silence the spinner with a no-op lambda.
+        """
+        if self._print_fn is not None:
+            try:
+                self._print_fn(text)
+            except Exception:
+                pass
+            return
         try:
             self._out.write(text + end)
             if flush:
@@ -270,11 +307,11 @@ class KawaiiSpinner:
         The CLI already drives a TUI widget (_spinner_text) for spinner display,
         so KawaiiSpinner's \\r-based animation is redundant under StdoutProxy.
         """
-        out = self._out
-        # StdoutProxy has a 'raw' attribute (bool) that plain file objects lack.
-        if hasattr(out, 'raw') and type(out).__name__ == 'StdoutProxy':
-            return True
-        return False
+        try:
+            from prompt_toolkit.patch_stdout import StdoutProxy
+            return isinstance(self._out, StdoutProxy)
+        except ImportError:
+            return False
 
     def _animate(self):
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
@@ -470,10 +507,14 @@ def get_cute_tool_message(
 
     def _trunc(s, n=40):
         s = str(s)
+        if _tool_preview_max_len == 0:
+            return s  # no limit
         return (s[:n-3] + "...") if len(s) > n else s
 
     def _path(p, n=35):
         p = str(p)
+        if _tool_preview_max_len == 0:
+            return p  # no limit
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
@@ -685,7 +726,7 @@ def format_context_pressure(
         threshold_percent: Compaction threshold as a fraction of context window.
         compression_enabled: Whether auto-compression is active.
     """
-    pct_int = int(compaction_progress * 100)
+    pct_int = min(int(compaction_progress * 100), 100)
     filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
     bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 
@@ -715,7 +756,7 @@ def format_context_pressure_gateway(
     No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
     The percentage shows progress toward the compaction threshold.
     """
-    pct_int = int(compaction_progress * 100)
+    pct_int = min(int(compaction_progress * 100), 100)
     filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
     bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 

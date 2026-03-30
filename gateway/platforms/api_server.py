@@ -166,7 +166,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
 }
 
 
@@ -222,6 +222,23 @@ if AIOHTTP_AVAILABLE:
         return await handler(request)
 else:
     body_limit_middleware = None  # type: ignore[assignment]
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def security_headers_middleware(request, handler):
+        """Add security headers to all responses (including errors)."""
+        response = await handler(request)
+        for k, v in _SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        return response
+else:
+    security_headers_middleware = None  # type: ignore[assignment]
 
 
 class _IdempotencyCache:
@@ -307,6 +324,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if "*" in self._cors_origins:
             headers = dict(_CORS_HEADERS)
             headers["Access-Control-Allow-Origin"] = "*"
+            headers["Access-Control-Max-Age"] = "600"
             return headers
 
         if origin not in self._cors_origins:
@@ -315,6 +333,7 @@ class APIServerAdapter(BasePlatformAdapter):
         headers = dict(_CORS_HEADERS)
         headers["Access-Control-Allow-Origin"] = origin
         headers["Vary"] = "Origin"
+        headers["Access-Control-Max-Age"] = "600"
         return headers
 
     def _origin_allowed(self, origin: str) -> bool:
@@ -366,13 +385,19 @@ class APIServerAdapter(BasePlatformAdapter):
         Create an AIAgent instance using the gateway's runtime config.
 
         Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
-        base_url, etc. from config.yaml / env vars.
+        base_url, etc. from config.yaml / env vars.  Toolsets are resolved
+        from config.yaml platform_toolsets.api_server (same as all other
+        gateway platforms), falling back to the hermes-api-server default.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+        from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = _resolve_gateway_model()
+
+        user_config = _load_gateway_config()
+        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -383,6 +408,7 @@ class APIServerAdapter(BasePlatformAdapter):
             quiet_mode=True,
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
+            enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
@@ -488,17 +514,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
-            # Start agent in background
+            # Start agent in background.  agent_ref is a mutable container
+            # so the SSE writer can interrupt the agent on client disconnect.
+            agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                agent_ref=agent_ref,
             ))
 
             return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q, agent_task
+                request, completion_id, model_name, created, _stream_q,
+                agent_task, agent_ref,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -561,80 +591,107 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
-        created: int, stream_q, agent_task,
+        created: int, stream_q, agent_task, agent_ref=None,
     ) -> "web.StreamResponse":
-        """Write real streaming SSE from agent's stream_delta_callback queue."""
+        """Write real streaming SSE from agent's stream_delta_callback queue.
+
+        If the client disconnects mid-stream (network drop, browser tab close),
+        the agent is interrupted via ``agent.interrupt()`` so it stops making
+        LLM API calls, and the asyncio task wrapper is cancelled.
+        """
         import queue as _q
 
-        response = web.StreamResponse(
-            status=200,
-            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
-        )
+        sse_headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+        # CORS middleware can't inject headers into StreamResponse after
+        # prepare() flushes them, so resolve CORS headers up front.
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
-        # Role chunk
-        role_chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-        }
-        await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
-
-        # Stream content chunks as they arrive from the agent
-        loop = asyncio.get_event_loop()
-        while True:
-            try:
-                delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
-            except _q.Empty:
-                if agent_task.done():
-                    # Drain any remaining items
-                    while True:
-                        try:
-                            delta = stream_q.get_nowait()
-                            if delta is None:
-                                break
-                            content_chunk = {
-                                "id": completion_id, "object": "chat.completion.chunk",
-                                "created": created, "model": model,
-                                "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
-                            }
-                            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
-                        except _q.Empty:
-                            break
-                    break
-                continue
-
-            if delta is None:  # End of stream sentinel
-                break
-
-            content_chunk = {
+        try:
+            # Role chunk
+            role_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
-                "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
 
-        # Get usage from completed agent
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        try:
-            result, agent_usage = await agent_task
-            usage = agent_usage or usage
-        except Exception:
-            pass
+            # Stream content chunks as they arrive from the agent
+            loop = asyncio.get_event_loop()
+            while True:
+                try:
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                except _q.Empty:
+                    if agent_task.done():
+                        # Drain any remaining items
+                        while True:
+                            try:
+                                delta = stream_q.get_nowait()
+                                if delta is None:
+                                    break
+                                content_chunk = {
+                                    "id": completion_id, "object": "chat.completion.chunk",
+                                    "created": created, "model": model,
+                                    "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                                }
+                                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                            except _q.Empty:
+                                break
+                        break
+                    continue
 
-        # Finish chunk
-        finish_chunk = {
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
-        }
-        await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
-        await response.write(b"data: [DONE]\n\n")
+                if delta is None:  # End of stream sentinel
+                    break
+
+                content_chunk = {
+                    "id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}],
+                }
+                await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+
+            # Get usage from completed agent
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            try:
+                result, agent_usage = await agent_task
+                usage = agent_usage or usage
+            except Exception:
+                pass
+
+            # Finish chunk
+            finish_chunk = {
+                "id": completion_id, "object": "chat.completion.chunk",
+                "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": usage.get("input_tokens", 0),
+                    "completion_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(b"data: [DONE]\n\n")
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            # Client disconnected mid-stream.  Interrupt the agent so it
+            # stops making LLM API calls at the next loop iteration, then
+            # cancel the asyncio task wrapper.
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                try:
+                    agent.interrupt("SSE client disconnected")
+                except Exception:
+                    pass
+            if not agent_task.done():
+                agent_task.cancel()
+                try:
+                    await agent_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
 
         return response
 
@@ -1137,12 +1194,18 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        agent_ref: Optional[list] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
 
         Returns ``(result_dict, usage_dict)`` where *usage_dict* contains
         ``input_tokens``, ``output_tokens`` and ``total_tokens``.
+
+        If *agent_ref* is a one-element list, the AIAgent instance is stored
+        at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
+        callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
+        another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_event_loop()
 
@@ -1152,6 +1215,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
             )
+            if agent_ref is not None:
+                agent_ref[0] = agent
             result = agent.run_conversation(
                 user_message=user_message,
                 conversation_history=conversation_history,
@@ -1176,10 +1241,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware) if mw is not None]
+            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
+            self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
@@ -1194,6 +1260,17 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+
+            # Port conflict detection — fail fast if port is already in use
+            import socket as _socket
+            try:
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                    _s.settimeout(1)
+                    _s.connect(('127.0.0.1', self._port))
+                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+                return False
+            except (ConnectionRefusedError, OSError):
+                pass  # port is free
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()

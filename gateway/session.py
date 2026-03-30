@@ -762,14 +762,16 @@ class SessionStore:
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
-                entry.input_tokens += input_tokens
-                entry.output_tokens += output_tokens
-                entry.cache_read_tokens += cache_read_tokens
-                entry.cache_write_tokens += cache_write_tokens
+                # Direct assignment — the gateway receives cumulative totals
+                # from the cached agent, not per-call deltas.
+                entry.input_tokens = input_tokens
+                entry.output_tokens = output_tokens
+                entry.cache_read_tokens = cache_read_tokens
+                entry.cache_write_tokens = cache_write_tokens
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 if estimated_cost_usd is not None:
-                    entry.estimated_cost_usd += estimated_cost_usd
+                    entry.estimated_cost_usd = estimated_cost_usd
                 if cost_status:
                     entry.cost_status = cost_status
                 entry.total_tokens = (
@@ -783,7 +785,7 @@ class SessionStore:
 
         if self._db and db_session_id:
             try:
-                self._db.update_token_counts(
+                self._db.set_token_counts(
                     db_session_id,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
@@ -795,6 +797,7 @@ class SessionStore:
                     billing_provider=provider,
                     billing_base_url=base_url,
                     model=model,
+                    absolute=True,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -955,13 +958,17 @@ class SessionStore:
             try:
                 self._db.clear_messages(session_id)
                 for msg in messages:
+                    role = msg.get("role", "unknown")
                     self._db.append_message(
                         session_id=session_id,
-                        role=msg.get("role", "unknown"),
+                        role=role,
                         content=msg.get("content"),
                         tool_name=msg.get("tool_name"),
                         tool_calls=msg.get("tool_calls"),
                         tool_call_id=msg.get("tool_call_id"),
+                        reasoning=msg.get("reasoning") if role == "assistant" else None,
+                        reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
+                        codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)

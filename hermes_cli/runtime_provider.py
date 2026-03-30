@@ -63,8 +63,11 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        default = cfg.get("default", "").strip()
-        base_url = cfg.get("base_url", "").strip()
+        # Accept "model" as alias for "default" (users intuitively write model.model)
+        if not cfg.get("default") and cfg.get("model"):
+            cfg["default"] = cfg["model"]
+        default = (cfg.get("default") or "").strip()
+        base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
         is_fallback = not default or default == "anthropic/claude-opus-4.6"
         if is_local and is_fallback and base_url:
@@ -203,7 +206,7 @@ def _resolve_named_custom_runtime(
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,
-        "api_key": api_key,
+        "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
 
@@ -407,12 +410,6 @@ def resolve_runtime_provider(
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
-            # MiniMax providers always use Anthropic Messages API.
-            # Auto-correct stale /v1 URLs (from old .env or config) to /anthropic.
-            elif provider in ("minimax", "minimax-cn"):
-                api_mode = "anthropic_messages"
-                if base_url.rstrip("/").endswith("/v1"):
-                    base_url = base_url.rstrip("/")[:-3] + "/anthropic"
         return {
             "provider": provider,
             "api_mode": api_mode,

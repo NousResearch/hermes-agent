@@ -18,6 +18,21 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Sensitive write targets that should trigger approval even when referenced
+# via shell expansions like $HOME or $HERMES_HOME.
+_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+_HERMES_ENV_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'\.env\b'
+)
+_SENSITIVE_WRITE_TARGET = (
+    r'(?:/etc/|/dev/sd|'
+    rf'{_SSH_SENSITIVE_PATH}|'
+    rf'{_HERMES_ENV_PATH})'
+)
+
 # =========================================================================
 # Dangerous command patterns
 # =========================================================================
@@ -46,13 +61,16 @@ DANGEROUS_PATTERNS = [
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    (r'\btee\b.*(/etc/|/dev/sd|\.ssh/|\.hermes/\.env)', "overwrite system file via tee"),
+    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    # Self-termination protection: prevent agent from killing its own process
+    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
 ]
 
 
@@ -456,6 +474,33 @@ def check_dangerous_command(command: str, env_type: str,
 # Combined pre-exec guard (tirith + dangerous command detection)
 # =========================================================================
 
+def _format_tirith_description(tirith_result: dict) -> str:
+    """Build a human-readable description from tirith findings.
+
+    Includes severity, title, and description for each finding so users
+    can make an informed approval decision.
+    """
+    findings = tirith_result.get("findings") or []
+    if not findings:
+        summary = tirith_result.get("summary") or "security issue detected"
+        return f"Security scan: {summary}"
+
+    parts = []
+    for f in findings:
+        severity = f.get("severity", "")
+        title = f.get("title", "")
+        desc = f.get("description", "")
+        if title and desc:
+            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+        elif title:
+            parts.append(f"[{severity}] {title}" if severity else title)
+    if not parts:
+        summary = tirith_result.get("summary") or "security issue detected"
+        return f"Security scan: {summary}"
+
+    return "Security scan — " + "; ".join(parts)
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
@@ -499,24 +544,20 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 2: Decide ---
 
-    # If tirith blocks, block immediately (no approval possible)
-    if tirith_result["action"] == "block":
-        summary = tirith_result.get("summary") or "security issue detected"
-        return {
-            "approved": False,
-            "message": f"BLOCKED: Command blocked by security scan ({summary}). Do NOT retry.",
-        }
-
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
     session_key = os.getenv("HERMES_SESSION_KEY", "default")
 
-    if tirith_result["action"] == "warn":
+    # Tirith block/warn → approvable warning with rich findings.
+    # Previously, tirith "block" was a hard block with no approval prompt.
+    # Now both block and warn go through the approval flow so users can
+    # inspect the explanation and approve if they understand the risk.
+    if tirith_result["action"] in ("block", "warn"):
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
-        tirith_desc = f"Security scan: {tirith_result.get('summary') or 'security warning detected'}"
+        tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 

@@ -35,6 +35,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
     ("google/gemini-3-flash-preview",   ""),
+    ("google/gemini-3.1-pro-preview",     ""),
+    ("google/gemini-3.1-flash-lite-preview",   ""),
     ("qwen/qwen3.5-plus-02-15",         ""),
     ("qwen/qwen3.5-35b-a3b",            ""),
     ("stepfun/step-3.5-flash",          ""),
@@ -62,6 +64,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.3-codex",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
         "qwen/qwen3.5-plus-02-15",
         "qwen/qwen3.5-35b-a3b",
         "stepfun/step-3.5-flash",
@@ -208,14 +212,31 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
+    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
+    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
+    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
+    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.5-plus",
-        "qwen3-max",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        "qwen-plus-latest",
-        "qwen3.5-flash",
-        "qwen-vl-max",
+        # Third-party models available on coding-intl
+        "glm-5",
+        "glm-4.7",
+        "kimi-k2.5",
+        "MiniMax-M2.5",
+    ],
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",
+        "Qwen/Qwen3.5-35B-A3B",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2.5",
+        "MiniMaxAI/MiniMax-M2.5",
+        "zai-org/GLM-5",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "moonshotai/Kimi-K2-Thinking",
     ],
 }
 
@@ -236,6 +257,7 @@ _PROVIDER_LABELS = {
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
+    "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
 
@@ -271,6 +293,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "hf": "huggingface",
+    "hugging-face": "huggingface",
+    "huggingface-hub": "huggingface",
 }
 
 
@@ -304,7 +329,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

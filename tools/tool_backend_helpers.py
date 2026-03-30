@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, Dict
 
 from utils import env_var_enabled
 
@@ -33,10 +34,7 @@ def coerce_modal_mode(value: object | None) -> str:
 
 def normalize_modal_mode(value: object | None) -> str:
     """Return a normalized modal execution mode."""
-    mode = coerce_modal_mode(value)
-    if mode == "managed" and not managed_nous_tools_enabled():
-        return "direct"
-    return mode
+    return coerce_modal_mode(value)
 
 
 def has_direct_modal_credentials() -> bool:
@@ -45,6 +43,42 @@ def has_direct_modal_credentials() -> bool:
         (os.getenv("MODAL_TOKEN_ID") and os.getenv("MODAL_TOKEN_SECRET"))
         or (Path.home() / ".modal.toml").exists()
     )
+
+
+def resolve_modal_backend_state(
+    modal_mode: object | None,
+    *,
+    has_direct: bool,
+    managed_ready: bool,
+) -> Dict[str, Any]:
+    """Resolve direct vs managed Modal backend selection.
+
+    Semantics:
+    - ``direct`` means direct-only
+    - ``managed`` means managed-only
+    - ``auto`` prefers managed when available, then falls back to direct
+    """
+    requested_mode = coerce_modal_mode(modal_mode)
+    normalized_mode = normalize_modal_mode(modal_mode)
+    managed_mode_blocked = (
+        requested_mode == "managed" and not managed_nous_tools_enabled()
+    )
+
+    if normalized_mode == "managed":
+        selected_backend = "managed" if managed_nous_tools_enabled() and managed_ready else None
+    elif normalized_mode == "direct":
+        selected_backend = "direct" if has_direct else None
+    else:
+        selected_backend = "managed" if managed_nous_tools_enabled() and managed_ready else "direct" if has_direct else None
+
+    return {
+        "requested_mode": requested_mode,
+        "mode": normalized_mode,
+        "has_direct": has_direct,
+        "managed_ready": managed_ready,
+        "managed_mode_blocked": managed_mode_blocked,
+        "selected_backend": selected_backend,
+    }
 
 
 def resolve_openai_audio_api_key() -> str:

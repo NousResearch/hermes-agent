@@ -81,6 +81,33 @@ class TestGetDefinitions:
         assert len(defs) == 1
         assert defs[0]["function"]["name"] == "available"
 
+    def test_reuses_shared_check_fn_once_per_call(self):
+        reg = ToolRegistry()
+        calls = {"count": 0}
+
+        def shared_check():
+            calls["count"] += 1
+            return True
+
+        reg.register(
+            name="first",
+            toolset="shared",
+            schema=_make_schema("first"),
+            handler=_dummy_handler,
+            check_fn=shared_check,
+        )
+        reg.register(
+            name="second",
+            toolset="shared",
+            schema=_make_schema("second"),
+            handler=_dummy_handler,
+            check_fn=shared_check,
+        )
+
+        defs = reg.get_definitions({"first", "second"})
+        assert len(defs) == 2
+        assert calls["count"] == 1
+
 
 class TestUnknownToolDispatch:
     def test_returns_error_json(self):

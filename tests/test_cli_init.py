@@ -96,6 +96,59 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestBusyInputMode:
+    def test_default_busy_input_mode_is_interrupt(self):
+        cli = _make_cli()
+        assert cli.busy_input_mode == "interrupt"
+
+    def test_busy_input_mode_queue_is_honored(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        assert cli.busy_input_mode == "queue"
+
+    def test_unknown_busy_input_mode_falls_back_to_interrupt(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "bogus"}})
+        assert cli.busy_input_mode == "interrupt"
+
+    def test_queue_command_works_while_busy(self):
+        """When agent is running, /queue should still put the prompt in _pending_input."""
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.process_command("/queue follow up")
+        assert cli._pending_input.get_nowait() == "follow up"
+
+    def test_queue_command_works_while_idle(self):
+        """When agent is idle, /queue should still queue (not reject)."""
+        cli = _make_cli()
+        cli._agent_running = False
+        cli.process_command("/queue follow up")
+        assert cli._pending_input.get_nowait() == "follow up"
+
+    def test_queue_mode_routes_busy_enter_to_pending(self):
+        """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        cli._agent_running = True
+        # Simulate what handle_enter does for non-command input while busy
+        text = "follow up"
+        if cli.busy_input_mode == "queue":
+            cli._pending_input.put(text)
+        else:
+            cli._interrupt_queue.put(text)
+        assert cli._pending_input.get_nowait() == "follow up"
+        assert cli._interrupt_queue.empty()
+
+    def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
+        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
+        cli = _make_cli()
+        cli._agent_running = True
+        text = "redirect"
+        if cli.busy_input_mode == "queue":
+            cli._pending_input.put(text)
+        else:
+            cli._interrupt_queue.put(text)
+        assert cli._interrupt_queue.get_nowait() == "redirect"
+        assert cli._pending_input.empty()
+
+
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
         """Single-query mode calls chat() without going through run()."""

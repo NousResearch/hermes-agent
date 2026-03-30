@@ -88,6 +88,26 @@ Handlers registered for `command:*` fire for any `command:` event (`command:mode
 
 ### Examples
 
+#### Boot Checklist (BOOT.md) — Built-in
+
+The gateway ships with a built-in `boot-md` hook that looks for `~/.hermes/BOOT.md` on every startup. If the file exists, the agent runs its instructions in a background session. No installation needed — just create the file.
+
+**Create `~/.hermes/BOOT.md`:**
+
+```markdown
+# Startup Checklist
+
+1. Check if any cron jobs failed overnight — run `hermes cron list`
+2. Send a message to Discord #general saying "Gateway restarted, all systems go"
+3. Check if /opt/app/deploy.log has any errors from the last 24 hours
+```
+
+The agent runs these instructions in a background thread so it doesn't block gateway startup. If nothing needs attention, the agent replies with `[SILENT]` and no message is delivered.
+
+:::tip
+No BOOT.md? The hook silently skips — zero overhead. Create the file whenever you need startup automation, delete it when you don't.
+:::
+
 #### Telegram Alert on Long Tasks
 
 Send yourself a message when the agent takes more than 10 steps:
@@ -209,10 +229,10 @@ def register(ctx):
 |------|-----------|-------------------|
 | `pre_tool_call` | Before any tool executes | `tool_name`, `args`, `task_id` |
 | `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
-| `pre_llm_call` | Before LLM API request | *(planned — not yet wired)* |
-| `post_llm_call` | After LLM API response | *(planned — not yet wired)* |
-| `on_session_start` | Session begins | *(planned — not yet wired)* |
-| `on_session_end` | Session ends | *(planned — not yet wired)* |
+| `pre_llm_call` | Before LLM API request | `session_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform` |
+| `post_llm_call` | After LLM API response | `session_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` |
+| `on_session_start` | Session begins | `session_id`, `model`, `platform` |
+| `on_session_end` | Session ends | `session_id`, `completed`, `interrupted`, `model`, `platform` |
 
 Callbacks receive keyword arguments matching the columns above:
 

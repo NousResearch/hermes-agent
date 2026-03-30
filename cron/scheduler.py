@@ -26,6 +26,7 @@ except ImportError:
         msvcrt = None
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config
 from typing import Optional
 
 from hermes_time import now as _hermes_now
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -86,6 +87,22 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             chat_id, thread_id = rest.split(":", 1)
         else:
             chat_id, thread_id = rest, None
+
+        # Resolve human-friendly labels like "Alice (dm)" to real IDs.
+        # send_message(action="list") shows labels with display suffixes
+        # that aren't valid platform IDs (e.g. WhatsApp JIDs).
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            target = chat_id
+            # Strip display suffix like " (dm)" or " (group)"
+            if target.endswith(")") and " (" in target:
+                target = target.rsplit(" (", 1)[0].strip()
+            resolved = resolve_channel_name(platform_name.lower(), target)
+            if resolved:
+                chat_id = resolved
+        except Exception:
+            pass
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,
@@ -145,6 +162,8 @@ def _deliver_result(job: dict, content: str) -> None:
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "feishu": Platform.FEISHU,
+        "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -164,18 +183,29 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
-    # Wrap the content so the user knows this is a cron delivery and that
-    # the interactive agent has no visibility into it.
-    task_name = job.get("name", job["id"])
-    wrapped = (
-        f"Cronjob Response: {task_name}\n"
-        f"-------------\n\n"
-        f"{content}\n\n"
-        f"Note: The agent cannot see this message, and therefore cannot respond to it."
-    )
+    # Optionally wrap the content with a header/footer so the user knows this
+    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
+    # in config.yaml for clean output.
+    wrap_response = True
+    try:
+        user_cfg = load_config()
+        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+    except Exception:
+        pass
+
+    if wrap_response:
+        task_name = job.get("name", job["id"])
+        delivery_content = (
+            f"Cronjob Response: {task_name}\n"
+            f"-------------\n\n"
+            f"{content}\n\n"
+            f"Note: The agent cannot see this message, and therefore cannot respond to it."
+        )
+    else:
+        delivery_content = content
 
     # Run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id)
+    coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -186,7 +216,7 @@ def _deliver_result(job: dict, content: str) -> None:
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -308,7 +338,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -524,6 +554,12 @@ def tick(verbose: bool = True) -> int:
         executed = 0
         for job in due_jobs:
             try:
+                # For recurring jobs (cron/interval), advance next_run_at to the
+                # next future occurrence BEFORE execution.  This way, if the
+                # process crashes mid-run, the job won't re-fire on restart.
+                # One-shot jobs are left alone so they can retry on restart.
+                advance_next_run(job["id"])
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)

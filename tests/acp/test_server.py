@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 import acp
+from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
@@ -18,6 +19,8 @@ from acp.schema import (
     NewSessionResponse,
     PromptResponse,
     ResumeSessionResponse,
+    SetSessionConfigOptionResponse,
+    SetSessionModeResponse,
     SessionInfo,
     TextContentBlock,
     Usage,
@@ -166,6 +169,74 @@ class TestListAndFork:
         fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
         assert fork_resp.session_id
         assert fork_resp.session_id != new_resp.session_id
+
+
+# ---------------------------------------------------------------------------
+# session configuration / model routing
+# ---------------------------------------------------------------------------
+
+
+class TestSessionConfiguration:
+    @pytest.mark.asyncio
+    async def test_set_session_mode_returns_response(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        resp = await agent.set_session_mode(mode_id="chat", session_id=new_resp.session_id)
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        assert isinstance(resp, SetSessionModeResponse)
+        assert getattr(state, "mode", None) == "chat"
+
+    @pytest.mark.asyncio
+    async def test_set_config_option_returns_response(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        resp = await agent.set_config_option(
+            config_id="approval_mode",
+            session_id=new_resp.session_id,
+            value="auto",
+        )
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        assert isinstance(resp, SetSessionConfigOptionResponse)
+        assert getattr(state, "config_options", {}) == {"approval_mode": "auto"}
+        assert resp.config_options == []
+
+    @pytest.mark.asyncio
+    async def test_router_accepts_stable_session_config_methods(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        router = build_agent_router(agent)
+
+        mode_result = await router(
+            "session/set_mode",
+            {"modeId": "chat", "sessionId": new_resp.session_id},
+            False,
+        )
+        config_result = await router(
+            "session/set_config_option",
+            {
+                "configId": "approval_mode",
+                "sessionId": new_resp.session_id,
+                "value": "auto",
+            },
+            False,
+        )
+
+        assert mode_result == {}
+        assert config_result == {"configOptions": []}
+
+    @pytest.mark.asyncio
+    async def test_router_accepts_unstable_model_switch_when_enabled(self, agent):
+        new_resp = await agent.new_session(cwd="/tmp")
+        router = build_agent_router(agent, use_unstable_protocol=True)
+
+        result = await router(
+            "session/set_model",
+            {"modelId": "gpt-5.4", "sessionId": new_resp.session_id},
+            False,
+        )
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        assert result == {}
+        assert state.model == "gpt-5.4"
 
 
 # ---------------------------------------------------------------------------

@@ -35,7 +35,7 @@
 
           ${pkgs.lib.concatMapStringsSep "\n" (name: ''
             makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-              --prefix PATH : "${runtimePath}" \
+              --suffix PATH : "${runtimePath}" \
               --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills
           '') [ "hermes" "hermes-agent" "hermes-acp" ]}
 

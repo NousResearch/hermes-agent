@@ -339,7 +339,7 @@ class MemoryStore:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
-        pct = int((current / limit) * 100) if limit > 0 else 0
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         resp = {
             "success": True,
@@ -360,7 +360,7 @@ class MemoryStore:
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
-        pct = int((current / limit) * 100) if limit > 0 else 0
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
             header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"

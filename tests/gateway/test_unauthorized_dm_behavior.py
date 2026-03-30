@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -19,7 +20,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "SMS_ALLOWED_USERS",
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
-        "DINGTALK_ALLOWED_USERS",
+        "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
@@ -30,7 +31,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "SMS_ALLOW_ALL_USERS",
         "MATTERMOST_ALLOW_ALL_USERS",
         "MATRIX_ALLOW_ALL_USERS",
-        "DINGTALK_ALLOW_ALL_USERS",
+        "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -60,6 +61,32 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
     return runner, adapter
+
+
+def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypatch, tmp_path):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    session_dir = tmp_path / "whatsapp" / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-15550000001.json").write_text('"900000000000001"', encoding="utf-8")
+    (session_dir / "lid-mapping-900000000000001_reverse.json").write_text('"15550000001"', encoding="utf-8")
+
+    runner, _adapter = _make_runner(
+        Platform.WHATSAPP,
+        GatewayConfig(platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="900000000000001@lid",
+        chat_id="900000000000001@lid",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,17 @@ def _env_enabled(name: str) -> bool:
     return env_var_enabled(name)
 
 
+def _get_disabled_plugins() -> set:
+    """Read the disabled plugins list from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        disabled = config.get("plugins", {}).get("disabled", [])
+        return set(disabled) if isinstance(disabled, list) else set()
+    except Exception:
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -201,8 +212,15 @@ class PluginManager:
         # 3. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest
+        # Load each manifest (skip user-disabled plugins)
+        disabled = _get_disabled_plugins()
         for manifest in manifests:
+            if manifest.name in disabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "disabled via config"
+                self._plugins[manifest.name] = loaded
+                logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                continue
             self._load_plugin(manifest)
 
         if manifests:
@@ -387,16 +405,23 @@ class PluginManager:
     # Hook invocation
     # -----------------------------------------------------------------------
 
-    def invoke_hook(self, hook_name: str, **kwargs: Any) -> None:
+    def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
         Each callback is wrapped in its own try/except so a misbehaving
         plugin cannot break the core agent loop.
+
+        Returns a list of non-``None`` return values from callbacks.
+        This allows hooks like ``pre_llm_call`` to contribute context
+        that the agent core can collect and inject.
         """
         callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
         for cb in callbacks:
             try:
-                cb(**kwargs)
+                ret = cb(**kwargs)
+                if ret is not None:
+                    results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
@@ -404,6 +429,7 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+        return results
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -448,9 +474,12 @@ def discover_plugins() -> None:
     get_plugin_manager().discover_and_load()
 
 
-def invoke_hook(hook_name: str, **kwargs: Any) -> None:
-    """Invoke a lifecycle hook on all loaded plugins."""
-    get_plugin_manager().invoke_hook(hook_name, **kwargs)
+def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a lifecycle hook on all loaded plugins.
+
+    Returns a list of non-``None`` return values from plugin callbacks.
+    """
+    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
 def get_plugin_tool_names() -> Set[str]:

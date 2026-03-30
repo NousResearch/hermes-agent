@@ -248,6 +248,42 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "hermes-api-server": {
+        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
+        "tools": [
+            # Web
+            "web_search", "web_extract",
+            # Terminal + process management
+            "terminal", "process",
+            # File manipulation
+            "read_file", "write_file", "patch", "search_files",
+            # Vision + image generation
+            "vision_analyze", "image_generate",
+            # MoA
+            "mixture_of_agents",
+            # Skills
+            "skills_list", "skill_view", "skill_manage",
+            # Browser automation
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_close", "browser_get_images",
+            "browser_vision", "browser_console",
+            # Planning & memory
+            "todo", "memory",
+            # Session history search
+            "session_search",
+            # Code execution + delegation
+            "execute_code", "delegate_task",
+            # Cronjob management
+            "cronjob",
+            # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            # Honcho memory tools (gated on honcho being active via check_fn)
+            "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
+        ],
+        "includes": []
+    },
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
@@ -297,6 +333,36 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-mattermost": {
+        "description": "Mattermost bot toolset - self-hosted team messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-matrix": {
+        "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-dingtalk": {
+        "description": "DingTalk bot toolset - enterprise messaging platform (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-feishu": {
+        "description": "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-wecom": {
+        "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-sms": {
         "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
         "tools": _HERMES_CORE_TOOLS,
@@ -306,7 +372,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom"]
     }
 }
 

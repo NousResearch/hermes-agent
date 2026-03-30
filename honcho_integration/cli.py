@@ -113,7 +113,7 @@ def cmd_enable(args) -> None:
         if peer_name and "peerName" not in block:
             block["peerName"] = peer_name
         block.setdefault("aiPeer", host)
-        block.setdefault("workspace", host)
+        block.setdefault("workspace", default_block.get("workspace") or cfg.get("workspace") or HOST)
 
     _write_config(cfg)
     print(f"  {label}Honcho enabled.")

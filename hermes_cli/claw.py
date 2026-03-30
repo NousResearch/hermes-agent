@@ -88,7 +88,19 @@ def claw_command(args):
 
 def _cmd_migrate(args):
     """Run the OpenClaw → Hermes migration."""
-    source_dir = Path(getattr(args, "source", None) or Path.home() / ".openclaw")
+    # Check current and legacy OpenClaw directories
+    explicit_source = getattr(args, "source", None)
+    if explicit_source:
+        source_dir = Path(explicit_source)
+    else:
+        source_dir = Path.home() / ".openclaw"
+        if not source_dir.is_dir():
+            # Try legacy directory names
+            for legacy in (".clawdbot", ".moldbot"):
+                candidate = Path.home() / legacy
+                if candidate.is_dir():
+                    source_dir = candidate
+                    break
     dry_run = getattr(args, "dry_run", False)
     preset = getattr(args, "preset", "full")
     overwrite = getattr(args, "overwrite", False)

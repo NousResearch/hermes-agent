@@ -2642,24 +2642,24 @@ class GatewayRunner:
         }
         pending_path.write_text(json.dumps(pending))
 
-        # Spawn `hermes update` in a separate cgroup so it survives gateway
-        # restart.  systemd-run --user --scope creates a transient scope unit.
+        # Spawn `hermes update` detached so it survives gateway restart.
+        # Use setsid for portable session detach (works under system services
+        # where systemd-run --user fails due to missing D-Bus session).
         update_cmd = f"{hermes_bin} update > {output_path} 2>&1"
         try:
-            systemd_run = shutil.which("systemd-run")
-            if systemd_run:
+            setsid = shutil.which("setsid")
+            if setsid:
+                # Preferred: setsid creates a new session, fully detached
                 subprocess.Popen(
-                    [systemd_run, "--user", "--scope",
-                     "--unit=hermes-update", "--",
-                     "bash", "-c", update_cmd],
+                    [setsid, "bash", "-c", update_cmd],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
             else:
-                # Fallback: best-effort detach with start_new_session
+                # Fallback: start_new_session=True is sufficient on most systems
                 subprocess.Popen(
-                    ["bash", "-c", f"nohup {update_cmd} &"],
+                    ["bash", "-c", update_cmd],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,

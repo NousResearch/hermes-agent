@@ -376,23 +376,23 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
-    retryable: bool = False  # True for transient errors (network, timeout) — base will retry automatically
+    retryable: bool = False  # True for transient connection errors — base will retry automatically; excludes timeouts (risk of duplicate delivery)
 
 
-# Error substrings that indicate a transient network failure worth retrying
+# Error substrings that indicate a transient *connection* failure worth retrying.
+# "timeout" / "timed out" are intentionally excluded: a read timeout on a
+# non-idempotent call (e.g. send_message) means the request may have reached
+# the server — retrying risks duplicate delivery.  Platforms that know a
+# timeout is safe to retry should set SendResult.retryable = True explicitly.
 _RETRYABLE_ERROR_PATTERNS = (
     "connecterror",
     "connectionerror",
     "connectionreset",
     "connectionrefused",
-    "timeout",
-    "timed out",
-    "network",
+    "connecttimeout",
     "broken pipe",
     "remotedisconnected",
     "eoferror",
-    "readtimeout",
-    "writetimeout",
 )
 
 

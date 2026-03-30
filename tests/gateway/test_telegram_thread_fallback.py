@@ -33,11 +33,16 @@ class FakeBadRequest(FakeNetworkError):
     pass
 
 
+class FakeTimedOut(FakeNetworkError):
+    pass
+
+
 # Build a fake telegram module tree so the adapter's internal imports work
 _fake_telegram = types.ModuleType("telegram")
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
 _fake_telegram_error.BadRequest = FakeBadRequest
+_fake_telegram_error.TimedOut = FakeTimedOut
 _fake_telegram.error = _fake_telegram_error
 _fake_telegram_constants = types.ModuleType("telegram.constants")
 _fake_telegram_constants.ParseMode = SimpleNamespace(MARKDOWN_V2="MarkdownV2")

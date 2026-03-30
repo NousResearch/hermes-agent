@@ -112,17 +112,21 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2  # initial + 1 retry
 
     @pytest.mark.asyncio
-    async def test_retries_on_timeout_and_succeeds(self):
+    async def test_timeout_not_retried_to_prevent_duplicates(self):
+        """ReadTimeout is NOT retried because the request may have reached
+        the server — retrying a non-idempotent send risks duplicate delivery."""
         adapter = _StubAdapter()
         adapter._send_results = [
             SendResult(success=False, error="ReadTimeout: request timed out"),
-            SendResult(success=False, error="ReadTimeout: request timed out"),
-            SendResult(success=True, message_id="ok"),
+            SendResult(success=True, message_id="fallback_ok"),
         ]
-        with patch("asyncio.sleep", new_callable=AsyncMock):
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
-        assert result.success
-        assert len(adapter._send_calls) == 3
+        # No retry delay — timeout skips the retry loop entirely
+        mock_sleep.assert_not_called()
+        # 2 calls: initial (timeout) + plain-text fallback (no retry loop in between)
+        assert len(adapter._send_calls) == 2
+        assert "plain text" in adapter._send_calls[-1][1].lower()
 
     @pytest.mark.asyncio
     async def test_retryable_flag_respected(self):

@@ -707,6 +707,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 from telegram.error import NetworkError as _NetErr
             except ImportError:
                 _NetErr = OSError  # type: ignore[misc,assignment]
+            try:
+                from telegram.error import TimedOut as _TimedOut
+            except (ImportError, AttributeError):
+                _TimedOut = None  # type: ignore[assignment,misc]
 
             try:
                 from telegram.error import BadRequest as _BadReq
@@ -774,6 +778,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             # Other BadRequest errors are permanent — don't retry
                             raise
+                        # TimedOut — request may have reached server; don't retry
+                        if _TimedOut and isinstance(send_err, _TimedOut):
+                            raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
@@ -791,7 +798,11 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            # TimedOut means the request may have reached Telegram's server;
+            # mark as non-retryable to prevent the upper _send_with_retry
+            # layer from re-sending and causing duplicate messages.
+            is_timeout = (_TimedOut and isinstance(e, _TimedOut)) or "timed out" in str(e).lower()
+            return SendResult(success=False, error=str(e), retryable=not is_timeout)
 
     async def edit_message(
         self,

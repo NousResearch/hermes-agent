@@ -2908,6 +2908,19 @@ class AIAgent:
         return converted or None
 
     @staticmethod
+    def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
+        """Generate a deterministic call_id from tool call content.
+
+        Used as a fallback when the API doesn't provide a call_id.
+        Deterministic IDs prevent cache invalidation — random UUIDs would
+        make every API call's prefix unique, breaking OpenAI's prompt cache.
+        """
+        import hashlib
+        seed = f"{fn_name}:{arguments}:{index}"
+        digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"call_{digest}"
+
+    @staticmethod
     def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
         """Split a stored tool id into (call_id, response_item_id)."""
         if not isinstance(raw_id, str):
@@ -3013,7 +3026,8 @@ class AIAgent:
                                 ):
                                     call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
                                 else:
-                                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                                    _raw_args = str(fn.get("arguments", "{}"))
+                                    call_id = self._deterministic_call_id(fn_name, _raw_args, len(items))
                             call_id = call_id.strip()
 
                             arguments = fn.get("arguments", "{}")
@@ -3377,7 +3391,7 @@ class AIAgent:
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
-                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                    call_id = self._deterministic_call_id(fn_name, arguments, len(tool_calls))
                 call_id = call_id.strip()
                 response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
                 response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
@@ -3398,7 +3412,7 @@ class AIAgent:
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
-                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                    call_id = self._deterministic_call_id(fn_name, arguments, len(tool_calls))
                 call_id = call_id.strip()
                 response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
                 response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
@@ -4933,7 +4947,10 @@ class AIAgent:
                     if isinstance(raw_id, str) and raw_id.strip():
                         call_id = raw_id.strip()
                     else:
-                        call_id = f"call_{uuid.uuid4().hex[:12]}"
+                        _fn = getattr(tool_call, "function", None)
+                        _fn_name = getattr(_fn, "name", "") if _fn else ""
+                        _fn_args = getattr(_fn, "arguments", "{}") if _fn else "{}"
+                        call_id = self._deterministic_call_id(_fn_name, _fn_args, len(tool_calls))
                 call_id = call_id.strip()
 
                 response_item_id = getattr(tool_call, "response_item_id", None)

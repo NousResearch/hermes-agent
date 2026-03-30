@@ -176,7 +176,7 @@ Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTI
 
 ### Skill Environment Variable Passthrough
 
-When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` sandboxes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code.
+When a skill declares `required_environment_variables` in its frontmatter, those variables are **automatically passed through** to both `execute_code` and `terminal` sandboxes after the skill is loaded. This lets skills use their declared API keys without weakening the security posture for arbitrary code. Hermes-managed provider, gateway, and tool secrets remain blocked even if a skill declares them.
 
 For non-skill use cases, you can explicitly allowlist variables in `config.yaml`:
 

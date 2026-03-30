@@ -132,3 +132,26 @@ class TestSkillViewRegistersPassthrough:
         assert result["success"] is True
         from tools.env_passthrough import get_all_passthrough
         assert len(get_all_passthrough()) == 0
+
+    def test_protected_hermes_secret_not_registered(self, tmp_path, monkeypatch):
+        """Skill metadata must not punch provider secrets through the sandbox."""
+        _create_skill(
+            tmp_path,
+            "protected-skill",
+            frontmatter_extra=(
+                "required_environment_variables:\n"
+                "  - name: OPENAI_API_KEY\n"
+                "    prompt: Enter your OpenAI API key\n"
+            ),
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+
+        with patch("tools.skills_tool._secret_capture_callback", None):
+            from tools.skills_tool import skill_view
+
+            result = json.loads(skill_view(name="protected-skill"))
+
+        assert result["success"] is True
+        assert result["setup_needed"] is False
+        assert not is_env_passthrough("OPENAI_API_KEY")

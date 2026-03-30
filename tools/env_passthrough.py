@@ -24,6 +24,8 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+from tools.sensitive_env import HERMES_SENSITIVE_ENV_BLOCKLIST
+
 logger = logging.getLogger(__name__)
 
 # Session-scoped set of env var names that should pass through to sandboxes.
@@ -31,6 +33,11 @@ _allowed_env_vars: set[str] = set()
 
 # Cache for the config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
+
+
+def _is_protected_passthrough_name(var_name: str) -> bool:
+    """Return True when a passthrough target is a Hermes-managed secret."""
+    return var_name in HERMES_SENSITIVE_ENV_BLOCKLIST
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -41,6 +48,12 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     for name in var_names:
         name = name.strip()
         if name:
+            if _is_protected_passthrough_name(name):
+                logger.warning(
+                    "env passthrough: refusing to allow Hermes-managed secret %s",
+                    name,
+                )
+                continue
             _allowed_env_vars.add(name)
             logger.debug("env passthrough: registered %s", name)
 
@@ -64,7 +77,14 @@ def _load_config_passthrough() -> frozenset[str]:
             if isinstance(passthrough, list):
                 for item in passthrough:
                     if isinstance(item, str) and item.strip():
-                        result.add(item.strip())
+                        name = item.strip()
+                        if _is_protected_passthrough_name(name):
+                            logger.warning(
+                                "env passthrough: ignoring protected config entry %s",
+                                name,
+                            )
+                            continue
+                        result.add(name)
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 

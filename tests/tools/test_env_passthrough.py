@@ -105,6 +105,16 @@ class TestConfigPassthrough:
         assert "CONFIG_KEY" in all_pt
         assert "SKILL_KEY" in all_pt
 
+    def test_ignores_protected_config_entry(self, tmp_path, monkeypatch):
+        config = {"terminal": {"env_passthrough": ["OPENAI_API_KEY", "SAFE_KEY"]}}
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.dump(config))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        reset_config_cache()
+
+        assert not is_env_passthrough("OPENAI_API_KEY")
+        assert is_env_passthrough("SAFE_KEY")
+
 
 class TestExecuteCodeIntegration:
     """Verify that the passthrough is checked in execute_code's env filtering."""
@@ -172,7 +182,7 @@ class TestTerminalIntegration:
         assert blocked_var not in result
         assert "PATH" in result
 
-    def test_passthrough_allows_blocklisted_var(self):
+    def test_passthrough_does_not_allow_blocklisted_var(self):
         from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
@@ -180,8 +190,7 @@ class TestTerminalIntegration:
 
         env = {blocked_var: "secret_value", "PATH": "/usr/bin"}
         result = _sanitize_subprocess_env(env)
-        assert blocked_var in result
-        assert result[blocked_var] == "secret_value"
+        assert blocked_var not in result
 
     def test_make_run_env_passthrough(self, monkeypatch):
         from tools.environments.local import _make_run_env, _HERMES_PROVIDER_ENV_BLOCKLIST
@@ -193,7 +202,7 @@ class TestTerminalIntegration:
         result_before = _make_run_env({})
         assert blocked_var not in result_before
 
-        # With passthrough — allowed
+        # Attempted passthrough for Hermes-managed secrets stays blocked.
         register_env_passthrough([blocked_var])
         result_after = _make_run_env({})
-        assert blocked_var in result_after
+        assert blocked_var not in result_after

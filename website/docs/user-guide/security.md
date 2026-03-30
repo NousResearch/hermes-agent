@@ -270,6 +270,8 @@ Two mechanisms allow specific variables through the sandbox filters:
 
 When a skill is loaded (via `skill_view` or the `/skill` command) and declares `required_environment_variables`, any of those vars that are actually set in the environment are automatically registered as passthrough. Missing vars (still in setup-needed state) are **not** registered.
 
+Hermes-managed infrastructure secrets are an exception: provider API keys, gateway tokens, and tool credentials stay blocked even if a skill or `terminal.env_passthrough` declares them.
+
 ```yaml
 # In a skill's SKILL.md frontmatter
 required_environment_variables:
@@ -340,7 +342,7 @@ Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside
 - Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
-- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
+- Hermes infrastructure secrets (provider API keys, gateway tokens, tool credentials) stay blocked even if a skill or config entry tries to pass them through
 
 ## MCP Credential Handling
 

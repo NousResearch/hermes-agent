@@ -1355,6 +1355,49 @@ class HermesCLI:
 
         return snapshot
 
+    @staticmethod
+    def _status_bar_display_width(text: str) -> int:
+        """Return terminal cell width for status-bar text.
+
+        len() is not enough for prompt_toolkit layout decisions because some
+        glyphs can render wider than one Python codepoint. Keeping the status
+        bar within the real display width prevents it from wrapping onto a
+        second line and leaving behind duplicate rows.
+        """
+        try:
+            from prompt_toolkit.utils import get_cwidth
+            return get_cwidth(text or "")
+        except Exception:
+            return len(text or "")
+
+    @classmethod
+    def _trim_status_bar_text(cls, text: str, max_width: int) -> str:
+        """Trim status-bar text to a single terminal row."""
+        if max_width <= 0:
+            return ""
+        try:
+            from prompt_toolkit.utils import get_cwidth
+        except Exception:
+            get_cwidth = None
+
+        if cls._status_bar_display_width(text) <= max_width:
+            return text
+
+        ellipsis = "..."
+        ellipsis_width = cls._status_bar_display_width(ellipsis)
+        if max_width <= ellipsis_width:
+            return ellipsis[:max_width]
+
+        out = []
+        width = 0
+        for ch in text:
+            ch_width = get_cwidth(ch) if get_cwidth else len(ch)
+            if width + ch_width + ellipsis_width > max_width:
+                break
+            out.append(ch)
+            width += ch_width
+        return "".join(out).rstrip() + ellipsis
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -1369,11 +1412,12 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                return f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
-                return " · ".join(parts)
+                return self._trim_status_bar_text(" · ".join(parts), width)
 
             if snapshot["context_length"]:
                 ctx_total = _format_context_length(snapshot["context_length"])
@@ -1384,7 +1428,7 @@ class HermesCLI:
 
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
-            return " │ ".join(parts)
+            return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
@@ -1406,53 +1450,54 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                return [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
-                    ("class:status-bar", " "),
-                ]
-
-            percent = snapshot["context_percent"]
-            percent_label = f"{percent}%" if percent is not None else "--"
-            if width < 76:
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
-                    (self._status_bar_context_style(percent), percent_label),
-                ]
-                frags.extend([
-                    ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                     ("class:status-bar", " "),
-                ])
-                return frags
-
-            if snapshot["context_length"]:
-                ctx_total = _format_context_length(snapshot["context_length"])
-                ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                context_label = f"{ctx_used}/{ctx_total}"
+                ]
             else:
-                context_label = "ctx --"
+                percent = snapshot["context_percent"]
+                percent_label = f"{percent}%" if percent is not None else "--"
+                if width < 76:
+                    frags = [
+                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", " · "),
+                        (self._status_bar_context_style(percent), percent_label),
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-dim", duration_label),
+                        ("class:status-bar", " "),
+                    ]
+                else:
+                    if snapshot["context_length"]:
+                        ctx_total = _format_context_length(snapshot["context_length"])
+                        ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                        context_label = f"{ctx_used}/{ctx_total}"
+                    else:
+                        context_label = "ctx --"
 
-            bar_style = self._status_bar_context_style(percent)
-            frags = [
-                ("class:status-bar", " ⚕ "),
-                ("class:status-bar-strong", snapshot["model_short"]),
-                ("class:status-bar-dim", " │ "),
-                ("class:status-bar-dim", context_label),
-                ("class:status-bar-dim", " │ "),
-                (bar_style, self._build_context_bar(percent)),
-                ("class:status-bar-dim", " "),
-                (bar_style, percent_label),
-            ]
-            frags.extend([
-                ("class:status-bar-dim", " │ "),
-                ("class:status-bar-dim", duration_label),
-                ("class:status-bar", " "),
-            ])
+                    bar_style = self._status_bar_context_style(percent)
+                    frags = [
+                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar-dim", context_label),
+                        ("class:status-bar-dim", " │ "),
+                        (bar_style, self._build_context_bar(percent)),
+                        ("class:status-bar-dim", " "),
+                        (bar_style, percent_label),
+                        ("class:status-bar-dim", " │ "),
+                        ("class:status-bar-dim", duration_label),
+                        ("class:status-bar", " "),
+                    ]
+
+            total_width = sum(self._status_bar_display_width(text) for _, text in frags)
+            if total_width > width:
+                plain_text = "".join(text for _, text in frags)
+                trimmed = self._trim_status_bar_text(plain_text, width)
+                return [("class:status-bar", trimmed)]
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]

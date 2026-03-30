@@ -511,15 +511,14 @@ def cmd_peers(args) -> None:
     rows = _all_profile_host_configs()
     cfg = _read_config()
 
-    print(f"\nHoncho peer identities ({len(rows)} profiles)\n" + "─" * 60)
-    print(f"  {'Profile':<14} {'User peer':<16} {'AI peer':<22} {'Linked hosts'}")
-    print(f"  {'─' * 14} {'─' * 16} {'─' * 22} {'─' * 16}")
+    print(f"\nHoncho peer identities ({len(rows)} profiles)\n" + "─" * 50)
+    print(f"  {'Profile':<14} {'User peer':<16} {'AI peer'}")
+    print(f"  {'─' * 14} {'─' * 16} {'─' * 18}")
 
     for name, host, block in rows:
         user = block.get("peerName") or cfg.get("peerName") or "(not set)"
         ai = block.get("aiPeer") or cfg.get("aiPeer") or host
-        linked = ", ".join(block.get("linkedHosts", [])) or "--"
-        print(f"  {name:<14} {user:<16} {ai:<22} {linked}")
+        print(f"  {name:<14} {user:<16} {ai}")
 
     print()
 

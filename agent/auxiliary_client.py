@@ -742,16 +742,37 @@ def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[st
     return None, None
 
 
+_AUTO_PROVIDER_LABELS = {
+    "_try_openrouter": "openrouter",
+    "_try_nous": "nous",
+    "_try_custom_endpoint": "local/custom",
+    "_try_codex": "openai-codex",
+    "_resolve_api_key_provider": "api-key",
+}
+
+
 def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
     global auxiliary_is_nous
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+    tried = []
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
                    _try_codex, _resolve_api_key_provider):
+        fn_name = getattr(try_fn, "__name__", "unknown")
+        label = _AUTO_PROVIDER_LABELS.get(fn_name, fn_name)
         client, model = try_fn()
         if client is not None:
+            if tried:
+                logger.info("Auxiliary auto-detect: using %s (%s) — skipped: %s",
+                            label, model or "default", ", ".join(tried))
+            else:
+                logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
             return client, model
-    logger.debug("Auxiliary client: none available")
+        tried.append(label)
+    logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
+                   "Compression, summarization, and memory flush will not work. "
+                   "Set OPENROUTER_API_KEY or configure a local model in config.yaml.",
+                   ", ".join(tried))
     return None, None
 
 
@@ -1618,8 +1639,8 @@ def call_llm(
                 )
             # For auto/custom, fall back to OpenRouter
             if not resolved_base_url:
-                logger.warning("Provider %s unavailable, falling back to openrouter",
-                               resolved_provider)
+                logger.info("Auxiliary %s: provider %s unavailable, falling back to openrouter",
+                            task or "call", resolved_provider)
                 client, final_model = _get_cached_client(
                     "openrouter", resolved_model or _OPENROUTER_MODEL)
         if client is None:
@@ -1628,6 +1649,13 @@ def call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
+    # Log what we're about to do — makes auxiliary operations visible
+    _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    if task:
+        logger.info("Auxiliary %s: using %s (%s)%s",
+                     task, resolved_provider or "auto", final_model or "default",
+                     f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
 
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,

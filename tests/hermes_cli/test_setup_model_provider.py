@@ -347,6 +347,54 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     assert config["credential_pool_strategies"]["openrouter"] == "fill_first"
 
 
+def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    config = load_config()
+
+    class _Entry:
+        def __init__(self, label, source):
+            self.label = label
+            self.source = source
+
+    class _Pool:
+        def entries(self):
+            return [
+                _Entry("primary", "manual"),
+                _Entry("secondary", "manual"),
+                _Entry("OPENROUTER_API_KEY", "env:OPENROUTER_API_KEY"),
+            ]
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 0
+        if question == "Select same-provider rotation strategy:":
+            return 0
+        if question == "Select default model:":
+            return len(choices) - 1
+        if question == "Configure vision:":
+            return len(choices) - 1
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    out = capsys.readouterr().out
+    assert "Current pooled credentials for openrouter: 3 (2 manual, 1 auto-detected from env/shared auth)" in out
+
+
 def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)

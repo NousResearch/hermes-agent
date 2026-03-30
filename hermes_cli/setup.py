@@ -1604,7 +1604,10 @@ def setup_model_provider(config: dict):
             from hermes_cli.auth_commands import auth_add_command
 
             pool = load_pool(selected_provider)
-            entry_count = len(pool.entries())
+            entries = pool.entries()
+            entry_count = len(entries)
+            manual_count = sum(1 for entry in entries if str(getattr(entry, "source", "")).startswith("manual"))
+            auto_count = entry_count - manual_count
             print()
             print_header("Same-Provider Fallback & Rotation")
             print_info(
@@ -1617,7 +1620,13 @@ def setup_model_provider(config: dict):
                 "your primary provider while reducing interruptions from quota issues."
             )
             print()
-            print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
+            if auto_count > 0:
+                print_info(
+                    f"Current pooled credentials for {selected_provider}: {entry_count} "
+                    f"({manual_count} manual, {auto_count} auto-detected from env/shared auth)"
+                )
+            else:
+                print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
 
             while prompt_yes_no("Add another credential for same-provider fallback?", False):
                 auth_add_command(

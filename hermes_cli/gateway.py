@@ -1322,6 +1322,35 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "feishu",
+        "label": "Feishu / Lark",
+        "emoji": "🪽",
+        "token_var": "FEISHU_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)",
+            "2. Create an app and copy the App ID and App Secret",
+            "3. Enable the Bot capability for the app",
+            "4. Choose WebSocket (recommended) or Webhook connection mode",
+            "5. Add the bot to a group chat or message it directly",
+            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Feishu/Lark application."},
+            {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret from your Feishu/Lark application."},
+            {"name": "FEISHU_DOMAIN", "prompt": "Domain — feishu or lark (default: feishu)", "password": False,
+             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
+            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
+             "help": "websocket is recommended unless you specifically need webhook mode."},
+            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which Feishu/Lark users can interact with the bot."},
+            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
 ]
 
 

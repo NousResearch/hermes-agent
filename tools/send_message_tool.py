@@ -15,6 +15,7 @@ import time
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+_FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
@@ -128,6 +129,7 @@ def _handle_send(args):
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "feishu": Platform.FEISHU,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -196,6 +198,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
+    if platform_name == "feishu":
+        match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
     if target_ref.lstrip("-").isdigit():
@@ -280,6 +286,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
 
+    # Feishu adapter import is optional (requires lark-oapi)
+    try:
+        from gateway.platforms.feishu import FeishuAdapter
+        _feishu_available = True
+    except ImportError:
+        _feishu_available = False
+
     media_files = media_files or []
 
     # Platform message length limits (from adapter class attributes)
@@ -288,6 +301,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
+    if _feishu_available:
+        _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -351,6 +366,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.FEISHU:
+            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -775,6 +792,63 @@ async def _send_dingtalk(extra, chat_id, message):
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         return {"error": f"DingTalk send failed: {e}"}
+
+
+async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
+    """Send via Feishu/Lark using the adapter's send pipeline."""
+    try:
+        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
+        if not FEISHU_AVAILABLE:
+            return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+        from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
+    except ImportError:
+        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+
+    media_files = media_files or []
+
+    try:
+        adapter = FeishuAdapter(pconfig)
+        domain_name = getattr(adapter, "_domain_name", "feishu")
+        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
+        adapter._client = adapter._build_lark_client(domain)
+        metadata = {"thread_id": thread_id} if thread_id else None
+
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return {"error": f"Feishu send failed: {last_result.error}"}
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return {"error": f"Media file not found: {media_path}"}
+
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+            elif ext in _VOICE_EXTS and is_voice:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            elif ext in _AUDIO_EXTS:
+                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+            else:
+                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+
+            if not last_result.success:
+                return {"error": f"Feishu media send failed: {last_result.error}"}
+
+        if last_result is None:
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+
+        return {
+            "success": True,
+            "platform": "feishu",
+            "chat_id": chat_id,
+            "message_id": last_result.message_id,
+        }
+    except Exception as e:
+        return {"error": f"Feishu send failed: {e}"}
 
 
 def _check_send_message():

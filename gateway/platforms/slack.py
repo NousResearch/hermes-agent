@@ -115,42 +115,19 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
 
-        try:
-            # Acquire scoped lock to prevent duplicate app token usage
-            from gateway.status import acquire_scoped_lock
-            self._token_lock_identity = app_token
-            acquired, existing = acquire_scoped_lock('slack-app-token', app_token, metadata={'platform': 'slack'})
-            if not acquired:
-                owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-                message = f'Slack app token already in use' + (f' (PID {owner_pid})' if owner_pid else '') + '. Stop the other gateway first.'
-                logger.error('[%s] %s', self.name, message)
-                self._set_fatal_error('slack_token_lock', message, retryable=False)
-                return False
-
-            # First token is the primary — used for AsyncApp / Socket Mode
-            primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
-
-            # Register each bot token and map team_id → client
-            for token in bot_tokens:
-                client = AsyncWebClient(token=token)
-                auth_response = await client.auth_test()
-                team_id = auth_response.get("team_id", "")
-                bot_user_id = auth_response.get("user_id", "")
-                bot_name = auth_response.get("user", "unknown")
-                team_name = auth_response.get("team", "unknown")
-
-                self._team_clients[team_id] = client
-                self._team_bot_user_ids[team_id] = bot_user_id
-
-                # First token sets the primary bot_user_id (backward compat)
-                if self._bot_user_id is None:
-                    self._bot_user_id = bot_user_id
-
-                logger.info(
-                    "[Slack] Authenticated as @%s in workspace %s (team: %s)",
-                    bot_name, team_name, team_id,
-                )
+            # Get our own bot user ID for mention detection
+            # `auth_test()` may be an awaitable coroutine or a sync method
+            # depending on slack-bolt version and test mocks. Handle both.
+            auth_test_fn = getattr(self._app.client, "auth_test", None)
+            auth_response = {}
+            if callable(auth_test_fn):
+                maybe_result = auth_test_fn()
+                if asyncio.iscoroutine(maybe_result):
+                    auth_response = await maybe_result
+                else:
+                    auth_response = maybe_result or {}
+            self._bot_user_id = auth_response.get("user_id")
+            bot_name = auth_response.get("user", "unknown")
 
             # Register message event handler
             @self._app.event("message")

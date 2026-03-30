@@ -699,14 +699,19 @@ install_deps() {
 
     # Install the main package in editable mode with all extras.
     # Try [all] first, fall back to base install if extras have issues.
-    if ! $UV_CMD pip install -e ".[all]" 2>/dev/null; then
+    ALL_INSTALL_LOG=$(mktemp)
+    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
         log_warn "Full install (.[all]) failed, trying base install..."
+        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
+        rm -f "$ALL_INSTALL_LOG"
         if ! $UV_CMD pip install -e "."; then
             log_error "Package installation failed."
             log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
             log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
             exit 1
         fi
+    else
+        rm -f "$ALL_INSTALL_LOG"
     fi
 
     log_success "Main package installed"
@@ -1070,7 +1075,14 @@ print_success() {
     echo ""
     echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
     echo ""
-    echo "   source ~/.bashrc   # or ~/.zshrc"
+    LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
+    if [ "$LOGIN_SHELL" = "zsh" ]; then
+        echo "   source ~/.zshrc"
+    elif [ "$LOGIN_SHELL" = "bash" ]; then
+        echo "   source ~/.bashrc"
+    else
+        echo "   source ~/.bashrc   # or ~/.zshrc"
+    fi
     echo ""
 
     # Show Node.js warning if auto-install failed

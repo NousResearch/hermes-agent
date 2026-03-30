@@ -18,6 +18,21 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Sensitive write targets that should trigger approval even when referenced
+# via shell expansions like $HOME or $HERMES_HOME.
+_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+_HERMES_ENV_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'\.env\b'
+)
+_SENSITIVE_WRITE_TARGET = (
+    r'(?:/etc/|/dev/sd|'
+    rf'{_SSH_SENSITIVE_PATH}|'
+    rf'{_HERMES_ENV_PATH})'
+)
+
 # =========================================================================
 # Dangerous command patterns
 # =========================================================================
@@ -46,7 +61,8 @@ DANGEROUS_PATTERNS = [
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    (r'\btee\b.*(/etc/|/dev/sd|\.ssh/|\.hermes/\.env)', "overwrite system file via tee"),
+    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),

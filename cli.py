@@ -3836,6 +3836,8 @@ class HermesCLI:
             self.console.print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
+        elif canonical == "yolo":
+            self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "compress":
@@ -4433,6 +4435,17 @@ class HermesCLI:
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
+
+    def _toggle_yolo(self):
+        """Toggle YOLO mode — skip all dangerous command approval prompts."""
+        import os
+        current = bool(os.environ.get("HERMES_YOLO_MODE"))
+        if current:
+            os.environ.pop("HERMES_YOLO_MODE", None)
+            self.console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
+        else:
+            os.environ["HERMES_YOLO_MODE"] = "1"
+            self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

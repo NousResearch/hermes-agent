@@ -1877,6 +1877,9 @@ class GatewayRunner:
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
+        if canonical == "yolo":
+            return await self._handle_yolo_command(event)
+
         if canonical == "provider":
             return await self._handle_provider_command(event)
         
@@ -4108,6 +4111,16 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    async def _handle_yolo_command(self, event: MessageEvent) -> str:
+        """Handle /yolo — toggle dangerous command approval bypass."""
+        current = bool(os.environ.get("HERMES_YOLO_MODE"))
+        if current:
+            os.environ.pop("HERMES_YOLO_MODE", None)
+            return "⚠️ YOLO mode **OFF** — dangerous commands will require approval."
+        else:
+            os.environ["HERMES_YOLO_MODE"] = "1"
+            return "⚡ YOLO mode **ON** — all commands auto-approved. Use with caution."
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

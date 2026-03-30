@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     old_value TEXT,
     new_value TEXT,
     reason TEXT,
-    agent TEXT,  -- 'hermes', 'katsumi', 'system'
+    agent TEXT,  -- 'hermes', 'hermes_agent', 'system'
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(fact_id) REFERENCES memory_facts(id)
 );

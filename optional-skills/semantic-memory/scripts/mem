@@ -57,7 +57,7 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
 
 DOMAIN_PATTERNS = {
     "memory_system":   [r"memory|memoria|capas|retrieval|embedding|fact"],
-    "ai_agents":       [r"agent|hermes|katsumi|leo|nova|aria|openclaw"],
+    "ai_agents":       [r"agent|hermes|hermes_agent|leo|nova|aria|openclaw"],
     "deployment":      [r"deploy|hosting|hostinger|vps|ssh|server|docker"],
     "automation":      [r"automat|pipeline|cron|script|selenium|workflow"],
     "content":         [r"stream|video|youtube|content|publicar|post"],

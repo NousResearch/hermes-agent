@@ -30,7 +30,7 @@ DB_PATH = Path.home() / ".hermes/memory-engine/db/memory.db"
 
 DOMAIN_PATTERNS: Dict[str, List[str]] = {
     "memory_system":   [r"memory|memoria|capas|retrieval|embedding|fact|quantum"],
-    "ai_agents":       [r"agent|hermes|katsumi|leo|nova|aria|openclaw"],
+    "ai_agents":       [r"agent|hermes|hermes_agent|leo|nova|aria|openclaw"],
     "deployment":      [r"deploy|hosting|hostinger|vps|ssh|server|nginx|docker"],
     "automation":      [r"automat|pipeline|cron|script|selenium|workflow"],
     "content":         [r"stream|video|youtube|content|publicar|post"],
@@ -49,7 +49,7 @@ DOMAIN_PATTERNS: Dict[str, List[str]] = {
 ENTITY_PATTERNS: Dict[str, str] = {
     r"stripe":          "stripe",
     r"hermes":          "hermes",
-    r"katsumi":         "katsumi",
+    r"hermes_agent":         "hermes_agent",
     r"leo\b":           "leo",
     r"nova\b":          "nova",
     r"aria\b":          "aria",

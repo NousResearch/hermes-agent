@@ -3,7 +3,7 @@ FROM debian:13.4
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        nodejs npm python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev && \
+        build-essential nodejs npm python3 python3-pip ripgrep ffmpeg gcc python3-dev libffi-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY . /opt/hermes

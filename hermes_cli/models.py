@@ -126,14 +126,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
     ],
     "minimax-cn": [
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
     ],
     "anthropic": [
         "claude-opus-4-6",

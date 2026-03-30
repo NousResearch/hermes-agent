@@ -1557,14 +1557,16 @@ _PROVIDER_MODELS = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6",

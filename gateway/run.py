@@ -323,10 +323,10 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
     Without this, temporary AIAgent instances (memory flush, /compress) fall
-    back to the hardcoded default ("anthropic/claude-opus-4.6") which fails
-    when the active provider is openai-codex.
+    back to the hardcoded default which fails when the active provider is
+    openai-codex.
     """
-    model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or "anthropic/claude-opus-4.6"
+    model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or ""
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):

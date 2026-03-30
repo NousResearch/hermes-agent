@@ -67,6 +67,83 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     return True
 
 
+def _ensure_peer_exists(host_key: str | None = None) -> bool:
+    """Create the AI peer in Honcho if it doesn't already exist.
+
+    Idempotent -- safe to call multiple times. Returns True if the peer
+    was created or already exists, False on failure.
+    """
+    try:
+        from honcho_integration.client import HonchoClientConfig, get_honcho_client
+        hcfg = HonchoClientConfig.from_global_config(host=host_key)
+        if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
+            return False
+        client = get_honcho_client(hcfg)
+        # peer() is idempotent -- creates if missing, returns if exists
+        client.peer(hcfg.ai_peer)
+        if hcfg.peer_name:
+            client.peer(hcfg.peer_name)
+        return True
+    except Exception:
+        return False
+
+
+def cmd_enable(args) -> None:
+    """Enable Honcho for the active profile."""
+    cfg = _read_config()
+    host = _host_key()
+    label = f"[{host}] " if host != "hermes" else ""
+    block = cfg.setdefault("hosts", {}).setdefault(host, {})
+
+    if block.get("enabled") is True:
+        print(f"  {label}Honcho is already enabled.\n")
+        return
+
+    block["enabled"] = True
+
+    # If this is a new profile host block with no settings, clone from default
+    if not block.get("aiPeer"):
+        default_block = cfg.get("hosts", {}).get(HOST, {})
+        for key in ("memoryMode", "recallMode", "writeFrequency", "sessionStrategy",
+                    "contextTokens", "dialecticReasoningLevel", "dialecticMaxChars"):
+            val = default_block.get(key)
+            if val is not None and key not in block:
+                block[key] = val
+        peer_name = default_block.get("peerName") or cfg.get("peerName")
+        if peer_name and "peerName" not in block:
+            block["peerName"] = peer_name
+        block.setdefault("aiPeer", host)
+        block.setdefault("workspace", host)
+
+    _write_config(cfg)
+    print(f"  {label}Honcho enabled.")
+
+    # Create peer eagerly
+    if _ensure_peer_exists(host):
+        print(f"  {label}Peer '{block.get('aiPeer', host)}' ready.")
+    else:
+        print(f"  {label}Peer creation deferred (no connection).")
+
+    print(f"  Saved to {_config_path()}\n")
+
+
+def cmd_disable(args) -> None:
+    """Disable Honcho for the active profile."""
+    cfg = _read_config()
+    host = _host_key()
+    label = f"[{host}] " if host != "hermes" else ""
+    block = cfg.get("hosts", {}).get(host, {})
+
+    if not block or block.get("enabled") is False:
+        print(f"  {label}Honcho is already disabled.\n")
+        return
+
+    block["enabled"] = False
+    _write_config(cfg)
+    print(f"  {label}Honcho disabled.")
+    print(f"  Saved to {_config_path()}\n")
+
+
 def _host_key() -> str:
     """Return the active Honcho host key, derived from the current Hermes profile."""
     return resolve_active_host()
@@ -949,6 +1026,10 @@ def honcho_command(args) -> None:
         cmd_identity(args)
     elif sub == "migrate":
         cmd_migrate(args)
+    elif sub == "enable":
+        cmd_enable(args)
+    elif sub == "disable":
+        cmd_disable(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate\n")
+        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate, enable, disable\n")

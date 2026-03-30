@@ -31,6 +31,28 @@ GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
+def resolve_active_host() -> str:
+    """Derive the Honcho host key from the active Hermes profile.
+
+    Resolution order:
+      1. HERMES_HONCHO_HOST env var (explicit override)
+      2. Active profile name via profiles system -> ``hermes.<profile>``
+      3. Fallback: ``"hermes"`` (default profile)
+    """
+    explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
+    if explicit:
+        return explicit
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name()
+        if profile and profile not in ("default", "custom"):
+            return f"{HOST}.{profile}"
+    except Exception:
+        pass
+    return HOST
+
+
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
@@ -135,40 +157,52 @@ class HonchoClientConfig:
     explicitly_configured: bool = False
 
     @classmethod
-    def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
+    def from_env(
+        cls,
+        workspace_id: str = "hermes",
+        host: str | None = None,
+    ) -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
+        resolved_host = host or resolve_active_host()
         api_key = os.environ.get("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+        effective_workspace = workspace_id
+        if effective_workspace == HOST and resolved_host != HOST:
+            effective_workspace = resolved_host
         return cls(
-            workspace_id=workspace_id,
+            host=resolved_host,
+            workspace_id=effective_workspace,
             api_key=api_key,
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
+            ai_peer=resolved_host,
             enabled=bool(api_key or base_url),
         )
 
     @classmethod
     def from_global_config(
         cls,
-        host: str = HOST,
+        host: str | None = None,
         config_path: Path | None = None,
     ) -> HonchoClientConfig:
         """Create config from the resolved Honcho config path.
 
         Resolution: $HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars.
+        When host is None, derives it from the active Hermes profile.
         """
+        resolved_host = host or resolve_active_host()
         path = config_path or resolve_config_path()
         if not path.exists():
             logger.debug("No global Honcho config at %s, falling back to env", path)
-            return cls.from_env()
+            return cls.from_env(host=resolved_host)
 
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
-            return cls.from_env()
+            return cls.from_env(host=resolved_host)
 
-        host_block = (raw.get("hosts") or {}).get(host, {})
+        host_block = (raw.get("hosts") or {}).get(resolved_host, {})
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True
@@ -177,12 +211,12 @@ class HonchoClientConfig:
         workspace = (
             host_block.get("workspace")
             or raw.get("workspace")
-            or host
+            or resolved_host
         )
         ai_peer = (
             host_block.get("aiPeer")
             or raw.get("aiPeer")
-            or host
+            or resolved_host
         )
         linked_hosts = host_block.get("linkedHosts", [])
 
@@ -242,7 +276,7 @@ class HonchoClientConfig:
         )
 
         return cls(
-            host=host,
+            host=resolved_host,
             workspace_id=workspace,
             api_key=api_key,
             environment=environment,

@@ -84,6 +84,48 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_human_friendly_label_resolved_via_channel_directory(self):
+        """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
+        job = {"deliver": "whatsapp:Alice (dm)"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="12345678901234@lid",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "whatsapp",
+            "chat_id": "12345678901234@lid",
+            "thread_id": None,
+        }
+
+    def test_human_friendly_label_without_suffix_resolved(self):
+        """deliver: 'telegram:My Group' resolves without display suffix."""
+        job = {"deliver": "telegram:My Group"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="-1009999",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "-1009999",
+            "thread_id": None,
+        }
+
+    def test_raw_id_not_mangled_when_directory_returns_none(self):
+        """deliver: 'whatsapp:12345@lid' passes through when directory has no match."""
+        job = {"deliver": "whatsapp:12345@lid"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value=None,
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "whatsapp",
+            "chat_id": "12345@lid",
+            "thread_id": None,
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",

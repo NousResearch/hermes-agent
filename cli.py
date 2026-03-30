@@ -1087,10 +1087,10 @@ class HermesCLI:
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
-        _FALLBACK_MODEL = "anthropic/claude-opus-4.6"
-        self.model = model or _config_model or _FALLBACK_MODEL
-        # Auto-detect model from local server if still on fallback
-        if self.model == _FALLBACK_MODEL:
+        _DEFAULT_CONFIG_MODEL = "anthropic/claude-opus-4.6"
+        self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # Auto-detect model from local server if still on default
+        if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
             if "localhost" in _base_url or "127.0.0.1" in _base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
@@ -1104,7 +1104,7 @@ class HermesCLI:
         # explicit choice — the user just never changed it.  But a config model
         # like "gpt-5.3-codex" IS explicit and must be preserved.
         self._model_is_default = not model and (
-            not _config_model or _config_model == _FALLBACK_MODEL
+            not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
         )
 
         self._explicit_api_key = api_key

@@ -104,7 +104,8 @@ class SmsAdapter(BasePlatformAdapter):
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self._webhook_port)
+        _host = os.getenv("SMS_WEBHOOK_HOST", "127.0.0.1")
+        site = web.TCPSite(self._runner, _host, self._webhook_port)
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),

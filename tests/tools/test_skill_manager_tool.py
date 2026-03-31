@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tools.skill_manager_tool import (
     _validate_name,
@@ -411,3 +411,71 @@ class TestSkillManageDispatcher:
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Security scan — "ask" policy enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityScanAskPolicy:
+    """_security_scan_skill must block when should_allow_install returns None (ask)."""
+
+    def test_ask_verdict_is_blocked(self, tmp_path):
+        """allowed=None (ask) must return an error string, not silently allow."""
+        mock_result = MagicMock()
+        mock_result.findings = [MagicMock()]
+
+        with (
+            patch("tools.skill_manager_tool._GUARD_AVAILABLE", True),
+            patch("tools.skill_manager_tool.scan_skill", return_value=mock_result),
+            patch(
+                "tools.skill_manager_tool.should_allow_install",
+                return_value=(None, "Requires confirmation (agent-created + dangerous verdict)"),
+            ),
+            patch("tools.skill_manager_tool.format_scan_report", return_value="[scan report]"),
+        ):
+            from tools.skill_manager_tool import _security_scan_skill
+            err = _security_scan_skill(tmp_path)
+
+        assert err is not None, "ask verdict must not silently pass through"
+        assert "confirmation" in err.lower()
+        assert "[scan report]" in err
+
+    def test_blocked_verdict_still_blocked(self, tmp_path):
+        """allowed=False (block) must still return an error string."""
+        mock_result = MagicMock()
+        mock_result.findings = [MagicMock()]
+
+        with (
+            patch("tools.skill_manager_tool._GUARD_AVAILABLE", True),
+            patch("tools.skill_manager_tool.scan_skill", return_value=mock_result),
+            patch(
+                "tools.skill_manager_tool.should_allow_install",
+                return_value=(False, "Blocked (community source + dangerous verdict)"),
+            ),
+            patch("tools.skill_manager_tool.format_scan_report", return_value="[scan report]"),
+        ):
+            from tools.skill_manager_tool import _security_scan_skill
+            err = _security_scan_skill(tmp_path)
+
+        assert err is not None
+        assert "blocked" in err.lower()
+
+    def test_safe_verdict_passes(self, tmp_path):
+        """allowed=True (safe) must return None (no error)."""
+        mock_result = MagicMock()
+        mock_result.findings = []
+
+        with (
+            patch("tools.skill_manager_tool._GUARD_AVAILABLE", True),
+            patch("tools.skill_manager_tool.scan_skill", return_value=mock_result),
+            patch(
+                "tools.skill_manager_tool.should_allow_install",
+                return_value=(True, "Allowed (agent-created source, safe verdict)"),
+            ),
+        ):
+            from tools.skill_manager_tool import _security_scan_skill
+            err = _security_scan_skill(tmp_path)
+
+        assert err is None

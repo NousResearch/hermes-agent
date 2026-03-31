@@ -64,11 +64,15 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             report = format_scan_report(result)
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
-            # "ask" — allow but include the warning so the user sees the findings
+            # "ask" — policy requires user confirmation; block and surface the report
+            # so the user can review findings before deciding to install with --force.
             report = format_scan_report(result)
-            logger.warning("Agent-created skill has security findings: %s", reason)
-            # Don't block — return None to allow, but log the warning
-            return None
+            return (
+                f"Security scan requires confirmation before installing this skill "
+                f"({reason}):\n{report}\n"
+                "To install anyway, delete the skill directory and recreate it after "
+                "reviewing the findings above."
+            )
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None

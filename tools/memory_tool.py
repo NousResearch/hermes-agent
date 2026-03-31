@@ -23,11 +23,15 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows
 import json
 import logging
 import os
 import re
+import struct
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -35,6 +39,26 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _flock(file_obj, operation):
+    """Cross-platform file locking.
+
+    Uses fcntl.flock on Unix and msvcrt.locking on Windows.
+    operation: fcntl.LOCK_EX (exclusive lock), fcntl.LOCK_UN (unlock)
+    """
+    if fcntl is not None:
+        fcntl.flock(file_obj.fileno(), operation)
+    else:
+        import msvcrt
+
+        # msvcrt.locking uses a file descriptor from os.open
+        fd = file_obj.fileno()
+        if operation == fcntl.LOCK_UN:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, struct.calcsize("i"))
+        else:
+            # LOCK_EX -> LK_NBLCK (non-blocking exclusive)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, struct.calcsize("i"))
 
 # Where memory files live
 MEMORY_DIR = get_hermes_home() / "memories"
@@ -135,10 +159,10 @@ class MemoryStore:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = open(lock_path, "w")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            _flock(fd, fcntl.LOCK_EX)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _flock(fd, fcntl.LOCK_UN)
             fd.close()
 
     @staticmethod

@@ -110,7 +110,7 @@ That same id should appear in:
 - auxiliary-model defaults
 - tests
 
-If the id differs between those files, the provider will feel half-wired: auth may work while `/model`, setup, or runtime resolution silently misses it.
+If the id differs between those files, the provider will feel half-wired: auth may work while `hermes model`, setup, or runtime resolution silently misses it.
 
 ## Step 2: Add auth metadata in `hermes_cli/auth.py`
 
@@ -162,7 +162,7 @@ anthropic:claude-sonnet-4-6
 kimi:model-name
 ```
 
-If aliases are missing here, the provider may authenticate correctly but still fail in `/model` parsing.
+If aliases are missing here, the provider may authenticate correctly but still fail in `hermes model` parsing.
 
 ## Step 4: Resolve runtime data in `hermes_cli/runtime_provider.py`
 
@@ -377,7 +377,7 @@ Use this when the provider needs a new protocol path.
 
 ### 1. Adding the provider to auth but not to model parsing
 
-That makes credentials resolve correctly while `/model` and `provider:model` inputs fail.
+That makes credentials resolve correctly while `hermes model` and `provider:model` inputs fail.
 
 ### 2. Forgetting that `config["model"]` can be a string or a dict
 

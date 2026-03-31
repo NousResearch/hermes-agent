@@ -106,7 +106,7 @@ Common examples:
 | Command | Description |
 |---------|-------------|
 | `/help` | Show command help |
-| `/model` | Show or change the current model |
+| `/provider` | Show current provider and available providers |
 | `/tools` | List currently available tools |
 | `/skills browse` | Browse the skills hub and official optional skills |
 | `/background <prompt>` | Run a prompt in a separate background session |

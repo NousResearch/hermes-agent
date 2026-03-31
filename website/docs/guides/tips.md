@@ -56,7 +56,7 @@ Press **Ctrl+V** to paste an image from your clipboard directly into the chat. T
 
 ### Slash Command Autocomplete
 
-Type `/` and press **Tab** to see all available commands. This includes built-in commands (`/compress`, `/model`, `/title`) and every installed skill. You don't need to memorize anything — Tab completion has you covered.
+Type `/` and press **Tab** to see all available commands. This includes built-in commands (`/compress`, `/provider`, `/title`) and every installed skill. You don't need to memorize anything — Tab completion has you covered.
 
 :::tip
 Use `/verbose` to cycle through tool output display modes: **off → new → all → verbose**. The "all" mode is great for watching what the agent does; "off" is cleanest for simple Q&A.
@@ -145,7 +145,7 @@ Instead of running terminal commands one at a time, ask the agent to write a scr
 
 ### Choose the Right Model
 
-Use `/model` to switch models mid-session. Use a frontier model (Claude Sonnet/Opus, GPT-4o) for complex reasoning and architecture decisions. Switch to a faster model for simple tasks like formatting, renaming, or boilerplate generation.
+Use `hermes model` to switch models between sessions. Use a frontier model (Claude Sonnet/Opus, GPT-4o) for complex reasoning and architecture decisions. Switch to a faster model for simple tasks like formatting, renaming, or boilerplate generation.
 
 :::tip
 Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days.

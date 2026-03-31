@@ -18,7 +18,7 @@ Primary implementation:
 
 - `hermes_cli/runtime_provider.py` — credential resolution, `_resolve_custom_runtime()`
 - `hermes_cli/auth.py` — provider registry, `resolve_provider()`
-- `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
+- `hermes_cli/model_switch.py` — model switch pipeline (CLI + ACP adapter)
 - `agent/auxiliary_client.py` — auxiliary model routing
 
 If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.

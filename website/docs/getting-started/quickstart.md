@@ -96,7 +96,7 @@ Type `/` to see an autocomplete dropdown of all commands:
 |---------|-------------|
 | `/help` | Show all available commands |
 | `/tools` | List available tools |
-| `/model` | Switch models interactively |
+| `hermes model` | Switch models interactively (run outside a session) |
 | `/personality pirate` | Try a fun personality |
 | `/save` | Save the conversation |
 

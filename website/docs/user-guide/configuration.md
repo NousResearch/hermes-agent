@@ -291,28 +291,17 @@ LLM_MODEL=your-model-name
 
 All three approaches end up in the same runtime path. `hermes model` persists provider, model, and base URL to `config.yaml` so later sessions keep using that endpoint even if env vars are not set.
 
-### Switching Models with `/model`
+### Switching Models
 
-Once a custom endpoint is configured, you can switch models mid-session:
+To switch models or providers, use the `hermes model` subcommand outside of a session:
 
-```
-/model custom:qwen-2.5          # Switch to a model on your custom endpoint
-/model custom                    # Auto-detect the model from the endpoint
-/model openrouter:claude-sonnet-4 # Switch back to a cloud provider
-```
-
-If you have **named custom providers** configured (see below), use the triple syntax:
-
-```
-/model custom:local:qwen-2.5    # Use the "local" custom provider with model qwen-2.5
-/model custom:work:llama3       # Use the "work" custom provider with llama3
+```bash
+hermes model                    # Interactive model picker
+hermes model zai:glm-5          # Switch provider and model
+hermes model custom:qwen-2.5    # Use model on your custom endpoint
 ```
 
 When switching providers, Hermes persists the base URL and provider to config so the change survives restarts. When switching away from a custom endpoint to a built-in provider, the stale base URL is automatically cleared.
-
-:::tip
-`/model custom` (bare, no model name) queries your endpoint's `/models` API and auto-selects the model if exactly one is loaded. Useful for local servers running a single model.
-:::
 
 Everything below follows this same pattern — just change the URL, key, and model name.
 
@@ -562,12 +551,12 @@ custom_providers:
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
-Switch between them mid-session with the triple syntax:
+Switch between them using `hermes model` with the provider prefix:
 
-```
-/model custom:local:qwen-2.5       # Use the "local" endpoint with qwen-2.5
-/model custom:work:llama3-70b      # Use the "work" endpoint with llama3-70b
-/model custom:anthropic-proxy:claude-sonnet-4  # Use the proxy
+```bash
+hermes model custom:local:qwen-2.5       # Use the "local" endpoint with qwen-2.5
+hermes model custom:work:llama3-70b      # Use the "work" endpoint with llama3-70b
+hermes model custom:anthropic-proxy:claude-sonnet-4  # Use the proxy
 ```
 
 You can also select named custom providers from the interactive `hermes model` menu.

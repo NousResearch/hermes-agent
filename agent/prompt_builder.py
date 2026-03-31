@@ -289,7 +289,7 @@ _INSTRUCTION_FILES_TIER2: list[tuple[str, str]] = [
 # (directory, glob_pattern, display_prefix)
 _INSTRUCTION_DIRS: list[tuple[str, str, str]] = [
     (".cursor/rules", "*.mdc", ".cursor/rules"),
-    (".cline/rules", "*.md", ".cline/rules"),
+    (".clinerules", "*.md", ".clinerules"),
     (".roo/rules", "*.md", ".roo/rules"),
     (".windsurf/rules", "*.md", ".windsurf/rules"),
     (".amazonq/rules", "*.md", ".amazonq/rules"),

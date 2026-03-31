@@ -136,6 +136,23 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
 
+    # gstack personas (specialized review agents)
+    CommandDef("ceo-review", "CEO review: strategic fit, user value, timing", "gstack",
+               aliases=("ceo",), args_hint="<target> [context]"),
+    CommandDef("eng-review", "Eng Manager review: architecture, tech debt, patterns", "gstack",
+               aliases=("eng",), args_hint="<target> [context]"),
+    CommandDef("design-review", "Designer review: UX, visual design, accessibility", "gstack",
+               aliases=("design",), args_hint="<target> [context]"),
+    CommandDef("reviewer", "Code review: quality, testing, production safety", "gstack",
+               aliases=("review",), args_hint="<target> [context]"),
+    CommandDef("qa-audit", "QA review: testing, edge cases, user flows", "gstack",
+               aliases=("qa",), args_hint="<target> [context]"),
+    CommandDef("cso", "Security review: OWASP, compliance, data protection", "gstack",
+               aliases=("security",), args_hint="<target> [context]"),
+    CommandDef("release-check", "Release Engineer review: deployment, rollback, safety", "gstack",
+               aliases=("release",), args_hint="<target> [context]"),
+    CommandDef("gstack", "Show available gstack personas and usage", "gstack"),
+
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit", "q")),

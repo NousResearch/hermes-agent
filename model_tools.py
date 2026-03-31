@@ -169,6 +169,21 @@ def _discover_tools():
 
 _discover_tools()
 
+# Composio tool discovery (Linear, Notion, Gmail integrations)
+try:
+    import sys
+    from pathlib import Path
+    composio_scripts_path = Path.home() / ".hermes" / "skills" / "productivity" / "composio-agent-ops" / "scripts"
+    if str(composio_scripts_path) not in sys.path:
+        sys.path.insert(0, str(composio_scripts_path))
+    from composio_hermes_registry import register_composio_tools
+    register_composio_tools(registry)
+    logger.info("✓ Composio tools registered (Linear, Notion, Gmail)")
+except ImportError:
+    logger.debug("Composio not available (composio-core not installed)")
+except Exception as e:
+    logger.debug("Composio registration failed: %s", e)
+
 # MCP tool discovery (external MCP servers from config)
 try:
     from tools.mcp_tool import discover_mcp_tools

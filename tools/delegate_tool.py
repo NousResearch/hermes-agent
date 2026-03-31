@@ -20,6 +20,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,42 @@ DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+def _enforce_model_discipline(requested_model: str, budget_tokens: int = 1000, task_id: str = None) -> str:
+    """Call enforce_token_discipline.py to get the actual model to use.
+    
+    Returns the chosen model string, or requested_model if enforcement fails.
+    """
+    try:
+        enforce_script = os.path.expanduser("~/rocky-brain/tools/enforce_token_discipline.py")
+        if not os.path.exists(enforce_script):
+            logger.debug(f"enforce_token_discipline.py not found at {enforce_script}, using requested model")
+            return requested_model
+        
+        cmd = [
+            "python3",
+            enforce_script,
+            "--requested-model", requested_model or "",
+            "--budget-tokens", str(budget_tokens),
+        ]
+        if task_id:
+            cmd.extend(["--task-id", task_id])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            logger.debug(f"enforce_token_discipline returned {result.returncode}: {result.stderr}")
+            return requested_model
+        
+        entry = json.loads(result.stdout)
+        chosen = entry.get("chosen_model", requested_model)
+        reason = entry.get("reason", "")
+        logger.info(f"[enforce] requested={requested_model} chosen={chosen} reason={reason}")
+        return chosen
+    
+    except Exception as e:
+        logger.debug(f"enforce_token_discipline failed: {e}")
+        return requested_model
 
 
 def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
@@ -444,6 +481,21 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
+    
+    # Enforce token discipline: check if the resolved model is within budget
+    if creds.get("model"):
+        # Estimate budget: use parent's remaining iteration budget if available, else default
+        budget_tokens = 1000
+        if hasattr(parent_agent, 'iteration_budget') and parent_agent.iteration_budget:
+            budget_tokens = int(getattr(parent_agent.iteration_budget, 'remaining', 1000))
+        
+        task_id_for_log = getattr(parent_agent, '_session_id', None) or "delegate_batch"
+        enforced_model = _enforce_model_discipline(
+            creds["model"],
+            budget_tokens=budget_tokens,
+            task_id=task_id_for_log
+        )
+        creds["model"] = enforced_model
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):

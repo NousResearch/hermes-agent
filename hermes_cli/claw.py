@@ -324,6 +324,7 @@ def _cmd_migrate(args):
     workspace_target = getattr(args, "workspace_target", None)
     skill_conflict = getattr(args, "skill_conflict", "skip")
     no_backup = getattr(args, "no_backup", False)
+    include_sessions = getattr(args, "include_sessions", False)
 
     # Secrets are never included implicitly — they must be explicitly requested
     # via --migrate-secrets, even under --preset full.  This mirrors OpenClaw's
@@ -380,6 +381,7 @@ def _cmd_migrate(args):
     print_info(f"Preset:      {preset}")
     print_info(f"Overwrite:   {'yes' if overwrite else 'no (skip conflicts)'}")
     print_info(f"Secrets:     {'yes (allowlisted only)' if migrate_secrets else 'no'}")
+    print_info(f"Sessions:    {'yes' if include_sessions else 'no (use --include-sessions to import)'}")
     if skill_conflict != "skip":
         print_info(f"Skill conflicts: {skill_conflict}")
     if workspace_target:
@@ -411,6 +413,11 @@ def _cmd_migrate(args):
         return
 
     selected = mod.resolve_selected_options(None, None, preset=preset)
+    # Sessions are opt-in via --include-sessions flag.
+    if include_sessions:
+        selected.add("sessions")
+    else:
+        selected.discard("sessions")
     ws_target = Path(workspace_target).resolve() if workspace_target else None
 
     # ── Phase 1: Always preview first ──────────────────────────

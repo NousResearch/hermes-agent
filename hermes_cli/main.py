@@ -9936,7 +9936,14 @@ Examples:
         help="How to handle skill name conflicts (default: skip)",
     )
     claw_migrate.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
+        "--include-sessions",
+        action="store_true",
+        help="Include chat session history in the migration (off by default)",
+    )
+    claw_migrate.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts",
     )
 
     # claw cleanup

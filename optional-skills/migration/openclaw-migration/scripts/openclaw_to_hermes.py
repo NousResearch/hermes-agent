@@ -183,6 +183,10 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "label": "Logging and diagnostics",
         "description": "Archive OpenClaw logging and diagnostics configuration.",
     },
+    "sessions": {
+        "label": "Session history",
+        "description": "Import OpenClaw chat session history into Hermes SessionDB.",
+    },
 }
 MIGRATION_PRESETS: Dict[str, set[str]] = {
     "user-data": {
@@ -953,6 +957,8 @@ class Migrator:
         self.run_if_selected("skills-config", lambda: self.migrate_skills_config(config))
         self.run_if_selected("ui-identity", lambda: self.migrate_ui_identity(config))
         self.run_if_selected("logging-config", lambda: self.migrate_logging_config(config))
+
+        self.run_if_selected("sessions", self.migrate_sessions)
 
         # Generate migration notes
         self.generate_migration_notes()
@@ -2838,6 +2844,230 @@ class Migrator:
         self.record("env-var", source_label, f".env {key}", "migrated")
 
     # ── Generate migration notes ──────────────────────────────
+    # ------------------------------------------------------------------
+    # Session history migration
+    # ------------------------------------------------------------------
+
+    def migrate_sessions(self) -> None:
+        """Import OpenClaw session JSONL files into Hermes SessionDB."""
+        import re as _re
+
+        sessions_dir = self.source_root / "agents" / "main" / "sessions"
+        if not sessions_dir.is_dir():
+            self.record("sessions", None, None, "skipped", "No sessions directory found")
+            return
+
+        # Try to import SessionDB
+        try:
+            import sys as _sys
+            _project_root = str(Path(__file__).resolve().parents[4])
+            if _project_root not in _sys.path:
+                _sys.path.insert(0, _project_root)
+            from hermes_state import SessionDB
+        except Exception as _e:
+            self.record("sessions", sessions_dir, None, "error", f"Cannot import SessionDB: {_e}")
+            return
+
+        # Load session index
+        index_path = sessions_dir / "sessions.json"
+        index = {}
+        if index_path.exists():
+            try:
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        # Build set of indexed JSONL filenames for orphan detection
+        indexed_files = set()
+        for _key, meta in index.items():
+            sf = meta.get("sessionFile", "")
+            if sf:
+                indexed_files.add(Path(sf).name)
+
+        # Collect all JSONL files
+        jsonl_files = sorted(sessions_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            self.record("sessions", sessions_dir, None, "skipped", "No session JSONL files found")
+            return
+
+        _telegram_prefix_re = _re.compile(
+            r"^\[Telegram\s.*?\]\s*"
+        )
+        _message_id_suffix_re = _re.compile(r"\n\[message_id:\s*\d+\]\s*$")
+
+        total_sessions = 0
+        total_messages = 0
+        errors = []
+
+        db = None
+        if self.execute:
+            try:
+                db = SessionDB()
+            except Exception as _e:
+                self.record("sessions", sessions_dir, None, "error", f"Cannot open SessionDB: {_e}")
+                return
+
+        for jsonl_path in jsonl_files:
+            try:
+                lines = jsonl_path.read_text(encoding="utf-8").strip().splitlines()
+                if not lines:
+                    continue
+
+                # Parse session header (line 1)
+                header = json.loads(lines[0])
+                if header.get("type") != "session":
+                    continue
+
+                session_id = "oc_" + header.get("id", jsonl_path.stem)
+                session_ts = header.get("timestamp", "")
+                is_orphan = jsonl_path.name not in indexed_files
+
+                # Find index metadata for this session
+                index_meta = None
+                for _key, meta in index.items():
+                    sf = meta.get("sessionFile", "")
+                    if sf and Path(sf).name == jsonl_path.name:
+                        index_meta = meta
+                        break
+
+                model = (index_meta or {}).get("model", "unknown")
+                source_platform = (index_meta or {}).get("origin", {}).get("provider", "cli")
+                source_label = f"openclaw-{source_platform}"
+
+                # Parse started_at from ISO timestamp
+                started_at = 0.0
+                if session_ts:
+                    try:
+                        from datetime import datetime, timezone
+                        dt = datetime.fromisoformat(session_ts.replace("Z", "+00:00"))
+                        started_at = dt.timestamp()
+                    except Exception:
+                        import time
+                        started_at = time.time()
+
+                # Extract messages
+                messages = []
+                for line in lines:
+                    event = json.loads(line)
+                    if event.get("type") != "message":
+                        continue
+                    msg = event.get("message", {})
+                    role = msg.get("role", "")
+                    if not role:
+                        continue
+
+                    # Skip delivery-mirror (system-generated messages)
+                    if role == "assistant":
+                        if msg.get("provider") == "openclaw" and msg.get("model") == "delivery-mirror":
+                            continue
+
+                    content_blocks = msg.get("content", [])
+                    if isinstance(content_blocks, str):
+                        content_blocks = [{"type": "text", "text": content_blocks}]
+
+                    timestamp = msg.get("timestamp", 0)
+                    if isinstance(timestamp, (int, float)) and timestamp > 1e12:
+                        timestamp = timestamp / 1000.0  # epoch_ms -> epoch_s
+
+                    if role == "user":
+                        text_parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+                        text = "\n".join(text_parts)
+                        # Strip Telegram metadata prefix/suffix
+                        text = _telegram_prefix_re.sub("", text)
+                        text = _message_id_suffix_re.sub("", text)
+                        messages.append({
+                            "role": "user",
+                            "content": text.strip(),
+                            "timestamp": timestamp,
+                        })
+
+                    elif role == "assistant":
+                        # Extract text and reasoning
+                        text_parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+                        thinking_parts = [b.get("thinking", "") for b in content_blocks if b.get("type") == "thinking"]
+                        tool_calls = [
+                            {"name": b.get("name", ""), "arguments": b.get("arguments", {})}
+                            for b in content_blocks if b.get("type") == "toolCall"
+                        ]
+
+                        _assistant_text = "\n".join(text_parts).strip() or None
+                        _reasoning_text = "\n".join(thinking_parts).strip() or None
+                        messages.append({
+                            "role": "assistant",
+                            "content": _assistant_text,
+                            "reasoning": _reasoning_text,
+                            "tool_calls": json.dumps(tool_calls) if tool_calls else None,
+                            "finish_reason": msg.get("stopReason"),
+                            "timestamp": timestamp,
+                        })
+
+                    elif role == "toolResult":
+                        text_parts = [b.get("text", "") for b in content_blocks if b.get("type") == "text"]
+                        _tool_text = "\n".join(text_parts).strip()
+                        messages.append({
+                            "role": "tool",
+                            "content": _tool_text,
+                            "tool_call_id": msg.get("toolCallId"),
+                            "tool_name": msg.get("toolName"),
+                            "timestamp": timestamp,
+                        })
+
+                if not messages:
+                    continue
+
+                total_sessions += 1
+                total_messages += len(messages)
+
+                if self.execute and db is not None:
+                    db.create_session(
+                        session_id=session_id,
+                        source=source_label,
+                        model=model,
+                        started_at=started_at or None,
+                    )
+                    # Set token counts from index metadata if available
+                    if index_meta:
+                        db.update_token_counts(
+                            session_id,
+                            input_tokens=index_meta.get("inputTokens", 0),
+                            output_tokens=index_meta.get("outputTokens", 0),
+                            cache_read_tokens=index_meta.get("cacheRead", 0),
+                            cache_write_tokens=index_meta.get("cacheWrite", 0),
+                            absolute=True,
+                        )
+                    for m in messages:
+                        ts = m.pop("timestamp", 0)
+                        db.append_message(session_id=session_id, timestamp=ts or None, **m)
+                    # Set title for orphans
+                    if is_orphan:
+                        db.set_session_title(session_id, f"OpenClaw import ({jsonl_path.stem[:8]})")
+
+            except Exception as _e:
+                errors.append(f"{jsonl_path.name}: {_e}")
+
+        if db is not None:
+            db.close()
+
+        details = {
+            "sessions_imported": total_sessions,
+            "messages_imported": total_messages,
+            "jsonl_files": len(jsonl_files),
+            "orphaned_files": len([f for f in jsonl_files if f.name not in indexed_files]),
+        }
+        if errors:
+            details["errors"] = errors
+
+        if total_sessions == 0:
+            self.record("sessions", sessions_dir, None, "skipped", "No importable sessions found", **details)
+        else:
+            action = "migrated" if self.execute else "previewed"
+            reason = (
+                f"Imported {total_sessions} session(s) with {total_messages} messages"
+                if self.execute
+                else f"Would import {total_sessions} session(s) with {total_messages} messages"
+            )
+            self.record("sessions", sessions_dir, None, action, reason, **details)
+
     def generate_migration_notes(self) -> None:
         if not self.output_dir:
             return

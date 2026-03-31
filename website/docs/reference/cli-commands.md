@@ -38,6 +38,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
+| `hermes auth` | Manage credential pools — add, list, remove, reset, set strategy. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
@@ -191,6 +192,22 @@ Useful options for `login`:
 - `--timeout <seconds>`
 - `--ca-bundle <pem>`
 - `--insecure`
+
+## `hermes auth`
+
+Manage credential pools for same-provider key rotation. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
+
+```bash
+hermes auth                                              # Interactive wizard
+hermes auth list                                         # Show all pools
+hermes auth list openrouter                              # Show specific provider
+hermes auth add openrouter --api-key sk-or-v1-xxx        # Add API key
+hermes auth add anthropic --type oauth                   # Add OAuth credential
+hermes auth remove openrouter 2                          # Remove by index
+hermes auth reset openrouter                             # Clear cooldowns
+```
+
+Subcommands: `add`, `list`, `remove`, `reset`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes status`
 

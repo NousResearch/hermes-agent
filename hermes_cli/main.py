@@ -2434,6 +2434,12 @@ def cmd_logout(args):
     logout_command(args)
 
 
+def cmd_auth(args):
+    """Manage pooled credentials."""
+    from hermes_cli.auth_commands import auth_command
+    auth_command(args)
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -3339,7 +3345,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     or a known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
+        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile",
@@ -3628,6 +3634,10 @@ Examples:
     hermes --resume <session_id>  Resume a specific session by ID
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
+    hermes auth add <provider>    Add a pooled credential
+    hermes auth list              List pooled credentials
+    hermes auth remove <p> <n>    Remove pooled credential by index
+    hermes auth reset <provider>  Clear exhaustion status for a provider
     hermes model                  Select default model
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
@@ -3945,6 +3955,33 @@ For more help on a command:
         help="Provider to log out from (default: active provider)"
     )
     logout_parser.set_defaults(func=cmd_logout)
+
+    auth_parser = subparsers.add_parser(
+        "auth",
+        help="Manage pooled provider credentials",
+    )
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
+    auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
+    auth_add.add_argument("provider", help="Provider id (for example: anthropic, openai-codex, openrouter)")
+    auth_add.add_argument("--type", dest="auth_type", choices=["oauth", "api-key", "api_key"], help="Credential type to add")
+    auth_add.add_argument("--label", help="Optional display label")
+    auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
+    auth_add.add_argument("--portal-url", help="Nous portal base URL")
+    auth_add.add_argument("--inference-url", help="Nous inference base URL")
+    auth_add.add_argument("--client-id", help="OAuth client id")
+    auth_add.add_argument("--scope", help="OAuth scope override")
+    auth_add.add_argument("--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
+    auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
+    auth_add.add_argument("--insecure", action="store_true", help="Disable TLS verification for OAuth login")
+    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+    auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
+    auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
+    auth_remove = auth_subparsers.add_parser("remove", help="Remove a pooled credential by index")
+    auth_remove.add_argument("provider", help="Provider id")
+    auth_remove.add_argument("index", type=int, help="1-based credential index")
+    auth_reset = auth_subparsers.add_parser("reset", help="Clear exhaustion status for all credentials for a provider")
+    auth_reset.add_argument("provider", help="Provider id")
+    auth_parser.set_defaults(func=cmd_auth)
 
     # =========================================================================
     # status command

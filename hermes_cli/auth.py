@@ -545,7 +545,11 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     except Exception:
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
-    if isinstance(raw, dict) and isinstance(raw.get("providers"), dict):
+    if isinstance(raw, dict) and (
+        isinstance(raw.get("providers"), dict)
+        or isinstance(raw.get("credential_pool"), dict)
+    ):
+        raw.setdefault("providers", {})
         return raw
 
     # Migrate from PR's "systems" format if present
@@ -613,6 +617,30 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
     auth_store["active_provider"] = provider_id
 
 
+def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return the persisted credential pool, or one provider slice."""
+    auth_store = _load_auth_store()
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        pool = {}
+    if provider_id is None:
+        return dict(pool)
+    provider_entries = pool.get(provider_id)
+    return list(provider_entries) if isinstance(provider_entries, list) else []
+
+
+def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
+    """Persist one provider's credential pool under auth.json."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            pool = {}
+            auth_store["credential_pool"] = pool
+        pool[provider_id] = list(entries)
+        return _save_auth_store(auth_store)
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
@@ -638,10 +666,25 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             return False
 
         providers = auth_store.get("providers", {})
-        if target not in providers:
-            return False
+        if not isinstance(providers, dict):
+            providers = {}
+            auth_store["providers"] = providers
 
-        del providers[target]
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            pool = {}
+            auth_store["credential_pool"] = pool
+
+        cleared = False
+        if target in providers:
+            del providers[target]
+            cleared = True
+        if target in pool:
+            del pool[target]
+            cleared = True
+
+        if not cleared:
+            return False
         if auth_store.get("active_provider") == target:
             auth_store["active_provider"] = None
         _save_auth_store(auth_store)
@@ -898,15 +941,14 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         _save_auth_store(auth_store)
 
 
-def _refresh_codex_auth_tokens(
-    tokens: Dict[str, str],
-    timeout_seconds: float,
-) -> Dict[str, str]:
-    """Refresh Codex access token using the refresh token.
-    
-    Saves the new tokens to Hermes auth store automatically.
-    """
-    refresh_token = tokens.get("refresh_token")
+def refresh_codex_oauth_pure(
+    access_token: str,
+    refresh_token: str,
+    *,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Refresh Codex OAuth tokens without mutating Hermes auth state."""
+    del access_token  # Access token is only used by callers to decide whether to refresh.
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
             "Codex auth is missing refresh_token. Run `hermes login` to re-authenticate.",
@@ -961,8 +1003,8 @@ def _refresh_codex_auth_tokens(
             relogin_required=True,
         ) from exc
 
-    access_token = refresh_payload.get("access_token")
-    if not isinstance(access_token, str) or not access_token.strip():
+    refreshed_access = refresh_payload.get("access_token")
+    if not isinstance(refreshed_access, str) or not refreshed_access.strip():
         raise AuthError(
             "Codex token refresh response was missing access_token.",
             provider="openai-codex",
@@ -970,11 +1012,33 @@ def _refresh_codex_auth_tokens(
             relogin_required=True,
         )
 
-    updated_tokens = dict(tokens)
-    updated_tokens["access_token"] = access_token.strip()
+    updated = {
+        "access_token": refreshed_access.strip(),
+        "refresh_token": refresh_token.strip(),
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
     next_refresh = refresh_payload.get("refresh_token")
     if isinstance(next_refresh, str) and next_refresh.strip():
-        updated_tokens["refresh_token"] = next_refresh.strip()
+        updated["refresh_token"] = next_refresh.strip()
+    return updated
+
+
+def _refresh_codex_auth_tokens(
+    tokens: Dict[str, str],
+    timeout_seconds: float,
+) -> Dict[str, str]:
+    """Refresh Codex access token using the refresh token.
+    
+    Saves the new tokens to Hermes auth store automatically.
+    """
+    refreshed = refresh_codex_oauth_pure(
+        str(tokens.get("access_token", "") or ""),
+        str(tokens.get("refresh_token", "") or ""),
+        timeout_seconds=timeout_seconds,
+    )
+    updated_tokens = dict(tokens)
+    updated_tokens["access_token"] = refreshed["access_token"]
+    updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
     return updated_tokens
@@ -1311,6 +1375,122 @@ def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
     if not isinstance(key, str) or not key.strip():
         return False
     return not _is_expiring(state.get("agent_key_expires_at"), min_ttl_seconds)
+
+
+def refresh_nous_oauth_pure(
+    access_token: str,
+    refresh_token: str,
+    client_id: str,
+    portal_base_url: str,
+    inference_base_url: str,
+    *,
+    token_type: str = "Bearer",
+    scope: str = DEFAULT_NOUS_SCOPE,
+    obtained_at: Optional[str] = None,
+    expires_at: Optional[str] = None,
+    agent_key: Optional[str] = None,
+    agent_key_expires_at: Optional[str] = None,
+    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
+    timeout_seconds: float = 15.0,
+    insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None,
+    force_refresh: bool = False,
+    force_mint: bool = False,
+) -> Dict[str, Any]:
+    """Refresh Nous OAuth state without mutating auth.json."""
+    state: Dict[str, Any] = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "client_id": client_id or DEFAULT_NOUS_CLIENT_ID,
+        "portal_base_url": (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/"),
+        "inference_base_url": (inference_base_url or DEFAULT_NOUS_INFERENCE_URL).rstrip("/"),
+        "token_type": token_type or "Bearer",
+        "scope": scope or DEFAULT_NOUS_SCOPE,
+        "obtained_at": obtained_at,
+        "expires_at": expires_at,
+        "agent_key": agent_key,
+        "agent_key_expires_at": agent_key_expires_at,
+        "tls": {
+            "insecure": bool(insecure),
+            "ca_bundle": ca_bundle,
+        },
+    }
+    verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
+    timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
+
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        if force_refresh or _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
+            refreshed = _refresh_access_token(
+                client=client,
+                portal_base_url=state["portal_base_url"],
+                client_id=state["client_id"],
+                refresh_token=state["refresh_token"],
+            )
+            now = datetime.now(timezone.utc)
+            access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
+            state["access_token"] = refreshed["access_token"]
+            state["refresh_token"] = refreshed.get("refresh_token") or state["refresh_token"]
+            state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
+            state["scope"] = refreshed.get("scope") or state.get("scope")
+            refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+            if refreshed_url:
+                state["inference_base_url"] = refreshed_url
+            state["obtained_at"] = now.isoformat()
+            state["expires_in"] = access_ttl
+            state["expires_at"] = datetime.fromtimestamp(
+                now.timestamp() + access_ttl, tz=timezone.utc
+            ).isoformat()
+
+        if force_mint or not _agent_key_is_usable(state, max(60, int(min_key_ttl_seconds))):
+            mint_payload = _mint_agent_key(
+                client=client,
+                portal_base_url=state["portal_base_url"],
+                access_token=state["access_token"],
+                min_ttl_seconds=min_key_ttl_seconds,
+            )
+            now = datetime.now(timezone.utc)
+            state["agent_key"] = mint_payload.get("api_key")
+            state["agent_key_id"] = mint_payload.get("key_id")
+            state["agent_key_expires_at"] = mint_payload.get("expires_at")
+            state["agent_key_expires_in"] = mint_payload.get("expires_in")
+            state["agent_key_reused"] = bool(mint_payload.get("reused", False))
+            state["agent_key_obtained_at"] = now.isoformat()
+            minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
+            if minted_url:
+                state["inference_base_url"] = minted_url
+
+    return state
+
+
+def refresh_nous_oauth_from_state(
+    state: Dict[str, Any],
+    *,
+    min_key_ttl_seconds: int = DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
+    timeout_seconds: float = 15.0,
+    force_refresh: bool = False,
+    force_mint: bool = False,
+) -> Dict[str, Any]:
+    """Refresh Nous OAuth from a state dict. Thin wrapper around refresh_nous_oauth_pure."""
+    tls = state.get("tls") or {}
+    return refresh_nous_oauth_pure(
+        state.get("access_token", ""),
+        state.get("refresh_token", ""),
+        state.get("client_id", "hermes-cli"),
+        state.get("portal_base_url", DEFAULT_NOUS_PORTAL_URL),
+        state.get("inference_base_url", DEFAULT_NOUS_INFERENCE_URL),
+        token_type=state.get("token_type", "Bearer"),
+        scope=state.get("scope", DEFAULT_NOUS_SCOPE),
+        obtained_at=state.get("obtained_at"),
+        expires_at=state.get("expires_at"),
+        agent_key=state.get("agent_key"),
+        agent_key_expires_at=state.get("agent_key_expires_at"),
+        min_key_ttl_seconds=min_key_ttl_seconds,
+        timeout_seconds=timeout_seconds,
+        insecure=tls.get("insecure"),
+        ca_bundle=tls.get("ca_bundle"),
+        force_refresh=force_refresh,
+        force_mint=force_mint,
+    )
 
 
 def resolve_nous_runtime_credentials(
@@ -2180,34 +2360,36 @@ def _codex_device_code_login() -> Dict[str, Any]:
     }
 
 
-def _login_nous(args, pconfig: ProviderConfig) -> None:
-    """Nous Portal device authorization flow."""
+def _nous_device_code_login(
+    *,
+    portal_base_url: Optional[str] = None,
+    inference_base_url: Optional[str] = None,
+    client_id: Optional[str] = None,
+    scope: Optional[str] = None,
+    open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+    insecure: bool = False,
+    ca_bundle: Optional[str] = None,
+    min_key_ttl_seconds: int = 5 * 60,
+) -> Dict[str, Any]:
+    """Run the Nous device-code flow and return full OAuth state without persisting."""
+    pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
-        getattr(args, "portal_url", None)
+        portal_base_url
         or os.getenv("HERMES_PORTAL_BASE_URL")
         or os.getenv("NOUS_PORTAL_BASE_URL")
         or pconfig.portal_base_url
     ).rstrip("/")
     requested_inference_url = (
-        getattr(args, "inference_url", None)
+        inference_base_url
         or os.getenv("NOUS_INFERENCE_BASE_URL")
         or pconfig.inference_base_url
     ).rstrip("/")
-    client_id = getattr(args, "client_id", None) or pconfig.client_id
-    scope = getattr(args, "scope", None) or pconfig.scope
-    open_browser = not getattr(args, "no_browser", False)
-    timeout_seconds = getattr(args, "timeout", None) or 15.0
+    client_id = client_id or pconfig.client_id
+    scope = scope or pconfig.scope
     timeout = httpx.Timeout(timeout_seconds)
-
-    insecure = bool(getattr(args, "insecure", False))
-    ca_bundle = (
-        getattr(args, "ca_bundle", None)
-        or os.getenv("HERMES_CA_BUNDLE")
-        or os.getenv("SSL_CERT_FILE")
-    )
     verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
-    # Skip browser open in SSH sessions
     if _is_remote_session():
         open_browser = False
 
@@ -2218,74 +2400,109 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
     elif ca_bundle:
         print(f"TLS verification: custom CA bundle ({ca_bundle})")
 
-    try:
-        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-            device_data = _request_device_code(
-                client=client, portal_base_url=portal_base_url,
-                client_id=client_id, scope=scope,
-            )
-
-            verification_url = str(device_data["verification_uri_complete"])
-            user_code = str(device_data["user_code"])
-            expires_in = int(device_data["expires_in"])
-            interval = int(device_data["interval"])
-
-            print()
-            print("To continue:")
-            print(f"  1. Open: {verification_url}")
-            print(f"  2. If prompted, enter code: {user_code}")
-
-            if open_browser:
-                opened = webbrowser.open(verification_url)
-                if opened:
-                    print("  (Opened browser for verification)")
-                else:
-                    print("  Could not open browser automatically — use the URL above.")
-
-            effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
-            print(f"Waiting for approval (polling every {effective_interval}s)...")
-
-            token_data = _poll_for_token(
-                client=client, portal_base_url=portal_base_url,
-                client_id=client_id, device_code=str(device_data["device_code"]),
-                expires_in=expires_in, poll_interval=interval,
-            )
-
-        # Process token response
-        now = datetime.now(timezone.utc)
-        token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
-        expires_at = now.timestamp() + token_expires_in
-        inference_base_url = (
-            _optional_base_url(token_data.get("inference_base_url"))
-            or requested_inference_url
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        device_data = _request_device_code(
+            client=client,
+            portal_base_url=portal_base_url,
+            client_id=client_id,
+            scope=scope,
         )
-        if inference_base_url != requested_inference_url:
-            print(f"Using portal-provided inference URL: {inference_base_url}")
 
-        auth_state = {
-            "portal_base_url": portal_base_url,
-            "inference_base_url": inference_base_url,
-            "client_id": client_id,
-            "scope": token_data.get("scope") or scope,
-            "token_type": token_data.get("token_type", "Bearer"),
-            "access_token": token_data["access_token"],
-            "refresh_token": token_data.get("refresh_token"),
-            "obtained_at": now.isoformat(),
-            "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
-            "expires_in": token_expires_in,
-            "tls": {
-                "insecure": verify is False,
-                "ca_bundle": verify if isinstance(verify, str) else None,
-            },
-            "agent_key": None,
-            "agent_key_id": None,
-            "agent_key_expires_at": None,
-            "agent_key_expires_in": None,
-            "agent_key_reused": None,
-            "agent_key_obtained_at": None,
-        }
+        verification_url = str(device_data["verification_uri_complete"])
+        user_code = str(device_data["user_code"])
+        expires_in = int(device_data["expires_in"])
+        interval = int(device_data["interval"])
 
-        # Save auth state
+        print()
+        print("To continue:")
+        print(f"  1. Open: {verification_url}")
+        print(f"  2. If prompted, enter code: {user_code}")
+
+        if open_browser:
+            opened = webbrowser.open(verification_url)
+            if opened:
+                print("  (Opened browser for verification)")
+            else:
+                print("  Could not open browser automatically — use the URL above.")
+
+        effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
+        print(f"Waiting for approval (polling every {effective_interval}s)...")
+
+        token_data = _poll_for_token(
+            client=client,
+            portal_base_url=portal_base_url,
+            client_id=client_id,
+            device_code=str(device_data["device_code"]),
+            expires_in=expires_in,
+            poll_interval=interval,
+        )
+
+    now = datetime.now(timezone.utc)
+    token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
+    expires_at = now.timestamp() + token_expires_in
+    resolved_inference_url = (
+        _optional_base_url(token_data.get("inference_base_url"))
+        or requested_inference_url
+    )
+    if resolved_inference_url != requested_inference_url:
+        print(f"Using portal-provided inference URL: {resolved_inference_url}")
+
+    auth_state = {
+        "portal_base_url": portal_base_url,
+        "inference_base_url": resolved_inference_url,
+        "client_id": client_id,
+        "scope": token_data.get("scope") or scope,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "access_token": token_data["access_token"],
+        "refresh_token": token_data.get("refresh_token"),
+        "obtained_at": now.isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "expires_in": token_expires_in,
+        "tls": {
+            "insecure": verify is False,
+            "ca_bundle": verify if isinstance(verify, str) else None,
+        },
+        "agent_key": None,
+        "agent_key_id": None,
+        "agent_key_expires_at": None,
+        "agent_key_expires_in": None,
+        "agent_key_reused": None,
+        "agent_key_obtained_at": None,
+    }
+    return refresh_nous_oauth_from_state(
+        auth_state,
+        min_key_ttl_seconds=min_key_ttl_seconds,
+        timeout_seconds=timeout_seconds,
+        force_refresh=False,
+        force_mint=True,
+    )
+
+
+def _login_nous(args, pconfig: ProviderConfig) -> None:
+    """Nous Portal device authorization flow."""
+    timeout_seconds = getattr(args, "timeout", None) or 15.0
+    insecure = bool(getattr(args, "insecure", False))
+    ca_bundle = (
+        getattr(args, "ca_bundle", None)
+        or os.getenv("HERMES_CA_BUNDLE")
+        or os.getenv("SSL_CERT_FILE")
+    )
+
+    try:
+        auth_state = _nous_device_code_login(
+            portal_base_url=getattr(args, "portal_url", None) or pconfig.portal_base_url,
+            inference_base_url=getattr(args, "inference_url", None) or pconfig.inference_base_url,
+            client_id=getattr(args, "client_id", None) or pconfig.client_id,
+            scope=getattr(args, "scope", None) or pconfig.scope,
+            open_browser=not getattr(args, "no_browser", False),
+            timeout_seconds=timeout_seconds,
+            insecure=insecure,
+            ca_bundle=ca_bundle,
+            min_key_ttl_seconds=5 * 60,
+        )
+        inference_base_url = auth_state["inference_base_url"]
+        verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
+
         with _auth_store_lock():
             auth_store = _load_auth_store()
             _save_provider_state(auth_store, "nous", auth_state)
@@ -2297,18 +2514,14 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         print(f"  Auth state: {saved_to}")
         print(f"  Config updated: {config_path} (model.provider=nous)")
 
-        # Mint an initial agent key and list available models
         try:
-            runtime_creds = resolve_nous_runtime_credentials(
-                min_key_ttl_seconds=5 * 60,
-                timeout_seconds=timeout_seconds,
-                insecure=insecure, ca_bundle=ca_bundle,
-            )
-            runtime_key = runtime_creds.get("api_key")
-            runtime_base_url = runtime_creds.get("base_url") or inference_base_url
+            runtime_key = auth_state.get("agent_key") or auth_state.get("access_token")
             if not isinstance(runtime_key, str) or not runtime_key:
-                raise AuthError("No runtime API key available to fetch models",
-                                provider="nous", code="invalid_token")
+                raise AuthError(
+                    "No runtime API key available to fetch models",
+                    provider="nous",
+                    code="invalid_token",
+                )
 
             # Use curated model list (same as OpenRouter defaults) instead
             # of the full /models dump which returns hundreds of models.

@@ -1158,6 +1158,14 @@ def run_conversation(
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+                # Copilot x-initiator: the first API call of a user turn is
+                # marked "user" so Copilot bills a premium request; tool-loop
+                # follow-ups keep the default "agent" header (#3040).
+                if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
+                    _xh = dict(api_kwargs.get("extra_headers") or {})
+                    _xh["x-initiator"] = "user"
+                    api_kwargs["extra_headers"] = _xh
+                    agent._is_user_initiated_turn = False
                 try:
                     from hermes_cli.middleware import apply_llm_request_middleware
 

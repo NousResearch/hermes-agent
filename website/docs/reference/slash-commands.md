@@ -31,10 +31,10 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/compress` | Manually compress conversation context (flush memories + summarize) |
 | `/rollback` | List or restore filesystem checkpoints (usage: /rollback [number]) |
 | `/stop` | Kill all running background processes |
-| `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response) |
+| `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). **Note:** `/q` is claimed by both `/queue` and `/quit`; the last registration wins, so `/q` resolves to `/quit` in practice. Use `/queue` explicitly. |
 | `/resume [name]` | Resume a previously-named session |
 | `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
-| `/background <prompt>` | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
+| `/background <prompt>` (alias: `/bg`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
 
 ### Configuration
@@ -50,6 +50,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
 | `/skin` | Show or change the display skin/theme |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
+| `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 
 ### Tools & Skills
 
@@ -60,7 +61,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/browser [connect\|disconnect\|status]` | Manage local Chrome CDP connection. `connect` attaches browser tools to a running Chrome instance (default: `ws://localhost:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches Chrome if no debugger is detected. |
 | `/skills` | Search, install, inspect, or manage skills from online registries |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
-| `/reload-mcp` | Reload MCP servers from config.yaml |
+| `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config.yaml |
 | `/plugins` | List installed plugins and their status |
 
 ### Info
@@ -70,14 +71,15 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/help` | Show this help message |
 | `/usage` | Show token usage, cost breakdown, and session duration |
 | `/insights` | Show usage insights and analytics (last 30 days) |
-| `/platforms` | Show gateway/messaging platform status |
+| `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status |
 | `/paste` | Check clipboard for an image and attach it |
+| `/profile` | Show active profile name and home directory |
 
 ### Exit
 
 | Command | Description |
 |---------|-------------|
-| `/quit` | Exit the CLI (also: /exit, /q) |
+| `/quit` | Exit the CLI (also: `/exit`). See note on `/q` under `/queue` above. |
 
 ### Dynamic CLI slash commands
 
@@ -105,7 +107,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/personality [name]` | Set a personality overlay for the session. |
 | `/retry` | Retry the last message. |
 | `/undo` | Remove the last exchange. |
-| `/sethome` | Mark the current chat as the platform home channel for deliveries. |
+| `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
 | `/compress` | Manually compress conversation context. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
@@ -116,7 +118,9 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
-| `/reload-mcp` | Reload MCP servers from config. |
+| `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |
+| `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
+| `/commands [page]` | Browse all commands and skills (paginated). |
 | `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |
 | `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
@@ -127,6 +131,6 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 - `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/prompt`, `/cron`, `/skills`, `/platforms`, `/paste`, `/statusbar`, and `/plugins` are **CLI-only** commands.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
-- `/status`, `/sethome`, `/update`, `/approve`, and `/deny` are **messaging-only** commands.
-- `/background`, `/voice`, `/reload-mcp`, and `/rollback` work in **both** the CLI and the messaging gateway.
+- `/status`, `/sethome`, `/update`, `/approve`, `/deny`, and `/commands` are **messaging-only** commands.
+- `/background`, `/voice`, `/reload-mcp`, `/rollback`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.

@@ -60,6 +60,7 @@ def _make_runner(platform: Platform, config: GatewayConfig):
     runner.adapters = {platform: adapter}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
+    runner.pairing_store._is_rate_limited.return_value = False
     return runner, adapter
 
 
@@ -140,6 +141,56 @@ async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_user_gets_no_response(monkeypatch):
+    """When a user is already rate-limited, pairing messages are silently ignored."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store._is_rate_limited.return_value = True
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejection_message_records_rate_limit(monkeypatch):
+    """After sending a 'too many requests' rejection, rate limit is recorded
+    so subsequent messages are silently ignored."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store.generate_code.return_value = None  # triggers rejection
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    adapter.send.assert_awaited_once()
+    assert "Too many" in adapter.send.await_args.args[1]
+    runner.pairing_store._record_rate_limit.assert_called_once_with(
+        "whatsapp", "15551234567@s.whatsapp.net"
+    )
 
 
 @pytest.mark.asyncio

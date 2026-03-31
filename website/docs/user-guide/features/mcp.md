@@ -168,9 +168,7 @@ So a server that exposes callable tools but no resources/prompts will not get th
 
 ## Per-server filtering
 
-This is the main feature added by the PR work.
-
-You can now control which tools each MCP server contributes to Hermes.
+You can control which tools each MCP server contributes to Hermes, allowing fine-grained management of your tool namespace.
 
 ### Disable a server entirely
 
@@ -277,6 +275,14 @@ That keeps the tool list clean.
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
 
+### Dynamic Tool Discovery
+
+MCP servers can notify Hermes when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Hermes receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.
+
+This is useful for MCP servers whose capabilities change dynamically (e.g. a server that adds tools when a new database schema is loaded, or removes tools when a service goes offline).
+
+The refresh is lock-protected so rapid-fire notifications from the same server don't cause overlapping refreshes. Prompt and resource change notifications (`prompts/list_changed`, `resources/list_changed`) are received but not yet acted on.
+
 ### Reloading
 
 If you change MCP config, use:
@@ -285,7 +291,7 @@ If you change MCP config, use:
 /reload-mcp
 ```
 
-This reloads MCP servers from config and refreshes the available tool list.
+This reloads MCP servers from config and refreshes the available tool list. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
 
 ### Toolsets
 
@@ -402,6 +408,39 @@ Because Hermes now only registers those wrappers when both are true:
 2. the server session actually supports the capability
 
 This is intentional and keeps the tool list honest.
+
+## MCP Sampling Support
+
+MCP servers can request LLM inference from Hermes via the `sampling/createMessage` protocol. This allows an MCP server to ask Hermes to generate text on its behalf — useful for servers that need LLM capabilities but don't have their own model access.
+
+Sampling is **enabled by default** for all MCP servers (when the MCP SDK supports it). Configure it per-server under the `sampling` key:
+
+```yaml
+mcp_servers:
+  my_server:
+    command: "my-mcp-server"
+    sampling:
+      enabled: true            # Enable sampling (default: true)
+      model: "openai/gpt-4o"  # Override model for sampling requests (optional)
+      max_tokens_cap: 4096     # Max tokens per sampling response (default: 4096)
+      timeout: 30              # Timeout in seconds per request (default: 30)
+      max_rpm: 10              # Rate limit: max requests per minute (default: 10)
+      max_tool_rounds: 5       # Max tool-use rounds in sampling loops (default: 5)
+      allowed_models: []       # Allowlist of model names the server may request (empty = any)
+      log_level: "info"        # Audit log level: debug, info, or warning (default: info)
+```
+
+The sampling handler includes a sliding-window rate limiter, per-request timeouts, and tool-loop depth limits to prevent runaway usage. Metrics (request count, errors, tokens used) are tracked per server instance.
+
+To disable sampling for a specific server:
+
+```yaml
+mcp_servers:
+  untrusted_server:
+    url: "https://mcp.example.com"
+    sampling:
+      enabled: false
+```
 
 ## Running Hermes as an MCP server
 

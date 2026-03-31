@@ -52,26 +52,86 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 # Managed mode (NixOS declarative config)
 # =============================================================================
 
+_MANAGED_TRUE_VALUES = ("true", "1", "yes")
+_MANAGED_SYSTEM_NAMES = {
+    "brew": "Homebrew",
+    "homebrew": "Homebrew",
+    "nix": "NixOS",
+    "nixos": "NixOS",
+}
+
+
+def get_managed_system() -> Optional[str]:
+    """Return the package manager owning this install, if any."""
+    raw = os.getenv("HERMES_MANAGED", "").strip()
+    if raw:
+        normalized = raw.lower()
+        if normalized in _MANAGED_TRUE_VALUES:
+            return "NixOS"
+        return _MANAGED_SYSTEM_NAMES.get(normalized, raw)
+
+    managed_marker = get_hermes_home() / ".managed"
+    if managed_marker.exists():
+        return "NixOS"
+    return None
+
+
 def is_managed() -> bool:
-    """Check if hermes is running in Nix-managed mode.
+    """Check if Hermes is running in package-manager-managed mode.
 
     Two signals: the HERMES_MANAGED env var (set by the systemd service),
     or a .managed marker file in HERMES_HOME (set by the NixOS activation
     script, so interactive shells also see it).
     """
-    if os.getenv("HERMES_MANAGED", "").lower() in ("true", "1", "yes"):
-        return True
-    managed_marker = get_hermes_home() / ".managed"
-    return managed_marker.exists()
+    return get_managed_system() is not None
+
+
+def get_managed_update_command() -> Optional[str]:
+    """Return the preferred upgrade command for a managed install."""
+    managed_system = get_managed_system()
+    if managed_system == "Homebrew":
+        return "brew upgrade hermes-agent"
+    if managed_system == "NixOS":
+        return "sudo nixos-rebuild switch"
+    return None
+
+
+def recommended_update_command() -> str:
+    """Return the best update command for the current installation."""
+    return get_managed_update_command() or "hermes update"
+
+
+def format_managed_message(action: str = "modify this Hermes installation") -> str:
+    """Build a user-facing error for managed installs."""
+    managed_system = get_managed_system() or "a package manager"
+    raw = os.getenv("HERMES_MANAGED", "").strip().lower()
+
+    if managed_system == "NixOS":
+        env_hint = "true" if raw in _MANAGED_TRUE_VALUES else raw or "true"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by NixOS "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
+            "  sudo nixos-rebuild switch"
+        )
+
+    if managed_system == "Homebrew":
+        env_hint = raw or "homebrew"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by Homebrew "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Use:\n"
+            "  brew upgrade hermes-agent"
+        )
+
+    return (
+        f"Cannot {action}: this Hermes installation is managed by {managed_system}.\n"
+        "Use your package manager to upgrade or reinstall Hermes."
+    )
 
 def managed_error(action: str = "modify configuration"):
     """Print user-friendly error for managed mode."""
-    print(
-        f"Cannot {action}: configuration is managed by NixOS (HERMES_MANAGED=true).\n"
-        "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
-        "  sudo nixos-rebuild switch",
-        file=sys.stderr,
-    )
+    print(format_managed_message(action), file=sys.stderr)
 
 
 # =============================================================================
@@ -138,6 +198,7 @@ def ensure_hermes_home():
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
     "fallback_providers": [],
+    "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -185,6 +246,7 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
+        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -392,6 +454,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -441,7 +504,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================

@@ -559,11 +559,18 @@ class TestAuxiliaryClientProviderPriority:
         assert model == "google/gemini-3-flash-preview"
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
+        """Custom endpoint is used when no OpenRouter/Nous keys are available.
+
+        Since the March 2026 config refactor, OPENAI_BASE_URL env var is no
+        longer consulted — base_url comes from config.yaml via
+        resolve_runtime_provider.  Mock _resolve_custom_runtime directly.
+        """
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
         from agent.auxiliary_client import get_text_auxiliary_client
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("http://localhost:1234/v1", "local-key")), \
              patch("agent.auxiliary_client.OpenAI") as mock:
             client, model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"

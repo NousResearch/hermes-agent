@@ -237,6 +237,60 @@ Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 
 ---
 
+## Multi-Workspace Support
+
+Hermes can connect to **multiple Slack workspaces** simultaneously using a single gateway instance. Each workspace is authenticated independently with its own bot user ID.
+
+### Configuration
+
+Provide multiple bot tokens as a **comma-separated list** in `SLACK_BOT_TOKEN`:
+
+```bash
+# Multiple bot tokens — one per workspace
+SLACK_BOT_TOKEN=xoxb-workspace1-token,xoxb-workspace2-token,xoxb-workspace3-token
+
+# A single app-level token is still used for Socket Mode
+SLACK_APP_TOKEN=xapp-your-app-token
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  slack:
+    token: "xoxb-workspace1-token,xoxb-workspace2-token"
+```
+
+### OAuth Token File
+
+In addition to tokens in the environment or config, Hermes also loads tokens from an **OAuth token file** at:
+
+```
+~/.hermes/platforms/slack/slack_tokens.json
+```
+
+This file is a JSON object mapping team IDs to token entries:
+
+```json
+{
+  "T01ABC2DEF3": {
+    "token": "xoxb-workspace-token-here",
+    "team_name": "My Workspace"
+  }
+}
+```
+
+Tokens from this file are merged with any tokens specified via `SLACK_BOT_TOKEN`. Duplicate tokens are automatically deduplicated.
+
+### How it works
+
+- The **first token** in the list is the primary token, used for the Socket Mode connection (AsyncApp).
+- Each token is authenticated via `auth.test` on startup. The gateway maps each `team_id` to its own `WebClient` and `bot_user_id`.
+- When a message arrives, Hermes uses the correct workspace-specific client to respond.
+- The primary `bot_user_id` (from the first token) is used for backward compatibility with features that expect a single bot identity.
+
+---
+
 ## Voice Messages
 
 Hermes supports voice on Slack:

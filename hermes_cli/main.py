@@ -173,8 +173,24 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home
+    from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
+
+    # Determine whether Hermes itself has been explicitly configured (model
+    # in config that isn't the hardcoded default). Used below to gate external
+    # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
+    # the setup wizard on a fresh install.
+    from hermes_cli.config import DEFAULT_CONFIG
+    _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
+    cfg = load_config()
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        _model_name = (model_cfg.get("default") or "").strip()
+    elif isinstance(model_cfg, str):
+        _model_name = model_cfg.strip()
+    else:
+        _model_name = ""
+    _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
 
     # Check env vars (may be set by .env or shell).
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
@@ -231,15 +247,16 @@ def _has_any_provider_configured() -> bool:
 
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # These are used by resolve_anthropic_token() at runtime but were missing
-    # from this startup gate check.
-    try:
-        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
-        creds = read_claude_code_credentials()
-        if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
-            return True
-    except Exception:
-        pass
+    # Only count these if Hermes has been explicitly configured — Claude Code
+    # being installed doesn't mean the user wants Hermes to use their tokens.
+    if _has_hermes_config:
+        try:
+            from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+            creds = read_claude_code_credentials()
+            if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
+                return True
+        except Exception:
+            pass
 
     return False
 
@@ -829,6 +846,17 @@ def cmd_setup(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
+    select_provider_and_model()
+
+
+def select_provider_and_model():
+    """Core provider selection + model picking logic.
+
+    Shared by ``cmd_model`` (``hermes model``) and the setup wizard
+    (``setup_model_provider`` in setup.py).  Handles the full flow:
+    provider picker, credential prompting, model selection, and config
+    persistence.
+    """
     from hermes_cli.auth import (
         resolve_provider, AuthError, format_auth_error,
     )
@@ -858,7 +886,10 @@ def cmd_model(args):
     except AuthError as exc:
         warning = format_auth_error(exc)
         print(f"Warning: {warning} Falling back to auto provider detection.")
-        active = resolve_provider("auto")
+        try:
+            active = resolve_provider("auto")
+        except AuthError:
+            active = "openrouter"  # no provider yet; show full picker
 
     # Detect custom endpoint
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
@@ -1050,10 +1081,6 @@ def _model_flow_openrouter(config, current_model=""):
 
     selected = _prompt_model_selection(openrouter_models, current_model=current_model)
     if selected:
-        # Clear any custom endpoint and set provider to openrouter
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _save_model_choice(selected)
 
         # Update config provider and deactivate any OAuth provider
@@ -1143,10 +1170,6 @@ def _model_flow_nous(config, current_model=""):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
-        # Clear any custom endpoint that might conflict
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
     else:
         print("No change.")
@@ -1191,10 +1214,6 @@ def _model_flow_openai_codex(config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-        # Clear custom endpoint env vars that would otherwise override Codex.
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
@@ -1223,21 +1242,9 @@ def _model_flow_custom(config):
     try:
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
         api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
-        model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
-        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
-
-    context_length = None
-    if context_length_str:
-        try:
-            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
-            if context_length <= 0:
-                context_length = None
-        except ValueError:
-            print(f"Invalid context length: {context_length_str} — will auto-detect.")
-            context_length = None
 
     if not base_url and not current_url:
         print("No URL provided. Cancelled.")
@@ -1275,10 +1282,43 @@ def _model_flow_custom(config):
         if probe.get("suggested_base_url"):
             print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
 
-    if base_url:
-        save_env_value("OPENAI_BASE_URL", effective_url)
-    if api_key:
-        save_env_value("OPENAI_API_KEY", api_key)
+    # Select model — use probe results when available, fall back to manual input
+    model_name = ""
+    detected_models = probe.get("models") or []
+    try:
+        if len(detected_models) == 1:
+            print(f"  Detected model: {detected_models[0]}")
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            if confirm in ("", "y", "yes"):
+                model_name = detected_models[0]
+            else:
+                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        elif len(detected_models) > 1:
+            print("  Available models:")
+            for i, m in enumerate(detected_models, 1):
+                print(f"    {i}. {m}")
+            pick = input(f"  Select model [1-{len(detected_models)}] or type name: ").strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                model_name = detected_models[int(pick) - 1]
+            elif pick:
+                model_name = pick
+        else:
+            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+
+        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
 
     if model_name:
         _save_model_choice(model_name)
@@ -1291,14 +1331,33 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        if effective_key:
+            model["api_key"] = effective_key
         model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
+
+        # Sync the caller's config dict so the setup wizard's final
+        # save_config(config) preserves our model settings.  Without
+        # this, the wizard overwrites model.provider/base_url with
+        # the stale values from its own config dict (#4172).
+        config["model"] = dict(model)
 
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
         if base_url or api_key:
             deactivate_provider()
+        # Even without a model name, persist the custom endpoint on the
+        # caller's config dict so the setup wizard doesn't lose it.
+        _caller_model = config.get("model")
+        if not isinstance(_caller_model, dict):
+            _caller_model = {"default": _caller_model} if _caller_model else {}
+        _caller_model["provider"] = "custom"
+        _caller_model["base_url"] = effective_url
+        if effective_key:
+            _caller_model["api_key"] = effective_key
+        _caller_model.pop("api_mode", None)
+        config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
@@ -1439,9 +1498,6 @@ def _model_flow_named_custom(config, provider_info):
 
     # If a model is saved, just activate immediately — no probing needed
     if saved_model:
-        save_env_value("OPENAI_BASE_URL", base_url)
-        if api_key:
-            save_env_value("OPENAI_API_KEY", api_key)
         _save_model_choice(saved_model)
 
         cfg = load_config()
@@ -1451,6 +1507,8 @@ def _model_flow_named_custom(config, provider_info):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = base_url
+        if api_key:
+            model["api_key"] = api_key
         save_config(cfg)
         deactivate_provider()
 
@@ -1513,9 +1571,6 @@ def _model_flow_named_custom(config, provider_info):
             return
 
     # Activate and save the model to the custom_providers entry
-    save_env_value("OPENAI_BASE_URL", base_url)
-    if api_key:
-        save_env_value("OPENAI_API_KEY", api_key)
     _save_model_choice(model_name)
 
     cfg = load_config()
@@ -1525,6 +1580,8 @@ def _model_flow_named_custom(config, provider_info):
         cfg["model"] = model
     model["provider"] = "custom"
     model["base_url"] = base_url
+    if api_key:
+        model["api_key"] = api_key
     save_config(cfg)
     deactivate_provider()
 
@@ -1577,11 +1634,15 @@ _PROVIDER_MODELS = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
@@ -1829,11 +1890,6 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         ) or selected
-        # Clear stale custom-endpoint overrides so the Copilot provider wins cleanly.
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         initial_cfg = load_config()
         current_effort = _current_reasoning_effort(initial_cfg)
         reasoning_efforts = github_model_reasoning_efforts(
@@ -2058,11 +2114,6 @@ def _model_flow_kimi(config, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set (avoid confusion)
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -2165,11 +2216,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set (avoid confusion)
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -2381,11 +2427,6 @@ def _model_flow_anthropic(config, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider — clear base_url since
@@ -2417,6 +2458,12 @@ def cmd_logout(args):
     """Clear provider authentication."""
     from hermes_cli.auth import logout_command
     logout_command(args)
+
+
+def cmd_auth(args):
+    """Manage pooled credentials."""
+    from hermes_cli.auth_commands import auth_command
+    auth_command(args)
 
 
 def cmd_status(args):
@@ -2467,10 +2514,14 @@ def cmd_version(args):
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from hermes_cli.banner import check_for_updates
+        from hermes_cli.config import recommended_update_command
         behind = check_for_updates()
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
-            print(f"Update available: {behind} {commits_word} behind — run 'hermes update'")
+            print(
+                f"Update available: {behind} {commits_word} behind — "
+                f"run '{recommended_update_command()}'"
+            )
         elif behind == 0:
             print("Up to date")
     except Exception:
@@ -2821,6 +2872,11 @@ def _invalidate_update_cache():
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
+    from hermes_cli.config import is_managed, managed_error
+
+    if is_managed():
+        managed_error("update Hermes Agent")
+        return
     
     print("⚕ Updating Hermes Agent...")
     print()
@@ -3156,6 +3212,7 @@ def cmd_update(args):
             _gw_service_name = get_service_name()
             existing_pid = get_running_pid()
             has_systemd_service = False
+            has_system_service = False
             has_launchd_service = False
 
             try:
@@ -3167,6 +3224,19 @@ def cmd_update(args):
                 has_systemd_service = check.stdout.strip() == "active"
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+
+            # Also check for a system-level service (hermes gateway install --system).
+            # This covers gateways running under system systemd where --user
+            # fails due to missing D-Bus session.
+            if not has_systemd_service and is_linux():
+                try:
+                    check = subprocess.run(
+                        ["systemctl", "is-active", _gw_service_name],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    has_system_service = check.stdout.strip() == "active"
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
 
             # Check for macOS launchd service
             if is_macos():
@@ -3182,7 +3252,7 @@ def cmd_update(args):
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
 
-            if existing_pid or has_systemd_service or has_launchd_service:
+            if existing_pid or has_systemd_service or has_system_service or has_launchd_service:
                 print()
 
                 # When a service manager is handling the gateway, let it
@@ -3223,6 +3293,21 @@ def cmd_update(args):
                                 print("    hermes gateway restart")
                             else:
                                 print("  Try manually: hermes gateway restart")
+                elif has_system_service:
+                    # System-level service (hermes gateway install --system).
+                    # No D-Bus session needed — systemctl without --user talks
+                    # directly to the system manager over /run/systemd/private.
+                    print("→ Restarting system gateway service...")
+                    restart = subprocess.run(
+                        ["systemctl", "restart", _gw_service_name],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if restart.returncode == 0:
+                        print("✓ Gateway restarted (system service).")
+                    else:
+                        print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                        print("  System services may require root.  Try:")
+                        print(f"    sudo systemctl restart {_gw_service_name}")
                 elif has_launchd_service:
                     # Refresh the plist first (picks up --replace and other
                     # changes from the update we just pulled).
@@ -3286,7 +3371,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     or a known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
+        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile",
@@ -3575,6 +3660,10 @@ Examples:
     hermes --resume <session_id>  Resume a specific session by ID
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
+    hermes auth add <provider>    Add a pooled credential
+    hermes auth list              List pooled credentials
+    hermes auth remove <p> <n>    Remove pooled credential by index
+    hermes auth reset <provider>  Clear exhaustion status for a provider
     hermes model                  Select default model
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
@@ -3892,6 +3981,33 @@ For more help on a command:
         help="Provider to log out from (default: active provider)"
     )
     logout_parser.set_defaults(func=cmd_logout)
+
+    auth_parser = subparsers.add_parser(
+        "auth",
+        help="Manage pooled provider credentials",
+    )
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
+    auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
+    auth_add.add_argument("provider", help="Provider id (for example: anthropic, openai-codex, openrouter)")
+    auth_add.add_argument("--type", dest="auth_type", choices=["oauth", "api-key", "api_key"], help="Credential type to add")
+    auth_add.add_argument("--label", help="Optional display label")
+    auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
+    auth_add.add_argument("--portal-url", help="Nous portal base URL")
+    auth_add.add_argument("--inference-url", help="Nous inference base URL")
+    auth_add.add_argument("--client-id", help="OAuth client id")
+    auth_add.add_argument("--scope", help="OAuth scope override")
+    auth_add.add_argument("--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
+    auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
+    auth_add.add_argument("--insecure", action="store_true", help="Disable TLS verification for OAuth login")
+    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+    auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
+    auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
+    auth_remove = auth_subparsers.add_parser("remove", help="Remove a pooled credential by index")
+    auth_remove.add_argument("provider", help="Provider id")
+    auth_remove.add_argument("index", type=int, help="1-based credential index")
+    auth_reset = auth_subparsers.add_parser("reset", help="Clear exhaustion status for all credentials for a provider")
+    auth_reset.add_argument("provider", help="Provider id")
+    auth_parser.set_defaults(func=cmd_auth)
 
     # =========================================================================
     # status command
@@ -4698,6 +4814,28 @@ For more help on a command:
         help="How to handle skill name conflicts (default: skip)"
     )
     claw_migrate.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts"
+    )
+
+    # claw cleanup
+    claw_cleanup = claw_subparsers.add_parser(
+        "cleanup",
+        aliases=["clean"],
+        help="Archive leftover OpenClaw directories after migration",
+        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation"
+    )
+    claw_cleanup.add_argument(
+        "--source",
+        help="Path to a specific OpenClaw directory to clean up"
+    )
+    claw_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be archived without making changes"
+    )
+    claw_cleanup.add_argument(
         "--yes", "-y",
         action="store_true",
         help="Skip confirmation prompts"

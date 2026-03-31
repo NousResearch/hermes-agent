@@ -744,3 +744,149 @@ class PixelBlendStack:
             result = blend_canvas(result, canvas, mode, opacity)
         return result
 ```
+
+## Text Backdrop (Readability Mask)
+
+When placing readable text over busy multi-grid ASCII backgrounds, the text will blend into the background and become illegible. **Always apply a dark backdrop behind text regions.**
+
+The technique: compute the bounding box of all text glyphs, create a gaussian-blurred dark mask covering that area with padding, and multiply the background by `(1 - mask * darkness)` before rendering text on top.
+
+```python
+from scipy.ndimage import gaussian_filter
+
+def apply_text_backdrop(canvas, glyphs, padding=80, darkness=0.75):
+    """Darken the background behind text for readability.
+    
+    Call AFTER rendering background, BEFORE rendering text.
+    
+    Args:
+        canvas: (VH, VW, 3) uint8 background
+        glyphs: list of {"x": float, "y": float, ...} glyph positions
+        padding: pixel padding around text bounding box
+        darkness: 0.0 = no darkening, 1.0 = fully black
+    Returns:
+        darkened canvas (uint8)
+    """
+    if not glyphs:
+        return canvas
+    xs = [g['x'] for g in glyphs]
+    ys = [g['y'] for g in glyphs]
+    x0 = max(0, int(min(xs)) - padding)
+    y0 = max(0, int(min(ys)) - padding)
+    x1 = min(VW, int(max(xs)) + padding + 50)   # extra for char width
+    y1 = min(VH, int(max(ys)) + padding + 60)   # extra for char height
+    
+    # Soft dark mask with gaussian blur for feathered edges
+    mask = np.zeros((VH, VW), dtype=np.float32)
+    mask[y0:y1, x0:x1] = 1.0
+    mask = gaussian_filter(mask, sigma=padding * 0.6)
+    
+    factor = 1.0 - mask * darkness
+    return (canvas.astype(np.float32) * factor[:, :, np.newaxis]).astype(np.uint8)
+```
+
+### Usage in render pipeline
+
+Insert between background rendering and text rendering:
+
+```python
+# 1. Render background (multi-grid ASCII effects)
+bg = render_background(cfg, t)
+
+# 2. Darken behind text region
+bg = apply_text_backdrop(bg, frame_glyphs, padding=80, darkness=0.75)
+
+# 3. Render text on top (now readable against dark backdrop)
+bg = text_renderer.render(bg, frame_glyphs, color=(255, 255, 255))
+```
+
+Combine with **reverse vignette** (see shaders.md) for scenes where text is always centered — the reverse vignette provides a persistent center-dark zone, while the backdrop handles per-frame glyph positions.
+
+## External Layout Oracle Pattern
+
+For text-heavy videos where text needs to dynamically reflow around obstacles (shapes, icons, other text), use an external layout engine to pre-compute glyph positions and feed them into the Python renderer via JSON.
+
+### Architecture
+
+```
+Layout Engine (browser/Node.js)  →  layouts.json  →  Python ASCII Renderer
+         ↑                                                    ↑
+   Computes per-frame                               Reads glyph positions,
+   glyph (x,y) positions                            renders as ASCII chars
+   with obstacle-aware reflow                        with full effect pipeline
+```
+
+### JSON interchange format
+
+```json
+{
+  "meta": {
+    "canvas_width": 1080, "canvas_height": 1080,
+    "fps": 24, "total_frames": 1248,
+    "fonts": {
+      "body": {"charW": 12.04, "charH": 24, "fontSize": 20},
+      "hero": {"charW": 24.08, "charH": 48, "fontSize": 40}
+    }
+  },
+  "scenes": [
+    {
+      "id": "scene_name",
+      "start_frame": 0, "end_frame": 96,
+      "frames": {
+        "0": {
+          "glyphs": [
+            {"char": "H", "x": 287.1, "y": 400.0, "alpha": 1.0},
+            {"char": "e", "x": 311.2, "y": 400.0, "alpha": 1.0}
+          ],
+          "obstacles": [
+            {"type": "circle", "cx": 540, "cy": 540, "r": 80},
+            {"type": "rect", "x": 300, "y": 500, "w": 120, "h": 80}
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+### When to use
+
+- Text that dynamically reflows around moving objects
+- Per-glyph animation (reveal, scatter, physics)
+- Variable typography that needs precise measurement
+- Any case where Python's Pillow text layout is insufficient
+
+### When NOT to use
+
+- Static centered text (just use PIL `draw.text()` directly)
+- Text that only fades in/out without spatial animation
+- Simple typewriter effects (handle in Python with a character counter)
+
+### Running the oracle
+
+Use Playwright to run the layout engine in a headless browser:
+
+```javascript
+// extract.mjs
+import { chromium } from 'playwright';
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage();
+await page.goto(`file://${oraclePath}`);
+await page.waitForFunction(() => window.__ORACLE_DONE__ === true, null, { timeout: 60000 });
+const result = await page.evaluate(() => window.__ORACLE_RESULT__);
+writeFileSync('layouts.json', JSON.stringify(result));
+await browser.close();
+```
+
+### Consuming in Python
+
+```python
+# In the renderer, map pixel positions to the canvas:
+for glyph in frame_data['glyphs']:
+    char, px, py = glyph['char'], glyph['x'], glyph['y']
+    alpha = glyph.get('alpha', 1.0)
+    # Render using PIL draw.text() at exact pixel position
+    draw.text((px, py), char, fill=(int(255*alpha),)*3, font=font)
+```
+
+Obstacles from the JSON can also be rendered as glowing ASCII shapes (circles, rectangles) to visualize the reflow zones.

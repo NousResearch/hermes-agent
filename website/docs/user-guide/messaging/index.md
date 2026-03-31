@@ -10,6 +10,26 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Ho
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
+## Platform Comparison
+
+| Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
+|----------|:-----:|:------:|:-----:|:-------:|:---------:|:------:|:---------:|
+| Telegram | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
+| Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
+| SMS | — | — | — | — | — | — | — |
+| Email | — | ✅ | ✅ | ✅ | — | — | — |
+| Home Assistant | — | — | — | — | — | — | — |
+| Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Matrix | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| DingTalk | — | — | — | — | — | ✅ | ✅ |
+| Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+
+**Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
+
 ## Architecture
 
 ```mermaid

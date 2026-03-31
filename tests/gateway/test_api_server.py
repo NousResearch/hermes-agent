@@ -428,6 +428,81 @@ class TestChatCompletionsEndpoint:
                 assert " about it..." in body
 
     @pytest.mark.asyncio
+    async def test_stream_includes_tool_progress(self, adapter):
+        """tool_progress_callback fires → progress appears in the SSE stream."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                # Simulate tool progress before streaming content
+                if tp_cb:
+                    tp_cb("terminal", "ls -la", {"command": "ls -la"})
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Here are the files.")
+                return (
+                    {"final_response": "Here are the files.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "list files"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # Tool progress message must appear in the stream
+                assert "ls -la" in body
+                # Final content must also be present
+                assert "Here are the files." in body
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_progress_skips_internal_events(self, adapter):
+        """Internal events (name starting with _) are not streamed."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                if tp_cb:
+                    tp_cb("_thinking", "some internal state", {})
+                    tp_cb("web_search", "Python docs", {"query": "Python docs"})
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Found it.")
+                return (
+                    {"final_response": "Found it.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "search"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                # Internal _thinking event should NOT appear
+                assert "some internal state" not in body
+                # Real tool progress should appear
+                assert "Python docs" in body
+
+    @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

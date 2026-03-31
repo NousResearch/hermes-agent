@@ -14,6 +14,8 @@ concurrency:
 
 jobs:
   build-and-push:
+    # Only run on the upstream repository, not on forks
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

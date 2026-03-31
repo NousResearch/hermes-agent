@@ -1576,3 +1576,110 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+
+# ---------------------------------------------------------------------------
+# X-Hermes-Session-Id header (session continuity)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdHeader:
+    @pytest.mark.asyncio
+    async def test_new_session_response_includes_session_id_header(self, adapter):
+        """Without X-Hermes-Session-Id, a new session is created and returned in the header."""
+        mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Session-Id") is not None
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_is_used_and_echoed(self, adapter):
+        """When X-Hermes-Session-Id is provided, it's passed to the agent and echoed in the response."""
+        mock_result = {"final_response": "Continuing!", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+                 patch("hermes_state.SessionDB") as mock_db_cls:
+                mock_db = MagicMock()
+                mock_db.get_messages_as_conversation.return_value = [
+                    {"role": "user", "content": "previous message"},
+                    {"role": "assistant", "content": "previous reply"},
+                ]
+                mock_db_cls.return_value = mock_db
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "my-session-123"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == "my-session-123"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_loads_history_from_db(self, adapter):
+        """When X-Hermes-Session-Id is provided, history comes from SessionDB not request body."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        db_history = [
+            {"role": "user", "content": "stored message 1"},
+            {"role": "assistant", "content": "stored reply 1"},
+        ]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+                 patch("hermes_state.SessionDB") as mock_db_cls:
+                mock_db = MagicMock()
+                mock_db.get_messages_as_conversation.return_value = db_history
+                mock_db_cls.return_value = mock_db
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "existing-session"},
+                    # Request body has different history — should be ignored
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "old msg from client"},
+                            {"role": "assistant", "content": "old reply from client"},
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            # History must come from DB, not from the request body
+            assert call_kwargs["conversation_history"] == db_history
+            assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_db_failure_falls_back_to_empty_history(self, adapter):
+        """If SessionDB raises, history falls back to empty and request still succeeds."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+                 patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "some-session"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == []
+            assert call_kwargs["session_id"] == "some-session"

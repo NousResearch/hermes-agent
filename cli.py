@@ -10466,6 +10466,12 @@ class HermesCLI:
                 event.app.invalidate()
                 return
 
+        @kb.add('c-l')
+        def handle_ctrl_l(event):
+            """Handle Ctrl+L - clear screen and force full redraw."""
+            event.app.renderer.clear()
+            event.app.invalidate()
+
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""

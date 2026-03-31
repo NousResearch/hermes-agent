@@ -136,6 +136,9 @@ _file_ops_cache: dict = {}
 #                   Used to skip re-reads of unchanged files.  Reset on
 #                   context compression (the original content is summarised
 #                   away so the model needs the full content again).
+#   "file_mtimes":  dict mapping resolved_path → mtime float at last read.
+#                   Used by write_file and patch to detect when a file was
+#                   modified externally between the agent's read and write.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
@@ -391,14 +394,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["consecutive"] = 1
             count = task_data["consecutive"]
 
-            # Store dedup entry (mtime at read time).
-            # Writes/patches will naturally change mtime, so subsequent
-            # dedup checks after edits will see a different mtime and
-            # return the full content — no special handling needed.
+            # Store mtime at read time for two purposes:
+            # 1. Dedup: skip identical re-reads of unchanged files.
+            # 2. Staleness: warn on write/patch if the file changed since
+            #    the agent last read it (external edit, concurrent agent, etc.).
             try:
-                task_data["dedup"][dedup_key] = os.path.getmtime(resolved_str)
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data["dedup"][dedup_key] = _mtime_now
+                task_data.setdefault("file_mtimes", {})[resolved_str] = _mtime_now
             except OSError:
-                pass  # Can't stat — skip dedup for this entry
+                pass  # Can't stat — skip tracking for this entry
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
@@ -495,15 +500,50 @@ def notify_other_tool_call(task_id: str = "default"):
             task_data["consecutive"] = 0
 
 
+def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+    """Check whether a file was modified since the agent last read it.
+
+    Returns a warning string if the file is stale (mtime changed since
+    the last read_file call for this task), or None if the file is fresh
+    or was never read.  Does not block — the write still proceeds.
+    """
+    try:
+        resolved = str(Path(filepath).expanduser().resolve())
+    except (OSError, ValueError):
+        return None
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if not task_data:
+            return None
+        read_mtime = task_data.get("file_mtimes", {}).get(resolved)
+    if read_mtime is None:
+        return None  # File was never read — nothing to compare against
+    try:
+        current_mtime = os.path.getmtime(resolved)
+    except OSError:
+        return None  # Can't stat — file may have been deleted, let write handle it
+    if current_mtime != read_mtime:
+        return (
+            f"Warning: {filepath} was modified since you last read it "
+            "(external edit or concurrent agent). The content you read may be "
+            "stale. Consider re-reading the file to verify before writing."
+        )
+    return None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return json.dumps({"error": sensitive_err}, ensure_ascii=False)
     try:
+        stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+        if stale_warning:
+            result_dict["_warning"] = stale_warning
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
@@ -529,6 +569,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if sensitive_err:
             return json.dumps({"error": sensitive_err}, ensure_ascii=False)
     try:
+        # Check staleness for all files this patch will touch.
+        stale_warnings = []
+        for _p in _paths_to_check:
+            _sw = _check_file_staleness(_p, task_id)
+            if _sw:
+                stale_warnings.append(_sw)
+
         file_ops = _get_file_ops(task_id)
         
         if mode == "replace":
@@ -545,6 +592,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
         result_dict = result.to_dict()
+        if stale_warnings:
+            result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.

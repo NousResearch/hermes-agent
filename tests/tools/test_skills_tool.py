@@ -119,9 +119,9 @@ class TestRequiredEnvironmentVariablesNormalization:
         frontmatter = {
             "required_environment_variables": [
                 {
-                    "name": "TENOR_API_KEY",
-                    "prompt": "Tenor API key",
-                    "help": "Get a key from https://developers.google.com/tenor",
+                    "name": "GIPHY_API_KEY",
+                    "prompt": "Giphy API key",
+                    "help": "Get a free key from https://developers.giphy.com",
                     "required_for": "full functionality",
                 }
             ]
@@ -131,22 +131,22 @@ class TestRequiredEnvironmentVariablesNormalization:
 
         assert result == [
             {
-                "name": "TENOR_API_KEY",
-                "prompt": "Tenor API key",
-                "help": "Get a key from https://developers.google.com/tenor",
+                "name": "GIPHY_API_KEY",
+                "prompt": "Giphy API key",
+                "help": "Get a free key from https://developers.giphy.com",
                 "required_for": "full functionality",
             }
         ]
 
     def test_normalizes_legacy_prerequisites_env_vars(self):
-        frontmatter = {"prerequisites": {"env_vars": ["TENOR_API_KEY"]}}
+        frontmatter = {"prerequisites": {"env_vars": ["GIPHY_API_KEY"]}}
 
         result = _get_required_environment_variables(frontmatter)
 
         assert result == [
             {
-                "name": "TENOR_API_KEY",
-                "prompt": "Enter value for TENOR_API_KEY",
+                "name": "GIPHY_API_KEY",
+                "prompt": "Enter value for GIPHY_API_KEY",
             }
         ]
 
@@ -406,7 +406,7 @@ class TestSkillView:
 
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
         calls = []
 
         def fake_secret_callback(var_name, prompt, metadata=None):
@@ -438,9 +438,9 @@ class TestSkillViewSecureSetupOnLoad:
                 "gif-search",
                 frontmatter_extra=(
                     "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
-                    "    help: Get a key from https://developers.google.com/tenor\n"
+                    "  - name: GIPHY_API_KEY\n"
+                    "    prompt: Giphy API key\n"
+                    "    help: Get a free key from https://developers.giphy.com\n"
                     "    required_for: full functionality\n"
                 ),
             )
@@ -451,20 +451,20 @@ class TestSkillViewSecureSetupOnLoad:
         assert result["name"] == "gif-search"
         assert calls == [
             {
-                "var_name": "TENOR_API_KEY",
-                "prompt": "Tenor API key",
+                "var_name": "GIPHY_API_KEY",
+                "prompt": "Giphy API key",
                 "metadata": {
                     "skill_name": "gif-search",
-                    "help": "Get a key from https://developers.google.com/tenor",
+                    "help": "Get a free key from https://developers.giphy.com",
                     "required_for": "full functionality",
                 },
             }
         ]
-        assert result["required_environment_variables"][0]["name"] == "TENOR_API_KEY"
+        assert result["required_environment_variables"][0]["name"] == "GIPHY_API_KEY"
         assert result["setup_skipped"] is False
 
     def test_allows_skipping_secure_setup_and_still_loads(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
 
         def fake_secret_callback(var_name, prompt, metadata=None):
             return {
@@ -487,8 +487,8 @@ class TestSkillViewSecureSetupOnLoad:
                 "gif-search",
                 frontmatter_extra=(
                     "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
+                    "  - name: GIPHY_API_KEY\n"
+                    "    prompt: Giphy API key\n"
                 ),
             )
             raw = skill_view("gif-search")
@@ -503,7 +503,7 @@ class TestSkillViewSecureSetupOnLoad:
         tmp_path,
         monkeypatch,
     ):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
         called = {"value": False}
 
         def fake_secret_callback(var_name, prompt, metadata=None):
@@ -531,8 +531,8 @@ class TestSkillViewSecureSetupOnLoad:
                     "gif-search",
                     frontmatter_extra=(
                         "required_environment_variables:\n"
-                        "  - name: TENOR_API_KEY\n"
-                        "    prompt: Tenor API key\n"
+                        "  - name: GIPHY_API_KEY\n"
+                        "    prompt: Giphy API key\n"
                     ),
                 )
                 raw = skill_view("gif-search")
@@ -908,7 +908,7 @@ class TestSkillViewPrerequisites:
         self, tmp_path, monkeypatch, backend
     ):
         monkeypatch.setenv("TERMINAL_ENV", backend)
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
         calls = []
 
         def fake_secret_callback(var_name, prompt, metadata=None):
@@ -934,8 +934,8 @@ class TestSkillViewPrerequisites:
                 "gif-search",
                 frontmatter_extra=(
                     "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
+                    "  - name: GIPHY_API_KEY\n"
+                    "    prompt: Giphy API key\n"
                 ),
             )
             raw = skill_view("gif-search")
@@ -1006,7 +1006,7 @@ Do the legacy thing.
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("TERMINAL_ENV", "local")
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
 
         def fake_secret_callback(var_name, prompt, metadata=None):
             from hermes_cli.config import save_env_value
@@ -1032,13 +1032,13 @@ Do the legacy thing.
                 "gif-search",
                 frontmatter_extra=(
                     "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
+                    "  - name: GIPHY_API_KEY\n"
+                    "    prompt: Giphy API key\n"
                 ),
             )
             from hermes_cli.config import save_env_value
 
-            save_env_value("TENOR_API_KEY", "")
+            save_env_value("GIPHY_API_KEY", "")
             raw = skill_view("gif-search")
 
         result = json.loads(raw)

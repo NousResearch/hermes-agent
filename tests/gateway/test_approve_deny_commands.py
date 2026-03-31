@@ -4,6 +4,7 @@ Verifies that dangerous command approvals require explicit /approve or /deny
 slash commands, not bare "yes"/"no" text matching.
 """
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,6 +50,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._background_tasks = set()
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -78,19 +80,31 @@ class TestApproveCommand:
 
     @pytest.mark.asyncio
     async def test_approve_executes_pending_command(self):
-        """Basic /approve executes the pending command."""
+        """Basic /approve executes the pending command and sends feedback."""
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
         runner._pending_approvals[session_key] = _make_pending_approval()
 
         event = _make_event("/approve")
-        with patch("tools.terminal_tool.terminal_tool", return_value="done") as mock_term:
+        with (
+            patch("tools.terminal_tool.terminal_tool", return_value="done") as mock_term,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value="agent continued"),
+        ):
             result = await runner._handle_approve_command(event)
+            # Yield to let the background continuation task run.
+            # This works because mocks return immediately (no real await points).
+            await asyncio.sleep(0)
 
-        assert "✅ Command approved and executed" in result
+        # Returns None because feedback is sent directly via adapter
+        assert result is None
         mock_term.assert_called_once_with(command="sudo rm -rf /tmp/test", force=True)
         assert session_key not in runner._pending_approvals
+
+        # Immediate feedback sent via adapter
+        adapter = runner.adapters[Platform.TELEGRAM]
+        sent_text = adapter.send.call_args_list[0][0][1]
+        assert "Command approved and executed" in sent_text
 
     @pytest.mark.asyncio
     async def test_approve_session_remembers_pattern(self):
@@ -104,11 +118,20 @@ class TestApproveCommand:
         with (
             patch("tools.terminal_tool.terminal_tool", return_value="done"),
             patch("tools.approval.approve_session") as mock_session,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value=None),
         ):
             result = await runner._handle_approve_command(event)
+            # Yield to let the background continuation task run.
+            # This works because mocks return immediately (no real await points).
+            await asyncio.sleep(0)
 
-        assert "pattern approved for this session" in result
+        assert result is None
         mock_session.assert_called_once_with(session_key, "sudo")
+
+        # Verify scope message in adapter feedback
+        adapter = runner.adapters[Platform.TELEGRAM]
+        sent_text = adapter.send.call_args_list[0][0][1]
+        assert "pattern approved for this session" in sent_text
 
     @pytest.mark.asyncio
     async def test_approve_always_approves_permanently(self):
@@ -122,11 +145,20 @@ class TestApproveCommand:
         with (
             patch("tools.terminal_tool.terminal_tool", return_value="done"),
             patch("tools.approval.approve_permanent") as mock_perm,
+            patch.object(runner, "_handle_message", new_callable=AsyncMock, return_value=None),
         ):
             result = await runner._handle_approve_command(event)
+            # Yield to let the background continuation task run.
+            # This works because mocks return immediately (no real await points).
+            await asyncio.sleep(0)
 
-        assert "pattern approved permanently" in result
+        assert result is None
         mock_perm.assert_called_once_with("sudo")
+
+        # Verify scope message in adapter feedback
+        adapter = runner.adapters[Platform.TELEGRAM]
+        sent_text = adapter.send.call_args_list[0][0][1]
+        assert "pattern approved permanently" in sent_text
 
     @pytest.mark.asyncio
     async def test_approve_no_pending(self):
@@ -151,6 +183,40 @@ class TestApproveCommand:
 
         assert "expired" in result
         assert session_key not in runner._pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_approve_reinvokes_agent_with_result(self):
+        """After executing, /approve re-invokes the agent with command output."""
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        runner._pending_approvals[session_key] = _make_pending_approval()
+
+        event = _make_event("/approve")
+        mock_handle = AsyncMock(return_value="I continued the task.")
+
+        with (
+            patch("tools.terminal_tool.terminal_tool", return_value="file deleted"),
+            patch.object(runner, "_handle_message", mock_handle),
+        ):
+            await runner._handle_approve_command(event)
+            # Yield to let the background continuation task run.
+            # This works because mocks return immediately (no real await points).
+            await asyncio.sleep(0)
+
+        # Agent was re-invoked via _handle_message with a synthetic event
+        mock_handle.assert_called_once()
+        synthetic_event = mock_handle.call_args[0][0]
+        assert "approved" in synthetic_event.text.lower()
+        assert "file deleted" in synthetic_event.text
+        assert "sudo rm -rf /tmp/test" in synthetic_event.text
+
+        # The continuation response was sent to the user
+        adapter = runner.adapters[Platform.TELEGRAM]
+        # First call: immediate feedback, second call: agent continuation
+        assert adapter.send.call_count == 2
+        continuation_response = adapter.send.call_args_list[1][0][1]
+        assert continuation_response == "I continued the task."
 
 
 # ------------------------------------------------------------------

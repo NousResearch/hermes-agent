@@ -153,6 +153,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TELEGRAM_ALLOWED_USERS` | Comma-separated user IDs allowed to use the bot |
 | `TELEGRAM_HOME_CHANNEL` | Default Telegram chat/channel for cron delivery |
 | `TELEGRAM_HOME_CHANNEL_NAME` | Display name for the Telegram home channel |
+| `TELEGRAM_WEBHOOK_URL` | Public HTTPS URL for webhook mode (enables webhook instead of polling) |
+| `TELEGRAM_WEBHOOK_PORT` | Local listen port for webhook server (default: `8443`) |
+| `TELEGRAM_WEBHOOK_SECRET` | Secret token for verifying updates come from Telegram |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_HOME_CHANNEL` | Default Discord channel for cron delivery |

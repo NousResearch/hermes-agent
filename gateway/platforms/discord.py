@@ -683,14 +683,22 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[%s] remove_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no")
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
+        if not self._reactions_enabled():
+            return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
             await self._add_reaction(message, "👀")
 
     async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
             await self._remove_reaction(message, "👀")

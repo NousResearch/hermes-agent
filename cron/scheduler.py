@@ -402,8 +402,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except Exception as exc:
-            message = format_runtime_provider_error(exc)
-            raise RuntimeError(message) from exc
+            # If the explicitly configured provider fails (e.g. missing API key),
+            # fall back to auto-detection so the cron job can still run.
+            logger.warning(
+                "Job '%s': provider resolution failed (%s), falling back to auto-detect",
+                job_id, exc,
+            )
+            try:
+                runtime = resolve_runtime_provider(requested="auto")
+            except Exception as fallback_exc:
+                message = format_runtime_provider_error(fallback_exc)
+                raise RuntimeError(message) from fallback_exc
 
         from agent.smart_model_routing import resolve_turn_route
         turn_route = resolve_turn_route(

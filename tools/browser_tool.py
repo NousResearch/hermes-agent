@@ -237,6 +237,8 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
+_allow_private_urls_resolved = False
+_allow_private_urls: Optional[bool] = None
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -263,6 +265,31 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
     return _cached_cloud_provider
+
+
+def _allow_private_urls() -> bool:
+    """Return whether the browser is allowed to navigate to private/internal addresses.
+
+    Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
+    for the process lifetime.  Defaults to ``False`` (SSRF protection active).
+    """
+    global _allow_private_urls, _allow_private_urls_resolved
+    if _allow_private_urls_resolved:
+        return _allow_private_urls
+
+    _allow_private_urls_resolved = True
+    _allow_private_urls = False  # safe default
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            _allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+    except Exception as e:
+        logger.debug("Could not read allow_private_urls from config: %s", e)
+    return _allow_private_urls
 
 
 def _socket_safe_tmpdir() -> str:
@@ -1038,8 +1065,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
-    # SSRF protection — block private/internal addresses before navigating
-    if not _is_safe_url(url):
+    # SSRF protection — block private/internal addresses before navigating.
+    # Can be opted out via ``browser.allow_private_urls`` in config for local
+    # development or LAN access use cases.
+    if not _allow_private_urls() and not _is_safe_url(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a private or internal address",
@@ -1081,7 +1110,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
-        if final_url and final_url != url and not _is_safe_url(final_url):
+        if not _allow_private_urls() and final_url and final_url != url and not _is_safe_url(final_url):
             # Navigate away to a blank page to prevent snapshot leaks
             _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
             return json.dumps({

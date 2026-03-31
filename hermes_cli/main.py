@@ -4712,6 +4712,28 @@ For more help on a command:
         help="Skip confirmation prompts"
     )
 
+    # claw cleanup
+    claw_cleanup = claw_subparsers.add_parser(
+        "cleanup",
+        aliases=["clean"],
+        help="Archive leftover OpenClaw directories after migration",
+        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation"
+    )
+    claw_cleanup.add_argument(
+        "--source",
+        help="Path to a specific OpenClaw directory to clean up"
+    )
+    claw_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be archived without making changes"
+    )
+    claw_cleanup.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts"
+    )
+
     def cmd_claw(args):
         from hermes_cli.claw import claw_command
         claw_command(args)

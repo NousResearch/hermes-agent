@@ -1048,7 +1048,9 @@ def _extract_relevant_content(
         if model:
             call_kwargs["model"] = model
         response = call_llm(**call_kwargs)
-        return (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
+        extracted = (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
+        # Redact any secrets the auxiliary LLM may have echoed back.
+        return redact_sensitive_text(extracted)
     except Exception:
         return _truncate_snapshot(snapshot_text)
 
@@ -1740,6 +1742,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         response = call_llm(**call_kwargs)
         
         analysis = (response.choices[0].message.content or "").strip()
+        # Redact secrets the vision LLM may have read from the screenshot.
+        from agent.redact import redact_sensitive_text
+        analysis = redact_sensitive_text(analysis)
         response_data = {
             "success": True,
             "analysis": analysis or "Vision analysis returned no content.",

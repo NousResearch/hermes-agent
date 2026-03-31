@@ -254,7 +254,7 @@ custom_providers:
         context_length: 32768
 ```
 
-See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for how auto-detection works and all override options.
+See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 
 ---
 

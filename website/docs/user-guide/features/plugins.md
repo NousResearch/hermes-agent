@@ -1,5 +1,8 @@
 ---
-sidebar_position: 20
+sidebar_position: 11
+sidebar_label: "Plugins"
+title: "Plugins"
+description: "Extend Hermes with custom tools, hooks, and integrations via the plugin system"
 ---
 
 # Plugins

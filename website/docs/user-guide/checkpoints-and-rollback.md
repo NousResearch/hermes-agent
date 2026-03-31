@@ -1,5 +1,6 @@
 ---
 sidebar_position: 8
+sidebar_label: "Checkpoints & Rollback"
 title: "Checkpoints and /rollback"
 description: "Filesystem safety nets for destructive operations using shadow git repos and automatic snapshots"
 ---

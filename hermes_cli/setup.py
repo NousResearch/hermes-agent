@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from hermes_constants import get_optional_skills_dir
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -3121,8 +3123,7 @@ def _skip_configured_section(
 
 
 _OPENCLAW_SCRIPT = (
-    PROJECT_ROOT
-    / "optional-skills"
+    get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
     / "migration"
     / "openclaw-migration"
     / "scripts"

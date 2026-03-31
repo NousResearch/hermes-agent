@@ -265,10 +265,11 @@ def cmd_install(identifier: str, force: bool = False) -> None:
                 )
                 sys.exit(1)
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                from hermes_cli.config import recommended_update_command
                 console.print(
                     f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
                     f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                    f"Run [bold]hermes update[/bold] to get a newer installer."
+                    f"Run [bold]{recommended_update_command()}[/bold] to get a newer installer."
                 )
                 sys.exit(1)
 

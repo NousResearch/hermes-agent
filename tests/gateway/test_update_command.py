@@ -46,6 +46,17 @@ class TestHandleUpdateCommand:
     """Tests for GatewayRunner._handle_update_command."""
 
     @pytest.mark.asyncio
+    async def test_managed_install_returns_package_manager_guidance(self, monkeypatch):
+        runner = _make_runner()
+        event = _make_event()
+        monkeypatch.setenv("HERMES_MANAGED", "homebrew")
+
+        result = await runner._handle_update_command(event)
+
+        assert "managed by Homebrew" in result
+        assert "brew upgrade hermes-agent" in result
+
+    @pytest.mark.asyncio
     async def test_no_git_directory(self, tmp_path):
         """Returns an error when .git does not exist."""
         runner = _make_runner()

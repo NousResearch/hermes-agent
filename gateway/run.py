@@ -325,9 +325,9 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                 )
 
         # Check optional skills (shipped with repo but not installed)
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home, get_optional_skills_dir
         repo_root = Path(__file__).resolve().parent.parent
-        optional_dir = repo_root / "optional-skills"
+        optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
                 name = skill_md.parent.name.lower().replace("_", "-")
@@ -4695,6 +4695,10 @@ class GatewayRunner:
         import shutil
         import subprocess
         from datetime import datetime
+        from hermes_cli.config import is_managed, format_managed_message
+
+        if is_managed():
+            return f"✗ {format_managed_message('update Hermes Agent')}"
 
         project_root = Path(__file__).parent.parent.resolve()
         git_dir = project_root / '.git'

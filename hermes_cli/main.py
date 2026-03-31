@@ -2467,10 +2467,14 @@ def cmd_version(args):
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from hermes_cli.banner import check_for_updates
+        from hermes_cli.config import recommended_update_command
         behind = check_for_updates()
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
-            print(f"Update available: {behind} {commits_word} behind — run 'hermes update'")
+            print(
+                f"Update available: {behind} {commits_word} behind — "
+                f"run '{recommended_update_command()}'"
+            )
         elif behind == 0:
             print("Up to date")
     except Exception:
@@ -2821,6 +2825,11 @@ def _invalidate_update_cache():
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
+    from hermes_cli.config import is_managed, managed_error
+
+    if is_managed():
+        managed_error("update Hermes Agent")
+        return
     
     print("⚕ Updating Hermes Agent...")
     print()

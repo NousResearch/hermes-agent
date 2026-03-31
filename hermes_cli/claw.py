@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from hermes_cli.config import get_hermes_home, get_config_path, load_config, save_config
+from hermes_constants import get_optional_skills_dir
 from hermes_cli.setup import (
     Colors,
     color,
@@ -27,8 +28,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 _OPENCLAW_SCRIPT = (
-    PROJECT_ROOT
-    / "optional-skills"
+    get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
     / "migration"
     / "openclaw-migration"
     / "scripts"

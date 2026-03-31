@@ -1373,6 +1373,36 @@ def _expand_env_vars(obj):
     return obj
 
 
+def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Move stale root-level provider/base_url into model section.
+
+    Some users (or older code) placed ``provider:`` and ``base_url:`` at the
+    config root instead of inside ``model:``.  These root-level keys are only
+    used as a fallback when the corresponding ``model.*`` key is empty — they
+    never override an existing ``model.provider`` or ``model.base_url``.
+    After migration the root-level keys are removed so they can't cause
+    confusion on subsequent loads.
+    """
+    # Only act if there are root-level keys to migrate
+    has_root = any(config.get(k) for k in ("provider", "base_url"))
+    if not has_root:
+        return config
+
+    config = dict(config)
+    model = config.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        config["model"] = model
+
+    for key in ("provider", "base_url"):
+        root_val = config.get(key)
+        if root_val and not model.get(key):
+            model[key] = root_val
+        config.pop(key, None)
+
+    return config
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -1414,7 +1444,7 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _expand_env_vars(_normalize_max_turns_config(config))
+    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
 
 
 _SECURITY_COMMENT = """
@@ -1521,7 +1551,7 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
-    normalized = _normalize_max_turns_config(config)
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.

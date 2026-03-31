@@ -263,17 +263,20 @@ def load_cli_config() -> Dict[str, Any]:
                     # Old format: model is a dict with default/base_url
                     defaults["model"].update(file_config["model"])
 
-            # Root-level provider and base_url override model config.
-            # Users may write:
-            #   model: kimi-k2.5:cloud
-            #   provider: custom
-            #   base_url: http://localhost:11434/v1
-            # These root-level keys must be merged into defaults["model"] so
-            # they are picked up by CLI provider resolution.
-            if "provider" in file_config and file_config["provider"]:
-                defaults["model"]["provider"] = file_config["provider"]
-            if "base_url" in file_config and file_config["base_url"]:
-                defaults["model"]["base_url"] = file_config["base_url"]
+            # Legacy root-level provider/base_url fallback.
+            # Some users (or old code) put provider: / base_url: at the
+            # config root instead of inside the model: section.  These are
+            # only used as a FALLBACK when model.provider / model.base_url
+            # is not already set — never as an override.  The canonical
+            # location is model.provider (written by `hermes model`).
+            if not defaults["model"].get("provider"):
+                root_provider = file_config.get("provider")
+                if root_provider:
+                    defaults["model"]["provider"] = root_provider
+            if not defaults["model"].get("base_url"):
+                root_base_url = file_config.get("base_url")
+                if root_base_url:
+                    defaults["model"]["base_url"] = root_base_url
             
             # Deep merge file_config into defaults.
             # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)

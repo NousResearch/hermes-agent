@@ -15,7 +15,7 @@ Setup::
     npm install && npm start   # downloads Camoufox (~300MB) on first run
 
     # Option 2: Docker
-    docker run -p 9377:9377 jo-inc/camofox-browser
+    docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
 
 Then set ``CAMOFOX_URL=http://localhost:9377`` in ``~/.hermes/.env``.
 """
@@ -184,7 +184,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             "success": False,
             "error": f"Cannot connect to Camofox at {get_camofox_url()}. "
                      "Is the server running? Start with: npm start (in camofox-browser dir) "
-                     "or: docker run -p 9377:9377 jo-inc/camofox-browser",
+                     "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser",
         })
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})

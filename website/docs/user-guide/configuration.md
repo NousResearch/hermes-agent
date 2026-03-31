@@ -478,6 +478,18 @@ If auto-compression is disabled, the warning tells you context may be truncated 
 
 Context pressure is automatic — no configuration needed. It fires purely as a user-facing notification and does not modify the message stream or inject anything into the model's context.
 
+## Credential Pool Strategies
+
+When you have multiple API keys or OAuth tokens for the same provider, configure the rotation strategy:
+
+```yaml
+credential_pool_strategies:
+  openrouter: round_robin    # cycle through keys evenly
+  anthropic: least_used      # always pick the least-used key
+```
+
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
+
 ## Auxiliary Models
 
 Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via auto-detection — you don't need to configure anything.

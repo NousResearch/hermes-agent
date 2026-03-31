@@ -54,6 +54,32 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
     config["model"] = model_cfg
 
 
+def _get_credential_pool_strategies(config: Dict[str, Any]) -> Dict[str, str]:
+    strategies = config.get("credential_pool_strategies")
+    return dict(strategies) if isinstance(strategies, dict) else {}
+
+
+def _set_credential_pool_strategy(config: Dict[str, Any], provider: str, strategy: str) -> None:
+    if not provider:
+        return
+    strategies = _get_credential_pool_strategies(config)
+    strategies[provider] = strategy
+    config["credential_pool_strategies"] = strategies
+
+
+def _supports_same_provider_pool_setup(provider: str) -> bool:
+    if not provider or provider == "custom":
+        return False
+    if provider == "openrouter":
+        return True
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if not pconfig:
+        return False
+    return pconfig.auth_type in {"api_key", "oauth_device_code"}
+
+
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
@@ -848,6 +874,85 @@ def setup_model_provider(config: dict):
     if isinstance(_m, dict):
         selected_provider = _m.get("provider")
 
+
+    # ── Same-provider fallback & rotation setup ──
+    if _supports_same_provider_pool_setup(selected_provider):
+        try:
+            from types import SimpleNamespace
+            from agent.credential_pool import load_pool
+            from hermes_cli.auth_commands import auth_add_command
+
+            pool = load_pool(selected_provider)
+            entries = pool.entries()
+            entry_count = len(entries)
+            manual_count = sum(1 for entry in entries if str(getattr(entry, "source", "")).startswith("manual"))
+            auto_count = entry_count - manual_count
+            print()
+            print_header("Same-Provider Fallback & Rotation")
+            print_info(
+                "Hermes can keep multiple credentials for one provider and rotate between"
+            )
+            print_info(
+                "them when a credential is exhausted or rate-limited. This preserves"
+            )
+            print_info(
+                "your primary provider while reducing interruptions from quota issues."
+            )
+            print()
+            if auto_count > 0:
+                print_info(
+                    f"Current pooled credentials for {selected_provider}: {entry_count} "
+                    f"({manual_count} manual, {auto_count} auto-detected from env/shared auth)"
+                )
+            else:
+                print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
+
+            while prompt_yes_no("Add another credential for same-provider fallback?", False):
+                auth_add_command(
+                    SimpleNamespace(
+                        provider=selected_provider,
+                        auth_type="",
+                        label=None,
+                        api_key=None,
+                        portal_url=None,
+                        inference_url=None,
+                        client_id=None,
+                        scope=None,
+                        no_browser=False,
+                        timeout=15.0,
+                        insecure=False,
+                        ca_bundle=None,
+                        min_key_ttl_seconds=5 * 60,
+                    )
+                )
+                pool = load_pool(selected_provider)
+                entry_count = len(pool.entries())
+                print_info(f"Provider pool now has {entry_count} credential(s).")
+
+            if entry_count > 1:
+                strategy_labels = [
+                    "Fill-first / sticky — keep using the first healthy credential until it is exhausted",
+                    "Round robin — rotate to the next healthy credential after each selection",
+                    "Random — pick a random healthy credential each time",
+                ]
+                current_strategy = _get_credential_pool_strategies(config).get(selected_provider, "fill_first")
+                default_strategy_idx = {
+                    "fill_first": 0,
+                    "round_robin": 1,
+                    "random": 2,
+                }.get(current_strategy, 0)
+                strategy_idx = prompt_choice(
+                    "Select same-provider rotation strategy:",
+                    strategy_labels,
+                    default_strategy_idx,
+                )
+                strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
+                _set_credential_pool_strategy(config, selected_provider, strategy_value)
+                print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
+            else:
+                _set_credential_pool_strategy(config, selected_provider, "fill_first")
+        except Exception as exc:
+            logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
     # ── Vision & Image Analysis Setup ──
     # Keep setup aligned with the actual runtime resolver the vision tools use.

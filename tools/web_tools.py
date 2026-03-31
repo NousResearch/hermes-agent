@@ -925,24 +925,26 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
 
 async def web_extract_tool(
-    urls: List[str], 
-    format: str = None, 
+    urls: List[str],
+    format: str = None,
     use_llm_processing: bool = True,
     model: str = DEFAULT_SUMMARIZER_MODEL,
     min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
-    
+
     This function provides a generic interface for web content extraction that
     can work with multiple backends. Currently uses Firecrawl.
-    
+
     Args:
         urls (List[str]): List of URLs to extract content from
         format (str): Desired output format ("markdown" or "html", optional)
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
         model (str): The model to use for LLM processing (default: google/gemini-3-flash-preview)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
+
+    Security: URLs are checked for embedded secrets before fetching.
     
     Returns:
         str: JSON string containing extracted content. If LLM processing is enabled and successful,
@@ -951,6 +953,16 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
+    # Block URLs containing embedded secrets (exfiltration prevention)
+    from agent.redact import _PREFIX_RE
+    for _url in urls:
+        if _PREFIX_RE.search(_url):
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: URL contains what appears to be an API key or token. "
+                         "Secrets must not be sent in URLs.",
+            })
+
     debug_call_data = {
         "parameters": {
             "urls": urls,

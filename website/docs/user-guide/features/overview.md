@@ -33,6 +33,15 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 - **[Image Generation](image-generation.md)** — Generate images from text prompts using FAL.ai's FLUX 2 Pro model with automatic 2x upscaling via the Clarity Upscaler.
 - **[Voice & TTS](tts.md)** — Text-to-speech output and voice message transcription across all messaging platforms, with four provider options: Edge TTS (free), ElevenLabs, OpenAI TTS, and NeuTTS.
 
+## Integrations
+
+- **[Provider Routing](provider-routing.md)** — Fine-grained control over which AI providers handle your requests. Optimize for cost, speed, or quality with sorting, whitelists, blacklists, and priority ordering.
+- **[Fallback Providers](fallback-providers.md)** — Automatic failover to backup LLM providers when your primary model encounters errors, including independent fallback for auxiliary tasks like vision and compression.
+- **[API Server](api-server.md)** — Expose Hermes as an OpenAI-compatible HTTP endpoint. Connect any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, and more.
+- **[IDE Integration (ACP)](acp.md)** — Use Hermes inside ACP-compatible editors such as VS Code, Zed, and JetBrains. Chat, tool activity, file diffs, and terminal commands render inside your editor.
+- **[Honcho Memory](honcho.md)** — AI-native persistent memory for cross-session user modeling and personalization via dialectic reasoning.
+- **[RL Training](rl-training.md)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning.
+
 ## Customization
 
 - **[Personality & SOUL.md](personality.md)** — Fully customizable agent personality. `SOUL.md` is the primary identity file — the first thing in the system prompt — and you can swap in built-in or custom `/personality` presets per session.

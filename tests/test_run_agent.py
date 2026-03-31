@@ -230,6 +230,27 @@ class TestStripThinkBlocks:
         assert "line1" not in result
         assert "visible" in result
 
+    def test_orphaned_closing_think_tag(self, agent):
+        result = agent._strip_think_blocks("some reasoning</think>actual answer")
+        assert "</think>" not in result
+        assert "actual answer" in result
+
+    def test_orphaned_closing_thinking_tag(self, agent):
+        result = agent._strip_think_blocks("reasoning</thinking>answer")
+        assert "</thinking>" not in result
+        assert "answer" in result
+
+    def test_orphaned_opening_think_tag(self, agent):
+        result = agent._strip_think_blocks("<think>orphaned reasoning without close")
+        assert "<think>" not in result
+
+    def test_mixed_orphaned_and_paired_tags(self, agent):
+        text = "stray</think><think>paired reasoning</think> visible"
+        result = agent._strip_think_blocks(text)
+        assert "</think>" not in result
+        assert "<think>" not in result
+        assert "visible" in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

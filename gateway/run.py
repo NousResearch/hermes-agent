@@ -1894,6 +1894,9 @@ class GatewayRunner:
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
+
+        if canonical == "model":
+            return await self._handle_model_command(event)
         
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -4203,6 +4206,181 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command - show or change the current model for gateway chats."""
+        import yaml
+        from hermes_cli.models import (
+            curated_models_for_provider,
+            normalize_provider,
+            _PROVIDER_LABELS,
+        )
+
+        args = event.get_command_args().strip()
+        config_path = _hermes_home / 'config.yaml'
+
+        current = _resolve_gateway_model() or "anthropic/claude-opus-4.6"
+        current_provider = "openrouter"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+
+        current_provider = normalize_provider(current_provider)
+        if current_provider == "auto":
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                current_provider = _resolve_provider(current_provider)
+            except Exception:
+                current_provider = "openrouter"
+
+        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
+            current_provider = "custom"
+
+        def _save_model_config(new_model: str, *, provider: str | None = None, base_url: str | None = None) -> bool:
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                if "model" not in user_config or not isinstance(user_config["model"], dict):
+                    user_config["model"] = {}
+                user_config["model"]["default"] = new_model
+                if provider is not None:
+                    user_config["model"]["provider"] = provider
+                if base_url is not None:
+                    if base_url and "openrouter.ai" not in base_url:
+                        user_config["model"]["base_url"] = base_url
+                    else:
+                        user_config["model"].pop("base_url", None)
+                atomic_yaml_write(config_path, user_config)
+                return True
+            except Exception as e:
+                logger.error("Failed to save model config: %s", e)
+                return False
+
+        if not args:
+            if self._effective_model:
+                eff_provider = self._effective_provider or 'unknown'
+                eff_label = _PROVIDER_LABELS.get(eff_provider, eff_provider)
+                cfg_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+                lines = [
+                    f"🤖 **Active model:** `{self._effective_model}` (fallback)",
+                    f"**Provider:** {eff_label}",
+                    f"**Primary model** (`{current}` via {cfg_label}) is rate-limited.",
+                    "",
+                    "To change: `/model model-name`",
+                    "Switch provider: `/model provider:model-name`",
+                ]
+                return "\n".join(lines)
+
+            provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+            lines = [
+                f"🤖 **Current model:** `{current}`",
+                f"**Provider:** {provider_label}",
+            ]
+            if current_provider == "custom":
+                from hermes_cli.models import _get_custom_base_url
+                custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                if custom_url:
+                    lines.append(f"**Endpoint:** `{custom_url}`")
+            lines.append("")
+            curated = curated_models_for_provider(current_provider)
+            if curated:
+                lines.append(f"**Available models ({provider_label}):**")
+                for mid, desc in curated:
+                    marker = " ←" if mid == current else ""
+                    label = f"  _{desc}_" if desc else ""
+                    lines.append(f"• `{mid}`{label}{marker}")
+                lines.append("")
+            lines.append("To change: `/model model-name`")
+            lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
+            return "\n".join(lines)
+
+        if args.strip().lower() == "custom":
+            from hermes_cli.model_switch import switch_to_custom_provider
+            cust_result = switch_to_custom_provider()
+            if not cust_result.success:
+                return f"⚠️ {cust_result.error_message}"
+
+            saved = _save_model_config(
+                cust_result.model,
+                provider="custom",
+                base_url=cust_result.base_url,
+            )
+            os.environ["HERMES_MODEL"] = cust_result.model
+            os.environ["HERMES_INFERENCE_PROVIDER"] = "custom"
+            self._effective_model = None
+            self._effective_provider = None
+            self._evict_cached_agent(self._session_key_for_source(event.source))
+            persist_note = "saved to config" if saved else "this session only"
+            return (
+                f"🤖 Model changed to `{cust_result.model}` ({persist_note})\n"
+                f"**Provider:** Custom\n"
+                f"**Endpoint:** `{cust_result.base_url}`\n"
+                f"_Model auto-detected from endpoint. Takes effect on next message._"
+            )
+
+        from hermes_cli.model_switch import switch_model
+        _resolved_base = ""
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider as _rtp
+            _resolved_base = _rtp(requested=current_provider).get("base_url", "")
+        except Exception:
+            pass
+
+        result = switch_model(
+            args,
+            current_provider,
+            current_base_url=_resolved_base,
+            current_api_key=os.getenv("OPENAI_API_KEY") or "",
+        )
+
+        if not result.success:
+            msg = result.error_message
+            tip = "\n\nUse `/model` to see available models, `/provider` to see providers" if "Did you mean" not in msg else ""
+            return f"⚠️ {msg}{tip}"
+
+        saved = False
+        if result.persist:
+            saved = _save_model_config(
+                result.new_model,
+                provider=result.target_provider if result.provider_changed else None,
+                base_url=result.base_url if result.provider_changed else None,
+            )
+
+        os.environ["HERMES_MODEL"] = result.new_model
+        if result.provider_changed:
+            os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
+
+        self._effective_model = None
+        self._effective_provider = None
+        self._evict_cached_agent(self._session_key_for_source(event.source))
+
+        provider_note = f"\n**Provider:** {result.provider_label}" if result.provider_changed else ""
+        warning = f"\n⚠️ {result.warning_message}" if result.warning_message else ""
+        persist_note = "saved to config" if saved else ("this session only — will revert on restart" if not result.persist else "this session only")
+
+        custom_hint = ""
+        if result.is_custom_target:
+            endpoint = result.base_url or _resolved_base or "custom endpoint"
+            custom_hint = f"\n**Endpoint:** `{endpoint}`"
+            if not result.provider_changed:
+                custom_hint += (
+                    "\n_To switch providers, use_ `/model provider:model`"
+                    "\n_e.g._ `/model openrouter:anthropic/claude-sonnet-4`"
+                )
+
+        return (
+            f"🤖 Model changed to `{result.new_model}` ({persist_note})"
+            f"{provider_note}{warning}{custom_hint}\n_(takes effect on next message)_"
+        )
+
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.

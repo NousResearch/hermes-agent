@@ -185,6 +185,19 @@ class TestGatewayHelpLines:
         assert "/bg" in bg_line[0]
 
 
+class TestGatewayModelCommandRegistry:
+    def test_model_is_gateway_only(self):
+        cmd = resolve_command("model")
+        assert cmd is not None
+        assert cmd.gateway_only is True
+        assert cmd.cli_only is False
+
+    def test_model_in_gateway_known_commands_and_telegram_menu(self):
+        assert "model" in GATEWAY_KNOWN_COMMANDS
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "model" in names
+
+
 class TestTelegramBotCommands:
     def test_returns_list_of_tuples(self):
         cmds = telegram_bot_commands()

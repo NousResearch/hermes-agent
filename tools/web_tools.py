@@ -163,7 +163,19 @@ def _get_async_parallel_client():
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
-_TAVILY_BASE_URL = "https://api.tavily.com"
+def _get_tavily_base_url() -> str:
+    """Get the Tavily API base URL.
+
+    Uses TAVILY_API_URL environment variable if set (for proxy/custom endpoint).
+    Falls back to the default Tavily API URL.
+    """
+    custom_url = os.getenv("TAVILY_API_URL")
+    if custom_url:
+        logger.info("Using custom Tavily API URL: %s", custom_url)
+        return custom_url.rstrip("/")
+    return "https://api.tavily.com"
+
+_TAVILY_BASE_URL = _get_tavily_base_url()
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:

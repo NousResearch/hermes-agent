@@ -112,6 +112,66 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Webhook Mode
+
+By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
+
+For **cloud deployments** (Fly.io, Railway, Render, etc.), **webhook mode** is more cost-effective. These platforms can auto-wake suspended machines on inbound HTTP traffic, but not on outbound connections. Since polling is outbound, a polling bot can never sleep. Webhook mode flips the direction — Telegram pushes updates to your bot's HTTPS URL, enabling sleep-when-idle deployments.
+
+| | Polling (default) | Webhook |
+|---|---|---|
+| Direction | Gateway → Telegram (outbound) | Telegram → Gateway (inbound) |
+| Best for | Local, always-on servers | Cloud platforms with auto-wake |
+| Setup | No extra config | Set `TELEGRAM_WEBHOOK_URL` |
+| Idle cost | Machine must stay running | Machine can sleep between messages |
+
+### Configuration
+
+Add the following to `~/.hermes/.env`:
+
+```bash
+TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
+# TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
+# TELEGRAM_WEBHOOK_SECRET=mysecret  # optional, recommended
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_WEBHOOK_URL` | Yes | Public HTTPS URL where Telegram will send updates. The URL path is auto-extracted (e.g., `/telegram` from the example above). |
+| `TELEGRAM_WEBHOOK_PORT` | No | Local port the webhook server listens on (default: `8443`). |
+| `TELEGRAM_WEBHOOK_SECRET` | No | Secret token for verifying that updates actually come from Telegram. **Strongly recommended** for production deployments. |
+
+When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP webhook server instead of polling. When unset, polling mode is used — no behavior change from previous versions.
+
+### Cloud deployment example (Fly.io)
+
+1. Add the env vars to your Fly.io app secrets:
+
+```bash
+fly secrets set TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
+fly secrets set TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 32)
+```
+
+2. Expose the webhook port in your `fly.toml`:
+
+```toml
+[[services]]
+  internal_port = 8443
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+```
+
+3. Deploy:
+
+```bash
+fly deploy
+```
+
+The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
@@ -335,6 +395,7 @@ You usually don't need to configure this manually. The auto-discovery via DoH ha
 | Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`. |
 | Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
+| Webhook not receiving updates | Verify `TELEGRAM_WEBHOOK_URL` is publicly reachable (test with `curl`). Ensure your platform/reverse proxy routes inbound HTTPS traffic from the URL's port to the local listen port configured by `TELEGRAM_WEBHOOK_PORT` (they do not need to be the same number). Ensure SSL/TLS is active — Telegram only sends to HTTPS URLs. Check firewall rules. |
 
 ## Exec Approval
 

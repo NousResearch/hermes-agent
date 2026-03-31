@@ -152,13 +152,17 @@ def _is_oauth_token(key: str) -> bool:
 
     Regular API keys start with 'sk-ant-api'. Everything else (setup-tokens
     starting with 'sk-ant-oat', managed keys, JWTs, etc.) needs Bearer auth.
+    Azure AI Foundry keys (non sk-ant- prefixed) should use x-api-key, not Bearer.
     """
     if not key:
         return False
     # Regular Console API keys use x-api-key header
     if key.startswith("sk-ant-api"):
         return False
-    # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
+    # Azure AI Foundry keys don't start with sk-ant- at all — treat as regular API key
+    if not key.startswith("sk-ant-"):
+        return False
+    # Everything else (setup-tokens sk-ant-oat, managed keys, JWTs) uses Bearer auth
     return True
 
 

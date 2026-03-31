@@ -25,6 +25,8 @@ def _make_run_side_effect(
     verify_ok=True,
     commit_count="3",
     systemd_active=False,
+    system_service_active=False,
+    system_restart_rc=0,
     launchctl_loaded=False,
 ):
     """Build a subprocess.run side_effect that simulates git + service commands."""
@@ -45,14 +47,23 @@ def _make_run_side_effect(
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
 
-        # systemctl --user is-active
+        # systemctl is-active — distinguish --user from system scope
         if "systemctl" in joined and "is-active" in joined:
-            if systemd_active:
-                return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
-            return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
+            if "--user" in joined:
+                if systemd_active:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
+            else:
+                # System-level check (no --user)
+                if system_service_active:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
 
-        # systemctl --user restart
+        # systemctl restart — distinguish --user from system scope
         if "systemctl" in joined and "restart" in joined:
+            if "--user" not in joined and system_service_active:
+                stderr = "" if system_restart_rc == 0 else "Failed to restart: Permission denied"
+                return subprocess.CompletedProcess(cmd, system_restart_rc, stdout="", stderr=stderr)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         # launchctl list ai.hermes.gateway
@@ -393,3 +404,91 @@ class TestCmdUpdateLaunchdRestart:
         assert "Stopped gateway" not in captured
         assert "Gateway restarted" not in captured
         assert "Gateway restarted via launchd" not in captured
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — system-level systemd service detection
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateSystemService:
+    """cmd_update detects system-level gateway services where --user fails."""
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_detects_system_service_and_restarts(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When user systemd is inactive but a system service exists, restart via system scope."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=False,
+            system_service_active=True,
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=12345), \
+             patch("gateway.status.remove_pid_file"):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "system gateway service" in captured.lower()
+        assert "Gateway restarted (system service)" in captured
+        # Verify systemctl restart (no --user) was called
+        restart_calls = [
+            c for c in mock_run.call_args_list
+            if "restart" in " ".join(str(a) for a in c.args[0])
+            and "systemctl" in " ".join(str(a) for a in c.args[0])
+            and "--user" not in " ".join(str(a) for a in c.args[0])
+        ]
+        assert len(restart_calls) == 1
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_system_service_restart_failure_shows_sudo_hint(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When system service restart fails (e.g. no root), show sudo hint."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=False,
+            system_service_active=True,
+            system_restart_rc=1,
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=12345), \
+             patch("gateway.status.remove_pid_file"):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "sudo systemctl restart" in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_user_service_takes_priority_over_system(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When both user and system services are active, user wins."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=True,
+            system_service_active=True,
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=12345), \
+             patch("gateway.status.remove_pid_file"), \
+             patch("os.kill"):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        # Should restart via user service, not system
+        assert "Gateway restarted." in captured
+        assert "(system service)" not in captured

@@ -505,6 +505,7 @@ class AIAgent:
         honcho_config=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        silent_fallback: bool = False,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
@@ -915,9 +916,10 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        self._silent_fallback = silent_fallback
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
-        if self._fallback_chain and not self.quiet_mode:
+        if self._fallback_chain and not self.quiet_mode and not getattr(self, "_silent_fallback", False):
             if len(self._fallback_chain) == 1:
                 fb = self._fallback_chain[0]
                 print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
@@ -4537,10 +4539,11 @@ class AIAgent:
                     fb_context_length * self.context_compressor.threshold_percent
                 )
 
-            self._emit_status(
-                f"🔄 Primary model failed — switching to fallback: "
-                f"{fb_model} via {fb_provider}"
-            )
+            if not getattr(self, "_silent_fallback", False):
+                self._emit_status(
+                    f"🔄 Primary model failed — switching to fallback: "
+                    f"{fb_model} via {fb_provider}"
+                )
             logging.info(
                 "Fallback activated: %s → %s (%s)",
                 old_model, fb_model, fb_provider,
@@ -6670,7 +6673,8 @@ class AIAgent:
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
                         if self._fallback_index < len(self._fallback_chain):
-                            self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
+                            if not getattr(self, "_silent_fallback", False):
+                                self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
@@ -7142,7 +7146,8 @@ class AIAgent:
                         or "quota" in error_msg
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
-                        self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        if not getattr(self, "_silent_fallback", False):
+                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue

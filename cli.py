@@ -1279,6 +1279,17 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+    @staticmethod
+    def _extract_silent_fallback(fallback_model) -> bool:
+        """Extract silent_fallback from fallback_model config."""
+        if not fallback_model:
+            return False
+        if isinstance(fallback_model, dict):
+            return bool(fallback_model.get("silent_fallback", False))
+        if isinstance(fallback_model, list):
+            return all(bool(f.get("silent_fallback", False)) for f in fallback_model if isinstance(f, dict))
+        return False
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         import time as _time
@@ -2122,6 +2133,7 @@ class HermesCLI:
                 reasoning_callback=self._current_reasoning_callback(),
                 honcho_session_key=None,  # resolved by run_agent via config sessions map / title
                 fallback_model=self._fallback_model,
+                silent_fallback=HermesCLI._extract_silent_fallback(self._fallback_model),
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
@@ -4112,6 +4124,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    silent_fallback=HermesCLI._extract_silent_fallback(self._fallback_model),
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
@@ -4247,6 +4260,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    silent_fallback=HermesCLI._extract_silent_fallback(self._fallback_model),
                     session_db=None,
                     skip_memory=True,
                     skip_context_files=True,

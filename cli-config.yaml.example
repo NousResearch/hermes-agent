@@ -82,6 +82,28 @@ model:
 #     model: google/gemini-2.5-flash
 
 # =============================================================================
+# Fallback Providers (optional)
+# =============================================================================
+# When your primary model fails (rate limits, server errors, auth failures),
+# Hermes can automatically switch to a backup provider. Both single-model
+# and multi-provider chain formats are supported.
+#
+# Single fallback model:
+# fallback_model:
+#   provider: openrouter
+#   model: anthropic/claude-sonnet-4
+#   # silent_fallback: true  # Suppress fallback status messages
+#
+# Multiple fallback providers (tried in order):
+# fallback_providers:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+#     silent_fallback: true  # Suppress fallback status messages
+#   - provider: nous
+#     model: nous-hermes-3
+#     silent_fallback: true
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

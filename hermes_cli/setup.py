@@ -3003,6 +3003,21 @@ def run_setup_wizard(args):
     config = load_config()
     hermes_home = get_hermes_home()
 
+    # Back up existing config before setup modifies it (#3522)
+    config_path = get_config_path()
+    if config_path.exists():
+        from datetime import datetime as _dt
+        _backup_path = config_path.with_suffix(
+            f".yaml.bak.{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        try:
+            import shutil
+            shutil.copy2(config_path, _backup_path)
+        except Exception:
+            _backup_path = None
+    else:
+        _backup_path = None
+
     # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
@@ -3172,6 +3187,10 @@ def run_setup_wizard(args):
 
     # Save and show summary
     save_config(config)
+    if _backup_path and _backup_path.exists():
+        print_info(f"Previous config backed up to: {_backup_path}")
+        print_info("If setup changed a value you customized, restore it with:")
+        print_info(f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
 
     _offer_launch_chat()

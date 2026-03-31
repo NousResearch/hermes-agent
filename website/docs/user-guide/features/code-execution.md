@@ -27,7 +27,7 @@ for r in results["data"]["web"]:
 print(summary)
 ```
 
-**Available tools in sandbox:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only).
+**Available tools in sandbox:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`.
 
 ## When the Agent Uses This
 

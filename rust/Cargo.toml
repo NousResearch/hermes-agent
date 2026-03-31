@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "hermes-proto",
+    "hermes-sidecar",
+]
+resolver = "2"
+

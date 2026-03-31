@@ -1,0 +1,9 @@
+[package]
+name = "hermes-sidecar"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hermes-proto = { path = "../hermes-proto" }
+serde_json = "1"
+

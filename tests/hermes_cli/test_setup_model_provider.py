@@ -113,6 +113,205 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(
     assert reloaded["model"]["provider"] == "zai"
 
 
+def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    # Pre-write config so the pool step sees provider="openrouter"
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+
+    class _Entry:
+        def __init__(self, label):
+            self.label = label
+
+    class _Pool:
+        def entries(self):
+            return [_Entry("primary"), _Entry("secondary")]
+
+    def fake_select():
+        pass  # no-op — config already has provider set
+
+    def fake_prompt_choice(question, choices, default=0):
+        if "rotation strategy" in question:
+            return 1  # round robin
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        return default
+
+    def fake_prompt_yes_no(question, default=True):
+        return False
+
+    # Patch directly on the module objects to ensure local imports pick them up.
+    import hermes_cli.main as _main_mod
+    import hermes_cli.setup as _setup_mod
+    import agent.credential_pool as _pool_mod
+    import agent.auxiliary_client as _aux_mod
+
+    monkeypatch.setattr(_main_mod, "select_provider_and_model", fake_select)
+    # NOTE: _stub_tts overwrites prompt_choice, so set our mock AFTER it.
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr(_setup_mod, "prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(_setup_mod, "prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr(_setup_mod, "prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr(_pool_mod, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(_aux_mod, "get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    # The pool has 2 entries, so the strategy prompt should fire
+    strategy = config.get("credential_pool_strategies", {}).get("openrouter")
+    assert strategy == "round_robin", f"Expected round_robin but got {strategy}"
+
+
+def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    # Pre-write config so the pool step sees provider="openrouter"
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+    pool_sizes = iter([1, 2])
+    add_calls = []
+
+    class _Entry:
+        def __init__(self, label):
+            self.label = label
+
+    class _Pool:
+        def __init__(self, size):
+            self._size = size
+
+        def entries(self):
+            return [_Entry(f"cred-{idx}") for idx in range(self._size)]
+
+    def fake_load_pool(provider):
+        return _Pool(next(pool_sizes))
+
+    def fake_auth_add_command(args):
+        add_calls.append(args.provider)
+
+    def fake_select():
+        pass  # no-op — config already has provider set
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select same-provider rotation strategy:":
+            return 0
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        return default
+
+    yes_no_answers = iter([True, False])
+
+    def fake_prompt_yes_no(question, default=True):
+        if question == "Add another credential for same-provider fallback?":
+            return next(yes_no_answers)
+        return False
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
+    monkeypatch.setattr("hermes_cli.auth_commands.auth_add_command", fake_auth_add_command)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert add_calls == ["openrouter"]
+    assert config.get("credential_pool_strategies", {}).get("openrouter") == "fill_first"
+
+
+def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    # Pre-write config so the pool step sees provider="openrouter"
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+
+    class _Entry:
+        def __init__(self, label, source):
+            self.label = label
+            self.source = source
+
+    class _Pool:
+        def entries(self):
+            return [
+                _Entry("primary", "manual"),
+                _Entry("secondary", "manual"),
+                _Entry("OPENROUTER_API_KEY", "env:OPENROUTER_API_KEY"),
+            ]
+
+    def fake_select():
+        pass  # no-op — config already has provider set
+
+    def fake_prompt_choice(question, choices, default=0):
+        if "rotation strategy" in question:
+            return 0
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    out = capsys.readouterr().out
+    assert "Current pooled credentials for openrouter: 3 (2 manual, 1 auto-detected from env/shared auth)" in out
+
+
+def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 15  # GitHub Copilot ACP
+        if question == "Select default model:":
+            return 0
+        if question == "Configure vision:":
+            return len(choices) - 1
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    def fake_prompt_yes_no(question, default=True):
+        if question == "Add another credential for same-provider fallback?":
+            raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
+        return False
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert config.get("credential_pool_strategies", {}) == {}
+
+
 def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
     """Copilot provider saves correctly through delegation."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

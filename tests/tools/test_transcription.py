@@ -18,6 +18,11 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _clear_openai_env(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
 class TestGetProvider:
     """_get_provider() picks the right backend based on config + availability."""
 

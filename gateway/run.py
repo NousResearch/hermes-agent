@@ -1707,6 +1707,14 @@ class GatewayRunner:
             except Exception as e:
                 logger.exception("Failed to prepare /plan command")
                 return f"Failed to enter plan mode: {e}"
+
+        if canonical in {"plannotator-last", "plannotator-review", "plannotator-annotate"}:
+            self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+            try:
+                return await self._handle_native_plannotator_command(event, source, _quick_key, canonical)
+            finally:
+                if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
+                    del self._running_agents[_quick_key]
         
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -1818,8 +1826,13 @@ class GatewayRunner:
                 cmd_key = f"/{command}"
                 if cmd_key in skill_cmds:
                     user_instruction = event.get_command_args().strip()
+                    runtime_note = ""
+                    if cmd_key == "/plannotator-last":
+                        runtime_note = (
+                            "After Plannotator feedback returns, treat it as the user's latest input and continue the work by incorporating the feedback. Do not stop at a summary unless the feedback explicitly asks only for a summary."
+                        )
                     msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=_quick_key
+                        cmd_key, user_instruction, task_id=_quick_key, runtime_note=runtime_note
                     )
                     if msg:
                         event.text = msg
@@ -1849,6 +1862,105 @@ class GatewayRunner:
             # not linger or the session would be permanently locked out.
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
+
+    def _seed_default_plannotator_templates_if_missing(self) -> None:
+        """Populate local bridge launcher templates when env vars are absent."""
+        bridge_path = Path.home() / "services" / "plannotator-bridge" / "start_session.py"
+        if not bridge_path.exists():
+            return
+        bridge_cmd = f"python3 {shlex.quote(str(bridge_path))}"
+        defaults = {
+            "HERMES_PLANNOTATOR_PREPARE_TEMPLATE": f"{bridge_cmd} prepare",
+            "HERMES_PLANNOTATOR_REVIEW_TEMPLATE": f"{bridge_cmd} review{{review_target_arg}}",
+            "HERMES_PLANNOTATOR_ANNOTATE_TEMPLATE": f"{bridge_cmd} annotate {{artifact_path}}",
+            "HERMES_PLANNOTATOR_LAST_TEMPLATE": f"{bridge_cmd} last",
+        }
+        for env_name, value in defaults.items():
+            if not os.getenv(env_name, "").strip():
+                os.environ[env_name] = value
+
+    async def _handle_native_plannotator_command(self, event, source, _quick_key: str, canonical: str):
+        """Execute Plannotator slash commands via the native tool path, not skill prompting."""
+        from tools.plannotator_tool import (
+            _build_last_message_fallback_args,
+            _launch_plannotator,
+            _normalize_args,
+            _validate_args,
+        )
+
+        session_entry = self.session_store.get_or_create_session(source)
+        context = build_session_context(source, self.config, session_entry)
+        self._set_session_env(context, event)
+        self._seed_default_plannotator_templates_if_missing()
+
+        base_action_map = {
+            "plannotator-last": "last",
+            "plannotator-review": "review",
+            "plannotator-annotate": "annotate",
+        }
+        user_instruction = event.get_command_args().strip()
+        raw_args = {"action": base_action_map[canonical]}
+        if canonical == "plannotator-review" and user_instruction:
+            raw_args["review_target"] = user_instruction
+        elif canonical == "plannotator-annotate":
+            if not user_instruction:
+                return "Usage: /plannotator_annotate <absolute-artifact-path>"
+            raw_args["artifact_path"] = user_instruction
+
+        normalized = _normalize_args(raw_args)
+        normalized["wait_for_completion"] = True
+        if normalized["action"] == "last":
+            fallback = _build_last_message_fallback_args(normalized)
+            if fallback:
+                normalized = fallback
+                normalized["wait_for_completion"] = True
+
+        validation_error = _validate_args(normalized)
+        if validation_error:
+            return f"Plannotator command failed: {validation_error}"
+
+        prepared = await asyncio.to_thread(
+            _launch_plannotator,
+            {**normalized, "action": "prepare", "wait_for_completion": False},
+        )
+        if not prepared.get("success"):
+            return f"Plannotator command failed: {prepared.get('error', 'prepare failed')}"
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return "Plannotator command failed: no adapter available for this platform."
+        message = prepared.get("suggested_message") or f"Temporary review URL:\n{prepared.get('url', '')}"
+        await adapter.send(
+            source.chat_id,
+            message + "\n\nI’ll wait here for your annotations and report back once they arrive.",
+            reply_to=event.message_id,
+            metadata=getattr(event, "metadata", None),
+        )
+
+        launched = await asyncio.to_thread(
+            _launch_plannotator,
+            {
+                **normalized,
+                "fixed_host": prepared.get("host") or normalized.get("fixed_host"),
+                "wait_for_completion": True,
+            },
+        )
+        if not launched.get("success"):
+            return f"Plannotator command failed: {launched.get('error', 'launch failed')}"
+
+        feedback = (launched.get("feedback_markdown") or "").strip()
+        if not feedback:
+            if launched.get("timed_out"):
+                return launched.get("message") or "Timed out waiting for Plannotator feedback."
+            return launched.get("message") or "Plannotator session finished without actionable feedback."
+
+        feedback_message = (
+            f"Plannotator feedback for /{canonical}:\n\n"
+            f"{feedback}\n\n"
+            "Treat this as the user's latest feedback. Incorporate it into the work and continue; do not stop at a summary unless the feedback explicitly asks only for a summary."
+        )
+        event.text = feedback_message
+        return await self._handle_message_with_agent(event, source, _quick_key)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""

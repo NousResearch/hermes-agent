@@ -225,13 +225,32 @@ def _get_last_assistant_message_from_gateway_session() -> str | None:
     if not session_id:
         return None
 
-    transcript_path = _get_gateway_sessions_dir() / f"{session_id}.jsonl"
-    if not transcript_path.exists():
-        return None
+    sessions_dir = _get_gateway_sessions_dir()
+    candidates = [
+        sessions_dir / f"session_{session_id}.json",
+        sessions_dir / f"{session_id}.jsonl",
+    ]
+    for path in candidates:
+        last_assistant = _read_last_assistant_message(path)
+        if last_assistant:
+            return last_assistant
+    return None
 
+
+def _read_last_assistant_message(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    if path.suffix == ".jsonl":
+        return _read_last_assistant_message_from_jsonl(path)
+    if path.suffix == ".json":
+        return _read_last_assistant_message_from_session_json(path)
+    return None
+
+
+def _read_last_assistant_message_from_jsonl(path: Path) -> str | None:
     last_assistant = None
     try:
-        with transcript_path.open("r", encoding="utf-8") as handle:
+        with path.open("r", encoding="utf-8") as handle:
             for raw_line in handle:
                 raw_line = raw_line.strip()
                 if not raw_line:
@@ -240,12 +259,40 @@ def _get_last_assistant_message_from_gateway_session() -> str | None:
                     message = json.loads(raw_line)
                 except json.JSONDecodeError:
                     continue
-                if message.get("role") == "assistant" and message.get("content"):
-                    last_assistant = str(message["content"])
+                content = _message_text(message)
+                if message.get("role") == "assistant" and content:
+                    last_assistant = content
     except OSError:
         return None
-
     return last_assistant
+
+
+def _read_last_assistant_message_from_session_json(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return None
+
+    last_assistant = None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = _message_text(message)
+        if message.get("role") == "assistant" and content:
+            last_assistant = content
+    return last_assistant
+
+
+def _message_text(message: dict[str, Any]) -> str | None:
+    content = message.get("content")
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+    return None
 
 
 def _resolve_current_gateway_session_id() -> str | None:
@@ -459,6 +506,7 @@ def _wait_for_plannotator_completion(
             final_log = _read_log_excerpt(log_path)
             if final_log is not None:
                 last_log_content = final_log
+            feedback_fields = _extract_plannotator_feedback_fields(last_log_content)
             return {
                 "completed": True,
                 "timed_out": False,
@@ -466,9 +514,11 @@ def _wait_for_plannotator_completion(
                 "final_log": last_log_content,
                 "message": "Plannotator session completed.",
                 "elapsed_seconds": round(elapsed, 2),
+                **feedback_fields,
             }
 
         if elapsed >= timeout_seconds:
+            feedback_fields = _extract_plannotator_feedback_fields(last_log_content)
             return {
                 "completed": False,
                 "timed_out": True,
@@ -477,9 +527,39 @@ def _wait_for_plannotator_completion(
                 "message": f"Timed out waiting for Plannotator session after {timeout_seconds} seconds.",
                 "elapsed_seconds": round(elapsed, 2),
                 "session_still_running": bool(process_alive),
+                **feedback_fields,
             }
 
         time.sleep(poll_interval_seconds)
+
+
+def _extract_plannotator_feedback_fields(log_text: str | None) -> dict[str, Any]:
+    feedback_block = _extract_feedback_block(log_text)
+    has_feedback = bool(feedback_block)
+    fields: dict[str, Any] = {
+        "feedback_detected": has_feedback,
+        "feedback_markdown": feedback_block,
+    }
+    if has_feedback:
+        fields["next_step_instruction"] = (
+            "Treat feedback_markdown as the user's latest feedback. Incorporate it into the work and continue the task; do not stop at a summary unless the feedback explicitly asks only for a summary."
+        )
+    return fields
+
+
+def _extract_feedback_block(log_text: str | None) -> str | None:
+    if not log_text:
+        return None
+    marker = "# File Feedback"
+    start = log_text.find(marker)
+    if start == -1:
+        return None
+    feedback = log_text[start:].strip()
+    bridge_marker = "\n[bridge]"
+    end = feedback.find(bridge_marker)
+    if end != -1:
+        feedback = feedback[:end].rstrip()
+    return feedback or None
 
 
 def _coerce_pid(pid: str | int | None) -> int | None:

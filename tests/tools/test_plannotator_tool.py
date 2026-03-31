@@ -4,7 +4,12 @@ import json
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-from tools.plannotator_tool import _send_inline_url_message, plannotator_session_tool
+from tools.plannotator_tool import (
+    _extract_feedback_block,
+    _get_last_assistant_message_from_gateway_session,
+    _send_inline_url_message,
+    plannotator_session_tool,
+)
 
 
 PREPARE_TEMPLATE = "launcher prepare"
@@ -238,6 +243,40 @@ def test_inline_last_falls_back_to_transcript_markdown():
     send_mock.assert_called_once()
 
 
+def test_get_last_assistant_message_reads_session_json(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "agent:main:telegram:dm:chat:thread": {
+                    "session_id": "session-123",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sessions_dir / "session_session-123.json").write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "assistant", "content": "Earlier answer"},
+                    {"role": "assistant", "content": ""},
+                    {"role": "assistant", "content": "Latest answer"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread")
+
+    assert _get_last_assistant_message_from_gateway_session() == "Latest answer"
+
+
 def test_inline_send_uses_origin_target():
     with patch("tools.send_message_tool.send_message_tool", return_value=json.dumps({"success": True})) as send_mock:
         result = _send_inline_url_message("Temporary review URL:\nhttps://review.example/")
@@ -301,6 +340,47 @@ def test_wait_returns_final_log_when_process_exits(tmp_path):
     assert result["timed_out"] is False
     assert result["status"] == "completed"
     assert "looks good" in result["final_log"]
+    assert result["feedback_detected"] is False
+    assert result["feedback_markdown"] is None
+
+
+def test_wait_extracts_feedback_block_and_guidance(tmp_path):
+    log_path = tmp_path / "annotate.log"
+    log_path.write_text(
+        "Resolved: /tmp/file.md\n\n# File Feedback\n\nI've reviewed this file and have 1 piece of feedback:\n\n## 1. General feedback about the file\n> Please remove the restart sentence.\n\n---\n\n[bridge] child exited with return code 0\n",
+        encoding="utf-8",
+    )
+
+    completed = CompletedProcess(
+        args=["bash", "-lc", "echo"],
+        returncode=0,
+        stdout=f"URL=https://review.example/\nPID=777\nLOG={log_path}\n",
+        stderr="",
+    )
+
+    with (
+        patch("tools.exposure_helpers.subprocess.run", return_value=completed),
+        patch("tools.plannotator_tool._pid_is_running", side_effect=[False]),
+    ):
+        result = json.loads(
+            plannotator_session_tool(
+                {
+                    "action": "annotate",
+                    "artifact_path": "/tmp/file.md",
+                    "command_template": ANNOTATE_TEMPLATE,
+                    "completion_timeout_seconds": 60,
+                }
+            )
+        )
+
+    assert result["feedback_detected"] is True
+    assert "Please remove the restart sentence" in result["feedback_markdown"]
+    assert "Treat feedback_markdown as the user's latest feedback" in result["next_step_instruction"]
+
+
+def test_extract_feedback_block_ignores_bridge_trailer():
+    log_text = "before\n# File Feedback\n\nhello\n\n[bridge] child exited with return code 0\n"
+    assert _extract_feedback_block(log_text) == "# File Feedback\n\nhello"
 
 
 def test_wait_times_out_and_preserves_last_log(tmp_path):

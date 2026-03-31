@@ -115,6 +115,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
+    CommandDef("plannotator-last", "Open the last assistant message in Plannotator", "Tools & Skills",
+               gateway_only=True, aliases=("plannotator_last",)),
+    CommandDef("plannotator-review", "Open a Plannotator review session", "Tools & Skills",
+               gateway_only=True, aliases=("plannotator_review",)),
+    CommandDef("plannotator-annotate", "Open a Plannotator annotate session", "Tools & Skills",
+               gateway_only=True, aliases=("plannotator_annotate",)),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 

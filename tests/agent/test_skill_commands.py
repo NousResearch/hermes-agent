@@ -8,6 +8,7 @@ from unittest.mock import patch
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_plan_path,
+    build_plannotator_skill_invocation_message,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     scan_skill_commands,
@@ -167,6 +168,21 @@ Generate some audio.
             scan_skill_commands()
             msg = build_skill_invocation_message("/nonexistent")
         assert msg is None
+
+    def test_build_plannotator_invocation_message_prefers_native_tool(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "plannotator-last", body="Use Plannotator.")
+            _make_skill(tmp_path, "plannotator-review", body="Review with Plannotator.")
+            _make_skill(tmp_path, "plannotator-annotate", body="Annotate with Plannotator.")
+            scan_skill_commands()
+            msg_last = build_plannotator_skill_invocation_message("/plannotator_last", "fix it")
+            msg_review = build_plannotator_skill_invocation_message("/plannotator-review", "repo diff")
+            msg_annotate = build_plannotator_skill_invocation_message("/plannotator_annotate", "artifact.md")
+
+        assert msg_last is not None and "plannotator_session(action='inline_last')" in msg_last
+        assert msg_review is not None and "plannotator_session(action='inline_review')" in msg_review
+        assert msg_annotate is not None and "plannotator_session(action='inline_annotate')" in msg_annotate
+        assert "continue the work by incorporating it" in msg_last
 
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TENOR_API_KEY", raising=False)

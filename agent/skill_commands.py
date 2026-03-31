@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_PLANNOTATOR_SKILL_COMMANDS: Dict[str, Dict[str, str]] = {
+    "/plannotator-last": {
+        "skill": "/plannotator-last",
+        "action": "inline_last",
+        "purpose": "review the last assistant message",
+    },
+    "/plannotator-review": {
+        "skill": "/plannotator-review",
+        "action": "inline_review",
+        "purpose": "review a diff or review target",
+    },
+    "/plannotator-annotate": {
+        "skill": "/plannotator-annotate",
+        "action": "inline_annotate",
+        "purpose": "annotate a markdown/text artifact",
+    },
+}
 
 
 def build_plan_path(
@@ -236,6 +253,33 @@ def build_skill_invocation_message(
         skill_dir,
         activation_note,
         user_instruction=user_instruction,
+        runtime_note=runtime_note,
+    )
+
+
+def build_plannotator_skill_invocation_message(
+    cmd_key: str,
+    user_instruction: str = "",
+    task_id: str | None = None,
+) -> Optional[str]:
+    """Build a Plannotator command message that strongly prefers the native tool path."""
+    normalized = (cmd_key or "").strip().lower().replace("_", "-")
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    spec = _PLANNOTATOR_SKILL_COMMANDS.get(normalized)
+    if not spec:
+        return None
+
+    runtime_note = (
+        f"Use the native Plannotator tool path first: plannotator_session(action='{spec['action']}'). "
+        f"This slash command should {spec['purpose']} via the native tool, which must send the URL immediately, wait for feedback, and then continue the same loop. "
+        "Do not use a manual bridge-only launch unless the native tool is unavailable or failing. "
+        "When feedback returns, treat it as the user's latest input and continue the work by incorporating it rather than stopping at a summary, unless the feedback explicitly asks only for a summary."
+    )
+    return build_skill_invocation_message(
+        spec["skill"],
+        user_instruction,
+        task_id=task_id,
         runtime_note=runtime_note,
     )
 

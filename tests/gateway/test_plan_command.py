@@ -2,6 +2,8 @@
 
 from datetime import datetime
 from types import SimpleNamespace
+import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,7 +46,7 @@ def _make_runner():
     runner._fallback_model = None
     runner._show_reasoning = False
     runner._is_user_authorized = lambda _source: True
-    runner._set_session_env = lambda _context: None
+    runner._set_session_env = lambda _context, _event=None: None
     runner._run_agent = AsyncMock(
         return_value={
             "final_response": "planned",
@@ -88,6 +90,22 @@ Save plans under the active workspace's .hermes/plans directory.
     )
 
 
+def _make_plannotator_last_skill(skills_dir):
+    skill_dir = skills_dir / "plannotator-last"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: plannotator-last
+description: Review the last assistant message in Plannotator.
+---
+
+# Plannotator Last
+
+Use native inline_last and continue work after feedback.
+"""
+    )
+
+
 class TestGatewayPlanCommand:
     @pytest.mark.asyncio
     async def test_plan_command_loads_skill_and_runs_agent(self, monkeypatch, tmp_path):
@@ -127,3 +145,77 @@ class TestGatewayPlanCommand:
             result = await runner._handle_help_command(event)
 
         assert "/plan" in result
+
+    def test_seed_default_plannotator_templates_if_missing(self, tmp_path, monkeypatch):
+        runner = _make_runner()
+        fake_home = tmp_path
+        bridge_dir = fake_home / "services" / "plannotator-bridge"
+        bridge_dir.mkdir(parents=True)
+        (bridge_dir / "start_session.py").write_text("#!/usr/bin/env python3\n")
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        for key in (
+            "HERMES_PLANNOTATOR_PREPARE_TEMPLATE",
+            "HERMES_PLANNOTATOR_REVIEW_TEMPLATE",
+            "HERMES_PLANNOTATOR_ANNOTATE_TEMPLATE",
+            "HERMES_PLANNOTATOR_LAST_TEMPLATE",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        runner._seed_default_plannotator_templates_if_missing()
+
+        assert os.environ["HERMES_PLANNOTATOR_PREPARE_TEMPLATE"].endswith("start_session.py prepare")
+        assert os.environ["HERMES_PLANNOTATOR_REVIEW_TEMPLATE"].endswith("start_session.py review{review_target_arg}")
+        assert os.environ["HERMES_PLANNOTATOR_ANNOTATE_TEMPLATE"].endswith("start_session.py annotate {artifact_path}")
+        assert os.environ["HERMES_PLANNOTATOR_LAST_TEMPLATE"].endswith("start_session.py last")
+
+    @pytest.mark.asyncio
+    async def test_plannotator_last_command_uses_native_tool_directly(self, monkeypatch, tmp_path):
+        import gateway.run as gateway_run
+
+        runner = _make_runner()
+        runner._handle_message_with_agent = AsyncMock(return_value="continued work")
+        event = _make_event("/plannotator_last")
+
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            lambda *_args, **_kwargs: 100_000,
+        )
+
+        prepare_result = {
+            "success": True,
+            "host": "plannotator-fixed.example",
+            "url": "https://plannotator-fixed.example/",
+            "suggested_message": "Temporary review URL:\nhttps://plannotator-fixed.example/",
+        }
+        launch_result = {
+            "success": True,
+            "completed": True,
+            "feedback_detected": True,
+            "feedback_markdown": "# File Feedback\n\nPlease remove the restart sentence.",
+        }
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(runner, "_seed_default_plannotator_templates_if_missing") as seed_mock,
+            patch("tools.plannotator_tool._launch_plannotator", side_effect=[prepare_result, launch_result]) as launch_mock,
+        ):
+            _make_plannotator_last_skill(tmp_path)
+            scan_skill_commands()
+            result = await runner._handle_message(event)
+
+        seed_mock.assert_called_once_with()
+
+        assert result == "continued work"
+        assert launch_mock.call_count == 2
+        adapter.send.assert_awaited_once()
+        sent_text = adapter.send.await_args.args[1]
+        assert "Temporary review URL" in sent_text
+        followup_event = runner._handle_message_with_agent.await_args.args[0]
+        assert "# File Feedback" in followup_event.text
+        assert "Please remove the restart sentence." in followup_event.text
+        assert "Treat this as the user's latest feedback" in followup_event.text

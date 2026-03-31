@@ -85,6 +85,10 @@ Expected launcher output convention:
 - `PID=...`
 - `LOG=...`
 
+Important nuance:
+- if the bridge starts Plannotator asynchronously, `PID` should identify a supervisor that stays alive until feedback is received and the local server is cleaned up
+- otherwise Hermes may think the review is done while the browser server is still exposed on the fixed port
+
 ### 2. `service_expose` native tool
 
 A generic, backend-agnostic exposure tool.

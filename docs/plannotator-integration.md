@@ -72,6 +72,11 @@ Recommended contract for inline flows:
 - `PID=...`
 - `LOG=...`
 
+Important detail for `PID=...`:
+- when the launcher daemonizes or spawns Plannotator in the background, `PID` should refer to a supervisor process, not only the immediate launcher shell
+- that supervisor should remain alive until feedback has been submitted, final log output has been flushed, and the local web server has been stopped
+- in other words, Hermes should be waiting on a PID whose lifetime matches the review session lifecycle, not a short-lived bootstrap process
+
 ## Requirements for inline flows
 
 `inline_review` and `inline_annotate` work best when the launcher supports two

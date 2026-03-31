@@ -1,6 +1,8 @@
 """Tests for BasePlatformAdapter topic-aware session handling."""
 
 import asyncio
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -133,3 +135,87 @@ class TestBasePlatformTopicSessions:
                 "metadata": {"thread_id": "17585"},
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_allows_inline_send_and_final_followup(self, monkeypatch):
+        adapter = DummyTelegramAdapter()
+
+        from gateway.config import GatewayConfig
+        import gateway.config as gateway_config
+        import model_tools
+        from tools.send_message_tool import send_message_tool
+
+        config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        )
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: config)
+
+        captured = {}
+
+        def fake_run_async(coro):
+            frame = getattr(coro, "cr_frame", None)
+            if frame is not None:
+                captured.update(frame.f_locals)
+            coro.close()
+            return {"success": True, "message_id": "inline-1"}
+
+        monkeypatch.setattr(model_tools, "_run_async", fake_run_async)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "-1001")
+        monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "17585")
+        monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "1")
+
+        async def handler(_event):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "origin",
+                        "message": "Temporary review URL:\nhttps://review.example/",
+                        "reply_to_current": True,
+                    }
+                )
+            )
+            assert result["success"] is True
+            await adapter.send(
+                _event.source.chat_id,
+                "Temporary review URL:\nhttps://review.example/",
+                reply_to=_event.message_id,
+                metadata={"thread_id": _event.source.thread_id},
+            )
+            return "Annotations received and summarized."
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert captured["chat_id"] == "-1001"
+        assert captured["thread_id"] == "17585"
+        assert captured["reply_to_message_id"] == "1"
+        assert captured["message"] == "Temporary review URL:\nhttps://review.example/"
+        assert adapter.sent == [
+            {
+                "chat_id": "-1001",
+                "content": "Temporary review URL:\nhttps://review.example/",
+                "reply_to": "1",
+                "metadata": {"thread_id": "17585"},
+            },
+            {
+                "chat_id": "-1001",
+                "content": "Annotations received and summarized.",
+                "reply_to": "1",
+                "metadata": {"thread_id": "17585"},
+            },
+        ]
+        for key in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_MESSAGE_ID",
+        ):
+            os.environ.pop(key, None)

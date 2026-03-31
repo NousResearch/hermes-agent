@@ -173,8 +173,24 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home
+    from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
+
+    # Determine whether Hermes itself has been explicitly configured (model
+    # in config that isn't the hardcoded default). Used below to gate external
+    # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
+    # the setup wizard on a fresh install.
+    from hermes_cli.config import DEFAULT_CONFIG
+    _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
+    cfg = load_config()
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        _model_name = (model_cfg.get("default") or "").strip()
+    elif isinstance(model_cfg, str):
+        _model_name = model_cfg.strip()
+    else:
+        _model_name = ""
+    _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
 
     # Check env vars (may be set by .env or shell).
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
@@ -231,15 +247,16 @@ def _has_any_provider_configured() -> bool:
 
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # These are used by resolve_anthropic_token() at runtime but were missing
-    # from this startup gate check.
-    try:
-        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
-        creds = read_claude_code_credentials()
-        if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
-            return True
-    except Exception:
-        pass
+    # Only count these if Hermes has been explicitly configured — Claude Code
+    # being installed doesn't mean the user wants Hermes to use their tokens.
+    if _has_hermes_config:
+        try:
+            from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+            creds = read_claude_code_credentials()
+            if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
+                return True
+        except Exception:
+            pass
 
     return False
 

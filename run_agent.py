@@ -1389,6 +1389,7 @@ class AIAgent:
         content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
+        content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
     def _looks_like_codex_intermediate_ack(

@@ -17,10 +17,13 @@ class RustContextCompressorClient:
     def _start_process(self) -> subprocess.Popen[str]:
         root = Path(__file__).resolve().parents[1]
         manifest_path = root / "rust" / "Cargo.toml"
+        compiled_bin = root / "rust" / "target" / "debug" / "hermes-sidecar"
         override_bin = os.getenv("HERMES_RUST_SIDECAR_BIN", "").strip()
 
         if override_bin:
             command = [override_bin, "--serve"]
+        elif compiled_bin.exists():
+            command = [str(compiled_bin), "--serve"]
         else:
             command = [
                 "cargo",

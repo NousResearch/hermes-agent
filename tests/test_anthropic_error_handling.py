@@ -488,3 +488,95 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
 
     assert result["final_response"] == "Compressed and recovered"
     assert _PromptTooLongThenSuccessAgent.compress_called >= 1
+
+
+def test_prompt_too_long_triggers_real_rust_context_compression(monkeypatch):
+    """The real _compress_context path should work with the Rust backend enabled."""
+    _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.build_anthropic_client", _fake_build_anthropic_client
+    )
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS", "false")
+    monkeypatch.setenv("HERMES_CONTEXT_COMPRESSOR_BACKEND", "rust")
+
+    class _PromptTooLongRustAgent(run_agent.AIAgent):
+        last_instance = None
+
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("skip_context_files", True)
+            kwargs.setdefault("skip_memory", True)
+            kwargs.setdefault("max_iterations", 4)
+            super().__init__(*args, **kwargs)
+            type(self).last_instance = self
+            self._cleanup_task_resources = lambda task_id: None
+            self._persist_session = lambda messages, history=None: None
+            self._save_trajectory = lambda messages, user_message, completed: None
+            self._save_session_log = lambda messages: None
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            calls = {"n": 0}
+
+            def _fake_api_call(api_kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise _PromptTooLongError()
+                return _anthropic_response("Rust compressed and recovered")
+
+            self._interruptible_api_call = _fake_api_call
+            return super().run_conversation(
+                user_message, conversation_history=conversation_history, task_id=task_id
+            )
+
+    monkeypatch.setattr(run_agent, "AIAgent", _PromptTooLongRustAgent)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "sk-ant-api03-test-key",
+        },
+    )
+
+    runner = gateway_run.GatewayRunner.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {}
+    runner._ephemeral_system_prompt = ""
+    runner._prefill_messages = []
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._running_agents = {}
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.hooks.loaded_hooks = []
+    runner._session_db = None
+
+    source = SessionSource(
+        platform=Platform.LOCAL, chat_id="cli", chat_name="CLI",
+        chat_type="dm", user_id="test-user-1",
+    )
+    history = [
+        {"role": "user", "content": (f"history {i} " * 3000)}
+        if i % 2 == 0
+        else {"role": "assistant", "content": (f"history {i} " * 3000)}
+        for i in range(30)
+    ]
+
+    result = asyncio.run(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=history,
+            source=source,
+            session_id="session-rust-prompt-long",
+            session_key="agent:main:local:dm",
+        )
+    )
+
+    instance = _PromptTooLongRustAgent.last_instance
+    assert result["final_response"] == "Rust compressed and recovered"
+    assert instance is not None
+    assert instance.context_compressor.compression_count >= 1
+    assert instance.context_compressor._rust_backend is not None
+    instance.context_compressor._rust_backend.close()

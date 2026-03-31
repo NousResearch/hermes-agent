@@ -718,21 +718,11 @@ class AIAgent:
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
-                effective_base = base_url
-                if "openrouter" in effective_base.lower():
-                    client_kwargs["default_headers"] = {
-                        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                        "X-OpenRouter-Title": "Hermes Agent",
-                        "X-OpenRouter-Categories": "productivity,cli-agent",
-                    }
-                elif "api.githubcopilot.com" in effective_base.lower():
-                    from hermes_cli.models import copilot_default_headers
+                from agent.auxiliary_client import _default_headers_for_base_url
 
-                    client_kwargs["default_headers"] = copilot_default_headers()
-                elif "api.kimi.com" in effective_base.lower():
-                    client_kwargs["default_headers"] = {
-                        "User-Agent": "KimiCLI/1.3",
-                    }
+                default_headers = _default_headers_for_base_url(base_url)
+                if default_headers:
+                    client_kwargs["default_headers"] = default_headers
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -3820,7 +3810,10 @@ class AIAgent:
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.
         try:
-            from agent.auxiliary_client import resolve_provider_client
+            from agent.auxiliary_client import (
+                _default_headers_for_base_url,
+                resolve_provider_client,
+            )
             fb_client, _ = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True)
             if fb_client is None:
@@ -3863,6 +3856,9 @@ class AIAgent:
                     "api_key": fb_client.api_key,
                     "base_url": fb_base_url,
                 }
+                default_headers = getattr(fb_client, "_default_headers", None) or _default_headers_for_base_url(fb_base_url)
+                if default_headers:
+                    self._client_kwargs["default_headers"] = dict(default_headers)
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages"

@@ -408,12 +408,15 @@ class TestExplicitProviderRouting:
             assert client is not None
 
     def test_explicit_kimi(self, monkeypatch):
-        """provider='kimi-coding' should use KIMI_API_KEY."""
+        """provider='kimi-coding' should use KIMI_API_KEY and Kimi CLI headers."""
         monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             client, model = resolve_provider_client("kimi-coding")
             assert client is not None
+
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["default_headers"]["User-Agent"] == "KimiCLI/1.3"
 
     def test_explicit_minimax(self, monkeypatch):
         """provider='minimax' should use MINIMAX_API_KEY."""

@@ -2305,7 +2305,7 @@ class TestFallbackAnthropicProvider:
 
         mock_client = MagicMock()
         mock_client.base_url = "https://openrouter.ai/api/v1"
-        mock_client.api_key = "sk-or-test"
+        mock_client.api_key="***"
 
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             result = agent._try_activate_fallback()
@@ -2313,6 +2313,22 @@ class TestFallbackAnthropicProvider:
         assert result is True
         assert agent.api_mode == "chat_completions"
         assert agent.client is mock_client
+
+    def test_fallback_to_kimi_preserves_default_headers(self, agent):
+        agent._fallback_activated = False
+        agent._fallback_model = {"provider": "kimi-coding", "model": "kimi-k2.5"}
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://api.kimi.com/coding/v1"
+        mock_client.api_key="***"
+        mock_client._default_headers = None
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.client is mock_client
+        assert agent._client_kwargs["default_headers"] == {"User-Agent": "KimiCLI/1.3"}
 
 
 def test_aiagent_uses_copilot_acp_client():

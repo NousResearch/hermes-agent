@@ -31,14 +31,16 @@ class TestGetProvider:
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
+             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._has_local_command", return_value=False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 
     def test_local_nothing_available(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False):
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 
@@ -49,12 +51,23 @@ class TestGetProvider:
             assert _get_provider({"provider": "openai"}) == "openai"
 
     def test_explicit_openai_no_key_returns_none(self, monkeypatch):
-        """Explicit openai without key returns none — no cross-provider fallback."""
+        """Explicit openai without env key AND without config key returns none."""
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
+            # No env key, no config key — provider must return none
             assert _get_provider({"provider": "openai"}) == "none"
+
+    def test_openai_with_config_api_key(self, monkeypatch):
+        """Config api_key in stt.openai should be accepted when no env key is set."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg = {"provider": "openai", "openai": {"api_key": "local-token", "base_url": "http://127.0.0.1:8001/v1"}}
+        with patch("tools.transcription_tools._HAS_OPENAI", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider(cfg) == "openai"
 
     def test_default_provider_is_local(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
@@ -64,6 +77,38 @@ class TestGetProvider:
     def test_disabled_config_returns_none(self):
         from tools.transcription_tools import _get_provider
         assert _get_provider({"enabled": False, "provider": "openai"}) == "none"
+
+
+# ---------------------------------------------------------------------------
+# API key resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOpenAIApiKey:
+    """_resolve_openai_api_key() falls back to config when env vars are absent."""
+
+    def test_env_key_takes_priority(self, monkeypatch):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-from-env")
+        from tools.transcription_tools import _resolve_openai_api_key
+        assert _resolve_openai_api_key({"openai": {"api_key": "config-key"}}) == "sk-from-env"
+
+    def test_openai_api_key_fallback(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+        from tools.transcription_tools import _resolve_openai_api_key
+        assert _resolve_openai_api_key({}) == "sk-openai-fallback"
+
+    def test_config_key_fallback(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from tools.transcription_tools import _resolve_openai_api_key
+        assert _resolve_openai_api_key({"openai": {"api_key": "config-key"}}) == "config-key"
+
+    def test_no_key_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from tools.transcription_tools import _resolve_openai_api_key
+        assert _resolve_openai_api_key({}) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +221,48 @@ class TestTranscribeOpenAI:
 
         assert result["success"] is True
         assert result["transcript"] == "Hello from OpenAI"
+
+    def test_config_api_key_and_base_url(self, monkeypatch, tmp_path):
+        """Config stt.openai.api_key and base_url used when no env key is set."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "Hello from local"
+
+        local_cfg = {
+            "provider": "openai",
+            "openai": {
+                "api_key": "local-token",
+                "base_url": "http://127.0.0.1:8001/v1",
+                "model": "whisper-large-v3-turbo",
+            }
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=local_cfg), \
+             patch("openai.OpenAI", return_value=mock_client) as mock_openai_cls:
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(str(audio_file), "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        assert result["transcript"] == "Hello from local"
+        # Verify it used the config base_url, not the default openai.com one
+        call_kwargs = mock_openai_cls.call_args
+        assert call_kwargs.kwargs.get("base_url") == "http://127.0.0.1:8001/v1"
+        assert call_kwargs.kwargs.get("api_key") == "local-token"
+
+    def test_no_key_anywhere(self, monkeypatch):
+        """No env key and no config key returns error."""
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai("/tmp/test.ogg", "whisper-1")
+        assert result["success"] is False
+        assert "VOICE_TOOLS_OPENAI_KEY" in result["error"]
 
 
 # ---------------------------------------------------------------------------

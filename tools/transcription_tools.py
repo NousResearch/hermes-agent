@@ -116,9 +116,15 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     return bool(enabled)
 
 
-def _resolve_openai_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
-    return os.getenv("VOICE_TOOLS_OPENAI_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+def _resolve_openai_api_key(stt_config: Optional[dict] = None) -> str:
+    """Prefer the voice-tools key, fall back to OPENAI_API_KEY, then config api_key."""
+    key = os.getenv("VOICE_TOOLS_OPENAI_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+    if key:
+        return key
+    # Fall back to api_key embedded in stt.openai config (for local/custom endpoints)
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    return stt_config.get("openai", {}).get("api_key", "")
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -210,7 +216,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "openai":
-            if _HAS_OPENAI and _resolve_openai_api_key():
+            if _HAS_OPENAI and _resolve_openai_api_key(stt_config):
                 return "openai"
             logger.warning(
                 "STT provider 'openai' configured but no API key available"
@@ -436,26 +442,33 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using OpenAI Whisper API (paid)."""
-    api_key = _resolve_openai_api_key()
+    """Transcribe using OpenAI Whisper API (paid) or a local OpenAI-compatible endpoint."""
+    stt_config = _load_stt_config()
+    openai_cfg = stt_config.get("openai", {})
+    api_key = _resolve_openai_api_key(stt_config)
     if not api_key:
         return {
             "success": False,
             "transcript": "",
-            "error": "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set",
+            "error": "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set, "
+                     "and no api_key found in stt.openai config",
         }
 
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
-    # Auto-correct model if caller passed a Groq-only model
-    if model_name in GROQ_MODELS:
+    # Use base_url from config if provided (local/custom endpoints), else fall back to env/default
+    base_url = openai_cfg.get("base_url") or os.getenv("STT_OPENAI_BASE_URL", OPENAI_BASE_URL)
+
+    # Auto-correct model: only skip GROQ_MODELS when using real OpenAI endpoint
+    is_local = base_url and "openai.com" not in base_url
+    if not is_local and model_name in GROQ_MODELS:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL, timeout=30, max_retries=0)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
 
         with open(file_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(

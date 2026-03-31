@@ -687,6 +687,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            # Skip messages sent by the bot itself to prevent echo loops.
+            # In self-chat mode (the default), the bridge reports outbound
+            # replies back as new inbound messages.
+            if data.get("fromMe"):
+                return None
+
             # Determine message type
             msg_type = MessageType.TEXT
             if data.get("hasMedia"):

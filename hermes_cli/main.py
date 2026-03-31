@@ -829,6 +829,17 @@ def cmd_setup(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
+    select_provider_and_model()
+
+
+def select_provider_and_model():
+    """Core provider selection + model picking logic.
+
+    Shared by ``cmd_model`` (``hermes model``) and the setup wizard
+    (``setup_model_provider`` in setup.py).  Handles the full flow:
+    provider picker, credential prompting, model selection, and config
+    persistence.
+    """
     from hermes_cli.auth import (
         resolve_provider, AuthError, format_auth_error,
     )
@@ -858,7 +869,10 @@ def cmd_model(args):
     except AuthError as exc:
         warning = format_auth_error(exc)
         print(f"Warning: {warning} Falling back to auto provider detection.")
-        active = resolve_provider("auto")
+        try:
+            active = resolve_provider("auto")
+        except AuthError:
+            active = "openrouter"  # no provider yet; show full picker
 
     # Detect custom endpoint
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):

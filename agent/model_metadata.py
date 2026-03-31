@@ -110,6 +110,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemini-3.1-pro": 1048576,
     "gemini-3-pro": 1048576,
     "gemini-3-flash": 1048576,
+    "minimax-m2.7": 204800,
+    "minimax-m2.7-highspeed": 204800,
     "minimax-m2.5": 204800,
     "minimax-m2.5-free": 204800,
     "minimax-m2.1": 204800,

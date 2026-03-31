@@ -39,7 +39,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.5-plus-02-15",         ""),
     ("qwen/qwen3.5-35b-a3b",            ""),
     ("stepfun/step-3.5-flash",          ""),
-    ("minimax/minimax-m2.5",            ""),
+    ("minimax/minimax-m2.7",            ""),
     ("z-ai/glm-5",                      ""),
     ("z-ai/glm-5-turbo",                ""),
     ("moonshotai/kimi-k2.5",            ""),
@@ -150,6 +150,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro",
         "gemini-3-pro",
         "gemini-3-flash",
+        "minimax-m2.7",
+        "minimax-m2.7-highspeed",
         "minimax-m2.5",
         "minimax-m2.5-free",
         "minimax-m2.1",
@@ -165,7 +167,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "opencode-go": [
         "glm-5",
         "kimi-k2.5",
-        "minimax-m2.5",
+        "minimax-m2.7",
     ],
     "ai-gateway": [
         "anthropic/claude-opus-4.6",

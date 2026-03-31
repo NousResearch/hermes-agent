@@ -202,7 +202,7 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/systemd-run"), \
+             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
@@ -215,8 +215,8 @@ class TestHandleUpdateCommand:
         assert not (hermes_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio
-    async def test_spawns_systemd_run(self, tmp_path):
-        """Uses systemd-run when available."""
+    async def test_spawns_setsid(self, tmp_path):
+        """Uses setsid when available."""
         runner = _make_runner()
         event = _make_event()
 
@@ -236,16 +236,16 @@ class TestHandleUpdateCommand:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Verify systemd-run was used
+        # Verify setsid was used
         call_args = mock_popen.call_args[0][0]
-        assert call_args[0] == "/usr/bin/systemd-run"
-        assert "--scope" in call_args
+        assert call_args[0] == "/usr/bin/setsid"
+        assert call_args[1] == "bash"
         assert ".update_exit_code" in call_args[-1]
         assert "Starting Hermes update" in result
 
     @pytest.mark.asyncio
-    async def test_fallback_nohup_when_no_systemd_run(self, tmp_path):
-        """Falls back to nohup when systemd-run is not available."""
+    async def test_fallback_when_no_setsid(self, tmp_path):
+        """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()
         event = _make_event()
 
@@ -260,24 +260,27 @@ class TestHandleUpdateCommand:
 
         mock_popen = MagicMock()
 
-        def which_no_systemd(x):
+        def which_no_setsid(x):
             if x == "hermes":
                 return "/usr/bin/hermes"
-            if x == "systemd-run":
+            if x == "setsid":
                 return None
             return None
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
-             patch("shutil.which", side_effect=which_no_systemd), \
+             patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Verify bash -c nohup fallback was used
+        # Verify plain bash -c fallback (no nohup, no setsid)
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "bash"
-        assert "nohup" in call_args[2]
+        assert "nohup" not in call_args[2]
         assert ".update_exit_code" in call_args[2]
+        # start_new_session=True should be in kwargs
+        call_kwargs = mock_popen.call_args[1]
+        assert call_kwargs.get("start_new_session") is True
         assert "Starting Hermes update" in result
 
     @pytest.mark.asyncio

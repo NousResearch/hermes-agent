@@ -6897,17 +6897,25 @@ class HermesCLI:
         def _input_height():
             try:
                 doc = input_area.buffer.document
-                prompt_width = max(2, len(self._get_tui_prompt_text()))
+                # Use display width (get_cwidth) for accurate terminal column count,
+                # since Unicode characters like Chinese render at 2 columns wide.
+                try:
+                    from prompt_toolkit.utils import get_cwidth
+                except Exception:
+                    get_cwidth = None
+                prompt_text = self._get_tui_prompt_text()
+                prompt_width = get_cwidth(prompt_text) if get_cwidth else max(2, len(prompt_text))
                 available_width = shutil.get_terminal_size().columns - prompt_width
                 if available_width < 10:
                     available_width = 40
                 visual_lines = 0
                 for line in doc.lines:
                     # Each logical line takes at least 1 visual row; long lines wrap
-                    if len(line) == 0:
+                    line_width = get_cwidth(line) if get_cwidth else len(line)
+                    if line_width == 0:
                         visual_lines += 1
                     else:
-                        visual_lines += max(1, -(-len(line) // available_width))  # ceil division
+                        visual_lines += max(1, -(-line_width // available_width))  # ceil division
                 return min(max(visual_lines, 1), 8)
             except Exception:
                 return 1

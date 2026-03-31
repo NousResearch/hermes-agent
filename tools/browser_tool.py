@@ -238,7 +238,7 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
 _allow_private_urls_resolved = False
-_allow_private_urls: Optional[bool] = None
+_cached_allow_private_urls: Optional[bool] = None
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -273,12 +273,12 @@ def _allow_private_urls() -> bool:
     Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
     for the process lifetime.  Defaults to ``False`` (SSRF protection active).
     """
-    global _allow_private_urls, _allow_private_urls_resolved
+    global _cached_allow_private_urls, _allow_private_urls_resolved
     if _allow_private_urls_resolved:
-        return _allow_private_urls
+        return _cached_allow_private_urls
 
     _allow_private_urls_resolved = True
-    _allow_private_urls = False  # safe default
+    _cached_allow_private_urls = False  # safe default
     try:
         hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
         config_path = hermes_home / "config.yaml"
@@ -286,10 +286,10 @@ def _allow_private_urls() -> bool:
             import yaml
             with open(config_path) as f:
                 cfg = yaml.safe_load(f) or {}
-            _allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+            _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
-    return _allow_private_urls
+    return _cached_allow_private_urls
 
 
 def _socket_safe_tmpdir() -> str:

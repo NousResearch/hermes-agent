@@ -468,6 +468,15 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the typing indicator immediately."""
+        if not self._client:
+            return
+        try:
+            await self._client.room_typing(chat_id, typing_state=False)
+        except Exception as exc:
+            logger.debug("Matrix: stop_typing failed: %s", exc)
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str
     ) -> SendResult:

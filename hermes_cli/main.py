@@ -1288,6 +1288,8 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        if effective_key:
+            model["api_key"] = effective_key
         model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
@@ -1309,6 +1311,8 @@ def _model_flow_custom(config):
             _caller_model = {"default": _caller_model} if _caller_model else {}
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
+        if effective_key:
+            _caller_model["api_key"] = effective_key
         _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
@@ -1460,6 +1464,8 @@ def _model_flow_named_custom(config, provider_info):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = base_url
+        if api_key:
+            model["api_key"] = api_key
         save_config(cfg)
         deactivate_provider()
 
@@ -1531,6 +1537,8 @@ def _model_flow_named_custom(config, provider_info):
         cfg["model"] = model
     model["provider"] = "custom"
     model["base_url"] = base_url
+    if api_key:
+        model["api_key"] = api_key
     save_config(cfg)
     deactivate_provider()
 

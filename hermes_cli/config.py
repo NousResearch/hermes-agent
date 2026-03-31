@@ -344,6 +344,9 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "busy_input_mode": "interrupt",
+        "key_bindings": {
+            "ctrl_d_action": "exit",
+        },
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,

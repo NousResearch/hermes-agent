@@ -722,6 +722,15 @@ display:
   # Ctrl+C always interrupts regardless of this setting.
   busy_input_mode: interrupt
 
+  # Keyboard shortcut behavior in the interactive CLI.
+  # Ctrl+D defaults to exit for backward compatibility with existing users.
+  #   exit:   Always exit the CLI (default)
+  #   delete: Delete one character at the cursor, exit on empty input
+  #   auto:   macOS -> delete, other platforms -> exit
+  # Set this explicitly if you want macOS-style forward delete behavior.
+  key_bindings:
+    ctrl_d_action: exit
+
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, check_interval=...) from Telegram/Discord/etc.

@@ -43,6 +43,9 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         "prompt_toolkit.completion": MagicMock(),
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),
+        "fire": MagicMock(),
+        "firecrawl": MagicMock(),
+        "fal_client": MagicMock(),
     }
     with patch.dict(sys.modules, prompt_toolkit_stubs), \
          patch.dict("os.environ", clean_env, clear=False):
@@ -147,6 +150,76 @@ class TestBusyInputMode:
             cli._interrupt_queue.put(text)
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
+
+
+class TestCtrlDAction:
+    def test_default_ctrl_d_action_is_exit(self):
+        # Verify that the default keeps Ctrl+D on the legacy exit behavior.
+        cli = _make_cli()
+        assert cli.ctrl_d_action == "exit"
+        assert cli._effective_ctrl_d_action() == "exit"
+
+    def test_auto_ctrl_d_action_uses_delete_on_macos(self):
+        # Verify that explicit auto mode opts macOS into forward delete behavior.
+        cli = _make_cli(config_overrides={"display": {"key_bindings": {"ctrl_d_action": "auto"}}})
+        with patch("sys.platform", "darwin"):
+            assert cli._effective_ctrl_d_action() == "delete"
+
+    def test_auto_ctrl_d_action_uses_exit_off_macos(self):
+        # Verify that auto mode stays on exit outside macOS.
+        cli = _make_cli(config_overrides={"display": {"key_bindings": {"ctrl_d_action": "auto"}}})
+        with patch("sys.platform", "linux"):
+            assert cli._effective_ctrl_d_action() == "exit"
+
+    def test_invalid_ctrl_d_action_falls_back_to_exit(self):
+        # Verify that invalid values fail closed to exit.
+        cli = _make_cli(config_overrides={"display": {"key_bindings": {"ctrl_d_action": "bogus"}}})
+        assert cli.ctrl_d_action == "exit"
+
+    def test_delete_ctrl_d_action_removes_character_under_cursor(self):
+        # Verify that delete mode removes exactly one character under the cursor.
+        cli = _make_cli(config_overrides={"display": {"key_bindings": {"ctrl_d_action": "delete"}}})
+        buffer = MagicMock()
+        buffer.text = "hello"
+        buffer.cursor_position = 1
+        exit_app = MagicMock()
+
+        result = cli._handle_ctrl_d_action(buffer, exit_app)
+
+        assert result == "delete"
+        buffer.delete.assert_called_once_with(count=1)
+        exit_app.assert_not_called()
+        assert cli._should_exit is False
+
+    def test_delete_ctrl_d_action_is_noop_at_end_of_line(self):
+        # Verify that delete mode is a no-op at end of line.
+        cli = _make_cli(config_overrides={"display": {"key_bindings": {"ctrl_d_action": "delete"}}})
+        buffer = MagicMock()
+        buffer.text = "hello"
+        buffer.cursor_position = len(buffer.text)
+        exit_app = MagicMock()
+
+        result = cli._handle_ctrl_d_action(buffer, exit_app)
+
+        assert result == "noop"
+        buffer.delete.assert_not_called()
+        exit_app.assert_not_called()
+        assert cli._should_exit is False
+
+    def test_delete_ctrl_d_action_exits_on_empty_buffer(self):
+        # Verify that delete mode still exits on an empty buffer, matching EOF behavior.
+        cli = _make_cli(config_overrides={"display": {"key_bindings": {"ctrl_d_action": "delete"}}})
+        buffer = MagicMock()
+        buffer.text = ""
+        buffer.cursor_position = 0
+        exit_app = MagicMock()
+
+        result = cli._handle_ctrl_d_action(buffer, exit_app)
+
+        assert result == "exit"
+        buffer.delete.assert_not_called()
+        exit_app.assert_called_once_with()
+        assert cli._should_exit is True
 
 
 class TestSingleQueryState:

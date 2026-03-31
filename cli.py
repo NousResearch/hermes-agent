@@ -206,6 +206,9 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            "key_bindings": {
+                "ctrl_d_action": "exit",
+            },
 
             "skin": "default",
         },
@@ -1067,6 +1070,7 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        self.ctrl_d_action = self._resolve_ctrl_d_action_setting()
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1278,6 +1282,37 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+    def _resolve_ctrl_d_action_setting(self) -> str:
+        """Resolve the configured Ctrl+D mode to exit, delete, or auto."""
+        display = self.config.get("display", {}) if isinstance(self.config, dict) else {}
+        key_bindings = display.get("key_bindings", {}) if isinstance(display, dict) else {}
+        raw_value = key_bindings.get("ctrl_d_action", "exit") if isinstance(key_bindings, dict) else "exit"
+        value = str(raw_value).strip().lower()
+        return value if value in {"exit", "delete", "auto"} else "exit"
+
+    def _effective_ctrl_d_action(self) -> str:
+        """Resolve auto to the platform-specific runtime action."""
+        if self.ctrl_d_action == "auto":
+            return "delete" if sys.platform == "darwin" else "exit"
+        return self.ctrl_d_action
+
+    def _handle_ctrl_d_action(self, buffer, exit_app) -> str:
+        """Apply the Ctrl+D action and return the action that was taken."""
+        action = self._effective_ctrl_d_action()
+        if action == "delete":
+            if not buffer.text:
+                self._should_exit = True
+                exit_app()
+                return "exit"
+            if buffer.cursor_position < len(buffer.text):
+                buffer.delete(count=1)
+                return "delete"
+            return "noop"
+
+        self._should_exit = True
+        exit_app()
+        return "exit"
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -6710,9 +6745,8 @@ class HermesCLI:
         
         @kb.add('c-d')
         def handle_ctrl_d(event):
-            """Handle Ctrl+D - exit."""
-            self._should_exit = True
-            event.app.exit()
+            """Handle Ctrl+D according to the configured action."""
+            self._handle_ctrl_d_action(event.app.current_buffer, event.app.exit)
 
         @kb.add('c-z')
         def handle_ctrl_z(event):

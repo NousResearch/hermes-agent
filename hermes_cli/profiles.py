@@ -383,7 +383,13 @@ def create_profile(
 
     if clone_all and source_dir:
         # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
+        # Prevent infinite recursion by ignoring the 'profiles' directory 
+        # when cloning the default root (~/.hermes).
+        shutil.copytree(
+            source_dir, 
+            profile_dir, 
+            ignore=shutil.ignore_patterns("profiles", "gateway.pid")
+        )
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)

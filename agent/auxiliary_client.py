@@ -7,7 +7,7 @@ the best available backend without duplicating fallback logic.
 Resolution order for text tasks (auto mode):
   1. OpenRouter  (OPENROUTER_API_KEY)
   2. Nous Portal (~/.hermes/auth.json active provider)
-  3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
+  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
   5. Native Anthropic
@@ -584,15 +584,11 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _read_main_model() -> str:
-    """Read the user's configured main model from config/env.
+    """Read the user's configured main model from config.yaml.
 
-    Falls back through HERMES_MODEL → LLM_MODEL → config.yaml model.default
-    so the auxiliary client can use the same model as the main agent when no
-    dedicated auxiliary model is available.
+    config.yaml model.default is the single source of truth for the active
+    model. Environment variables are no longer consulted.
     """
-    from_env = os.getenv("OPENAI_MODEL") or os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL")
-    if from_env:
-        return from_env.strip()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()

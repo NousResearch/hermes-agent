@@ -941,10 +941,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear any custom endpoint if switching to OpenRouter
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
 
         # Update config.yaml and deactivate any OAuth provider so the
         # resolver doesn't keep returning the old provider (e.g. Codex).
@@ -1032,10 +1028,6 @@ def setup_model_provider(config: dict):
 
             mock_args = argparse.Namespace()
             _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
-            # Clear custom endpoint vars that would override provider routing.
-            if existing_custom:
-                save_env_value("OPENAI_BASE_URL", "")
-                save_env_value("OPENAI_API_KEY", "")
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
         except SystemExit:
@@ -1118,10 +1110,6 @@ def setup_model_provider(config: dict):
                     "  If you get billing errors, check your plan at https://open.bigmodel.cn/"
                 )
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "zai", zai_base_url)
         selected_base_url = zai_base_url
 
@@ -1151,10 +1139,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1184,10 +1168,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "minimax", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1217,10 +1197,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1250,10 +1226,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "kilocode", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1352,10 +1324,6 @@ def setup_model_provider(config: dict):
                 else:
                     print_warning("Skipped — agent won't work without credentials")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         # Don't save base_url for Anthropic — resolve_runtime_provider()
         # always hardcodes it. Stale base_urls contaminate other providers.
         _set_model_provider(config, "anthropic")
@@ -1386,10 +1354,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
@@ -1418,10 +1382,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
         _set_model_provider(config, "alibaba", pconfig.inference_base_url)
 
@@ -1451,10 +1411,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1484,10 +1440,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without an API key")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1518,9 +1470,6 @@ def setup_model_provider(config: dict):
             else:
                 print_warning("Skipped - agent won't work without a GitHub token or gh auth login")
 
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "copilot", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1534,9 +1483,6 @@ def setup_model_provider(config: dict):
         print_info(f"Base marker: {pconfig.inference_base_url}")
         print()
 
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1553,9 +1499,6 @@ def setup_model_provider(config: dict):
         api_key = prompt("  HF Token", password=True)
         if api_key:
             save_env_value("HF_TOKEN", api_key)
-            # Clear OpenRouter env vars to prevent routing confusion
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _set_model_provider(config, "huggingface", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
@@ -1632,7 +1575,9 @@ def setup_model_provider(config: dict):
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
-                save_env_value("OPENAI_BASE_URL", _base_url)
+                # Save vision base URL to config (not .env — only secrets go there)
+                _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
+                _vaux["base_url"] = _base_url
                 if "api.openai.com" in _base_url.lower():
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
                     _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]

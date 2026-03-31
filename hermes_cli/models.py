@@ -349,7 +349,7 @@ def list_available_providers() -> list[dict[str, str]]:
         try:
             from hermes_cli.auth import get_auth_status, has_usable_secret
             if pid == "custom":
-                custom_base_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                custom_base_url = _get_custom_base_url() or ""
                 has_creds = bool(custom_base_url.strip())
             elif pid == "openrouter":
                 has_creds = has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))

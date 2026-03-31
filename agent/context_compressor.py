@@ -13,7 +13,10 @@ Improvements over v1:
   - Richer tool call/result detail in summarizer input
 """
 
+import hashlib
+import json
 import logging
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -46,6 +49,7 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
+_CACHE_MAX_ENTRIES = 32
 
 
 class ContextCompressor:
@@ -118,6 +122,39 @@ class ContextCompressor:
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+        self._token_estimate_cache: OrderedDict[str, int] = OrderedDict()
+        self._serialized_turns_cache: OrderedDict[str, str] = OrderedDict()
+        self._summary_cache: OrderedDict[str, str] = OrderedDict()
+
+    @staticmethod
+    def _messages_cache_key(messages: List[Dict[str, Any]]) -> str:
+        payload = json.dumps(messages, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cache_lookup(cache: OrderedDict[str, Any], key: str):
+        if key not in cache:
+            return None
+        value = cache.pop(key)
+        cache[key] = value
+        return value
+
+    @staticmethod
+    def _cache_store(cache: OrderedDict[str, Any], key: str, value: Any) -> Any:
+        if key in cache:
+            cache.pop(key)
+        cache[key] = value
+        while len(cache) > _CACHE_MAX_ENTRIES:
+            cache.popitem(last=False)
+        return value
+
+    def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        key = self._messages_cache_key(messages)
+        cached = self._cache_lookup(self._token_estimate_cache, key)
+        if cached is not None:
+            return cached
+        estimate = estimate_messages_tokens_rough(messages)
+        return self._cache_store(self._token_estimate_cache, key, estimate)
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -132,7 +169,7 @@ class ContextCompressor:
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick pre-flight check using rough estimate (before API call)."""
-        rough_estimate = estimate_messages_tokens_rough(messages)
+        rough_estimate = self._estimate_tokens(messages)
         return rough_estimate >= self.threshold_tokens
 
     def get_status(self) -> Dict[str, Any]:
@@ -192,7 +229,7 @@ class ContextCompressor:
         capped at ``_SUMMARY_TOKENS_CEILING``) so large-context models get
         richer summaries instead of being hard-capped at 8K tokens.
         """
-        content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        content_tokens = self._estimate_tokens(turns_to_summarize)
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
@@ -203,6 +240,11 @@ class ContextCompressor:
         per message) so the summarizer can preserve specific details like
         file paths, commands, and outputs.
         """
+        key = self._messages_cache_key(turns)
+        cached = self._cache_lookup(self._serialized_turns_cache, key)
+        if cached is not None:
+            return cached
+
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
@@ -245,7 +287,8 @@ class ContextCompressor:
                 content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
             parts.append(f"[{role.upper()}]: {content}")
 
-        return "\n\n".join(parts)
+        serialized = "\n\n".join(parts)
+        return self._cache_store(self._serialized_turns_cache, key, serialized)
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> Optional[str]:
         """Generate a structured summary of conversation turns.
@@ -260,6 +303,18 @@ class ContextCompressor:
         """
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+        summary_cache_key = "|".join(
+            [
+                self._messages_cache_key(turns_to_summarize),
+                hashlib.sha1((self._previous_summary or "").encode("utf-8")).hexdigest(),
+                str(summary_budget),
+                self.summary_model or "",
+            ]
+        )
+        cached_summary = self._cache_lookup(self._summary_cache, summary_cache_key)
+        if cached_summary is not None:
+            self._previous_summary = cached_summary
+            return self._with_summary_prefix(cached_summary)
 
         if self._previous_summary:
             # Iterative update: preserve existing info, add new progress
@@ -359,6 +414,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = content.strip()
             # Store for iterative updates on next compaction
             self._previous_summary = summary
+            self._cache_store(self._summary_cache, summary_cache_key, summary)
             return self._with_summary_prefix(summary)
         except RuntimeError:
             logging.warning("Context compression: no provider available for "
@@ -565,7 +621,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 )
             return messages
 
-        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or self._estimate_tokens(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
@@ -663,7 +719,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         compressed = self._sanitize_tool_pairs(compressed)
 
         if not self.quiet_mode:
-            new_estimate = estimate_messages_tokens_rough(compressed)
+            new_estimate = self._estimate_tokens(compressed)
             saved_estimate = display_tokens - new_estimate
             logger.info(
                 "Compressed: %d -> %d messages (~%d tokens saved)",

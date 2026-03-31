@@ -48,6 +48,13 @@ class TestShouldCompressPreflight:
         msgs = [{"role": "user", "content": "x" * 400000}]
         assert compressor.should_compress_preflight(msgs) is True
 
+    def test_preflight_token_estimate_is_cached(self, compressor):
+        msgs = [{"role": "user", "content": "cached message"}]
+        with patch("agent.context_compressor.estimate_messages_tokens_rough", return_value=42) as mock_estimate:
+            assert compressor.should_compress_preflight(msgs) is False
+            assert compressor.should_compress_preflight(msgs) is False
+        assert mock_estimate.call_count == 1
+
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
@@ -116,6 +123,19 @@ class TestCompress:
         # (head=assistant, tail=user in this fixture).  Verify the
         # original content is present in either case.
         assert msgs[-2]["content"] in result[-2]["content"]
+
+    def test_summary_generation_is_cached_for_same_input(self, compressor):
+        turns = self._make_messages(6)
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary body"
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            compressor._previous_summary = None
+            first = compressor._generate_summary(turns)
+            compressor._previous_summary = None
+            second = compressor._generate_summary(turns)
+        assert first == second
+        assert mock_call.call_count == 1
 
 
 class TestGenerateSummaryNoneContent:

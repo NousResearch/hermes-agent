@@ -191,7 +191,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "opencode-go": [
         "glm-5",
         "kimi-k2.5",
-        "minimax-m2.5",
+        "minimax-m2.7",
     ],
     "ai-gateway": [
         "anthropic/claude-opus-4.6",

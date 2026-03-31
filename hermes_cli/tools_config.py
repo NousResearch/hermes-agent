@@ -9,6 +9,8 @@ Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
 """
 
+import json as _json
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -18,6 +20,8 @@ from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -136,7 +140,9 @@ PLATFORMS = {
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
-    "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
+ "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
+    "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
+    "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
 }
@@ -267,6 +273,16 @@ TOOL_CATEGORIES = {
                 "browser_provider": "browser-use",
                 "post_setup": "browserbase",
             },
+            {
+                "name": "Camofox",
+                "tag": "Local anti-detection browser (Firefox/Camoufox)",
+                "env_vars": [
+                    {"key": "CAMOFOX_URL", "prompt": "Camofox server URL", "default": "http://localhost:9377",
+                     "url": "https://github.com/jo-inc/camofox-browser"},
+                ],
+                "browser_provider": "camofox",
+                "post_setup": "camofox",
+            },
         ],
     },
     "homeassistant": {
@@ -330,6 +346,28 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+
+    elif post_setup_key == "camofox":
+        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camoufox-browser"
+        if not camofox_dir.exists() and shutil.which("npm"):
+            _print_info("    Installing Camofox browser server...")
+            import subprocess
+            result = subprocess.run(
+                ["npm", "install", "--silent"],
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+            )
+            if result.returncode == 0:
+                _print_success("    Camofox installed")
+            else:
+                _print_warning("    npm install failed - run manually: npm install")
+        if camofox_dir.exists():
+            _print_info("    Start the Camofox server:")
+            _print_info("      npx @askjo/camoufox-browser")
+            _print_info("    First run downloads the Camoufox engine (~300MB)")
+            _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+        elif not shutil.which("npm"):
+            _print_warning("    Node.js not found. Install Camofox via Docker:")
+            _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
     elif post_setup_key == "rl_training":
         try:
@@ -559,7 +597,9 @@ def _toolset_has_keys(ts_key: str) -> bool:
     if cat:
         for provider in cat.get("providers", []):
             env_vars = provider.get("env_vars", [])
-            if env_vars and all(get_env_value(e["key"]) for e in env_vars):
+            if not env_vars:
+                return True  # No-key provider (e.g. Local Browser, Edge TTS)
+            if all(get_env_value(e["key"]) for e in env_vars):
                 return True
         return False
 
@@ -653,9 +693,61 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
             return default
 
 
+# ─── Token Estimation ────────────────────────────────────────────────────────
+
+# Module-level cache so discovery + tokenization runs at most once per process.
+_tool_token_cache: Optional[Dict[str, int]] = None
+
+
+def _estimate_tool_tokens() -> Dict[str, int]:
+    """Return estimated token counts per individual tool name.
+
+    Uses tiktoken (cl100k_base) to count tokens in the JSON-serialised
+    OpenAI-format tool schema.  Triggers tool discovery on first call,
+    then caches the result for the rest of the process.
+
+    Returns an empty dict when tiktoken or the registry is unavailable.
+    """
+    global _tool_token_cache
+    if _tool_token_cache is not None:
+        return _tool_token_cache
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        logger.debug("tiktoken unavailable; skipping tool token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    try:
+        # Trigger full tool discovery (imports all tool modules).
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+    except Exception:
+        logger.debug("Tool registry unavailable; skipping token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    counts: Dict[str, int] = {}
+    for name in registry.get_all_tool_names():
+        schema = registry.get_schema(name)
+        if schema:
+            # Mirror what gets sent to the API:
+            # {"type": "function", "function": <schema>}
+            text = _json.dumps({"type": "function", "function": schema})
+            counts[name] = len(enc.encode(text))
+    _tool_token_cache = counts
+    return _tool_token_cache
+
+
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
+    from toolsets import resolve_toolset
+
+    # Pre-compute per-tool token counts (cached after first call).
+    tool_tokens = _estimate_tool_tokens()
 
     effective = _get_effective_configurable_toolsets()
 
@@ -671,11 +763,27 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         if ts_key in enabled
     }
 
+    # Build a live status function that shows deduplicated total token cost.
+    status_fn = None
+    if tool_tokens:
+        ts_keys = [ts_key for ts_key, _, _ in effective]
+
+        def status_fn(chosen: set) -> str:
+            # Collect unique tool names across all selected toolsets
+            all_tools: set = set()
+            for idx in chosen:
+                all_tools.update(resolve_toolset(ts_keys[idx]))
+            total = sum(tool_tokens.get(name, 0) for name in all_tools)
+            if total >= 1000:
+                return f"Est. tool context: ~{total / 1000:.1f}k tokens"
+            return f"Est. tool context: ~{total} tokens"
+
     chosen = curses_checklist(
         f"Tools for {platform_label}",
         labels,
         pre_selected,
         cancel_returns=pre_selected,
+        status_fn=status_fn,
     )
     return {effective[i][0] for i in chosen}
 
@@ -875,8 +983,13 @@ def _configure_simple_requirements(ts_key: str):
             key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
-                save_env_value("OPENAI_BASE_URL", base_url)
                 save_env_value("OPENAI_API_KEY", api_key.strip())
+                # Save vision base URL to config (not .env — only secrets go there)
+                from hermes_cli.config import load_config, save_config
+                _cfg = load_config()
+                _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
+                _aux["base_url"] = base_url
+                save_config(_cfg)
                 if "api.openai.com" in base_url.lower():
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")

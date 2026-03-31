@@ -230,6 +230,27 @@ class TestStripThinkBlocks:
         assert "line1" not in result
         assert "visible" in result
 
+    def test_orphaned_closing_think_tag(self, agent):
+        result = agent._strip_think_blocks("some reasoning</think>actual answer")
+        assert "</think>" not in result
+        assert "actual answer" in result
+
+    def test_orphaned_closing_thinking_tag(self, agent):
+        result = agent._strip_think_blocks("reasoning</thinking>answer")
+        assert "</thinking>" not in result
+        assert "answer" in result
+
+    def test_orphaned_opening_think_tag(self, agent):
+        result = agent._strip_think_blocks("<think>orphaned reasoning without close")
+        assert "<think>" not in result
+
+    def test_mixed_orphaned_and_paired_tags(self, agent):
+        text = "stray</think><think>paired reasoning</think> visible"
+        result = agent._strip_think_blocks(text)
+        assert "</think>" not in result
+        assert "<think>" not in result
+        assert "visible" in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
@@ -1839,6 +1860,127 @@ class TestNousCredentialRefresh:
         assert isinstance(agent.client, _RebuiltClient)
 
 
+class TestCredentialPoolRecovery:
+    def test_recover_with_pool_rotates_on_402(self, agent):
+        current = SimpleNamespace(label="primary")
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def current(self):
+                return current
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 402
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=402,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_retries_first_429_then_rotates(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def current(self):
+                return SimpleNamespace(label="primary")
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 429
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+        )
+        assert recovered is False
+        assert retry_same is True
+        agent._swap_credential.assert_not_called()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=True,
+        )
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+
+    def test_recover_with_pool_refreshes_on_401(self, agent):
+        """401 with successful refresh should swap to refreshed credential."""
+        refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return refreshed_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        agent._swap_credential.assert_called_once_with(refreshed_entry)
+
+    def test_recover_with_pool_rotates_on_401_when_refresh_fails(self, agent):
+        """401 with failed refresh should rotate to next credential."""
+        next_entry = SimpleNamespace(label="secondary", id="def")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return None  # refresh failed
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 401
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_401_refresh_fails_no_more_credentials(self, agent):
+        """401 with failed refresh and no other credentials returns not recovered."""
+
+        class _Pool:
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                return None  # no more credentials
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is False
+        agent._swap_credential.assert_not_called()
+
+
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""
 
@@ -2575,6 +2717,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_sets_api_mode(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2596,6 +2740,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2613,6 +2759,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_openrouter_uses_openai_client(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://openrouter.ai/api/v1"
@@ -3306,6 +3454,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -3327,6 +3477,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"

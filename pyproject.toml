@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,7 +32,6 @@ dependencies = [
   "fal-client>=0.13.1,<1",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts>=7.2.7,<8",
-  "faster-whisper>=1.0.0,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
 ]
@@ -47,7 +46,13 @@ slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
 matrix = ["matrix-nio[e2e]>=0.24.0,<1"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
-voice = ["sounddevice>=0.4.6,<1", "numpy>=1.24.0,<3"]
+voice = [
+  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
+  # so keep it out of the base install for source-build packagers like Homebrew.
+  "faster-whisper>=1.0.0,<2",
+  "sounddevice>=0.4.6,<1",
+  "numpy>=1.24.0,<3",
+]
 pty = [
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
@@ -58,6 +63,7 @@ homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.8.1,<0.9"]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
+feishu = ["lark-oapi>=1.5.3,<2"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
@@ -70,6 +76,7 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
+  "hermes-agent[matrix]",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
@@ -83,6 +90,7 @@ all = [
   "hermes-agent[acp]",
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",
+  "hermes-agent[feishu]",
 ]
 
 [project.scripts]

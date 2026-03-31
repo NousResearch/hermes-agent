@@ -87,6 +87,23 @@ class ToolRegistry:
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
 
+    def deregister(self, name: str) -> None:
+        """Remove a tool from the registry.
+
+        Also cleans up the toolset check if no other tools remain in the
+        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
+        when a server sends ``notifications/tools/list_changed``.
+        """
+        entry = self._tools.pop(name, None)
+        if entry is None:
+            return
+        # Drop the toolset check if this was the last tool in that toolset
+        if entry.toolset in self._toolset_checks and not any(
+            e.toolset == entry.toolset for e in self._tools.values()
+        ):
+            self._toolset_checks.pop(entry.toolset, None)
+        logger.debug("Deregistered tool: %s", name)
+
     # ------------------------------------------------------------------
     # Schema retrieval
     # ------------------------------------------------------------------
@@ -115,7 +132,9 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            result.append({"type": "function", "function": entry.schema})
+            # Ensure schema always has a "name" field — use entry.name as fallback
+            schema_with_name = {**entry.schema, "name": entry.name}
+            result.append({"type": "function", "function": schema_with_name})
         return result
 
     # ------------------------------------------------------------------
@@ -148,6 +167,15 @@ class ToolRegistry:
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
         return sorted(self._tools.keys())
+
+    def get_schema(self, name: str) -> Optional[dict]:
+        """Return a tool's raw schema dict, bypassing check_fn filtering.
+
+        Useful for token estimation and introspection where availability
+        doesn't matter — only the schema content does.
+        """
+        entry = self._tools.get(name)
+        return entry.schema if entry else None
 
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""

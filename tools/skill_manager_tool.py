@@ -113,6 +113,31 @@ def _validate_name(name: str) -> Optional[str]:
     return None
 
 
+def _validate_category(category: Optional[str]) -> Optional[str]:
+    """Validate an optional category name used as a single directory segment."""
+    if category is None:
+        return None
+    if not isinstance(category, str):
+        return "Category must be a string."
+
+    category = category.strip()
+    if not category:
+        return None
+    if "/" in category or "\\" in category:
+        return (
+            f"Invalid category '{category}'. Use lowercase letters, numbers, "
+            "hyphens, dots, and underscores. Categories must be a single directory name."
+        )
+    if len(category) > MAX_NAME_LENGTH:
+        return f"Category exceeds {MAX_NAME_LENGTH} characters."
+    if not VALID_NAME_RE.match(category):
+        return (
+            f"Invalid category '{category}'. Use lowercase letters, numbers, "
+            "hyphens, dots, and underscores. Categories must be a single directory name."
+        )
+    return None
+
+
 def _validate_frontmatter(content: str) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
@@ -238,6 +263,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     """Create a new user skill with SKILL.md content."""
     # Validate name
     err = _validate_name(name)
+    if err:
+        return {"success": False, "error": err}
+
+    err = _validate_category(category)
     if err:
         return {"success": False, "error": err}
 

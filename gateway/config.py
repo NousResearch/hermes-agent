@@ -27,9 +27,16 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
         return default
     if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        return value != 0
     if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "on")
-    return bool(value)
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        return default
+    return default
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
@@ -57,6 +64,8 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    FEISHU = "feishu"
+    WECOM = "wecom"
 
 
 @dataclass
@@ -273,6 +282,12 @@ class GatewayConfig:
                 connected.append(platform)
             # Webhook uses enabled flag only (secrets are per-route)
             elif platform == Platform.WEBHOOK:
+                connected.append(platform)
+            # Feishu uses extra dict for app credentials
+            elif platform == Platform.FEISHU and config.extra.get("app_id"):
+                connected.append(platform)
+            # WeCom uses extra dict for bot credentials
+            elif platform == Platform.WECOM and config.extra.get("bot_id"):
                 connected.append(platform)
         return connected
     
@@ -507,6 +522,10 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                if "require_mention" in platform_cfg:
+                    bridged["require_mention"] = platform_cfg["require_mention"]
+                if "mention_patterns" in platform_cfg:
+                    bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -531,6 +550,22 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+                if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
+                    os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+
+            # Telegram settings → env vars (env vars take precedence)
+            telegram_cfg = yaml_cfg.get("telegram", {})
+            if isinstance(telegram_cfg, dict):
+                if "require_mention" in telegram_cfg and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+                    os.environ["TELEGRAM_REQUIRE_MENTION"] = str(telegram_cfg["require_mention"]).lower()
+                if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
+                    import json as _json
+                    os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
+                frc = telegram_cfg.get("free_response_chats")
+                if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
@@ -647,14 +682,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.SLACK] = PlatformConfig()
         config.platforms[Platform.SLACK].enabled = True
         config.platforms[Platform.SLACK].token = slack_token
-        # Home channel
-        slack_home = os.getenv("SLACK_HOME_CHANNEL")
-        if slack_home:
-            config.platforms[Platform.SLACK].home_channel = HomeChannel(
-                platform=Platform.SLACK,
-                chat_id=slack_home,
-                name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
-            )
+    slack_home = os.getenv("SLACK_HOME_CHANNEL")
+    if slack_home and Platform.SLACK in config.platforms:
+        config.platforms[Platform.SLACK].home_channel = HomeChannel(
+            platform=Platform.SLACK,
+            chat_id=slack_home,
+            name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
+        )
     
     # Signal
     signal_url = os.getenv("SIGNAL_HTTP_URL")
@@ -668,13 +702,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "account": signal_account,
             "ignore_stories": os.getenv("SIGNAL_IGNORE_STORIES", "true").lower() in ("true", "1", "yes"),
         })
-        signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
-        if signal_home:
-            config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
-                platform=Platform.SIGNAL,
-                chat_id=signal_home,
-                name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
-            )
+    signal_home = os.getenv("SIGNAL_HOME_CHANNEL")
+    if signal_home and Platform.SIGNAL in config.platforms:
+        config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
+            platform=Platform.SIGNAL,
+            chat_id=signal_home,
+            name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Mattermost
     mattermost_token = os.getenv("MATTERMOST_TOKEN")
@@ -687,13 +721,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.MATTERMOST].enabled = True
         config.platforms[Platform.MATTERMOST].token = mattermost_token
         config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
-        mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
-        if mattermost_home:
-            config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
-                platform=Platform.MATTERMOST,
-                chat_id=mattermost_home,
-                name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
-            )
+    mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
+    if mattermost_home and Platform.MATTERMOST in config.platforms:
+        config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(
+            platform=Platform.MATTERMOST,
+            chat_id=mattermost_home,
+            name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Matrix
     matrix_token = os.getenv("MATRIX_ACCESS_TOKEN")
@@ -715,13 +749,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.MATRIX].extra["password"] = matrix_password
         matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
         config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
-        matrix_home = os.getenv("MATRIX_HOME_ROOM")
-        if matrix_home:
-            config.platforms[Platform.MATRIX].home_channel = HomeChannel(
-                platform=Platform.MATRIX,
-                chat_id=matrix_home,
-                name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
-            )
+    matrix_home = os.getenv("MATRIX_HOME_ROOM")
+    if matrix_home and Platform.MATRIX in config.platforms:
+        config.platforms[Platform.MATRIX].home_channel = HomeChannel(
+            platform=Platform.MATRIX,
+            chat_id=matrix_home,
+            name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
+        )
 
     # Home Assistant
     hass_token = os.getenv("HASS_TOKEN")
@@ -748,13 +782,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "imap_host": email_imap,
             "smtp_host": email_smtp,
         })
-        email_home = os.getenv("EMAIL_HOME_ADDRESS")
-        if email_home:
-            config.platforms[Platform.EMAIL].home_channel = HomeChannel(
-                platform=Platform.EMAIL,
-                chat_id=email_home,
-                name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
-            )
+    email_home = os.getenv("EMAIL_HOME_ADDRESS")
+    if email_home and Platform.EMAIL in config.platforms:
+        config.platforms[Platform.EMAIL].home_channel = HomeChannel(
+            platform=Platform.EMAIL,
+            chat_id=email_home,
+            name=os.getenv("EMAIL_HOME_ADDRESS_NAME", "Home"),
+        )
 
     # SMS (Twilio)
     twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -763,13 +797,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.SMS] = PlatformConfig()
         config.platforms[Platform.SMS].enabled = True
         config.platforms[Platform.SMS].api_key = os.getenv("TWILIO_AUTH_TOKEN", "")
-        sms_home = os.getenv("SMS_HOME_CHANNEL")
-        if sms_home:
-            config.platforms[Platform.SMS].home_channel = HomeChannel(
-                platform=Platform.SMS,
-                chat_id=sms_home,
-                name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
-            )
+    sms_home = os.getenv("SMS_HOME_CHANNEL")
+    if sms_home and Platform.SMS in config.platforms:
+        config.platforms[Platform.SMS].home_channel = HomeChannel(
+            platform=Platform.SMS,
+            chat_id=sms_home,
+            name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # API Server
     api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
@@ -810,6 +844,55 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Feishu / Lark
+    feishu_app_id = os.getenv("FEISHU_APP_ID")
+    feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    if feishu_app_id and feishu_app_secret:
+        if Platform.FEISHU not in config.platforms:
+            config.platforms[Platform.FEISHU] = PlatformConfig()
+        config.platforms[Platform.FEISHU].enabled = True
+        config.platforms[Platform.FEISHU].extra.update({
+            "app_id": feishu_app_id,
+            "app_secret": feishu_app_secret,
+            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
+            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+        })
+        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+        if feishu_encrypt_key:
+            config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
+        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+        if feishu_verification_token:
+            config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
+        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+        if feishu_home:
+            config.platforms[Platform.FEISHU].home_channel = HomeChannel(
+                platform=Platform.FEISHU,
+                chat_id=feishu_home,
+                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # WeCom (Enterprise WeChat)
+    wecom_bot_id = os.getenv("WECOM_BOT_ID")
+    wecom_secret = os.getenv("WECOM_SECRET")
+    if wecom_bot_id and wecom_secret:
+        if Platform.WECOM not in config.platforms:
+            config.platforms[Platform.WECOM] = PlatformConfig()
+        config.platforms[Platform.WECOM].enabled = True
+        config.platforms[Platform.WECOM].extra.update({
+            "bot_id": wecom_bot_id,
+            "secret": wecom_secret,
+        })
+        wecom_ws_url = os.getenv("WECOM_WEBSOCKET_URL", "")
+        if wecom_ws_url:
+            config.platforms[Platform.WECOM].extra["websocket_url"] = wecom_ws_url
+        wecom_home = os.getenv("WECOM_HOME_CHANNEL")
+        if wecom_home:
+            config.platforms[Platform.WECOM].home_channel = HomeChannel(
+                platform=Platform.WECOM,
+                chat_id=wecom_home,
+                name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

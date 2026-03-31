@@ -27,6 +27,7 @@ GITHUB_MODELS_CATALOG_URL = COPILOT_MODELS_URL
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.6",       "recommended"),
+    ("anthropic/claude-sonnet-4.6",     ""),
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
     ("openai/gpt-5.4",                  ""),
@@ -35,6 +36,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
     ("google/gemini-3-flash-preview",   ""),
+    ("google/gemini-3.1-pro-preview",     ""),
+    ("google/gemini-3.1-flash-lite-preview",   ""),
     ("qwen/qwen3.5-plus-02-15",         ""),
     ("qwen/qwen3.5-35b-a3b",            ""),
     ("stepfun/step-3.5-flash",          ""),
@@ -54,6 +57,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.4",
@@ -62,6 +66,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.3-codex",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
         "qwen/qwen3.5-plus-02-15",
         "qwen/qwen3.5-35b-a3b",
         "stepfun/step-3.5-flash",
@@ -185,7 +191,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "opencode-go": [
         "glm-5",
         "kimi-k2.5",
-        "minimax-m2.5",
+        "minimax-m2.7",
     ],
     "ai-gateway": [
         "anthropic/claude-opus-4.6",
@@ -343,7 +349,7 @@ def list_available_providers() -> list[dict[str, str]]:
         try:
             from hermes_cli.auth import get_auth_status, has_usable_secret
             if pid == "custom":
-                custom_base_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                custom_base_url = _get_custom_base_url() or ""
                 has_creds = bool(custom_base_url.strip())
             elif pid == "openrouter":
                 has_creds = has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))

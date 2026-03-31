@@ -15,19 +15,23 @@
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
+---
+
+## ✨ Key Features
+
 <table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Daytona, Singularity, and Modal. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
+<tr><td>🖥️ <b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
+<tr><td>📱 <b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td>🧠 <b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td>⏰ <b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
+<tr><td>⚡ <b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
+<tr><td>☁️ <b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Daytona, Singularity, and Modal. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
+<tr><td>🔬 <b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
 </table>
 
 ---
 
-## Quick Install
+## 🚀 Quick Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
@@ -46,7 +50,30 @@ hermes              # start chatting!
 
 ---
 
-## Getting Started
+## 🗺️ Roadmap
+
+We are constantly evolving Hermes Agent. Here is a glimpse of what's coming:
+
+### Phase 1: Core Stability & Platform Expansion (Current)
+- [x] Robust multi-platform gateway (Discord, Telegram, Slack, etc.)
+- [x] Skill creation and autonomous learning loop
+- [x] Model Context Protocol (MCP) integration
+
+### Phase 2: Enhanced Orchestration & Delegation
+- [ ] Advanced subagent swarm management and visual trajectory debugging
+- [ ] Enhanced long-term episodic memory using vector databases
+- [ ] Interactive desktop/GUI automation tools
+
+### Phase 3: Research & Reinforcement Learning
+- [ ] Atropos RL environment full integration for autonomous self-improvement
+- [ ] Open-source model fine-tuning pipelines using curated trajectories
+- [ ] Fully decentralized agent-to-agent communication protocol
+
+*(Note: Roadmap is subject to change based on community feedback and research breakthroughs.)*
+
+---
+
+## 🎮 Getting Started
 
 ```bash
 hermes              # Interactive CLI — start a conversation
@@ -62,7 +89,7 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
-## CLI vs Messaging Quick Reference
+### CLI vs Messaging Quick Reference
 
 Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
 
@@ -82,7 +109,7 @@ For the full command lists, see the [CLI guide](https://hermes-agent.nousresearc
 
 ---
 
-## Documentation
+## 📚 Documentation
 
 All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
 
@@ -106,7 +133,7 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ---
 
-## Migrating from OpenClaw
+## 🔄 Migrating from OpenClaw
 
 If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
 
@@ -135,7 +162,7 @@ See `hermes claw migrate --help` for all options, or use the `openclaw-migration
 
 ---
 
-## Contributing
+## 🛠️ Contributing
 
 We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
 
@@ -159,7 +186,7 @@ python -m pytest tests/ -q
 
 ---
 
-## Community
+## 💬 Community
 
 - 💬 [Discord](https://discord.gg/NousResearch)
 - 📚 [Skills Hub](https://agentskills.io)
@@ -168,7 +195,7 @@ python -m pytest tests/ -q
 
 ---
 
-## License
+## 📜 License
 
 MIT — see [LICENSE](LICENSE).
 

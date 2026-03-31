@@ -19,6 +19,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
+| **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
 
 :::tip
 If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
@@ -253,6 +254,9 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # DISCORD_FREE_RESPONSE_CHANNELS=1234567890,9876543210
+
+# Optional: ignore messages that @mention other users but NOT the bot (default: true)
+# DISCORD_IGNORE_NO_MENTION=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:

@@ -54,3 +54,9 @@ docker run -d \
   -v ~/.hermes:/opt/data \
   nousresearch/hermes-agent
 ```
+
+## Skills and credential files
+
+When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox), Hermes automatically bind-mounts the skills directory (`~/.hermes/skills/`) and any credential files declared by skills into the container as read-only volumes. This means skill scripts, templates, and references are available inside the sandbox without manual configuration.
+
+The same syncing happens for SSH and Modal backends — skills and credential files are uploaded via rsync or the Modal mount API before each command.

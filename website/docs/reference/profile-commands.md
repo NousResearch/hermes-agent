@@ -78,7 +78,7 @@ Creates a new profile.
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
 | `--clone` | Copy `config.yaml`, `.env`, and `SOUL.md` from the current profile. |
 | `--clone-all` | Copy everything (config, memories, skills, sessions, state) from the current profile. |
-| `--from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
+| `--clone-from <profile>` | Clone from a specific profile instead of the current one. Used with `--clone` or `--clone-all`. |
 
 **Examples:**
 
@@ -93,7 +93,7 @@ hermes profile create work --clone
 hermes profile create backup --clone-all
 
 # Clone config from a specific profile
-hermes profile create work2 --clone --from work
+hermes profile create work2 --clone --clone-from work
 ```
 
 ## `hermes profile delete`
@@ -123,14 +123,14 @@ This permanently deletes the profile's entire directory including all config, me
 ## `hermes profile show`
 
 ```bash
-hermes profile show [name]
+hermes profile show <name>
 ```
 
 Displays details about a profile including its home directory, configured model, active platforms, and disk usage.
 
 | Argument | Description |
 |----------|-------------|
-| `[name]` | Profile to inspect. Defaults to the current active profile if omitted. |
+| `<name>` | Profile to inspect. |
 
 **Example:**
 
@@ -147,20 +147,28 @@ Disk:       48 MB
 ## `hermes profile alias`
 
 ```bash
-hermes profile alias <name>
+hermes profile alias <name> [options]
 ```
 
-Regenerates the shell alias script at `~/.local/bin/hermes-<name>`. Useful if the alias was accidentally deleted or if you need to update it after moving your Hermes installation.
+Regenerates the shell alias script at `~/.local/bin/<name>`. Useful if the alias was accidentally deleted or if you need to update it after moving your Hermes installation.
 
-| Argument | Description |
-|----------|-------------|
+| Argument / Option | Description |
+|-------------------|-------------|
 | `<name>` | Profile to create/update the alias for. |
+| `--remove` | Remove the wrapper script instead of creating it. |
+| `--name <alias>` | Custom alias name (default: profile name). |
 
 **Example:**
 
 ```bash
 hermes profile alias work
 # Creates/updates ~/.local/bin/work
+
+hermes profile alias work --name mywork
+# Creates ~/.local/bin/mywork
+
+hermes profile alias work --remove
+# Removes the wrapper script
 ```
 
 ## `hermes profile rename`
@@ -187,39 +195,45 @@ hermes profile rename mybot assistant
 ## `hermes profile export`
 
 ```bash
-hermes profile export <name> <output-path>
+hermes profile export <name> [options]
 ```
 
 Exports a profile as a compressed tar.gz archive.
 
-| Argument | Description |
-|----------|-------------|
+| Argument / Option | Description |
+|-------------------|-------------|
 | `<name>` | Profile to export. |
-| `<output-path>` | Path for the output archive (e.g., `./work-backup.tar.gz`). |
+| `-o`, `--output <path>` | Output file path (default: `<name>.tar.gz`). |
 
 **Example:**
 
 ```bash
-hermes profile export work ./work-2026-03-29.tar.gz
+hermes profile export work
+# Creates work.tar.gz in the current directory
+
+hermes profile export work -o ./work-2026-03-29.tar.gz
 ```
 
 ## `hermes profile import`
 
 ```bash
-hermes profile import <archive-path> [name]
+hermes profile import <archive> [options]
 ```
 
 Imports a profile from a tar.gz archive.
 
-| Argument | Description |
-|----------|-------------|
-| `<archive-path>` | Path to the tar.gz archive to import. |
-| `[name]` | Name for the imported profile. Defaults to the original profile name from the archive. |
+| Argument / Option | Description |
+|-------------------|-------------|
+| `<archive>` | Path to the tar.gz archive to import. |
+| `--name <name>` | Name for the imported profile (default: inferred from archive). |
 
 **Example:**
 
 ```bash
-hermes profile import ./work-2026-03-29.tar.gz work-restored
+hermes profile import ./work-2026-03-29.tar.gz
+# Infers profile name from the archive
+
+hermes profile import ./work-2026-03-29.tar.gz --name work-restored
 ```
 
 ## `hermes -p` / `hermes --profile`
@@ -254,7 +268,7 @@ Generates shell completion scripts. Includes completions for profile names and p
 
 | Argument | Description |
 |----------|-------------|
-| `<shell>` | Shell to generate completions for: `bash`, `zsh`, or `fish`. |
+| `<shell>` | Shell to generate completions for: `bash` or `zsh`. |
 
 **Examples:**
 
@@ -262,7 +276,6 @@ Generates shell completion scripts. Includes completions for profile names and p
 # Install completions
 hermes completion bash >> ~/.bashrc
 hermes completion zsh >> ~/.zshrc
-hermes completion fish > ~/.config/fish/completions/hermes.fish
 
 # Reload shell
 source ~/.bashrc

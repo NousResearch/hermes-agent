@@ -1217,3 +1217,25 @@ class TestUniversalContextDiscovery:
         assert "Rule A." in section
         assert "Rule B." in section
         assert size == len(section)
+
+    def test_binary_file_does_not_crash(self, tmp_path):
+        """Binary content in an instruction file should be silently skipped."""
+        (tmp_path / ".tabnine").write_bytes(b"\x00\x01\x80\xff" * 100)
+        section, size = _load_instruction_file(tmp_path, ".tabnine", ".tabnine")
+        assert section == "" and size == 0
+
+    def test_symlink_outside_project_is_read(self, tmp_path):
+        """Document current behavior: symlinks are followed (not blocked).
+
+        This is consistent with existing .hermes.md / AGENTS.md / CLAUDE.md
+        behavior. Symlink protection is tracked separately.
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("External content.")
+        link = tmp_path / "GEMINI.md"
+        link.symlink_to(outside / "secret.md")
+        section, size = _load_instruction_file(tmp_path, "GEMINI.md", "GEMINI.md")
+        # Symlinks ARE followed — this documents the current (inherited) behavior
+        assert "External content" in section
+        assert size > 0

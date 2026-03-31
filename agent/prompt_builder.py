@@ -753,6 +753,9 @@ def _load_instruction_file(
     """Load a single instruction file and return (formatted_content, char_count).
 
     Returns ("", 0) if the file doesn't exist, is empty, or fails to read.
+
+    Note: symlinks are followed (consistent with existing .hermes.md / AGENTS.md
+    behavior).  Content is scanned for prompt injection regardless of source.
     """
     candidate = cwd_path / rel_path
     if not candidate.exists():

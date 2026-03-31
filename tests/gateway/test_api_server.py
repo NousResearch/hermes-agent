@@ -12,6 +12,7 @@ Tests cover:
 - Error handling (invalid JSON, missing fields)
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -101,6 +102,24 @@ class TestResponseStore:
     def test_delete_missing(self):
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
+
+
+class TestRustResponseStore:
+    def test_rust_backend_put_get_delete_and_conversation(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_RESPONSE_STORE_BACKEND", "rust")
+        monkeypatch.setenv("HERMES_RUST_RESPONSE_STORE_DB_PATH", str(tmp_path / "response-store.db"))
+        store = ResponseStore(max_size=10)
+        try:
+            assert store.backend == "rust"
+            store.put("resp_1", {"output": "hello"})
+            assert store.get("resp_1") == {"output": "hello"}
+            store.set_conversation("chat-a", "resp_1")
+            assert store.get_conversation("chat-a") == "resp_1"
+            assert len(store) == 1
+            assert store.delete("resp_1") is True
+            assert store.get("resp_1") is None
+        finally:
+            store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +893,66 @@ class TestResponsesEndpoint:
                 json={"model": "hermes-agent", "input": 42},
             )
             assert resp.status == 400
+
+    def test_rust_backend_replaces_full_responses_flow(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_RESPONSE_STORE_BACKEND", "rust")
+        monkeypatch.setenv("HERMES_RUST_RESPONSE_STORE_DB_PATH", str(tmp_path / "responses-flow.db"))
+        adapter = _make_adapter()
+        assert adapter._response_store.backend == "rust"
+
+        async def _exercise_flow():
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                first_result = {
+                    "final_response": "first",
+                    "messages": [{"role": "assistant", "content": "first"}],
+                    "api_calls": 1,
+                }
+                second_result = {
+                    "final_response": "second",
+                    "messages": [{"role": "assistant", "content": "second"}],
+                    "api_calls": 1,
+                }
+
+                with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                    mock_run.return_value = (first_result, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+                    resp1 = await cli.post(
+                        "/v1/responses",
+                        json={"model": "hermes-agent", "input": "hello", "conversation": "chat-rust"},
+                    )
+                assert resp1.status == 200
+                data1 = await resp1.json()
+                response_id = data1["id"]
+
+                with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                    mock_run.return_value = (second_result, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+                    resp2 = await cli.post(
+                        "/v1/responses",
+                        json={
+                            "model": "hermes-agent",
+                            "input": "follow up",
+                            "previous_response_id": response_id,
+                        },
+                    )
+                assert resp2.status == 200
+                call_kwargs = mock_run.call_args.kwargs
+                assert call_kwargs["conversation_history"]
+
+                get_resp = await cli.get(f"/v1/responses/{response_id}")
+                assert get_resp.status == 200
+                get_data = await get_resp.json()
+                assert get_data["id"] == response_id
+
+                delete_resp = await cli.delete(f"/v1/responses/{response_id}")
+                assert delete_resp.status == 200
+
+                missing_resp = await cli.get(f"/v1/responses/{response_id}")
+                assert missing_resp.status == 404
+
+        try:
+            asyncio.run(_exercise_flow())
+        finally:
+            adapter._response_store.close()
 
 
 # ---------------------------------------------------------------------------

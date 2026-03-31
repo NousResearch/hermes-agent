@@ -53,7 +53,7 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
-class ResponseStore:
+class _PythonResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
 
@@ -158,6 +158,48 @@ class ResponseStore:
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
         return row[0] if row else 0
+
+
+class ResponseStore:
+    """Backend-selecting response store facade.
+
+    The default backend remains Python/SQLite. Setting
+    HERMES_RESPONSE_STORE_BACKEND=rust routes the same API surface through the
+    Rust sidecar so endpoint handlers can stay unchanged.
+    """
+
+    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
+        backend = (os.getenv("HERMES_RESPONSE_STORE_BACKEND", "python") or "python").strip().lower()
+        self.backend = backend
+        if backend == "rust":
+            from gateway.rust_response_store import RustResponseStore
+
+            self._impl = RustResponseStore(max_size=max_size, db_path=db_path)
+        else:
+            self._impl = _PythonResponseStore(max_size=max_size, db_path=db_path)
+
+    def get(self, response_id: str) -> Optional[Dict[str, Any]]:
+        return self._impl.get(response_id)
+
+    def put(self, response_id: str, data: Dict[str, Any]) -> None:
+        self._impl.put(response_id, data)
+
+    def delete(self, response_id: str) -> bool:
+        return self._impl.delete(response_id)
+
+    def get_conversation(self, name: str) -> Optional[str]:
+        return self._impl.get_conversation(name)
+
+    def set_conversation(self, name: str, response_id: str) -> None:
+        self._impl.set_conversation(name, response_id)
+
+    def close(self) -> None:
+        closer = getattr(self._impl, "close", None)
+        if closer is not None:
+            closer()
+
+    def __len__(self) -> int:
+        return len(self._impl)
 
 
 # ---------------------------------------------------------------------------

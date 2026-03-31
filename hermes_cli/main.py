@@ -3165,6 +3165,7 @@ def cmd_update(args):
             _gw_service_name = get_service_name()
             existing_pid = get_running_pid()
             has_systemd_service = False
+            has_system_service = False
             has_launchd_service = False
 
             try:
@@ -3176,6 +3177,19 @@ def cmd_update(args):
                 has_systemd_service = check.stdout.strip() == "active"
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+
+            # Also check for a system-level service (hermes gateway install --system).
+            # This covers gateways running under system systemd where --user
+            # fails due to missing D-Bus session.
+            if not has_systemd_service and is_linux():
+                try:
+                    check = subprocess.run(
+                        ["systemctl", "is-active", _gw_service_name],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    has_system_service = check.stdout.strip() == "active"
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
 
             # Check for macOS launchd service
             if is_macos():
@@ -3191,7 +3205,7 @@ def cmd_update(args):
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
 
-            if existing_pid or has_systemd_service or has_launchd_service:
+            if existing_pid or has_systemd_service or has_system_service or has_launchd_service:
                 print()
 
                 # When a service manager is handling the gateway, let it
@@ -3232,6 +3246,21 @@ def cmd_update(args):
                                 print("    hermes gateway restart")
                             else:
                                 print("  Try manually: hermes gateway restart")
+                elif has_system_service:
+                    # System-level service (hermes gateway install --system).
+                    # No D-Bus session needed — systemctl without --user talks
+                    # directly to the system manager over /run/systemd/private.
+                    print("→ Restarting system gateway service...")
+                    restart = subprocess.run(
+                        ["systemctl", "restart", _gw_service_name],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if restart.returncode == 0:
+                        print("✓ Gateway restarted (system service).")
+                    else:
+                        print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                        print("  System services may require root.  Try:")
+                        print(f"    sudo systemctl restart {_gw_service_name}")
                 elif has_launchd_service:
                     # Refresh the plist first (picks up --replace and other
                     # changes from the update we just pulled).

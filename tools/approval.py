@@ -71,6 +71,8 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    (r'\blaunchctl\s+(stop|start|kickstart|unload|load|bootout|bootstrap)\b.*\bai\.hermes\.gateway\b', "manage hermes launchd service directly (self-termination)"),
+    (r'\blaunchctl\s+(unload|load)\b.*\bai\.hermes\.gateway(?:-[^/\s]+)?\.plist\b', "manage hermes launchd service directly (self-termination)"),
     # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),

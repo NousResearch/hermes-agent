@@ -564,6 +564,30 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
 
+    def test_launchctl_stop_gateway_detected(self):
+        cmd = "launchctl stop ai.hermes.gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_launchctl_stop_start_gateway_detected(self):
+        cmd = "launchctl stop ai.hermes.gateway && sleep 2 && launchctl start ai.hermes.gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_launchctl_kickstart_gateway_detected(self):
+        cmd = "launchctl kickstart -k gui/502/ai.hermes.gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
+    def test_launchctl_unload_gateway_plist_detected(self):
+        cmd = "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "self-termination" in desc
+
     def test_pkill_unrelated_not_flagged(self):
         """pkill targeting unrelated processes should not be flagged."""
         cmd = "pkill -f nginx"
@@ -639,5 +663,4 @@ class TestNormalizationBypass:
         cmd = "\uff4c\uff53 -\uff4c\uff41 /tmp"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
-
 

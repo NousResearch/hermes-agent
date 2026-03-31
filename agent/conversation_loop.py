@@ -3557,20 +3557,29 @@ def run_conversation(
                 else:
                     agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
 
-            # Notify progress callback of model's thinking (used by subagent
-            # delegation to relay the child's reasoning to the parent display).
-            if (assistant_message.content and agent.tool_progress_callback):
+            # Notify progress callback of model's thinking.  Subagents always
+            # relay a short first line to the parent display; gateway users can
+            # opt into complete between-tool-call thinking text independently
+            # via display.thinking_progress.
+            _should_relay_thinking = (
+                getattr(agent, '_delegate_depth', 0) > 0
+                or getattr(agent, 'thinking_progress', False)
+            )
+            if (assistant_message.content and agent.tool_progress_callback and _should_relay_thinking):
                 _think_text = assistant_message.content.strip()
                 # Strip reasoning XML tags that shouldn't leak to parent display
                 _think_text = re.sub(
                     r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
                 ).strip()
-                # For subagents: relay first line to parent display (existing behaviour).
-                # For all agents with a structured callback: emit reasoning.available event.
-                first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-                if first_line and getattr(agent, '_delegate_depth', 0) > 0:
+                if getattr(agent, 'thinking_progress', False):
+                    # Explicit thinking_progress: relay complete text, no limit.
+                    _relay_text = _think_text or ""
+                else:
+                    # Subagent relay: first line, truncated.
+                    _relay_text = _think_text.split('\n')[0][:80] if _think_text else ""
+                if _relay_text:
                     try:
-                        agent.tool_progress_callback("_thinking", first_line)
+                        agent.tool_progress_callback("_thinking", _relay_text)
                     except Exception:
                         pass
                 elif _think_text:

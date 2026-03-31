@@ -91,24 +91,20 @@ def _get_backend() -> str:
     if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
 
-    # Fallback for manual / legacy config — use whichever key is present.
-    has_firecrawl = (
-        _has_env("FIRECRAWL_API_KEY")
-        or _has_env("FIRECRAWL_API_URL")
-        or _is_tool_gateway_ready()
+    # Fallback for manual / legacy config — pick the highest-priority
+    # available backend. Firecrawl also counts as available when the managed
+    # tool gateway is configured for Nous subscribers.
+    backend_candidates = (
+        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
+        ("parallel", _has_env("PARALLEL_API_KEY")),
+        ("tavily", _has_env("TAVILY_API_KEY")),
+        ("exa", _has_env("EXA_API_KEY")),
     )
-    has_parallel = _has_env("PARALLEL_API_KEY")
-    has_tavily = _has_env("TAVILY_API_KEY")
-    has_exa = _has_env("EXA_API_KEY")
-    if has_exa and not has_firecrawl and not has_parallel and not has_tavily:
-        return "exa"
-    if has_tavily and not has_firecrawl and not has_parallel:
-        return "tavily"
-    if has_parallel and not has_firecrawl:
-        return "parallel"
+    for backend, available in backend_candidates:
+        if available:
+            return backend
 
-    # Default to firecrawl (backward compat, or when both are set)
-    return "firecrawl"
+    return "firecrawl"  # default (backward compat)
 
 
 def _is_backend_available(backend: str) -> bool:

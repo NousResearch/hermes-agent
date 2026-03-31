@@ -406,8 +406,11 @@ def run_doctor(args):
     if terminal_env == "docker":
         if shutil.which("docker"):
             # Check if docker daemon is running
-            result = subprocess.run(["docker", "info"], capture_output=True)
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
                 check_ok("docker", "(daemon running)")
             else:
                 check_fail("docker daemon not running")
@@ -426,12 +429,16 @@ def run_doctor(args):
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
         if ssh_host:
             # Try to connect
-            result = subprocess.run(
-                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(
+                    ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
                 check_ok(f"SSH connection to {ssh_host}")
             else:
                 check_fail(f"SSH connection to {ssh_host}")

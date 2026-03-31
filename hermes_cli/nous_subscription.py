@@ -131,6 +131,7 @@ def _browser_label(current_provider: str) -> str:
     mapping = {
         "browserbase": "Browserbase",
         "browser-use": "Browser Use",
+        "camofox": "Camofox",
         "local": "Local browser",
     }
     return mapping.get(current_provider or "local", current_provider or "Local browser")
@@ -144,6 +145,64 @@ def _tts_label(current_provider: str) -> str:
         "neutts": "NeuTTS",
     }
     return mapping.get(current_provider or "edge", current_provider or "Edge TTS")
+
+
+def _resolve_browser_feature_state(
+    *,
+    browser_tool_enabled: bool,
+    browser_provider: str,
+    browser_provider_explicit: bool,
+    browser_local_available: bool,
+    direct_camofox: bool,
+    direct_browserbase: bool,
+    direct_browser_use: bool,
+    managed_browser_available: bool,
+) -> tuple[str, bool, bool, bool]:
+    """Resolve browser availability using the same precedence as runtime."""
+    if direct_camofox:
+        return "camofox", True, bool(browser_tool_enabled), False
+
+    if browser_provider_explicit:
+        current_provider = browser_provider or "local"
+        if current_provider == "browserbase":
+            provider_available = managed_browser_available or direct_browserbase
+            available = bool(browser_local_available and provider_available)
+            managed = bool(
+                browser_tool_enabled
+                and browser_local_available
+                and managed_browser_available
+                and not direct_browserbase
+            )
+            active = bool(browser_tool_enabled and available)
+            return current_provider, available, active, managed
+        if current_provider == "browser-use":
+            available = bool(browser_local_available and direct_browser_use)
+            active = bool(browser_tool_enabled and available)
+            return current_provider, available, active, False
+        if current_provider == "camofox":
+            return current_provider, False, False, False
+
+        current_provider = "local"
+        available = bool(browser_local_available)
+        active = bool(browser_tool_enabled and available)
+        return current_provider, available, active, False
+
+    if managed_browser_available or direct_browserbase:
+        available = bool(browser_local_available)
+        managed = bool(
+            browser_tool_enabled
+            and browser_local_available
+            and managed_browser_available
+            and not direct_browserbase
+        )
+        active = bool(browser_tool_enabled and available)
+        return "browserbase", available, active, managed
+
+    available = bool(browser_local_available)
+    active = bool(browser_tool_enabled and available)
+    return "local", available, active, False
+
+
 def get_nous_subscription_features(
     config: Optional[Dict[str, object]] = None,
 ) -> NousSubscriptionFeatures:
@@ -168,22 +227,22 @@ def get_nous_subscription_features(
     browser_tool_enabled = _toolset_enabled(config, "browser")
     modal_tool_enabled = _toolset_enabled(config, "terminal")
 
-    web_backend = str(config.get("web", {}).get("backend") or "").strip().lower() if isinstance(config.get("web"), dict) else ""
-    tts_provider = str(config.get("tts", {}).get("provider") or "edge").strip().lower() if isinstance(config.get("tts"), dict) else "edge"
+    web_cfg = config.get("web") if isinstance(config.get("web"), dict) else {}
+    tts_cfg = config.get("tts") if isinstance(config.get("tts"), dict) else {}
+    browser_cfg = config.get("browser") if isinstance(config.get("browser"), dict) else {}
+    terminal_cfg = config.get("terminal") if isinstance(config.get("terminal"), dict) else {}
+
+    web_backend = str(web_cfg.get("backend") or "").strip().lower()
+    tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
+    browser_provider_explicit = "cloud_provider" in browser_cfg
     browser_provider = normalize_browser_cloud_provider(
-        config.get("browser", {}).get("cloud_provider")
-        if isinstance(config.get("browser"), dict)
-        else None
+        browser_cfg.get("cloud_provider") if browser_provider_explicit else None
     )
     terminal_backend = (
-        str(config.get("terminal", {}).get("backend") or "local").strip().lower()
-        if isinstance(config.get("terminal"), dict)
-        else "local"
+        str(terminal_cfg.get("backend") or "local").strip().lower()
     )
     modal_mode = normalize_modal_mode(
-        config.get("terminal", {}).get("modal_mode")
-        if isinstance(config.get("terminal"), dict)
-        else None
+        terminal_cfg.get("modal_mode")
     )
 
     direct_exa = bool(get_env_value("EXA_API_KEY"))
@@ -193,6 +252,7 @@ def get_nous_subscription_features(
     direct_fal = bool(get_env_value("FAL_KEY"))
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
+    direct_camofox = bool(get_env_value("CAMOFOX_URL"))
     direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
     direct_modal = has_direct_modal_credentials()
@@ -241,26 +301,21 @@ def get_nous_subscription_features(
     )
     tts_active = bool(tts_tool_enabled and tts_available)
 
-    browser_current_provider = browser_provider or "local"
     browser_local_available = _has_agent_browser()
-    browser_managed = (
-        browser_tool_enabled
-        and browser_current_provider == "browserbase"
-        and managed_browser_available
-        and not direct_browserbase
-    )
-    browser_available = bool(
-        browser_local_available
-        or (browser_current_provider == "browserbase" and (managed_browser_available or direct_browserbase))
-        or (browser_current_provider == "browser-use" and direct_browser_use)
-    )
-    browser_active = bool(
-        browser_tool_enabled
-        and (
-            (browser_current_provider == "local" and browser_local_available)
-            or (browser_current_provider == "browserbase" and (managed_browser_available or direct_browserbase))
-            or (browser_current_provider == "browser-use" and direct_browser_use)
-        )
+    (
+        browser_current_provider,
+        browser_available,
+        browser_active,
+        browser_managed,
+    ) = _resolve_browser_feature_state(
+        browser_tool_enabled=browser_tool_enabled,
+        browser_provider=browser_provider,
+        browser_provider_explicit=browser_provider_explicit,
+        browser_local_available=browser_local_available,
+        direct_camofox=direct_camofox,
+        direct_browserbase=direct_browserbase,
+        direct_browser_use=direct_browser_use,
+        managed_browser_available=managed_browser_available,
     )
 
     if terminal_backend != "modal":
@@ -346,7 +401,7 @@ def get_nous_subscription_features(
             direct_override=browser_active and not browser_managed,
             toolset_enabled=browser_tool_enabled,
             current_provider=_browser_label(browser_current_provider),
-            explicit_configured=isinstance(config.get("browser"), dict) and "cloud_provider" in config.get("browser", {}),
+            explicit_configured=browser_provider_explicit,
         ),
         "modal": NousFeatureState(
             key="modal",

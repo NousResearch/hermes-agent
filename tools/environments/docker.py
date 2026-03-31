@@ -315,7 +315,7 @@ class DockerEnvironment(BaseEnvironment):
         # Mount credential files (OAuth tokens, etc.) declared by skills.
         # Read-only so the container can authenticate but not modify host creds.
         try:
-            from tools.credential_files import get_credential_file_mounts
+            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
 
             for mount_entry in get_credential_file_mounts():
                 volume_args.extend([
@@ -326,6 +326,20 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker: mounting credential %s -> %s",
                     mount_entry["host_path"],
                     mount_entry["container_path"],
+                )
+
+            # Mount the skills directory so skill scripts/templates are
+            # available inside the container at the same relative path.
+            skills_mount = get_skills_directory_mount()
+            if skills_mount:
+                volume_args.extend([
+                    "-v",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
                 )
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)

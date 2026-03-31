@@ -354,7 +354,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
 
     # Quarantine the bundle
-    q_path = quarantine_bundle(bundle)
+    try:
+        q_path = quarantine_bundle(bundle)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        from tools.skills_hub import append_audit_log
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_path", str(exc))
+        return
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     # Scan
@@ -414,7 +421,15 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             return
 
     # Install
-    install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    try:
+        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+    except ValueError as exc:
+        c.print(f"[bold red]Installation blocked:[/] {exc}\n")
+        shutil.rmtree(q_path, ignore_errors=True)
+        from tools.skills_hub import append_audit_log
+        append_audit_log("BLOCKED", bundle.name, bundle.source,
+                         bundle.trust_level, "invalid_path", str(exc))
+        return
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")

@@ -113,15 +113,61 @@ class DaytonaEnvironment(BaseEnvironment):
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)
 
-        # Resolve cwd: detect actual home dir inside the sandbox
-        if self._requested_cwd in ("~", "/home/daytona"):
-            try:
-                home = self._sandbox.process.exec("echo $HOME").result.strip()
-                if home:
+        # Detect remote home dir first so mounts go to the right place.
+        self._remote_home = "/root"
+        try:
+            home = self._sandbox.process.exec("echo $HOME").result.strip()
+            if home:
+                self._remote_home = home
+                if self._requested_cwd in ("~", "/home/daytona"):
                     self.cwd = home
-            except Exception:
-                pass  # leave cwd as-is; sandbox will use its own default
-            logger.info("Daytona: resolved cwd to %s", self.cwd)
+        except Exception:
+            pass
+        logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
+
+        # Track synced files to avoid redundant uploads.
+        # Key: remote_path, Value: (mtime, size)
+        self._synced_files: Dict[str, tuple] = {}
+
+        # Upload credential files and skills directory into the sandbox.
+        self._sync_skills_and_credentials()
+
+    def _upload_if_changed(self, host_path: str, remote_path: str) -> bool:
+        """Upload a file if its mtime/size changed since last sync."""
+        hp = Path(host_path)
+        try:
+            stat = hp.stat()
+            file_key = (stat.st_mtime, stat.st_size)
+        except OSError:
+            return False
+        if self._synced_files.get(remote_path) == file_key:
+            return False
+        try:
+            parent = str(Path(remote_path).parent)
+            self._sandbox.process.exec(f"mkdir -p {parent}")
+            self._sandbox.fs.upload_file(host_path, remote_path)
+            self._synced_files[remote_path] = file_key
+            return True
+        except Exception as e:
+            logger.debug("Daytona: upload failed %s: %s", host_path, e)
+            return False
+
+    def _sync_skills_and_credentials(self) -> None:
+        """Upload changed credential files and skill files into the sandbox."""
+        container_base = f"{self._remote_home}/.hermes"
+        try:
+            from tools.credential_files import get_credential_file_mounts, iter_skills_files
+
+            for mount_entry in get_credential_file_mounts():
+                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
+                if self._upload_if_changed(mount_entry["host_path"], remote_path):
+                    logger.debug("Daytona: synced credential %s", remote_path)
+
+            for entry in iter_skills_files(container_base=container_base):
+                if self._upload_if_changed(entry["host_path"], entry["container_path"]):
+                    logger.debug("Daytona: synced skill %s", entry["container_path"])
+        except Exception as e:
+            logger.debug("Daytona: could not sync skills/credentials: %s", e)
 
     def _ensure_sandbox_ready(self):
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
@@ -191,6 +237,9 @@ class DaytonaEnvironment(BaseEnvironment):
                 stdin_data: Optional[str] = None) -> dict:
         with self._lock:
             self._ensure_sandbox_ready()
+        # Incremental sync before each command so mid-session credential
+        # refreshes and skill updates are picked up.
+        self._sync_skills_and_credentials()
 
         if stdin_data is not None:
             marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"

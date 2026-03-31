@@ -2393,21 +2393,20 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 raise AuthError("No runtime API key available to fetch models",
                                 provider="nous", code="invalid_token")
 
-            model_ids = fetch_nous_models(
-                inference_base_url=runtime_base_url,
-                api_key=runtime_key,
-                timeout_seconds=timeout_seconds,
-                verify=verify,
-            )
+            # Use curated model list (same as OpenRouter defaults) instead
+            # of the full /models dump which returns hundreds of models.
+            from hermes_cli.models import _PROVIDER_MODELS
+            model_ids = _PROVIDER_MODELS.get("nous", [])
 
             print()
             if model_ids:
+                print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
                 selected_model = _prompt_model_selection(model_ids)
                 if selected_model:
                     _save_model_choice(selected_model)
                     print(f"Default model set to: {selected_model}")
             else:
-                print("No models were returned by the inference API.")
+                print("No curated models available for Nous Portal.")
         except Exception as exc:
             message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
             print()

@@ -41,8 +41,8 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),
+    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
+    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
@@ -71,6 +71,10 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # File copy/move/edit into sensitive system paths
+    (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
+    (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
+    (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
 ]
 
 
@@ -237,7 +241,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int = 60,
+                              timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
@@ -252,6 +256,9 @@ def prompt_dangerous_approval(command: str, description: str,
 
     Returns: 'once', 'session', 'always', or 'deny'
     """
+    if timeout_seconds is None:
+        timeout_seconds = _get_approval_timeout()
+
     if approval_callback is not None:
         try:
             return approval_callback(command, description,
@@ -332,15 +339,28 @@ def _normalize_approval_mode(mode) -> str:
     return "manual"
 
 
-def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+def _get_approval_config() -> dict:
+    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        mode = config.get("approvals", {}).get("mode", "manual")
-        return _normalize_approval_mode(mode)
+        return config.get("approvals", {}) or {}
     except Exception:
-        return "manual"
+        return {}
+
+
+def _get_approval_mode() -> str:
+    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    mode = _get_approval_config().get("mode", "manual")
+    return _normalize_approval_mode(mode)
+
+
+def _get_approval_timeout() -> int:
+    """Read the approval timeout from config. Defaults to 60 seconds."""
+    try:
+        return int(_get_approval_config().get("timeout", 60))
+    except (ValueError, TypeError):
+        return 60
 
 
 def _smart_approve(command: str, description: str) -> str:

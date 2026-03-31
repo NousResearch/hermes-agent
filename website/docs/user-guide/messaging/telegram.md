@@ -161,9 +161,35 @@ Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
 Hermes Agent works in Telegram group chats with a few considerations:
 
 - **Privacy mode** determines what messages the bot can see (see [Step 3](#step-3-privacy-mode-critical-for-groups))
-- When privacy mode is on, **@mention the bot** (e.g., `@my_hermes_bot what's the weather?`) or **reply to its messages** to interact
-- When privacy mode is off (or bot is admin), the bot sees all messages and can participate naturally
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
+- You can keep the bot from responding to ordinary group chatter with `telegram.require_mention: true`
+- With `telegram.require_mention: true`, group messages are accepted when they are:
+  - slash commands
+  - replies to one of the bot's messages
+  - `@botusername` mentions
+  - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+
+### Example group trigger configuration
+
+Add this to `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  require_mention: true
+  mention_patterns:
+    - "^\\s*chompy\\b"
+```
+
+This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+
+### Notes on `mention_patterns`
+
+- Patterns use Python regular expressions
+- Matching is case-insensitive
+- Patterns are checked against both text messages and media captions
+- Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
+- If you want a pattern to match only at the start of a message, anchor it with `^`
 
 ## Private Chat Topics (Bot API 9.4)
 

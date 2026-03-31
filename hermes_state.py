@@ -1035,7 +1035,13 @@ class SessionDB:
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
 
-        # Step 5: Wrap unquoted hyphenated terms (e.g. ``chat-send``) in
+        # Step 5: Wrap unquoted dotted terms (e.g. ``P2.2``, ``simulate.p2.test.ts``)
+        # in double quotes. In practice, FTS5 query parsing can treat dots as
+        # syntax boundaries, which may produce OperationalError or zero results.
+        # Quoting forces phrase semantics and avoids query parse edge cases.
+        sanitized = re.sub(r"\b([\w-]+(?:\.[\w-]+)+)\b", r'"\1"', sanitized)
+
+        # Step 6: Wrap unquoted hyphenated terms (e.g. ``chat-send``) in
         # double quotes.  FTS5's tokenizer splits on hyphens, turning
         # ``chat-send`` into ``chat AND send``.  Quoting preserves the
         # intended phrase match.

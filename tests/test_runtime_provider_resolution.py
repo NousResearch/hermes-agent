@@ -545,7 +545,7 @@ def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch)
 
     assert resolved["provider"] == "alibaba"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
+    assert resolved["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
 
 def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch):

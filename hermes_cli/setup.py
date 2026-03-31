@@ -883,6 +883,7 @@ def setup_model_provider(config: dict):
         "MiniMax China (mainland China endpoint)",
         "Kilo Code (Kilo Gateway API)",
         "Anthropic (Claude models — API key or Claude Code subscription)",
+        "Claude Code CLI (spawns `claude -p`)",
         "AI Gateway (Vercel — 200+ models, pay-per-use)",
         "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
         "OpenCode Zen (35+ curated models, pay-as-you-go)",
@@ -1355,7 +1356,24 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "anthropic")
         selected_base_url = ""
 
-    elif provider_idx == 10:  # AI Gateway
+    elif provider_idx == 10:  # Claude Code CLI
+        selected_provider = "claude-code-cli"
+        print()
+        print_header("Claude Code CLI")
+        pconfig = PROVIDER_REGISTRY["claude-code-cli"]
+        print_info("Hermes will start `claude -p` for each request.")
+        print_info("Use HERMES_CLAUDE_CODE_COMMAND or CLAUDE_CODE_PATH to override the command.")
+        print_info("Use HERMES_CLAUDE_CODE_ARGS for extra CLI args before `-p`.")
+        print_info(f"Base marker: {pconfig.inference_base_url}")
+        print()
+
+        if existing_custom:
+            save_env_value("OPENAI_BASE_URL", "")
+            save_env_value("OPENAI_API_KEY", "")
+        _set_model_provider(config, "claude-code-cli", pconfig.inference_base_url)
+        selected_base_url = pconfig.inference_base_url
+
+    elif provider_idx == 11:  # AI Gateway
         selected_provider = "ai-gateway"
         print()
         print_header("AI Gateway API Key")
@@ -1387,7 +1405,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
         _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
 
-    elif provider_idx == 11:  # Alibaba Cloud / DashScope
+    elif provider_idx == 12:  # Alibaba Cloud / DashScope
         selected_provider = "alibaba"
         print()
         print_header("Alibaba Cloud / DashScope API Key")
@@ -1419,7 +1437,7 @@ def setup_model_provider(config: dict):
         _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
         _set_model_provider(config, "alibaba", pconfig.inference_base_url)
 
-    elif provider_idx == 12:  # OpenCode Zen
+    elif provider_idx == 13:  # OpenCode Zen
         selected_provider = "opencode-zen"
         print()
         print_header("OpenCode Zen API Key")
@@ -1452,7 +1470,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 13:  # OpenCode Go
+    elif provider_idx == 14:  # OpenCode Go
         selected_provider = "opencode-go"
         print()
         print_header("OpenCode Go API Key")
@@ -1485,7 +1503,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 14:  # GitHub Copilot
+    elif provider_idx == 15:  # GitHub Copilot
         selected_provider = "copilot"
         print()
         print_header("GitHub Copilot")
@@ -1518,7 +1536,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 15:  # GitHub Copilot ACP
+    elif provider_idx == 16:  # GitHub Copilot ACP
         selected_provider = "copilot-acp"
         print()
         print_header("GitHub Copilot ACP")
@@ -1534,7 +1552,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    elif provider_idx == 16:  # Hugging Face Inference Providers
+    elif provider_idx == 17:  # Hugging Face Inference Providers
         selected_provider = "huggingface"
         print()
         print_header("Hugging Face API Token")
@@ -1553,7 +1571,7 @@ def setup_model_provider(config: dict):
         _set_model_provider(config, "huggingface", pconfig.inference_base_url)
         selected_base_url = pconfig.inference_base_url
 
-    # else: provider_idx == 17 (Keep current) — only shown when a provider already exists
+    # else: provider_idx == 18 (Keep current) — only shown when a provider already exists
     # Normalize "keep current" to an explicit provider so downstream logic
     # doesn't fall back to the generic OpenRouter/static-model path.
     if selected_provider is None:
@@ -1726,7 +1744,7 @@ def setup_model_provider(config: dict):
                     _set_default_model(config, custom)
             _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
             _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider == "copilot-acp":
+        elif selected_provider in ("copilot-acp", "claude-code-cli"):
             _setup_provider_model_selection(
                 config, selected_provider, current_model,
                 prompt_choice, prompt,

@@ -465,9 +465,16 @@ class TestGetTextAuxiliaryClient:
         assert model == "google/gemini-3-flash-preview"
 
     def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         # Override the autouse monkeypatch for codex
         monkeypatch.setattr(
             "agent.auxiliary_client._read_codex_access_token",
@@ -726,10 +733,17 @@ class TestVisionClientFallback:
 
     def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
         """When explicitly forced to 'main', vision CAN use custom endpoint."""
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
@@ -827,9 +841,16 @@ class TestResolveForcedProvider:
         assert model is None
 
     def test_forced_main_uses_custom(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")
@@ -858,10 +879,17 @@ class TestResolveForcedProvider:
 
     def test_forced_main_skips_openrouter_nous(self, monkeypatch):
         """Even if OpenRouter key is set, 'main' skips it."""
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")

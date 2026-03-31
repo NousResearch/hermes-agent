@@ -364,20 +364,19 @@ def _load_gateway_config() -> dict:
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from env/config — mirrors the resolution in _run_agent_sync.
+    """Read model from config.yaml — single source of truth.
 
     Without this, temporary AIAgent instances (memory flush, /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
     """
-    model = os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL") or ""
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
-        model = model_cfg
+        return model_cfg
     elif isinstance(model_cfg, dict):
-        model = model_cfg.get("default") or model_cfg.get("model") or model
-    return model
+        return model_cfg.get("default") or model_cfg.get("model") or ""
+    return ""
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -2762,7 +2761,7 @@ class GatewayRunner:
                     {
                         "role": "session_meta",
                         "tools": tool_defs or [],
-                        "model": os.getenv("HERMES_MODEL", ""),
+                        "model": _resolve_gateway_model(),
                         "platform": source.platform.value if source.platform else "",
                         "timestamp": ts,
                     }
@@ -3227,9 +3226,11 @@ class GatewayRunner:
             except Exception:
                 current_provider = "openrouter"
 
-        # Detect custom endpoint
-        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
-            current_provider = "custom"
+        # Detect custom endpoint from config base_url
+        if current_provider == "openrouter":
+            _cfg_base = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+            if _cfg_base and "openrouter.ai" not in _cfg_base:
+                current_provider = "custom"
 
         current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
 

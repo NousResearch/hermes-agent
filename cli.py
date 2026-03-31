@@ -1124,9 +1124,9 @@ class HermesCLI:
         self.acp_args: list[str] = []
         self.base_url = (
             base_url
-            or os.getenv("OPENAI_BASE_URL")
-            or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
-        )
+            or CLI_CONFIG["model"].get("base_url", "")
+            or os.getenv("OPENROUTER_BASE_URL", "")
+        ) or None
         # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
         # custom endpoint → prefer OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.
@@ -3239,7 +3239,7 @@ class HermesCLI:
                         print(f"      {mid}{current_marker}")
                 elif p["id"] == "custom":
                     from hermes_cli.models import _get_custom_base_url
-                    custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                    custom_url = _get_custom_base_url()
                     if custom_url:
                         print(f"      endpoint: {custom_url}")
                     if is_active:

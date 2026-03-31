@@ -458,7 +458,7 @@ class GatewayRunner:
 
         # Track active fallback model/provider when primary is rate-limited.
         # Set after an agent run where fallback was activated; cleared when
-        # the primary model succeeds again or the user switches via /model.
+        # the primary model succeeds again or the user restarts the gateway.
         self._effective_model: Optional[str] = None
         self._effective_provider: Optional[str] = None
 
@@ -3244,7 +3244,7 @@ class GatewayRunner:
             lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
 
         lines.append("")
-        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Switch model: `hermes model` (outside gateway)")
         lines.append("Setup: `hermes setup`")
         return "\n".join(lines)
     
@@ -5117,7 +5117,7 @@ class GatewayRunner:
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
     def _evict_cached_agent(self, session_key: str) -> None:
-        """Remove a cached agent for a session (called on /new, /model, etc)."""
+        """Remove a cached agent for a session (called on /new, /reset, etc)."""
         _lock = getattr(self, "_agent_cache_lock", None)
         if _lock:
             with _lock:
@@ -5779,7 +5779,7 @@ class GatewayRunner:
             response = await loop.run_in_executor(None, run_sync)
 
             # Track fallback model state: if the agent switched to a
-            # fallback model during this run, persist it so /model shows
+            # fallback model during this run, persist it so /provider shows
             # the actually-active model instead of the config default.
             _agent = agent_holder[0]
             if _agent is not None and hasattr(_agent, 'model'):

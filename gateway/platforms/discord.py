@@ -1518,11 +1518,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reset(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reset", "Session reset~")
 
-        @tree.command(name="model", description="Show or change the model")
-        @discord.app_commands.describe(name="Model name (e.g. anthropic/claude-sonnet-4). Leave empty to see current.")
-        async def slash_model(interaction: discord.Interaction, name: str = ""):
-            await self._run_simple_slash(interaction, f"/model {name}".strip())
-
         @tree.command(name="reasoning", description="Show or change reasoning effort")
         @discord.app_commands.describe(effort="Reasoning effort: xhigh, high, medium, low, minimal, or none.")
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):

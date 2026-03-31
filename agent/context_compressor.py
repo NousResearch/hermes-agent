@@ -199,30 +199,39 @@ class ContextCompressor:
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
+    # Truncation limits for the summarizer input.  These bound how much of
+    # each message the summary model sees — the budget is the *summary*
+    # model's context window, not the main model's.
+    _CONTENT_MAX = 6000       # total chars per message body
+    _CONTENT_HEAD = 4000      # chars kept from the start
+    _CONTENT_TAIL = 1500      # chars kept from the end
+    _TOOL_ARGS_MAX = 1500     # tool call argument chars
+    _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
-        Includes tool call arguments and result content (up to 3000 chars
-        per message) so the summarizer can preserve specific details like
-        file paths, commands, and outputs.
+        Includes tool call arguments and result content (up to
+        ``_CONTENT_MAX`` chars per message) so the summarizer can preserve
+        specific details like file paths, commands, and outputs.
         """
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = msg.get("content") or ""
 
-            # Tool results: keep more content than before (3000 chars)
+            # Tool results: keep enough content for the summarizer
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                if len(content) > 3000:
-                    content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
+                if len(content) > self._CONTENT_MAX:
+                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
-                if len(content) > 3000:
-                    content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
+                if len(content) > self._CONTENT_MAX:
+                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -232,8 +241,8 @@ class ContextCompressor:
                             name = fn.get("name", "?")
                             args = fn.get("arguments", "")
                             # Truncate long arguments but keep enough for context
-                            if len(args) > 500:
-                                args = args[:400] + "..."
+                            if len(args) > self._TOOL_ARGS_MAX:
+                                args = args[:self._TOOL_ARGS_HEAD] + "..."
                             tc_parts.append(f"  {name}({args})")
                         else:
                             fn = getattr(tc, "function", None)
@@ -244,8 +253,8 @@ class ContextCompressor:
                 continue
 
             # User and other roles
-            if len(content) > 3000:
-                content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
+            if len(content) > self._CONTENT_MAX:
+                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
@@ -310,6 +319,9 @@ Update the summary using this exact structure. PRESERVE all existing information
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
 
+## Tools & Patterns
+[Which tools were used, how they were used effectively, and any tool-specific discoveries. Accumulate across compactions.]
+
 Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions.
 
 Write only the summary body. Do not include any preamble or prefix."""
@@ -347,6 +359,9 @@ Use this exact structure:
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
+
+## Tools & Patterns
+[Which tools were used, how they were used effectively, and any tool-specific discoveries (e.g., preferred flags, working invocations, successful command patterns)]
 
 Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions. The goal is to prevent the next assistant from repeating work or losing important details.
 

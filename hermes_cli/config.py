@@ -2040,7 +2040,7 @@ def config_command(args):
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
-        if not key or not value:
+        if not key or value is None:
             print("Usage: hermes config set <key> <value>")
             print()
             print("Examples:")

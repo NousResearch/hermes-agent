@@ -63,8 +63,16 @@
 
 /* Navbar styling */
 .navbar {
-  backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(255, 215, 0, 0.08);
+}
+
+/* Frosted-glass blur — desktop only.
+   On mobile, backdrop-filter creates a stacking context that hides
+   the navbar-sidebar menu content (Docusaurus #6996). */
+@media (min-width: 997px) {
+  .navbar {
+    backdrop-filter: blur(12px);
+  }
 }
 
 .navbar__title {

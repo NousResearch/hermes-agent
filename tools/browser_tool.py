@@ -267,6 +267,19 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     return _cached_cloud_provider
 
 
+def _is_local_backend() -> bool:
+    """Return True when the browser runs locally (no cloud provider).
+
+    SSRF protection is only meaningful for cloud backends (Browserbase,
+    BrowserUse) where the agent could reach internal resources on a remote
+    machine.  For local backends — Camofox, or the built-in headless
+    Chromium without a cloud provider — the user already has full terminal
+    and network access on the same machine, so the check adds no security
+    value.
+    """
+    return _is_camofox_mode() or _get_cloud_provider() is None
+
+
 def _allow_private_urls() -> bool:
     """Return whether the browser is allowed to navigate to private/internal addresses.
 
@@ -1066,9 +1079,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         JSON string with navigation result (includes stealth features info on first nav)
     """
     # SSRF protection — block private/internal addresses before navigating.
-    # Can be opted out via ``browser.allow_private_urls`` in config for local
-    # development or LAN access use cases.
-    if not _allow_private_urls() and not _is_safe_url(url):
+    # Skipped for local backends (Camofox, headless Chromium without a cloud
+    # provider) because the agent already has full local network access via
+    # the terminal tool.  Can also be opted out for cloud mode via
+    # ``browser.allow_private_urls`` in config.
+    if not _is_local_backend() and not _allow_private_urls() and not _is_safe_url(url):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a private or internal address",
@@ -1110,7 +1125,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
-        if not _allow_private_urls() and final_url and final_url != url and not _is_safe_url(final_url):
+        # Skipped for local backends (same rationale as the pre-nav check).
+        if not _is_local_backend() and not _allow_private_urls() and final_url and final_url != url and not _is_safe_url(final_url):
             # Navigate away to a blank page to prevent snapshot leaks
             _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
             return json.dumps({

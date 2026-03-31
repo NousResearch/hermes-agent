@@ -7568,6 +7568,19 @@ class HermesCLI:
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
+
+                        # Push the input prompt toward the bottom of the
+                        # terminal so it doesn't sit mid-screen after short
+                        # responses.  patch_stdout renders these newlines
+                        # above the input area, creating visual separation
+                        # and anchoring the prompt near the bottom.
+                        try:
+                            _pad = shutil.get_terminal_size().lines // 2
+                            if _pad > 2:
+                                _cprint("\n" * _pad)
+                        except Exception:
+                            pass
+
                         app.invalidate()  # Refresh status line
 
                         # Continuous voice: auto-restart recording after agent responds.

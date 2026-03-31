@@ -212,47 +212,7 @@ class TestSessionHygieneWarnThreshold:
         assert post_compress_tokens < warn_threshold
 
 
-class TestCompressionWarnRateLimit:
-    """Compression warning messages must be rate-limited per chat_id."""
 
-    def _make_runner(self):
-        from unittest.mock import MagicMock, patch
-        with patch("gateway.run.load_gateway_config"), \
-             patch("gateway.run.SessionStore"), \
-             patch("gateway.run.DeliveryRouter"):
-            from gateway.run import GatewayRunner
-            runner = GatewayRunner.__new__(GatewayRunner)
-            runner._compression_warn_sent = {}
-            runner._compression_warn_cooldown = 3600
-            return runner
-
-    def test_first_warn_is_sent(self):
-        runner = self._make_runner()
-        now = 1_000_000.0
-        last = runner._compression_warn_sent.get("chat:1", 0)
-        assert now - last >= runner._compression_warn_cooldown
-
-    def test_second_warn_suppressed_within_cooldown(self):
-        runner = self._make_runner()
-        now = 1_000_000.0
-        runner._compression_warn_sent["chat:1"] = now - 60  # 1 minute ago
-        last = runner._compression_warn_sent.get("chat:1", 0)
-        assert now - last < runner._compression_warn_cooldown
-
-    def test_warn_allowed_after_cooldown(self):
-        runner = self._make_runner()
-        now = 1_000_000.0
-        runner._compression_warn_sent["chat:1"] = now - 3601  # just past cooldown
-        last = runner._compression_warn_sent.get("chat:1", 0)
-        assert now - last >= runner._compression_warn_cooldown
-
-    def test_rate_limit_is_per_chat(self):
-        """Rate-limiting one chat must not suppress warnings for another."""
-        runner = self._make_runner()
-        now = 1_000_000.0
-        runner._compression_warn_sent["chat:1"] = now - 60  # suppressed
-        last_other = runner._compression_warn_sent.get("chat:2", 0)
-        assert now - last_other >= runner._compression_warn_cooldown
 
 
 class TestEstimatedTokenThreshold:
@@ -421,10 +381,6 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    assert len(adapter.sent) == 2
-    assert adapter.sent[0]["chat_id"] == "-1001"
-    assert "Session is large" in adapter.sent[0]["content"]
-    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
-    assert adapter.sent[1]["chat_id"] == "-1001"
-    assert "Compressed:" in adapter.sent[1]["content"]
-    assert adapter.sent[1]["metadata"] == {"thread_id": "17585"}
+    # Compression warnings are no longer sent to users — compression
+    # happens silently with server-side logging only.
+    assert len(adapter.sent) == 0

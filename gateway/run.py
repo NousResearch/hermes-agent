@@ -476,12 +476,7 @@ class GatewayRunner:
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
 
-        # Rate-limit compression warning messages sent to users.
-        # Keyed by chat_id — value is the timestamp of the last warning sent.
-        # Prevents the warning from firing on every message when a session
-        # remains above the threshold after compression.
-        self._compression_warn_sent: Dict[str, float] = {}
-        self._compression_warn_cooldown: int = 3600  # seconds (1 hour)
+
 
         # Ensure tirith security scanner is available (downloads if needed)
         try:
@@ -2354,18 +2349,7 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_adapter = self.adapters.get(source.platform)
                     _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                    if _hyg_adapter:
-                        try:
-                            await _hyg_adapter.send(
-                                source.chat_id,
-                                f"🗜️ Session is large ({_msg_count} messages, "
-                                f"~{_approx_tokens:,} tokens). Auto-compressing...",
-                                metadata=_hyg_meta,
-                            )
-                        except Exception:
-                            pass
 
                     try:
                         from run_agent import AIAgent
@@ -2426,70 +2410,17 @@ class GatewayRunner:
                                     f"{_approx_tokens:,}", f"{_new_tokens:,}",
                                 )
 
-                                if _hyg_adapter:
-                                    try:
-                                        await _hyg_adapter.send(
-                                            source.chat_id,
-                                            f"🗜️ Compressed: {_msg_count} → "
-                                            f"{_new_count} messages, "
-                                            f"~{_approx_tokens:,} → "
-                                            f"~{_new_tokens:,} tokens",
-                                            metadata=_hyg_meta,
-                                        )
-                                    except Exception:
-                                        pass
-
-                                # Still too large after compression — warn user
-                                # Rate-limited to once per cooldown period per
-                                # chat to avoid spamming on every message.
                                 if _new_tokens >= _warn_token_threshold:
                                     logger.warning(
                                         "Session hygiene: still ~%s tokens after "
-                                        "compression — suggesting /reset",
+                                        "compression",
                                         f"{_new_tokens:,}",
                                     )
-                                    _now = time.time()
-                                    _last_warn = self._compression_warn_sent.get(source.chat_id, 0)
-                                    if _hyg_adapter and _now - _last_warn >= self._compression_warn_cooldown:
-                                        self._compression_warn_sent[source.chat_id] = _now
-                                        try:
-                                            await _hyg_adapter.send(
-                                                source.chat_id,
-                                                "⚠️ Session is still very large "
-                                                "after compression "
-                                                f"(~{_new_tokens:,} tokens). "
-                                                "Consider using /reset to start "
-                                                "fresh if you experience issues.",
-                                                metadata=_hyg_meta,
-                                            )
-                                        except Exception:
-                                            pass
 
                     except Exception as e:
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e
                         )
-                        # Compression failed and session is dangerously large
-                        if _approx_tokens >= _warn_token_threshold:
-                            _hyg_adapter = self.adapters.get(source.platform)
-                            _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                            _now = time.time()
-                            _last_warn = self._compression_warn_sent.get(source.chat_id, 0)
-                            if _hyg_adapter and _now - _last_warn >= self._compression_warn_cooldown:
-                                self._compression_warn_sent[source.chat_id] = _now
-                                try:
-                                    await _hyg_adapter.send(
-                                        source.chat_id,
-                                        f"⚠️ Session is very large "
-                                        f"({_msg_count} messages, "
-                                        f"~{_approx_tokens:,} tokens) and "
-                                        "auto-compression failed. Consider "
-                                        "using /compress or /reset to avoid "
-                                        "issues.",
-                                        metadata=_hyg_meta,
-                                    )
-                                except Exception:
-                                    pass
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():

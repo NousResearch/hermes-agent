@@ -24,6 +24,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 
 # Tools that children must never have access to
@@ -437,6 +438,56 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+def _check_daily_budget(context: Optional[str] = None, parent_agent=None) -> Dict[str, Any]:
+    """
+    Check and enforce daily token budget before delegation.
+    
+    Returns dict with:
+      - allowed: bool - whether to proceed
+      - message: str - reason if blocked or warning
+      - context_limited: str - context truncated to 2000 tokens if needed
+    """
+    try:
+        from tools.enforce_token_discipline import (
+            check_and_enforce_budget,
+            apply_context_limit,
+            log_token_usage,
+            get_allowed_premium_models,
+        )
+    except ImportError as e:
+        logger.warning(f"Could not import enforce_token_discipline: {e}")
+        return {"allowed": True, "message": "", "context_limited": context}
+    
+    # Estimate tokens from context
+    task_id = getattr(parent_agent, '_session_id', 'delegate')
+    estimated_tokens = len(context or "") // 4 if context else 500  # Conservative est
+    
+    # Check budget
+    budget_ok, budget_msg = check_and_enforce_budget(
+        job_id=task_id,
+        estimated_tokens=estimated_tokens,
+        is_background_job=True,
+    )
+    
+    if not budget_ok:
+        return {
+            "allowed": False,
+            "message": budget_msg,
+            "context_limited": context,
+        }
+    
+    # Apply context limit (max 2000 tokens = ~8000 chars)
+    context_limited, _ = apply_context_limit(context or "", max_tokens=2000)
+    
+    result = {
+        "allowed": True,
+        "message": budget_msg,  # May contain warning
+        "context_limited": context_limited,
+    }
+    
+    return result
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -452,6 +503,11 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
 
+    Budget enforcement:
+      - Hard daily cap: $5.00 USD
+      - Warning threshold: $3.00 USD
+      - Per-job context limit: 2000 tokens
+      
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
@@ -466,6 +522,21 @@ def delegate_task(
                 "Subagents cannot spawn further subagents."
             )
         })
+    
+    # Check budget and apply context limits BEFORE proceeding
+    budget_check = _check_daily_budget(context, parent_agent)
+    if not budget_check["allowed"]:
+        return json.dumps({
+            "error": budget_check["message"],
+            "status": "blocked_by_budget",
+        })
+    
+    # Log any warning but continue
+    if budget_check["message"]:
+        logger.warning(f"[delegate] {budget_check['message']}")
+    
+    # Use limited context for all tasks
+    context = budget_check["context_limited"]
 
     # Load config
     cfg = _load_config()

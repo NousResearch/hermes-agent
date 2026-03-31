@@ -246,6 +246,17 @@ def _has_any_provider_configured() -> bool:
             pass
 
 
+    # Check config.yaml — if model is a dict with an explicit provider set,
+    # the user has gone through setup (fresh installs have model as a plain
+    # string).  Also covers custom endpoints that store api_key/base_url in
+    # config rather than .env.
+    if isinstance(model_cfg, dict):
+        cfg_provider = (model_cfg.get("provider") or "").strip()
+        cfg_base_url = (model_cfg.get("base_url") or "").strip()
+        cfg_api_key = (model_cfg.get("api_key") or "").strip()
+        if cfg_provider or cfg_base_url or cfg_api_key:
+            return True
+
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
     # Only count these if Hermes has been explicitly configured — Claude Code
     # being installed doesn't mean the user wants Hermes to use their tokens.

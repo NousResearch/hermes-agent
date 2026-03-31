@@ -51,6 +51,7 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
@@ -2254,6 +2255,7 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()
         self._should_exit = False
         self._last_ctrl_c_time = 0
+        self._vim_mode = self.config.get("tui", {}).get("vim_mode", False)
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -6461,6 +6463,14 @@ class HermesCLI:
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
             self._console_print(f"  Status bar {state}")
+        elif canonical == "vim":
+            self._vim_mode = not self._vim_mode
+            if self._vim_mode:
+                self._app.editing_mode = EditingMode.VI
+                self._console_print("  Vim mode enabled. Escape to toggle INSERT/NORMAL.")
+            else:
+                self._app.editing_mode = EditingMode.EMACS
+                self._console_print("  Vim mode disabled. Using standard keybindings.")
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "footer":
@@ -11388,6 +11398,7 @@ class HermesCLI:
             layout=layout,
             key_bindings=kb,
             style=style,
+            editing_mode=EditingMode.VI if self._vim_mode else EditingMode.EMACS,
             full_screen=False,
             mouse_support=False,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),

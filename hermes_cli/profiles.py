@@ -241,7 +241,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
         if isinstance(model_cfg, str):
             return model_cfg, None
         if isinstance(model_cfg, dict):
-            return model_cfg.get("model"), model_cfg.get("provider")
+            return model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider")
         return None, None
     except Exception:
         return None, None

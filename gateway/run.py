@@ -363,6 +363,30 @@ def _load_gateway_config() -> dict:
     return {}
 
 
+def _resolve_sender_profile(platform_value: str, user_id: str, config: dict) -> str | None:
+    """Return the profile name for a given platform sender from config routing.sender_profiles.
+
+    Config key format: "platform:normalized_id"
+    e.g. "whatsapp:573104851803", "discord:384435881706127380", "telegram:123456789"
+
+    The sender ID is normalized via _normalize_whatsapp_identifier (strips leading +
+    and @domain suffixes), so raw IDs from any platform work as keys.
+
+    Returns profile name string, or None if no mapping exists.
+    Configure via config.yaml:
+        routing:
+          sender_profiles:
+            whatsapp:573104851803: paco
+            discord:384435881706127380: work
+    """
+    sender_profiles = (config.get("routing") or {}).get("sender_profiles") or {}
+    if not sender_profiles or not user_id:
+        return None
+    normalized = _normalize_whatsapp_identifier(user_id)
+    lookup_key = f"{platform_value}:{normalized}"
+    return sender_profiles.get(lookup_key)
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from env/config — mirrors the resolution in _run_agent_sync.
 
@@ -2078,7 +2102,15 @@ class GatewayRunner:
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
-        
+
+        # Start typing indicator immediately so the user sees the bubble
+        try:
+            _typing_adapter = self.adapters.get(source.platform)
+            if _typing_adapter and hasattr(_typing_adapter, "send_typing"):
+                await _typing_adapter.send_typing(source.chat_id)
+        except Exception:
+            pass
+
         # Set environment variables for tools
         self._set_session_env(context)
         
@@ -2094,7 +2126,35 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # Per-sender profile override: if a recognized sender has a dedicated
+        # Hermes profile, load that profile's SOUL.md / MEMORY.md / USER.md
+        # and prepend it as the identity context for this turn.
+        # Configured via routing.sender_profiles in config.yaml.
+        _routing_cfg = _load_gateway_config()
+        _profile_name = _resolve_sender_profile(source.platform.value, source.user_id or "", _routing_cfg)
+        if _profile_name:
+            try:
+                _profile_home = _hermes_home.parent / "profiles" / _profile_name
+                _profile_files = [
+                    (_profile_home / "SOUL.md", "# SOUL.md - Who You Are"),
+                    (_profile_home / "MEMORY.md", "# MEMORY (your personal notes)"),
+                    (_profile_home / "USER.md", "# USER PROFILE (who the user is)"),
+                ]
+                _profile_context = ""
+                for _pf, _label in _profile_files:
+                    if _pf.exists():
+                        _content = _pf.read_text(encoding="utf-8").strip()
+                        if _content:
+                            _profile_context += f"\n\n{_label}\n{_content}"
+                if _profile_context:
+                    context_prompt = _profile_context.strip() + (
+                        ("\n\n" + context_prompt) if context_prompt else ""
+                    )
+                    logger.debug("Loaded profile '%s' context for sender %s", _profile_name, _sender_num)
+            except Exception as _pe:
+                logger.debug("Failed to load profile '%s' context: %s", _profile_name, _pe)
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
@@ -2731,6 +2791,10 @@ class GatewayRunner:
                 pending = pop_pending(session_key)
                 if pending:
                     pending["timestamp"] = _time.time()
+                    # Store original message + session info so /approve can resume
+                    pending["original_message"] = message_text
+                    pending["original_source"] = source
+                    pending["original_session_id"] = session_entry.session_id
                     self._pending_approvals[session_key] = pending
                     # Append structured instructions so the user knows how to respond
                     cmd_preview = pending.get("command", "")
@@ -4591,6 +4655,33 @@ class GatewayRunner:
         logger.info("User approved dangerous command via /approve: %s...%s", cmd[:60], scope_msg)
         from tools.terminal_tool import terminal_tool
         result = terminal_tool(command=cmd, force=True)
+
+        # Resume the agent with the original message so it can continue where it left off
+        original_message = approval.get("original_message")
+        original_source = approval.get("original_source")
+        original_session_id = approval.get("original_session_id")
+        if original_message and original_source and original_session_id:
+            logger.info("Resuming agent after approval for session %s", original_session_id)
+            try:
+                # Build history for the resumed session
+                session_entry = self._get_or_create_session(original_source)
+                history = self._load_history(session_entry)
+                agent_result = await self._run_agent(
+                    message=original_message,
+                    context_prompt=None,
+                    history=history,
+                    source=original_source,
+                    session_id=original_session_id,
+                    session_key=session_key,
+                    event_message_id=None,
+                )
+                resumed_response = agent_result.get("final_response") or ""
+                if resumed_response:
+                    return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:1500]}\n```\n\n{resumed_response}"
+            except Exception as e:
+                logger.error("Failed to resume agent after approval: %s", e)
+                # Fall through to just return the command result
+
         return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
@@ -5138,6 +5229,27 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+
+        # Per-sender profile config override: load profile's config.yaml
+        # for display/tool settings when a dedicated profile exists.
+        # Driven by routing.sender_profiles in config.yaml (user_config already loaded above).
+        _profile_name_cfg = _resolve_sender_profile(source.platform.value, source.user_id or "", user_config)
+        if _profile_name_cfg:
+            try:
+                _profile_cfg_path = _hermes_home.parent / "profiles" / _profile_name_cfg / "config.yaml"
+                if _profile_cfg_path.exists():
+                    import yaml as _pcfg_yaml
+                    with open(_profile_cfg_path, encoding="utf-8") as _pcf:
+                        _profile_user_config = _pcfg_yaml.safe_load(_pcf) or {}
+                    # Merge profile display settings on top of gateway config
+                    for _k, _v in _profile_user_config.items():
+                        if isinstance(_v, dict) and isinstance(user_config.get(_k), dict):
+                            user_config[_k] = {**user_config[_k], **_v}
+                        else:
+                            user_config[_k] = _v
+                    logger.debug("Merged profile '%s' config for sender %s", _profile_name_cfg, _sender_num_cfg)
+            except Exception as _pce:
+                logger.debug("Failed to load profile '%s' config: %s", _profile_name_cfg, _pce)
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -6057,6 +6169,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
     
     loop = asyncio.get_event_loop()
+
+    # Increase thread pool size for parallel session handling.
+    # Default is min(32, cpu_count + 4) — bump to 32 to support more
+    # concurrent agent threads without queueing.
+    import concurrent.futures as _cf
+    loop.set_default_executor(_cf.ThreadPoolExecutor(max_workers=32, thread_name_prefix="hermes-worker"))
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, signal_handler)

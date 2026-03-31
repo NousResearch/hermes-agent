@@ -204,6 +204,22 @@ DEFAULT_CONFIG = {
         "summary_provider": "auto",
         "summary_base_url": None,
     },
+    # Per-sender profile routing (gateway mode).
+    # Maps "platform:normalized_sender_id" -> profile name.
+    # The matched profile's SOUL.md, MEMORY.md, USER.md, and config.yaml are
+    # loaded for that sender, overriding the default identity and settings.
+    # Platform values: whatsapp, discord, telegram, slack, signal
+    # Sender ID: normalized (no + prefix, no @domain suffix)
+    #
+    # Example config.yaml entry:
+    #   routing:
+    #     sender_profiles:
+    #       whatsapp:573104851803: paco
+    #       discord:384435881706127380: work
+    "routing": {
+        "sender_profiles": {},
+    },
+
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,
@@ -441,7 +457,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================

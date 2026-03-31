@@ -214,8 +214,9 @@ class TestStatusBarWidthSource:
                 frags = cli_obj._get_status_bar_fragments()
 
             total_text = "".join(text for _, text in frags)
-            assert len(total_text) <= width + 4, (  # +4 for minor padding chars
-                f"At width={width}, fragment total {len(total_text)} chars overflows "
+            display_width = cli_obj._status_bar_display_width(total_text)
+            assert display_width <= width + 4, (  # +4 for minor padding chars
+                f"At width={width}, fragment total {display_width} cells overflows "
                 f"({total_text!r})"
             )
 

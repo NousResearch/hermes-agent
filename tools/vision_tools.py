@@ -45,6 +45,28 @@ logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
+# Configurable HTTP download timeout for _download_image().
+# Separate from auxiliary.vision.timeout which governs the LLM API call.
+# Resolution: config.yaml auxiliary.vision.download_timeout → env var → 30s default.
+def _resolve_download_timeout() -> float:
+    env_val = os.getenv("HERMES_VISION_DOWNLOAD_TIMEOUT", "").strip()
+    if env_val:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg.get("auxiliary", {}).get("vision", {}).get("download_timeout")
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return 30.0
+
+_VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
+
 
 def _validate_image_url(url: str) -> bool:
     """
@@ -146,7 +168,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
             # SSRF: event_hooks validates each redirect target against private IP ranges
             async with httpx.AsyncClient(
-                timeout=30.0,
+                timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
@@ -183,6 +205,10 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                     exc_info=True,
                 )
     
+    if last_error is None:
+        raise RuntimeError(
+            f"_download_image exited retry loop without attempting (max_retries={max_retries})"
+        )
     raise last_error
 
 

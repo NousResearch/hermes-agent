@@ -50,6 +50,23 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+def _require_tty(command_name: str) -> None:
+    """Exit with a clear error if stdin is not a terminal.
+
+    Interactive TUI commands (hermes tools, hermes setup, hermes model) use
+    curses or input() prompts that spin at 100% CPU when stdin is a pipe.
+    This guard prevents accidental non-interactive invocation.
+    """
+    if not sys.stdin.isatty():
+        print(
+            f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
+            f"It cannot be run through a pipe or non-interactive subprocess.\n"
+            f"Run it directly in your terminal instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -617,6 +634,7 @@ def cmd_gateway(args):
 
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
+    _require_tty("whatsapp")
     import subprocess
     from pathlib import Path
     from hermes_cli.config import get_env_value, save_env_value
@@ -803,12 +821,14 @@ def cmd_whatsapp(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
+    _require_tty("setup")
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
 
 
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
+    _require_tty("model")
     from hermes_cli.auth import (
         resolve_provider, AuthError, format_auth_error,
     )
@@ -1096,14 +1116,20 @@ def _model_flow_nous(config, current_model="", args=None):
         # login_nous already handles model selection + config update
         return
 
-    # Already logged in — fetch models and select
-    print("Fetching models from Nous Portal...")
+    # Already logged in — use curated model list (same as OpenRouter defaults).
+    # The live /models endpoint returns hundreds of models; the curated list
+    # shows only agentic models users recognize from OpenRouter.
+    from hermes_cli.models import _PROVIDER_MODELS
+    model_ids = _PROVIDER_MODELS.get("nous", [])
+    if not model_ids:
+        print("No curated models available for Nous Portal.")
+        return
+
+    print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
+
+    # Verify credentials are still valid (catches expired sessions early)
     try:
         creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
-        model_ids = fetch_nous_models(
-            inference_base_url=creds.get("base_url", ""),
-            api_key=creds.get("api_key", ""),
-        )
     except Exception as exc:
         relogin = isinstance(exc, AuthError) and exc.relogin_required
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
@@ -1120,11 +1146,7 @@ def _model_flow_nous(config, current_model="", args=None):
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
             return
-        print(f"Could not fetch models: {msg}")
-        return
-
-    if not model_ids:
-        print("No models returned by the inference API.")
+        print(f"Could not verify credentials: {msg}")
         return
 
     selected = _prompt_model_selection(model_ids, current_model=current_model)
@@ -2494,6 +2516,7 @@ def cmd_version(args):
 
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
+    _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
     run_uninstall(args)
 
@@ -4204,6 +4227,7 @@ For more help on a command:
     def cmd_skills(args):
         # Route 'config' action to skills_config module
         if getattr(args, 'skills_action', None) == 'config':
+            _require_tty("skills config")
             from hermes_cli.skills_config import skills_command as skills_config_command
             skills_config_command(args)
         else:
@@ -4414,6 +4438,7 @@ For more help on a command:
             from hermes_cli.tools_config import tools_disable_enable_command
             tools_disable_enable_command(args)
         else:
+            _require_tty("tools")
             from hermes_cli.tools_config import tools_command
             tools_command(args)
 

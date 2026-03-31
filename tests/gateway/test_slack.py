@@ -126,9 +126,20 @@ class TestAppMentionHandler:
             "user": "testbot",
         })
 
+        # Mock AsyncWebClient so multi-workspace auth_test is awaitable
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+
         with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("asyncio.create_task"):
             asyncio.run(adapter.connect())
 

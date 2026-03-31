@@ -225,7 +225,8 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 30,         # seconds — increase for slow local vision models
+            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
+            "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
             "provider": "auto",
@@ -409,6 +410,7 @@ DEFAULT_CONFIG = {
     #   off    — skip all approval prompts (equivalent to --yolo)
     "approvals": {
         "mode": "manual",
+        "timeout": 60,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -737,6 +739,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://browser-use.com/",
         "tools": ["browser_navigate", "browser_click"],
         "password": True,
+        "category": "tool",
+    },
+    "CAMOFOX_URL": {
+        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
+        "prompt": "Camofox server URL",
+        "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
         "category": "tool",
     },
     "FAL_KEY": {

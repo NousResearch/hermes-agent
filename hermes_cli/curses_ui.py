@@ -4,6 +4,7 @@ Used by `hermes tools` and `hermes skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
+import sys
 from typing import Callable, List, Optional, Set
 
 from hermes_cli.colors import Colors, color
@@ -30,6 +31,11 @@ def curses_checklist(
     """
     if cancel_returns is None:
         cancel_returns = set(selected)
+
+    # Safety: curses and input() both hang or spin when stdin is not a
+    # terminal (e.g. subprocess pipe).  Return defaults immediately.
+    if not sys.stdin.isatty():
+        return cancel_returns
 
     try:
         import curses

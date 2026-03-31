@@ -55,6 +55,10 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 
 function formatOutgoingMessage(message) {
+  // In bot mode, messages come from a different number so the prefix is
+  // redundant — the sender identity is already clear.  Only prepend in
+  // self-chat mode where bot and user share the same number.
+  if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
 }
 

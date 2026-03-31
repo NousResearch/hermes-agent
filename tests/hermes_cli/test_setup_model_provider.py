@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hermes_cli.config import load_config, save_config, save_env_value
+from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 from hermes_cli.setup import _print_setup_summary, setup_model_provider
 
 
@@ -471,3 +472,58 @@ def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkey
 
     assert "Vision (image analysis)" in output
     assert "missing run 'hermes setup' to configure" not in output
+
+
+def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, True, True, False, True, True, "Camofox"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Camofox)" in output
+
+
+def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, "Browserbase"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Browserbase)" not in output
+    assert "Browser Automation" in output
+    assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output

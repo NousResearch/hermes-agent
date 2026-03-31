@@ -37,6 +37,9 @@ _PREFIX_PATTERNS = [
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
     r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
+    r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
+    r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
+    r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

@@ -1291,6 +1291,15 @@ class GatewayRunner:
                         await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
                         self.session_store._pre_flushed_sessions.add(entry.session_id)
+                        # Remove flushed expired session from the store so it
+                        # won't be re-discovered on the next gateway restart.
+                        with self.session_store._lock:
+                            self.session_store._entries.pop(key, None)
+                            self.session_store._save()
+                        logger.info(
+                            "Pre-reset memory flush completed for session %s",
+                            entry.session_id,
+                        )
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
             except Exception as e:

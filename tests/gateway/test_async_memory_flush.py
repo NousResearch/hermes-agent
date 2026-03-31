@@ -178,3 +178,63 @@ class TestPreFlushedSessionsTracking:
         assert "sid_a" not in idle_store._pre_flushed_sessions
         # discard on non-existent should not raise
         idle_store._pre_flushed_sessions.discard("sid_nonexistent")
+
+
+class TestFlushedSessionRemovedFromDisk:
+    """After a successful proactive flush, the session entry must be removed
+    from the on-disk store so that a gateway restart does not re-flush it."""
+
+    def test_flushed_entry_removed_from_entries(self, idle_store):
+        """Flushed expired sessions should be popped from _entries."""
+        key = "agent:main:discord:thread:123"
+        entry = SessionEntry(
+            session_key=key,
+            session_id="sid_flush_1",
+            created_at=datetime.now() - timedelta(hours=5),
+            updated_at=datetime.now() - timedelta(hours=5),
+            platform=Platform.DISCORD,
+            chat_type="thread",
+        )
+        idle_store._entries[key] = entry
+
+        # Simulate the post-flush cleanup from _session_expiry_watcher
+        idle_store._pre_flushed_sessions.add(entry.session_id)
+        with idle_store._lock:
+            idle_store._entries.pop(key, None)
+            idle_store._save()
+
+        assert key not in idle_store._entries
+        # A fresh load should also not contain the entry
+        idle_store._loaded = False
+        idle_store._ensure_loaded()
+        assert key not in idle_store._entries
+
+    def test_flushed_entry_survives_restart_without_cleanup(self, idle_store):
+        """Without the disk cleanup, a flushed session persists across restarts.
+
+        This test demonstrates the original bug: _pre_flushed_sessions is
+        in-memory only, so after re-load the entry reappears as flushable.
+        """
+        key = "agent:main:discord:thread:456"
+        entry = SessionEntry(
+            session_key=key,
+            session_id="sid_flush_2",
+            created_at=datetime.now() - timedelta(hours=5),
+            updated_at=datetime.now() - timedelta(hours=5),
+            platform=Platform.DISCORD,
+            chat_type="thread",
+        )
+        idle_store._entries[key] = entry
+        idle_store._save()
+
+        # Mark as flushed in-memory only (the old buggy behavior)
+        idle_store._pre_flushed_sessions.add(entry.session_id)
+
+        # Simulate a gateway restart — reset in-memory state, reload from disk
+        idle_store._pre_flushed_sessions = set()
+        idle_store._loaded = False
+        idle_store._ensure_loaded()
+
+        # The entry is back and would be re-flushed
+        assert key in idle_store._entries
+        assert entry.session_id not in idle_store._pre_flushed_sessions

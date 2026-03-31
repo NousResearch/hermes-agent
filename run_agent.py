@@ -3862,6 +3862,13 @@ class AIAgent:
                 logger.info(f"Credential 401 — refreshed pool entry {getattr(refreshed, 'id', '?')}")
                 self._swap_credential(refreshed)
                 return True, has_retried_429
+            # Refresh failed — rotate to next credential instead of giving up.
+            # The failed entry is already marked exhausted by try_refresh_current().
+            next_entry = pool.mark_exhausted_and_rotate(status_code=401)
+            if next_entry is not None:
+                logger.info(f"Credential 401 (refresh failed) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
 
         return False, has_retried_429
 

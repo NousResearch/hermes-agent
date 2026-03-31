@@ -1848,6 +1848,71 @@ class TestCredentialPoolRecovery:
         agent._swap_credential.assert_called_once_with(next_entry)
 
 
+    def test_recover_with_pool_refreshes_on_401(self, agent):
+        """401 with successful refresh should swap to refreshed credential."""
+        refreshed_entry = SimpleNamespace(label="refreshed-primary", id="abc")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return refreshed_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        agent._swap_credential.assert_called_once_with(refreshed_entry)
+
+    def test_recover_with_pool_rotates_on_401_when_refresh_fails(self, agent):
+        """401 with failed refresh should rotate to next credential."""
+        next_entry = SimpleNamespace(label="secondary", id="def")
+
+        class _Pool:
+            def try_refresh_current(self):
+                return None  # refresh failed
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                assert status_code == 401
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_401_refresh_fails_no_more_credentials(self, agent):
+        """401 with failed refresh and no other credentials returns not recovered."""
+
+        class _Pool:
+            def try_refresh_current(self):
+                return None
+
+            def mark_exhausted_and_rotate(self, *, status_code):
+                return None  # no more credentials
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+        )
+
+        assert recovered is False
+        agent._swap_credential.assert_not_called()
+
+
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""
 

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "hermes-compression",
     "hermes-proto",
     "hermes-store",
     "hermes-sidecar",

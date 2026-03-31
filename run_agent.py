@@ -5204,6 +5204,15 @@ class AIAgent:
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
+        # Warn on repeated compressions (quality degrades with each pass)
+        _cc = self.context_compressor.compression_count
+        if _cc >= 2:
+            self._vprint(
+                f"{self.log_prefix}⚠️  Session compressed {_cc} times — "
+                f"accuracy may degrade. Consider /new to start fresh.",
+                force=True,
+            )
+
         # Reset context pressure warning and token estimate — usage drops
         # after compaction.  Without this, the stale last_prompt_tokens from
         # the previous API call causes the pressure calculation to stay at

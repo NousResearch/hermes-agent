@@ -199,7 +199,7 @@ class ContextCompressor:
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
-        Includes tool call arguments and result content (up to 3000 chars
+        Includes tool call arguments and result content (up to 6000 chars
         per message) so the summarizer can preserve specific details like
         file paths, commands, and outputs.
         """
@@ -211,15 +211,15 @@ class ContextCompressor:
             # Tool results: keep more content than before (3000 chars)
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                if len(content) > 3000:
-                    content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
+                if len(content) > 6000:
+                    content = content[:4000] + "\n...[truncated]...\n" + content[-1500:]
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
-                if len(content) > 3000:
-                    content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
+                if len(content) > 6000:
+                    content = content[:4000] + "\n...[truncated]...\n" + content[-1500:]
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -229,8 +229,8 @@ class ContextCompressor:
                             name = fn.get("name", "?")
                             args = fn.get("arguments", "")
                             # Truncate long arguments but keep enough for context
-                            if len(args) > 500:
-                                args = args[:400] + "..."
+                            if len(args) > 1500:
+                                args = args[:1200] + "..."
                             tc_parts.append(f"  {name}({args})")
                         else:
                             fn = getattr(tc, "function", None)
@@ -241,8 +241,8 @@ class ContextCompressor:
                 continue
 
             # User and other roles
-            if len(content) > 3000:
-                content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
+            if len(content) > 6000:
+                content = content[:4000] + "\n...[truncated]...\n" + content[-1500:]
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
@@ -299,6 +299,9 @@ Update the summary using this exact structure. PRESERVE all existing information
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
 
+## Tools & Patterns
+[Which tools were used, how they were used effectively, and any tool-specific discoveries. Accumulate across compactions.]
+
 Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions.
 
 Write only the summary body. Do not include any preamble or prefix."""
@@ -336,6 +339,9 @@ Use this exact structure:
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
+
+## Tools & Patterns
+[Which tools were used, how they were used effectively, and any tool-specific discoveries (e.g., preferred flags, working invocations, successful command patterns)]
 
 Target ~{summary_budget} tokens. Be specific — include file paths, command outputs, error messages, and concrete values rather than vague descriptions. The goal is to prevent the next assistant from repeating work or losing important details.
 

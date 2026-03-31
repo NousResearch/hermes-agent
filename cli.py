@@ -9222,6 +9222,8 @@ class HermesCLI:
                     "2-3 sentences max. No code blocks or markdown.] "
                 )
 
+            _turn_start = time.time()
+
             def run_agent():
                 nonlocal result
                 # Set callbacks inside the agent thread so thread-local storage
@@ -9391,6 +9393,17 @@ class HermesCLI:
             # sleep lets the renderer actually paint it before we draw.
             sys.stdout.flush()
             time.sleep(0.15)
+
+            # Show turn duration
+            _turn_elapsed = time.time() - _turn_start
+            if _turn_elapsed >= 1.0:
+                if _turn_elapsed >= 60:
+                    _mins = int(_turn_elapsed // 60)
+                    _secs = int(_turn_elapsed % 60)
+                    _dur_str = f"{_mins}m {_secs}s"
+                else:
+                    _dur_str = f"{_turn_elapsed:.1f}s"
+                _cprint(f"{_DIM}  [{_dur_str}]{_RST}")
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history

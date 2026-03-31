@@ -313,15 +313,15 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         assert "Gateway restarted via launchd" in captured
         assert "Restart it with: hermes gateway run" not in captured
-        # Verify launchctl stop + start were called (not manual SIGTERM)
+        # Verify launchctl kickstart was used rather than stop+start.
         launchctl_calls = [
             c for c in mock_run.call_args_list
             if len(c.args[0]) > 0 and c.args[0][0] == "launchctl"
         ]
-        stop_calls = [c for c in launchctl_calls if "stop" in c.args[0]]
-        start_calls = [c for c in launchctl_calls if "start" in c.args[0]]
-        assert len(stop_calls) >= 1
-        assert len(start_calls) >= 1
+        kickstart_calls = [c for c in launchctl_calls if "kickstart" in c.args[0]]
+        assert len(kickstart_calls) >= 1
+        assert not any("stop" in c.args[0] for c in launchctl_calls)
+        assert not any("start" in c.args[0] for c in launchctl_calls if "kickstart" not in c.args[0])
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

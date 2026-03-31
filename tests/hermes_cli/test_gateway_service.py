@@ -192,6 +192,24 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchd_restart_uses_kickstart_target(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "get_launchd_service_target", lambda: "gui/502/ai.hermes.gateway")
+
+        gateway_cli.launchd_restart()
+
+        assert calls[-1] == ["launchctl", "kickstart", "-k", "gui/502/ai.hermes.gateway"]
+
 
 class TestGatewayServiceDetection:
     def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):

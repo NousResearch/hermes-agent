@@ -3204,7 +3204,7 @@ def cmd_update(args):
             from gateway.status import get_running_pid, remove_pid_file
             from hermes_cli.gateway import (
                 get_service_name, get_launchd_plist_path, is_macos, is_linux,
-                refresh_launchd_plist_if_needed,
+                refresh_launchd_plist_if_needed, get_launchd_service_target,
                 _ensure_user_systemd_env, get_systemd_linger_status,
             )
             import signal as _signal
@@ -3310,19 +3310,13 @@ def cmd_update(args):
                         print(f"    sudo systemctl restart {_gw_service_name}")
                 elif has_launchd_service:
                     # Refresh the plist first (picks up --replace and other
-                    # changes from the update we just pulled).
+                    # changes from the update we just pulled). Use kickstart
+                    # instead of stop+start so updates invoked from inside the
+                    # gateway do not terminate the active process mid-command.
                     refresh_launchd_plist_if_needed()
-                    # Explicit stop+start — don't rely on KeepAlive respawn
-                    # after a manual SIGTERM, which would race with the
-                    # PID file cleanup.
                     print("→ Restarting gateway service...")
-                    _launchd_label = get_launchd_label()
-                    stop = subprocess.run(
-                        ["launchctl", "stop", _launchd_label],
-                        capture_output=True, text=True, timeout=10,
-                    )
                     start = subprocess.run(
-                        ["launchctl", "start", _launchd_label],
+                        ["launchctl", "kickstart", "-k", get_launchd_service_target()],
                         capture_output=True, text=True, timeout=10,
                     )
                     if start.returncode == 0:

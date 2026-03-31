@@ -807,6 +807,11 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def get_launchd_service_target() -> str:
+    """Return the launchd job target in ``domain/label`` form for kickstart."""
+    return f"gui/{os.getuid()}/{get_launchd_label()}"
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -1021,14 +1026,17 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
 
 def launchd_restart():
+    refresh_launchd_plist_if_needed()
+    target = get_launchd_service_target()
     try:
-        launchd_stop()
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True)
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
             raise
-        print("↻ launchd job was unloaded; skipping stop")
-    _wait_for_gateway_exit()
-    launchd_start()
+        print("↻ launchd job was unloaded; reloading service definition")
+        launchd_start()
+        return
+    print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()

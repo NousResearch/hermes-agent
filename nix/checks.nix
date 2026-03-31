@@ -1,8 +1,7 @@
 # nix/checks.nix — Build-time verification tests
 #
-# Checks are Linux-only: the full Python venv (via uv2nix) includes
-# transitive deps like onnxruntime that lack compatible wheels on
-# aarch64-darwin. The package and devShell still work on macOS.
+# Checks are Linux-only because the test derivations need to execute
+# binaries (hermes, hermes-agent), which requires a matching host platform.
 { inputs, ... }: {
   perSystem = { pkgs, system, lib, ... }:
     let

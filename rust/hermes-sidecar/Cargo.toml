@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+hermes-compression = { path = "../hermes-compression" }
 hermes-proto = { path = "../hermes-proto" }
 hermes-store = { path = "../hermes-store" }
 serde_json = "1"

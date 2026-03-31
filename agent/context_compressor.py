@@ -14,6 +14,7 @@ Improvements over v1:
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -118,6 +119,7 @@ class ContextCompressor:
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+        self._rust_backend = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -555,6 +557,35 @@ Write only the summary body. Do not include any preamble or prefix."""
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
         """
+        if (os.getenv("HERMES_CONTEXT_COMPRESSOR_BACKEND", "python") or "python").strip().lower() == "rust":
+            from agent.rust_context_compressor import RustContextCompressorClient
+
+            if self._rust_backend is None:
+                self._rust_backend = RustContextCompressorClient()
+
+            plan = self._rust_backend.plan(
+                messages=messages,
+                protect_first_n=self.protect_first_n,
+                protect_last_n=self.protect_last_n,
+            )
+            if not plan.get("needs_compression"):
+                return plan["messages"]
+
+            planned_messages = plan["messages"]
+            compress_start = int(plan["compress_start"])
+            compress_end = int(plan["compress_end"])
+            turns_to_summarize = planned_messages[compress_start:compress_end]
+            summary = self._generate_summary(turns_to_summarize)
+            compressed = self._rust_backend.apply(
+                messages=planned_messages,
+                compress_start=compress_start,
+                compress_end=compress_end,
+                summary=summary,
+                compression_count=self.compression_count,
+            )
+            self.compression_count += 1
+            return compressed
+
         n_messages = len(messages)
         if n_messages <= self.protect_first_n + self.protect_last_n + 1:
             if not self.quiet_mode:

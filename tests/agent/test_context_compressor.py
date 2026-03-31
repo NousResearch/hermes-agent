@@ -518,6 +518,53 @@ class TestCompressWithClient:
 class TestSummaryTargetRatio:
     """Verify that summary_target_ratio properly scales budgets with context window."""
 
+
+class TestRustBackend:
+    def test_rust_backend_truncation_path(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CONTEXT_COMPRESSOR_BACKEND", "rust")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "system", "content": "System prompt"}] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(10)
+        ]
+        result = c.compress(msgs)
+
+        assert len(result) < len(msgs)
+        assert result[0]["role"] == "system"
+        assert c.compression_count == 1
+        c._rust_backend.close()
+
+    def test_rust_backend_summary_path(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CONTEXT_COMPRESSOR_BACKEND", "rust")
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: rust summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"} for i in range(10)]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        contents = [m.get("content", "") for m in result]
+        assert any(content.startswith(SUMMARY_PREFIX) for content in contents)
+        c._rust_backend.close()
+
     def test_tail_budget_scales_with_context(self):
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):

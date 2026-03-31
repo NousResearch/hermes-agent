@@ -146,6 +146,58 @@ fn handle_request(store: &hermes_store::ResponseStoreBackend, request: hermes_pr
             Ok(value) => success_response(request.id, json!({ "value": value })),
             Err(err) => error_response(request.id, "store_error", &err.to_string(), true),
         },
+        "compression.plan" => {
+            let Some(messages) = request.params.get("messages").and_then(Value::as_array) else {
+                return error_response(request.id, "bad_request", "missing messages", false);
+            };
+            let protect_first_n = request
+                .params
+                .get("protect_first_n")
+                .and_then(Value::as_u64)
+                .unwrap_or(2) as usize;
+            let protect_last_n = request
+                .params
+                .get("protect_last_n")
+                .and_then(Value::as_u64)
+                .unwrap_or(2) as usize;
+
+            let plan = hermes_compression::plan(messages, protect_first_n, protect_last_n);
+            success_response(
+                request.id,
+                json!({
+                    "messages": plan.messages,
+                    "compress_start": plan.compress_start,
+                    "compress_end": plan.compress_end,
+                    "needs_compression": plan.needs_compression,
+                }),
+            )
+        }
+        "compression.apply" => {
+            let Some(messages) = request.params.get("messages").and_then(Value::as_array) else {
+                return error_response(request.id, "bad_request", "missing messages", false);
+            };
+            let Some(compress_start) = request.params.get("compress_start").and_then(Value::as_u64) else {
+                return error_response(request.id, "bad_request", "missing compress_start", false);
+            };
+            let Some(compress_end) = request.params.get("compress_end").and_then(Value::as_u64) else {
+                return error_response(request.id, "bad_request", "missing compress_end", false);
+            };
+            let compression_count = request
+                .params
+                .get("compression_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let summary = request.params.get("summary").and_then(Value::as_str);
+
+            let compressed = hermes_compression::apply(
+                messages,
+                compress_start as usize,
+                compress_end as usize,
+                summary,
+                compression_count,
+            );
+            success_response(request.id, json!({ "messages": compressed }))
+        }
         _ => error_response(request.id, "unknown_method", "unsupported method", false),
     }
 }

@@ -615,19 +615,23 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    custom_base: Optional[str] = None
+    custom_key: Optional[str] = None
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested="custom")
+        custom_base = runtime.get("base_url")
+        custom_key = runtime.get("api_key")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
-        return None, None
-
-    custom_base = runtime.get("base_url")
-    custom_key = runtime.get("api_key")
+    # Env fallback keeps tests and local custom-endpoint setups working even
+    # when runtime provider doesn't expose custom values.
     if not isinstance(custom_base, str) or not custom_base.strip():
-        return None, None
+        custom_base = os.getenv("OPENAI_BASE_URL", "")
     if not isinstance(custom_key, str) or not custom_key.strip():
+        custom_key = os.getenv("OPENAI_API_KEY", "")
+    if not isinstance(custom_base, str) or not custom_base.strip():
         return None, None
 
     custom_base = custom_base.strip().rstrip("/")
@@ -635,6 +639,10 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
         # requested='custom' falls back to OpenRouter when no custom endpoint is
         # configured. Treat that as "no custom endpoint" for auxiliary routing.
         return None, None
+
+    # Local/custom OpenAI-compatible endpoints may not require auth.
+    if not isinstance(custom_key, str) or not custom_key.strip():
+        custom_key = "no-key-required"
 
     return custom_base, custom_key.strip()
 

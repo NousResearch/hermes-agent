@@ -4599,6 +4599,7 @@ class AIAgent:
             )
 
         if self.api_mode == "codex_responses":
+            model_name = str(getattr(self, "model", "") or "").strip() or "gpt-5.3-codex"
             instructions = ""
             payload_messages = api_messages
             if api_messages and api_messages[0].get("role") == "system":
@@ -4622,7 +4623,7 @@ class AIAgent:
                     reasoning_effort = self.reasoning_config["effort"]
 
             kwargs = {
-                "model": self.model,
+                "model": model_name,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
                 "tools": self._responses_tools(),

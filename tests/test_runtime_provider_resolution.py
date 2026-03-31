@@ -140,10 +140,19 @@ def test_custom_endpoint_prefers_openai_key(monkeypatch):
 
     Regression test for #560: when base_url is a non-OpenRouter endpoint,
     OPENROUTER_API_KEY was being sent as the auth header instead of OPENAI_API_KEY.
+
+    Since the March 2026 config refactor, OPENAI_BASE_URL env var is no longer
+    consulted — base_url comes exclusively from config.yaml (model.base_url).
     """
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.z.ai/api/coding/paas/v4",
+        },
+    )
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "zai-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
@@ -225,10 +234,18 @@ def test_custom_endpoint_auto_provider_prefers_openai_key(monkeypatch):
     """Auto provider with non-OpenRouter base_url should prefer OPENAI_API_KEY.
 
     Same as #560 but via 'hermes model' flow which sets provider to 'auto'.
+
+    Since the March 2026 config refactor, OPENAI_BASE_URL env var is no longer
+    consulted — base_url comes exclusively from config.yaml (model.base_url).
     """
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://my-vllm-server.example.com/v1")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "base_url": "https://my-vllm-server.example.com/v1",
+        },
+    )
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-vllm-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-...leak")

@@ -33,6 +33,7 @@ Usage:
 import importlib.util
 import json
 import logging
+import re
 import os
 import platform
 import time
@@ -177,6 +178,67 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
             return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
     
     return output
+
+
+# Maximum sleep duration (seconds) allowed in foreground commands.
+# Longer sleeps should use background=true + process(action="poll").
+_MAX_FOREGROUND_SLEEP_SECONDS = 60
+
+
+def _check_long_sleep_command(command: str, background: bool) -> dict:
+    """
+    Detect blocking sleep commands that would make the agent unresponsive.
+    
+    Returns {"blocked": True, "message": "..."} if a long sleep is detected
+    in a foreground command, otherwise {"blocked": False}.
+    
+    Why this matters:
+    - `sleep 360 && tail -15 log` blocks the agent for 6 minutes
+    - During this time, user messages cannot interrupt
+    - The agent appears frozen/unresponsive
+    
+    The correct pattern is: background=true + process(action="poll")
+    """
+    if background:
+        # Background processes don't block the main agent loop
+        return {"blocked": False}
+    
+    # Match patterns like: sleep 300, sleep 5m, sleep 2h
+    # Handles: `sleep 60`, `sleep 60 && ...`, `sleep 5m; ...`
+    sleep_pattern = re.compile(
+        r'\bsleep\s+(\d+)([smh]?)\b',
+        re.IGNORECASE
+    )
+    
+    match = sleep_pattern.search(command)
+    if not match:
+        return {"blocked": False}
+    
+    value = int(match.group(1))
+    unit = match.group(2).lower() if match.group(2) else 's'
+    
+    # Convert to seconds
+    if unit == 'm':
+        seconds = value * 60
+    elif unit == 'h':
+        seconds = value * 3600
+    else:
+        seconds = value
+    
+    if seconds > _MAX_FOREGROUND_SLEEP_SECONDS:
+        return {
+            "blocked": True,
+            "message": (
+                f"Command contains `sleep {match.group(0)}` ({seconds}s) which would "
+                f"block the agent and prevent user interaction.\n\n"
+                f"For long waits, use background=true and process(action=\"poll\") instead:\n"
+                f"1. Start: terminal(command=\"your_command\", background=true)\n"
+                f"2. Check: process(action=\"poll\", session_id=\"...\")\n\n"
+                f"This allows the user to interact with you while the process runs."
+            ),
+        }
+    
+    return {"blocked": False}
 
 
 def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
@@ -1082,6 +1144,16 @@ def terminal_tool(
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
+
+        # Check for long sleep commands that would block agent responsiveness
+        sleep_check = _check_long_sleep_command(command, background)
+        if sleep_check.get("blocked"):
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": sleep_check["message"],
+                "status": "blocked"
+            }, ensure_ascii=False)
 
         # Prepare command for execution
         if background:

@@ -25,6 +25,56 @@ Drop a directory into `~/.hermes/plugins/` with a `plugin.yaml` and Python code:
 
 Start Hermes — your tools appear alongside built-in tools. The model can call them immediately.
 
+### Minimal working example
+
+Here is a complete plugin that adds a `hello_world` tool and logs every tool call via a hook.
+
+**`~/.hermes/plugins/hello-world/plugin.yaml`**
+
+```yaml
+name: hello-world
+version: "1.0"
+description: A minimal example plugin
+```
+
+**`~/.hermes/plugins/hello-world/__init__.py`**
+
+```python
+"""Minimal Hermes plugin — registers a tool and a hook."""
+
+
+def register(ctx):
+    # --- Tool: hello_world ---
+    schema = {
+        "name": "hello_world",
+        "description": "Returns a friendly greeting for the given name.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name to greet",
+                }
+            },
+            "required": ["name"],
+        },
+    }
+
+    def handle_hello(params):
+        name = params.get("name", "World")
+        return f"Hello, {name}! 👋  (from the hello-world plugin)"
+
+    ctx.register_tool("hello_world", schema, handle_hello)
+
+    # --- Hook: log every tool call ---
+    def on_tool_call(tool_name, params, result):
+        print(f"[hello-world] tool called: {tool_name}")
+
+    ctx.register_hook("post_tool_call", on_tool_call)
+```
+
+Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the model can immediately call `hello_world`. The hook prints a log line after every tool invocation.
+
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
 ## What plugins can do

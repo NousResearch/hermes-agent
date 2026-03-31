@@ -168,9 +168,7 @@ So a server that exposes callable tools but no resources/prompts will not get th
 
 ## Per-server filtering
 
-This is the main feature added by the PR work.
-
-You can now control which tools each MCP server contributes to Hermes.
+You can control which tools each MCP server contributes to Hermes, allowing fine-grained management of your tool namespace.
 
 ### Disable a server entirely
 

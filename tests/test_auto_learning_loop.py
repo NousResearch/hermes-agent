@@ -205,7 +205,7 @@ def test_auto_learning_review_stages_structured_audit_evidence(tmp_path):
 
 
 
-def test_auto_learning_review_records_rejected_status_when_verifier_rejects(tmp_path):
+def test_auto_learning_role_records_critic_audit_when_rejecting(tmp_path):
     agent = _make_agent(
         {
             "enabled": True,
@@ -219,6 +219,10 @@ def test_auto_learning_review_records_rejected_status_when_verifier_rejects(tmp_
             "store_path": str(tmp_path / "candidates.jsonl"),
             "debug": False,
             "verifier": {
+                "provider": "anthropic",
+                "model": "claude-3-5-haiku-latest",
+            },
+            "critic": {
                 "provider": "anthropic",
                 "model": "claude-3-5-haiku-latest",
             },
@@ -261,6 +265,7 @@ def test_auto_learning_review_records_rejected_status_when_verifier_rejects(tmp_
     assert len(items) == 1
     assert items[0]["status"] == "rejected"
     assert items[0]["evidence"]["verifier"]["disposition"] == "reject"
+    assert items[0]["evidence"]["critic"]["disposition"] == "reject"
     mock_memory_tool.assert_not_called()
 
 
@@ -326,7 +331,7 @@ def test_auto_learning_review_downscores_candidate_before_promotion(tmp_path):
 
 
 
-def test_auto_learning_review_promotes_high_confidence_memory_candidate(tmp_path):
+def test_auto_learning_role_records_promoter_audit_when_promoting(tmp_path):
     agent = _make_agent(
         {
             "enabled": True,
@@ -339,6 +344,10 @@ def test_auto_learning_review_promotes_high_confidence_memory_candidate(tmp_path
             "auto_promote_skills": False,
             "store_path": str(tmp_path / "candidates.jsonl"),
             "debug": False,
+            "promoter": {
+                "provider": "anthropic",
+                "model": "claude-3-5-haiku-latest",
+            },
         }
     )
     agent._memory_store = MagicMock()
@@ -357,6 +366,7 @@ def test_auto_learning_review_promotes_high_confidence_memory_candidate(tmp_path
     assert result["promoted"] == 1
     assert len(items) == 1
     assert items[0]["status"] == "promoted"
+    assert items[0]["evidence"]["promoter"]["disposition"] == "promote"
     mock_memory_tool.assert_called_once()
 
 

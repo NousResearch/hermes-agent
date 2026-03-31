@@ -64,20 +64,28 @@ hermes doctor       # Diagnose any issues
 
 ## Karpathy auto-learning quality engine
 
-Hermes now has an M003-quality local-first learning engine for staged auto-learning candidates before anything durable gets promoted. Instead of treating every reviewer suggestion as equally trustworthy, the loop now stages candidates, checks them for overlap and contradictions, preserves structured evidence, and only then leaves them eligible for promotion.
+Hermes now has a staged, local-first auto-learning loop that grows in steps:
+- M001: stage reviewer candidates in a local store and optionally promote safe memory/skill learnings
+- M002: add reviewer/verifier routing, richer evidence, and more reliable hook selection
+- M003: add semantic dedupe, contradiction checks, `manual_review`, local search/show inspection, and shadow analytics
+- M004: add specialized proposer/verifier/critic/promoter roles with conservative routing and audit trails
 
-In practical terms, M003 adds a real trust layer on top of the earlier reviewer/verifier pipeline:
-- semantic dedupe and supersession for overlapping learnings with different wording
-- contradiction detection against durable memory and other staged candidates
-- `manual_review` routing for ambiguous or conflicting learnings instead of silent promotion
-- local evidence inspection via `hermes autolearning search` and `hermes autolearning show <id>`
-- shadow quality analytics in `hermes autolearning status`
-- richer staged candidate metadata so operators can inspect why a learning was kept, superseded, or deferred
+Current milestone blocks:
 
-This means Hermes can now distinguish between:
-- the same learning said two different ways
-- a new learning that conflicts with an existing durable preference
-- a candidate that should remain reviewable instead of being auto-promoted
+### M001 — staged candidate learning store
+- captures post-task learning candidates in a local store under Hermes home
+- keeps auto-learning disabled by default and promotion conservative
+- supports manual inspection and promotion instead of silent durable writes
+
+### M002 — reviewer/verifier quality gates
+- adds dedicated reviewer/verifier routing for the learning loop
+- records richer evidence on staged candidates
+- improves hook selection so reviews trigger more reliably on useful turns
+
+### M004 — specialized learning roles
+- adds explicit proposer, verifier, critic, and promoter role configuration blocks
+- preserves backward-compatible defaults when specialized actors are not configured
+- records role-specific audit trails so staged decisions remain inspectable
 
 Useful commands:
 

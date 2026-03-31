@@ -1134,6 +1134,9 @@ class AIAgent:
         self._auto_learning_config = {}
         self._auto_learning_reviewer_config = {}
         self._auto_learning_verifier_config = {}
+        self._auto_learning_proposer_config = {}
+        self._auto_learning_critic_config = {}
+        self._auto_learning_promoter_config = {}
         self._auto_learning_store = None
         self._turns_since_auto_learning = 0
         try:
@@ -1141,6 +1144,9 @@ class AIAgent:
             self._auto_learning_config = dict(auto_learning_config)
             self._auto_learning_reviewer_config = dict(auto_learning_config.get("reviewer") or {})
             self._auto_learning_verifier_config = dict(auto_learning_config.get("verifier") or {})
+            self._auto_learning_proposer_config = dict(auto_learning_config.get("proposer") or {})
+            self._auto_learning_critic_config = dict(auto_learning_config.get("critic") or {})
+            self._auto_learning_promoter_config = dict(auto_learning_config.get("promoter") or {})
             self._auto_learning_enabled = bool(auto_learning_config.get("enabled", False))
             if self._auto_learning_enabled:
                 from tools.auto_learning_store import AutoLearningStore
@@ -2001,6 +2007,15 @@ class AIAgent:
         elif actor_name == "verifier":
             actor_cfg = dict(self._auto_learning_verifier_config or {})
             default_max_iterations = 4
+        elif actor_name == "proposer":
+            actor_cfg = dict(self._auto_learning_proposer_config or {})
+            default_max_iterations = 4
+        elif actor_name == "critic":
+            actor_cfg = dict(self._auto_learning_critic_config or {})
+            default_max_iterations = 4
+        elif actor_name == "promoter":
+            actor_cfg = dict(self._auto_learning_promoter_config or {})
+            default_max_iterations = 4
         else:
             raise ValueError(f"Unknown auto-learning actor: {actor}")
 
@@ -2225,6 +2240,7 @@ class AIAgent:
         *,
         hook_reason: str,
         reviewer_settings: Dict[str, Any],
+        source_actor: str = "reviewer",
     ) -> Dict[str, Any]:
         recent_messages = self._slice_auto_learning_turn(messages_snapshot)
         transcript_refs = []
@@ -2245,7 +2261,7 @@ class AIAgent:
             "hook_signals": hook_signals or [str(hook_reason or "tool_heavy_success")],
             "source": {
                 "trigger": "post_response_review",
-                "actor": "reviewer",
+                "actor": str(source_actor or "reviewer").strip() or "reviewer",
                 "model": reviewer_settings.get("model") or self.model,
                 "provider": reviewer_settings.get("provider") or self.provider,
             },
@@ -2289,13 +2305,27 @@ class AIAgent:
         verifier = candidate.get("verifier")
         if isinstance(verifier, dict) and verifier:
             evidence["verifier"] = dict(verifier)
+        critic = candidate.get("critic")
+        if isinstance(critic, dict) and critic:
+            evidence["critic"] = dict(critic)
+        promoter = candidate.get("promoter")
+        if isinstance(promoter, dict) and promoter:
+            evidence["promoter"] = dict(promoter)
         quality = candidate.get("quality")
         if isinstance(quality, dict) and quality:
             evidence["quality"] = dict(quality)
         return evidence
 
-    def _auto_learning_verifier_is_configured(self) -> bool:
-        cfg = dict(self._auto_learning_verifier_config or {})
+    def _auto_learning_actor_is_configured(self, actor: str) -> bool:
+        actor_name = str(actor or "").strip().lower()
+        actor_cfg_map = {
+            "reviewer": self._auto_learning_reviewer_config,
+            "verifier": self._auto_learning_verifier_config,
+            "proposer": self._auto_learning_proposer_config,
+            "critic": self._auto_learning_critic_config,
+            "promoter": self._auto_learning_promoter_config,
+        }
+        cfg = dict(actor_cfg_map.get(actor_name) or {})
         for key in ("model", "provider", "base_url", "api_key"):
             if str(cfg.get(key) or "").strip():
                 return True
@@ -2309,6 +2339,9 @@ class AIAgent:
             except (TypeError, ValueError):
                 continue
         return False
+
+    def _auto_learning_verifier_is_configured(self) -> bool:
+        return self._auto_learning_actor_is_configured("verifier")
 
     def _apply_auto_learning_verifier_decision(
         self,
@@ -2335,6 +2368,8 @@ class AIAgent:
             "model": (verifier_settings or {}).get("model") or self.model,
             "provider": (verifier_settings or {}).get("provider") or self.provider,
         }
+        if self._auto_learning_actor_is_configured("critic"):
+            updated["critic"] = dict(updated["verifier"])
         return updated
 
     def _run_auto_learning_verifier_pass(
@@ -2475,6 +2510,16 @@ class AIAgent:
             quality = dict(quality)
             quality["shadow_decision"] = new_status if new_status in {"manual_review", "promoted", "rejected", "superseded"} else quality.get("shadow_decision", "candidate")
             evidence = dict(entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {})
+            if new_status == "promoted" and self._auto_learning_actor_is_configured("promoter"):
+                try:
+                    promoter_settings = self._resolve_auto_learning_actor_settings("promoter")
+                except Exception:
+                    promoter_settings = {}
+                evidence["promoter"] = {
+                    "disposition": "promote",
+                    "model": promoter_settings.get("model") or self.model,
+                    "provider": promoter_settings.get("provider") or self.provider,
+                }
             evidence["quality"] = quality
             entry = self._auto_learning_store.update_candidate(entry["id"], evidence=evidence)
             if entry.get("supersedes") and new_status != "superseded":
@@ -2495,16 +2540,18 @@ class AIAgent:
             promotion_threshold=float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80),
         )
 
+        review_actor = "proposer" if self._auto_learning_actor_is_configured("proposer") else "reviewer"
         try:
-            reviewer_settings = self._resolve_auto_learning_actor_settings("reviewer")
+            reviewer_settings = self._resolve_auto_learning_actor_settings(review_actor)
         except Exception as exc:
-            logger.debug("Auto-learning reviewer routing resolution failed: %s", exc)
+            logger.debug("Auto-learning %s routing resolution failed: %s", review_actor, exc)
             return
 
         review_context = self._build_auto_learning_review_context(
             messages_snapshot,
             hook_reason=hook_reason,
             reviewer_settings=reviewer_settings,
+            source_actor=review_actor,
         )
 
         def _run_review():

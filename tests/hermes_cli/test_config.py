@@ -126,6 +126,30 @@ class TestSaveAndLoadRoundtrip:
                     "max_iterations": 0,
                     "timeout": 0,
                 },
+                "proposer": {
+                    "model": "",
+                    "provider": "",
+                    "base_url": "",
+                    "api_key": "",
+                    "max_iterations": 0,
+                    "timeout": 0,
+                },
+                "critic": {
+                    "model": "",
+                    "provider": "",
+                    "base_url": "",
+                    "api_key": "",
+                    "max_iterations": 0,
+                    "timeout": 0,
+                },
+                "promoter": {
+                    "model": "",
+                    "provider": "",
+                    "base_url": "",
+                    "api_key": "",
+                    "max_iterations": 0,
+                    "timeout": 0,
+                },
             }
 
     def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):

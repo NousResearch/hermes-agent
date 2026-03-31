@@ -3516,6 +3516,21 @@ class TestAutoLearningActorRouting:
                     "model": "claude-3-5-haiku-latest",
                     "timeout": 30,
                 },
+                "proposer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 5,
+                },
+                "critic": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "timeout": 20,
+                },
+                "promoter": {
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
+                    "max_iterations": 3,
+                },
             }
         )
 
@@ -3529,6 +3544,21 @@ class TestAutoLearningActorRouting:
             "provider": "anthropic",
             "model": "claude-3-5-haiku-latest",
             "timeout": 30,
+        }
+        assert agent._auto_learning_proposer_config == {
+            "provider": "openrouter",
+            "model": "google/gemini-3-flash-preview",
+            "max_iterations": 5,
+        }
+        assert agent._auto_learning_critic_config == {
+            "provider": "anthropic",
+            "model": "claude-3-5-haiku-latest",
+            "timeout": 20,
+        }
+        assert agent._auto_learning_promoter_config == {
+            "provider": "anthropic",
+            "model": "claude-3-5-haiku-latest",
+            "max_iterations": 3,
         }
 
     def test_auto_learning_actor_resolution_inherits_parent_route_by_default(self):
@@ -3546,6 +3576,9 @@ class TestAutoLearningActorRouting:
                 "debug": False,
                 "reviewer": {},
                 "verifier": {},
+                "proposer": {},
+                "critic": {},
+                "promoter": {},
             },
             api_key="parent-secret",
             provider="openrouter",
@@ -3554,14 +3587,38 @@ class TestAutoLearningActorRouting:
             max_iterations=23,
         )
 
-        resolved = agent._resolve_auto_learning_actor_settings("reviewer")
+        reviewer_resolved = agent._resolve_auto_learning_actor_settings("reviewer")
+        proposer_resolved = agent._resolve_auto_learning_actor_settings("proposer")
+        critic_resolved = agent._resolve_auto_learning_actor_settings("critic")
+        promoter_resolved = agent._resolve_auto_learning_actor_settings("promoter")
 
-        assert resolved["model"] == "anthropic/claude-sonnet-4"
-        assert resolved["provider"] == "openrouter"
-        assert resolved["base_url"] == "https://openrouter.ai/api/v1"
-        assert resolved["api_key"] == "parent-secret"
-        assert resolved["max_iterations"] == 4
-        assert resolved["timeout"] is None
+        assert reviewer_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert reviewer_resolved["provider"] == "openrouter"
+        assert reviewer_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert reviewer_resolved["api_key"] == "parent-secret"
+        assert reviewer_resolved["max_iterations"] == 4
+        assert reviewer_resolved["timeout"] is None
+
+        assert proposer_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert proposer_resolved["provider"] == "openrouter"
+        assert proposer_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert proposer_resolved["api_key"] == "parent-secret"
+        assert proposer_resolved["max_iterations"] == 4
+        assert proposer_resolved["timeout"] is None
+
+        assert critic_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert critic_resolved["provider"] == "openrouter"
+        assert critic_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert critic_resolved["api_key"] == "parent-secret"
+        assert critic_resolved["max_iterations"] == 4
+        assert critic_resolved["timeout"] is None
+
+        assert promoter_resolved["model"] == "anthropic/claude-sonnet-4"
+        assert promoter_resolved["provider"] == "openrouter"
+        assert promoter_resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert promoter_resolved["api_key"] == "parent-secret"
+        assert promoter_resolved["max_iterations"] == 4
+        assert promoter_resolved["timeout"] is None
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_auto_learning_actor_resolution_uses_provider_override(self, mock_resolve):
@@ -3604,6 +3661,72 @@ class TestAutoLearningActorRouting:
             "timeout": 45.0,
         }
         mock_resolve.assert_called_once_with(requested="openrouter")
+
+    def test_spawn_auto_learning_review_uses_resolved_proposer_route(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+                "proposer": {
+                    "provider": "openrouter",
+                    "model": "google/gemini-3-flash-preview",
+                    "max_iterations": 5,
+                },
+            }
+        )
+
+        with (
+            patch.object(agent, "_resolve_auto_learning_actor_settings", return_value={
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "proposer-key",
+                "api_mode": "chat_completions",
+                "max_iterations": 5,
+                "timeout": None,
+            }) as mock_resolve,
+            patch("agent.auto_learning.build_auto_learning_review_prompt", return_value="review prompt"),
+            patch.object(agent, "_process_auto_learning_review_result") as mock_process,
+            patch("run_agent.AIAgent") as mock_child_cls,
+            patch("run_agent.threading.Thread") as mock_thread_cls,
+        ):
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {"final_response": '{"candidates": []}'}
+            mock_child_cls.return_value = mock_child
+
+            def _run_now(*, target=None, **kwargs):
+                thread = MagicMock()
+                thread.start.side_effect = target
+                return thread
+
+            mock_thread_cls.side_effect = _run_now
+
+            agent._spawn_auto_learning_review(
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                hook_reason="tool_heavy_success",
+            )
+
+        mock_resolve.assert_called_once_with("proposer")
+        _, kwargs = mock_child_cls.call_args
+        assert kwargs["model"] == "google/gemini-3-flash-preview"
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["api_key"] == "proposer-key"
+        assert kwargs["api_mode"] == "chat_completions"
+        assert kwargs["max_iterations"] == 5
+        mock_process.assert_called_once()
+        _, review_kwargs = mock_process.call_args
+        review_context = review_kwargs["review_context"]
+        assert review_context["source"]["actor"] == "proposer"
+        assert review_context["source"]["model"] == "google/gemini-3-flash-preview"
 
     def test_process_auto_learning_review_result_uses_resolved_verifier_route(self):
         agent = self._make_agent(

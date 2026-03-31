@@ -237,18 +237,25 @@ _COMBINED_REVIEW_PROMPT = (
 def summarize_background_review_actions(
     review_messages: List[Dict],
     prior_snapshot: List[Dict],
+    notification_mode: str = "on",
 ) -> List[str]:
     """Build the human-facing action summary for a background review pass.
 
-    Walks the review agent's session messages and collects "successful tool
-    action" descriptions to surface to the user (e.g. "Memory updated").
-    Tool messages already present in ``prior_snapshot`` are skipped so we
-    don't re-surface stale results from the prior conversation that the
-    review agent inherited via ``conversation_history`` (issue #14944).
+    Walks the review agent's session messages and collects successful memory
+    and skill-management actions to surface to the user. Tool messages already
+    present in ``prior_snapshot`` are skipped so stale inherited results are
+    not re-surfaced as fresh background work (issue #14944).
 
-    Matching is by ``tool_call_id`` when available, with a content-equality
-    fallback for tool messages that lack one.
+    ``notification_mode`` controls display detail:
+    - ``off``: return no actions.
+    - ``on``: generic "Memory updated"/tool messages.
+    - ``verbose``: include compact content previews from tool-call arguments.
     """
+    mode = str(notification_mode or "on").lower()
+    if mode == "off":
+        return []
+    verbose = mode == "verbose"
+
     existing_tool_call_ids = set()
     existing_tool_contents = set()
     for prior in prior_snapshot or []:
@@ -262,6 +269,36 @@ def summarize_background_review_actions(
             if isinstance(content, str):
                 existing_tool_contents.add(content)
 
+    # Map review-agent tool results back to the calls that produced them.  The
+    # result JSON only says "Entry added"; the call arguments contain action,
+    # target, and content previews.  Restricting to notify_tools also prevents
+    # helper tools from surfacing as memory work just because they succeeded.
+    notify_tools = {"memory", "skill_manage"}
+    call_details: dict = {}
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            fn_name = fn.get("name", "")
+            if fn_name not in notify_tools:
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            tcid = tc.get("id")
+            if tcid:
+                call_details[tcid] = {
+                    "tool": fn_name,
+                    "action": args.get("action", "?"),
+                    "target": args.get("target", "memory"),
+                    "content": args.get("content", ""),
+                    "old_text": args.get("old_text", ""),
+                }
+
     actions: List[str] = []
     for msg in review_messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -273,6 +310,8 @@ def summarize_background_review_actions(
             content_str = msg.get("content")
             if isinstance(content_str, str) and content_str in existing_tool_contents:
                 continue
+        if tcid and call_details and tcid not in call_details:
+            continue
         try:
             data = json.loads(msg.get("content", "{}"))
         except (json.JSONDecodeError, TypeError):
@@ -281,18 +320,45 @@ def summarize_background_review_actions(
             continue
         message = data.get("message", "")
         target = data.get("target", "")
-        if "created" in message.lower():
+        detail = call_details.get(tcid, {})
+        is_skill = detail.get("tool") == "skill_manage"
+
+        if is_skill:
+            label = "Skill"
+        elif target:
+            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+        else:
+            continue
+
+        if verbose:
+            action = detail.get("action", "")
+            content = detail.get("content", "")
+            old_text = detail.get("old_text", "")
+            max_preview = 120
+            if is_skill:
+                actions.append(f"📝 {message}" if message else f"Skill {action}")
+            elif action == "add" and content:
+                preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
+                actions.append(f"{label} ➕ {preview}")
+            elif action == "replace" and content:
+                preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
+                actions.append(f"{label} ✏️ {preview}")
+            elif action == "remove" and old_text:
+                preview = old_text[:60] + ("…" if len(old_text) > 60 else "")
+                actions.append(f"{label} ➖ {preview}")
+            else:
+                actions.append(f"{label} updated")
+        elif "created" in message.lower():
             actions.append(message)
         elif "updated" in message.lower():
             actions.append(message)
-        elif "added" in message.lower() or (target and "add" in message.lower()):
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
-        elif "Entry added" in message:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
-        elif "removed" in message.lower() or "replaced" in message.lower():
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+        elif (
+            "added" in message.lower()
+            or "replaced" in message.lower()
+            or "removed" in message.lower()
+            or (target and "add" in message.lower())
+            or "Entry added" in message
+        ):
             actions.append(f"{label} updated")
     return actions
 
@@ -522,6 +588,7 @@ def _run_review_in_thread(
         actions = summarize_background_review_actions(
             review_messages,
             messages_snapshot,
+            notification_mode=getattr(agent, "memory_notifications", "on"),
         )
 
         if actions:

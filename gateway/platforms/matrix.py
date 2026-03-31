@@ -323,6 +323,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
+
+        # Register this adapter instance for matrix tools.
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(self)
+        except ImportError:
+            pass  # tools module not loaded (e.g., test environment)
+
         return True
 
     async def disconnect(self) -> None:
@@ -349,6 +357,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: could not export keys on disconnect: %s", exc)
 
         if self._client:
+            try:
+                from tools.matrix_tools import set_matrix_adapter
+                set_matrix_adapter(None)
+            except ImportError:
+                pass
+
             await self._client.close()
             self._client = None
 

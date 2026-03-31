@@ -102,6 +102,43 @@ class TestResponseStore:
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
 
+    def test_delta_chain_survives_parent_deletion(self):
+        store = ResponseStore(max_size=10)
+        store.put(
+            "resp_1",
+            {
+                "response": {"id": "resp_1", "output": ["one"]},
+                "conversation_history": [
+                    {"role": "user", "content": "one"},
+                    {"role": "assistant", "content": "1"},
+                ],
+                "instructions": "keep state",
+            },
+        )
+        store.put(
+            "resp_2",
+            {
+                "response": {"id": "resp_2", "output": ["two"]},
+                "conversation_history": [
+                    {"role": "user", "content": "one"},
+                    {"role": "assistant", "content": "1"},
+                    {"role": "user", "content": "two"},
+                    {"role": "assistant", "content": "2"},
+                ],
+                "instructions": "keep state",
+                "parent_response_id": "resp_1",
+            },
+        )
+
+        assert store.delete("resp_1") is True
+        stored = store.get("resp_2")
+        assert stored is not None
+        assert stored["instructions"] == "keep state"
+        assert stored["conversation_history"][-2:] == [
+            {"role": "user", "content": "two"},
+            {"role": "assistant", "content": "2"},
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Adapter initialization
@@ -1119,6 +1156,125 @@ class TestDeleteResponse:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.delete("/v1/responses/resp_any")
             assert resp.status == 401
+
+
+class TestResponsesEndpointSemantic(AioHTTPTestCase):
+    async def get_application(self):
+        self.adapter = _make_adapter()
+        return _create_app(self.adapter)
+
+    async def test_previous_response_id_chaining(self):
+        first = {
+            "final_response": "2",
+            "messages": [{"role": "assistant", "content": "2"}],
+            "api_calls": 1,
+        }
+        second = {
+            "final_response": "3",
+            "messages": [{"role": "assistant", "content": "3"}],
+            "api_calls": 1,
+        }
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (first, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp1 = await self.client.post(
+                "/v1/responses",
+                json={"model": "hermes-agent", "input": "What is 1+1?"},
+            )
+        response1_id = (await resp1.json())["id"]
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (second, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp2 = await self.client.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "Now add 1 more",
+                    "previous_response_id": response1_id,
+                },
+            )
+
+        self.assertEqual(resp2.status, 200)
+        call_kwargs = mock_run.call_args.kwargs
+        self.assertGreater(len(call_kwargs["conversation_history"]), 0)
+
+    async def test_instructions_inherited_from_previous(self):
+        result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp1 = await self.client.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "Hello",
+                    "instructions": "Be a pirate",
+                },
+            )
+        response1_id = (await resp1.json())["id"]
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp2 = await self.client.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "Tell me more",
+                    "previous_response_id": response1_id,
+                },
+            )
+
+        self.assertEqual(resp2.status, 200)
+        self.assertEqual(mock_run.call_args.kwargs["ephemeral_system_prompt"], "Be a pirate")
+
+    async def test_delete_parent_response_does_not_break_child_chain(self):
+        first = {
+            "final_response": "2",
+            "messages": [{"role": "assistant", "content": "2"}],
+            "api_calls": 1,
+        }
+        second = {
+            "final_response": "3",
+            "messages": [{"role": "assistant", "content": "3"}],
+            "api_calls": 1,
+        }
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (first, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp1 = await self.client.post(
+                "/v1/responses",
+                json={"model": "hermes-agent", "input": "What is 1+1?"},
+            )
+        response1_id = (await resp1.json())["id"]
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (second, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp2 = await self.client.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "Now add 1 more",
+                    "previous_response_id": response1_id,
+                },
+            )
+        response2_id = (await resp2.json())["id"]
+
+        deleted = await self.client.delete(f"/v1/responses/{response1_id}")
+        self.assertEqual(deleted.status, 200)
+
+        with patch.object(self.adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (second, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp3 = await self.client.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "And one more",
+                    "previous_response_id": response2_id,
+                },
+            )
+
+        self.assertEqual(resp3.status, 200)
+        self.assertGreaterEqual(len(mock_run.call_args.kwargs["conversation_history"]), 3)
 
 
 # ---------------------------------------------------------------------------

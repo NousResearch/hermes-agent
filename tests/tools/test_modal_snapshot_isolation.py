@@ -87,6 +87,10 @@ def _install_modal_test_modules(
 
     sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyBaseEnvironment)
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
+    sys.modules["tools.credential_files"] = types.SimpleNamespace(
+        get_credential_file_mounts=lambda: [],
+        iter_skills_files=lambda: [],
+    )
 
     from_id_calls: list[str] = []
     registry_calls: list[tuple[str, list[str] | None]] = []

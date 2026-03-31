@@ -19,8 +19,8 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
-:::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+:::info Universal discovery
+**All** project instruction files that exist are loaded, within a 50K character global budget. Priority: `.hermes.md` → `AGENTS.md` / `CLAUDE.md` / `.cursorrules` → third-party files (`.github/copilot-instructions.md`, Gemini, Cursor, Cline, Windsurf, etc.). **SOUL.md** is always loaded independently as the agent identity (slot #1).
 :::
 
 ## AGENTS.md

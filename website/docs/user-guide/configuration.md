@@ -1688,7 +1688,7 @@ Hermes uses two different context scopes:
 
 - **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
 - If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
-- **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
+- **Project context files are all loaded** — `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, and third-party instruction files (`.github/copilot-instructions.md`, Gemini, Cursor, Cline, etc.) are all discovered and included, within a 50K character global budget. Hermes-native files take priority. SOUL.md is always loaded independently.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
 - All loaded context files are capped at 20,000 characters with smart truncation.

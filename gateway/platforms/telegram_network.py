@@ -132,7 +132,7 @@ def _normalize_fallback_ips(values: Iterable[str]) -> list[str]:
         except ValueError:
             logger.warning("Ignoring invalid Telegram fallback IP: %r", raw)
             continue
-        if addr.version != 4:
+         if addr.version != 4:
             logger.warning("Ignoring non-IPv4 Telegram fallback IP: %s", raw)
             continue
         if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified:

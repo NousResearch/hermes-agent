@@ -90,6 +90,46 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypat
     assert runner._is_user_authorized(source) is True
 
 
+def test_star_wildcard_in_allowlist_authorizes_any_user(monkeypatch):
+    """WHATSAPP_ALLOWED_USERS=* should act as allow-all wildcard."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    runner, _adapter = _make_runner(
+        Platform.WHATSAPP,
+        GatewayConfig(platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        user_id="99998887776@s.whatsapp.net",
+        chat_id="99998887776@s.whatsapp.net",
+        user_name="stranger",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_star_wildcard_works_for_any_platform(monkeypatch):
+    """The * wildcard should work generically, not just for WhatsApp."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="123456789",
+        chat_id="123456789",
+        user_name="stranger",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)

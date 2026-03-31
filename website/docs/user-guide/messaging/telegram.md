@@ -258,6 +258,73 @@ Topics created outside of the config (e.g., by manually calling the Telegram API
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
 
+## Webhook Mode
+
+By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
+
+**Webhook mode** is an alternative where Telegram pushes updates to your server over HTTPS. This is ideal for **serverless and cloud deployments** (Fly.io, Railway, etc.) where inbound HTTP can wake a suspended machine.
+
+### Configuration
+
+Set the `TELEGRAM_WEBHOOK_URL` environment variable to enable webhook mode:
+
+```bash
+# Required — your public HTTPS endpoint
+TELEGRAM_WEBHOOK_URL=https://app.fly.dev/telegram
+
+# Optional — local listen port (default: 8443)
+TELEGRAM_WEBHOOK_PORT=8443
+
+# Optional — secret token for update verification (auto-generated if not set)
+TELEGRAM_WEBHOOK_SECRET=my-secret-token
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  webhook_mode: true
+```
+
+When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP server listening on `0.0.0.0:<port>` and registers the webhook URL with Telegram. The URL path is extracted from the webhook URL (defaults to `/telegram`).
+
+:::warning
+Telegram requires a **valid TLS certificate** on the webhook endpoint. Self-signed certificates will be rejected. Use a reverse proxy (nginx, Caddy) or a platform that provides TLS termination (Fly.io, Railway, Cloudflare Tunnel).
+:::
+
+## DNS-over-HTTPS Fallback IPs
+
+In some restricted networks, `api.telegram.org` may resolve to an IP that is unreachable. The Telegram adapter includes a **fallback IP** mechanism that transparently retries connections against alternative IPs while preserving the correct TLS hostname and SNI.
+
+### How it works
+
+1. If `TELEGRAM_FALLBACK_IPS` is set, those IPs are used directly.
+2. Otherwise, the adapter automatically queries **Google DNS** and **Cloudflare DNS** via DNS-over-HTTPS (DoH) to discover alternative IPs for `api.telegram.org`.
+3. IPs returned by DoH that differ from the system DNS result are used as fallbacks.
+4. If DoH is also blocked, a hardcoded seed IP (`149.154.167.220`) is used as a last resort.
+5. Once a fallback IP succeeds, it becomes "sticky" — subsequent requests use it directly without retrying the primary path first.
+
+### Configuration
+
+```bash
+# Explicit fallback IPs (comma-separated)
+TELEGRAM_FALLBACK_IPS=149.154.167.220,149.154.167.221
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      fallback_ips:
+        - "149.154.167.220"
+```
+
+:::tip
+You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
+:::
+
 ## Troubleshooting
 
 | Problem | Solution |

@@ -3238,9 +3238,10 @@ class AIAgent:
             "model": model,
             "instructions": instructions,
             "input": normalized_input,
-            "tools": normalized_tools,
             "store": False,
         }
+        if normalized_tools is not None:
+            normalized["tools"] = normalized_tools
 
         # Pass through reasoning config
         reasoning = api_kwargs.get("reasoning")
@@ -3583,6 +3584,8 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
+        import httpx as _httpx
+
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -3616,6 +3619,22 @@ class AIAgent:
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
                     return stream.get_final_response()
+            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+                if attempt < max_stream_retries:
+                    logger.debug(
+                        "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                        self._client_log_context(),
+                        exc,
+                    )
+                    continue
+                logger.debug(
+                    "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
+                    self._client_log_context(),
+                    exc,
+                )
+                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text

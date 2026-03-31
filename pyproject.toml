@@ -32,7 +32,6 @@ dependencies = [
   "fal-client>=0.13.1,<1",
   # Text-to-speech (Edge TTS is free, no API key needed)
   "edge-tts>=7.2.7,<8",
-  "faster-whisper>=1.0.0,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
 ]
@@ -47,7 +46,13 @@ slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
 matrix = ["matrix-nio[e2e]>=0.24.0,<1"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
-voice = ["sounddevice>=0.4.6,<1", "numpy>=1.24.0,<3"]
+voice = [
+  # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime),
+  # so keep it out of the base install for source-build packagers like Homebrew.
+  "faster-whisper>=1.0.0,<2",
+  "sounddevice>=0.4.6,<1",
+  "numpy>=1.24.0,<3",
+]
 pty = [
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",

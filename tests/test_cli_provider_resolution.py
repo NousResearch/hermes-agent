@@ -460,13 +460,16 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     )
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
 
-    answers = iter(["http://localhost:8000", "local-key", "llm", ""])
+    # After the probe detects a single model ("llm"), the flow asks
+    # "Use this model? [Y/n]:" — confirm with Enter, then context length.
+    answers = iter(["http://localhost:8000", "local-key", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
     hermes_main._model_flow_custom({})
     output = capsys.readouterr().out
 
     assert "Saving the working base URL instead" in output
+    assert "Detected model: llm" in output
     # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"

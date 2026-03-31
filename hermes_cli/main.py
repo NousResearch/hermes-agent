@@ -1242,21 +1242,9 @@ def _model_flow_custom(config):
     try:
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
         api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
-        model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
-        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
-
-    context_length = None
-    if context_length_str:
-        try:
-            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
-            if context_length <= 0:
-                context_length = None
-        except ValueError:
-            print(f"Invalid context length: {context_length_str} — will auto-detect.")
-            context_length = None
 
     if not base_url and not current_url:
         print("No URL provided. Cancelled.")
@@ -1293,6 +1281,44 @@ def _model_flow_custom(config):
         )
         if probe.get("suggested_base_url"):
             print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
+
+    # Select model — use probe results when available, fall back to manual input
+    model_name = ""
+    detected_models = probe.get("models") or []
+    try:
+        if len(detected_models) == 1:
+            print(f"  Detected model: {detected_models[0]}")
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            if confirm in ("", "y", "yes"):
+                model_name = detected_models[0]
+            else:
+                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        elif len(detected_models) > 1:
+            print("  Available models:")
+            for i, m in enumerate(detected_models, 1):
+                print(f"    {i}. {m}")
+            pick = input(f"  Select model [1-{len(detected_models)}] or type name: ").strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                model_name = detected_models[int(pick) - 1]
+            elif pick:
+                model_name = pick
+        else:
+            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+
+        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
 
     if model_name:
         _save_model_choice(model_name)

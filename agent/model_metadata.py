@@ -379,7 +379,8 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return _model_metadata_cache
 
     try:
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=10)
+        # Tuple timeout: (connect_timeout, read_timeout) to prevent long hangs on NixOS/slow networks
+        response = requests.get(OPENROUTER_MODELS_URL, timeout=(3.0, 5.0))
         response.raise_for_status()
         data = response.json()
 

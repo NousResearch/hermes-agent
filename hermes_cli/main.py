@@ -1278,10 +1278,25 @@ def _model_flow_custom(config):
         save_config(cfg)
         deactivate_provider()
 
+        # Sync the caller's config dict so the setup wizard's final
+        # save_config(config) preserves our model settings.  Without
+        # this, the wizard overwrites model.provider/base_url with
+        # the stale values from its own config dict (#4172).
+        config["model"] = dict(model)
+
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
         if base_url or api_key:
             deactivate_provider()
+        # Even without a model name, persist the custom endpoint on the
+        # caller's config dict so the setup wizard doesn't lose it.
+        _caller_model = config.get("model")
+        if not isinstance(_caller_model, dict):
+            _caller_model = {"default": _caller_model} if _caller_model else {}
+        _caller_model["provider"] = "custom"
+        _caller_model["base_url"] = effective_url
+        _caller_model.pop("api_mode", None)
+        config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time

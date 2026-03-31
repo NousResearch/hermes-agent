@@ -991,9 +991,10 @@ def save_config_value(key_path: str, value: any) -> bool:
             current = current[key]
         current[keys[-1]] = value
         
-        # Save back
-        with open(config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        # Save back atomically — write to temp file + fsync + os.replace
+        # so an interrupt never leaves config.yaml truncated or empty.
+        from utils import atomic_yaml_write
+        atomic_yaml_write(config_path, config)
         
         # Enforce owner-only permissions on config files (contain API keys)
         try:

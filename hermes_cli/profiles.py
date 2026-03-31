@@ -698,6 +698,21 @@ def export_profile(name: str, output_path: str) -> Path:
     output = Path(output_path)
     # shutil.make_archive wants the base name without extension
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
+
+    if name == "default":
+        import tempfile
+        import shutil
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_default_dir = Path(tmpdir) / "default"
+            # Copy root profile contents to a dummy 'default' folder, ignoring other profiles and runtime state
+            shutil.copytree(
+                profile_dir,
+                tmp_default_dir,
+                ignore=shutil.ignore_patterns("profiles", "gateway.pid", "*.sock", "__pycache__")
+            )
+            result = shutil.make_archive(base, "gztar", tmpdir, "default")
+            return Path(result)
+
     result = shutil.make_archive(base, "gztar", str(profile_dir.parent), name)
     return Path(result)
 

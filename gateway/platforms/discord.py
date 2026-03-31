@@ -660,6 +660,41 @@ class DiscordAdapter(BasePlatformAdapter):
             pass
 
         logger.info("[%s] Disconnected", self.name)
+
+    async def _add_reaction(self, message: Any, emoji: str) -> bool:
+        """Add an emoji reaction to a Discord message."""
+        if not message or not hasattr(message, "add_reaction"):
+            return False
+        try:
+            await message.add_reaction(emoji)
+            return True
+        except Exception as e:
+            logger.debug("[%s] add_reaction failed (%s): %s", self.name, emoji, e)
+            return False
+
+    async def _remove_reaction(self, message: Any, emoji: str) -> bool:
+        """Remove the bot's own emoji reaction from a Discord message."""
+        if not message or not hasattr(message, "remove_reaction") or not self._client or not self._client.user:
+            return False
+        try:
+            await message.remove_reaction(emoji, self._client.user)
+            return True
+        except Exception as e:
+            logger.debug("[%s] remove_reaction failed (%s): %s", self.name, emoji, e)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction for normal Discord message events."""
+        message = event.raw_message
+        if hasattr(message, "add_reaction"):
+            await self._add_reaction(message, "👀")
+
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction."""
+        message = event.raw_message
+        if hasattr(message, "add_reaction"):
+            await self._remove_reaction(message, "👀")
+            await self._add_reaction(message, "✅" if success else "❌")
     
     async def send(
         self,

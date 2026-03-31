@@ -155,7 +155,7 @@ class ModalEnvironment(BaseEnvironment):
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()
-        self._synced_creds: Dict[str, tuple] = {}
+        self._synced_files: Dict[str, tuple] = {}
 
         sandbox_kwargs = dict(modal_sandbox_kwargs or {})
 
@@ -172,7 +172,7 @@ class ModalEnvironment(BaseEnvironment):
 
         cred_mounts = []
         try:
-            from tools.credential_files import get_credential_file_mounts
+            from tools.credential_files import get_credential_file_mounts, iter_skills_files
 
             for mount_entry in get_credential_file_mounts():
                 cred_mounts.append(
@@ -186,6 +186,18 @@ class ModalEnvironment(BaseEnvironment):
                     mount_entry["host_path"],
                     mount_entry["container_path"],
                 )
+
+            # Mount individual skill files (symlinks filtered out).
+            skills_files = iter_skills_files()
+            for entry in skills_files:
+                cred_mounts.append(
+                    _modal.Mount.from_local_file(
+                        entry["host_path"],
+                        remote_path=entry["container_path"],
+                    )
+                )
+            if skills_files:
+                logger.info("Modal: mounting %d skill files", len(skills_files))
         except Exception as e:
             logger.debug("Modal: could not load credential file mounts: %s", e)
 
@@ -212,8 +224,9 @@ class ModalEnvironment(BaseEnvironment):
             target_image_spec = restored_snapshot_id or image
             try:
                 # _resolve_modal_image keeps the Modal bootstrap fix together:
-                # it applies ensurepip via setup_dockerfile_commands before
-                # Modal builds or restores the image.
+                # it applies setup_dockerfile_commands with ensurepip before
+                # Modal builds registry images, while snapshot ids restore via
+                # modal.Image.from_id() without rebuilding.
                 effective_image = _resolve_modal_image(target_image_spec)
                 self._app, self._sandbox = self._worker.run_coroutine(
                     _create_sandbox(effective_image),
@@ -247,55 +260,57 @@ class ModalEnvironment(BaseEnvironment):
 
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
 
-    def _sync_credential_files(self) -> None:
-        """Push credential files into the running sandbox."""
+    def _push_file_to_sandbox(self, host_path: str, container_path: str) -> bool:
+        """Push a single file into the sandbox if changed. Returns True if synced."""
+        hp = Path(host_path)
         try:
-            from tools.credential_files import get_credential_file_mounts
+            stat = hp.stat()
+            file_key = (stat.st_mtime, stat.st_size)
+        except OSError:
+            return False
 
-            mounts = get_credential_file_mounts()
-            if not mounts:
-                return
+        if self._synced_files.get(container_path) == file_key:
+            return False
 
-            for entry in mounts:
-                host_path = entry["host_path"]
-                container_path = entry["container_path"]
-                hp = Path(host_path)
-                try:
-                    stat = hp.stat()
-                    file_key = (stat.st_mtime, stat.st_size)
-                except OSError:
-                    continue
+        try:
+            content = hp.read_bytes()
+        except Exception:
+            return False
 
-                if self._synced_creds.get(container_path) == file_key:
-                    continue
+        import base64
+        b64 = base64.b64encode(content).decode("ascii")
+        container_dir = str(Path(container_path).parent)
+        cmd = (
+            f"mkdir -p {shlex.quote(container_dir)} && "
+            f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
+        )
 
-                try:
-                    content = hp.read_text(encoding="utf-8")
-                except Exception:
-                    continue
+        async def _write():
+            proc = await self._sandbox.exec.aio("bash", "-c", cmd)
+            await proc.wait.aio()
 
-                import base64
+        self._worker.run_coroutine(_write(), timeout=15)
+        self._synced_files[container_path] = file_key
+        return True
 
-                b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
-                container_dir = str(Path(container_path).parent)
-                cmd = (
-                    f"mkdir -p {shlex.quote(container_dir)} && "
-                    f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
-                )
+    def _sync_files(self) -> None:
+        """Push credential files and skill files into the running sandbox.
 
-                async def _write():
-                    proc = await self._sandbox.exec.aio("bash", "-c", cmd)
-                    await proc.wait.aio()
+        Runs before each command. Uses mtime+size caching so only changed
+        files are pushed (~13μs overhead in the no-op case).
+        """
+        try:
+            from tools.credential_files import get_credential_file_mounts, iter_skills_files
 
-                self._worker.run_coroutine(_write(), timeout=15)
-                self._synced_creds[container_path] = file_key
-                logger.debug(
-                    "Modal: synced credential %s -> %s",
-                    host_path,
-                    container_path,
-                )
+            for entry in get_credential_file_mounts():
+                if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
+                    logger.debug("Modal: synced credential %s", entry["container_path"])
+
+            for entry in iter_skills_files():
+                if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
+                    logger.debug("Modal: synced skill file %s", entry["container_path"])
         except Exception as e:
-            logger.debug("Modal: credential file sync failed: %s", e)
+            logger.debug("Modal: file sync failed: %s", e)
 
     def execute(
         self,
@@ -305,7 +320,7 @@ class ModalEnvironment(BaseEnvironment):
         timeout: int | None = None,
         stdin_data: str | None = None,
     ) -> dict:
-        self._sync_credential_files()
+        self._sync_files()
 
         if stdin_data is not None:
             marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"

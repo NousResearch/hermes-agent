@@ -152,18 +152,29 @@ def _is_oauth_token(key: str) -> bool:
 
     Regular API keys start with 'sk-ant-api'. Everything else (setup-tokens
     starting with 'sk-ant-oat', managed keys, JWTs, etc.) needs Bearer auth.
-    Azure AI Foundry keys (non sk-ant- prefixed) should use x-api-key, not Bearer.
     """
     if not key:
         return False
     # Regular Console API keys use x-api-key header
     if key.startswith("sk-ant-api"):
         return False
-    # Azure AI Foundry keys don't start with sk-ant- at all — treat as regular API key
-    if not key.startswith("sk-ant-"):
-        return False
-    # Everything else (setup-tokens sk-ant-oat, managed keys, JWTs) uses Bearer auth
+    # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
     return True
+
+
+def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for non-Anthropic endpoints using the Anthropic Messages API.
+
+    Third-party proxies (Azure AI Foundry, AWS Bedrock, self-hosted) authenticate
+    with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
+    detection should be skipped for these endpoints.
+    """
+    if not base_url:
+        return False  # No base_url = direct Anthropic API
+    normalized = base_url.rstrip("/").lower()
+    if "anthropic.com" in normalized:
+        return False  # Direct Anthropic API — OAuth applies
+    return True  # Any other endpoint is a third-party proxy
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -207,6 +218,14 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
         # Anthropic OAuth/setup tokens.
         kwargs["auth_token"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    elif _is_third_party_anthropic_endpoint(base_url):
+        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
+        # own API keys with x-api-key auth. Skip OAuth detection — their keys
+        # don't follow Anthropic's sk-ant-* prefix convention and would be
+        # misclassified as OAuth tokens.
+        kwargs["api_key"] = api_key
         if _COMMON_BETAS:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
     elif _is_oauth_token(api_key):

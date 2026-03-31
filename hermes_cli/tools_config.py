@@ -197,6 +197,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Brave Search",
+                "tag": "Privacy-focused search with independent index",
+                "web_backend": "brave",
+                "env_vars": [
+                    {"key": "BRAVE_API_KEY", "prompt": "Brave Search API key", "url": "https://brave.com/search/api/"},
+                ],
+            },
+            {
                 "name": "Exa",
                 "tag": "AI-native search and contents",
                 "web_backend": "exa",

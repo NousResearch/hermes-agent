@@ -256,6 +256,11 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
+
+    # Maximum characters returned by a single read_file call.  Reads that
+    # exceed this are rejected with guidance to use offset+limit.
+    # 100K chars ≈ 25–35K tokens across typical tokenisers.
+    "file_read_max_chars": 100_000,
     
     "compression": {
         "enabled": True,

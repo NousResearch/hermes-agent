@@ -360,6 +360,26 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
+## File Read Safety
+
+Controls how much content a single `read_file` call can return. Reads that exceed the limit are rejected with an error telling the agent to use `offset` and `limit` for a smaller range. This prevents a single read of a minified JS bundle or large data file from flooding the context window.
+
+```yaml
+file_read_max_chars: 100000  # default — ~25-35K tokens
+```
+
+Raise it if you're on a model with a large context window and frequently read big files. Lower it for small-context models to keep reads efficient:
+
+```yaml
+# Large context model (200K+)
+file_read_max_chars: 200000
+
+# Small local model (16K context)
+file_read_max_chars: 30000
+```
+
+The agent also deduplicates file reads automatically — if the same file region is read twice and the file hasn't changed, a lightweight stub is returned instead of re-sending the content. This resets on context compression so the agent can re-read files after their content is summarized away.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

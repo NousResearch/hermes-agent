@@ -46,6 +46,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+HISTORY_SNAPSHOT_INTERVAL = 8
 
 
 def check_api_server_requirements() -> bool:
@@ -77,11 +78,39 @@ class ResponseStore:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._ensure_schema()
+        self._conn.commit()
+
+    def _ensure_schema(self) -> None:
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS responses (
                 response_id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
+                data TEXT,
+                response_json TEXT,
+                instructions TEXT,
+                history_node_id TEXT,
+                accessed_at REAL NOT NULL
+            )"""
+        )
+        existing_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(responses)").fetchall()
+        }
+        if "response_json" not in existing_columns:
+            self._conn.execute("ALTER TABLE responses ADD COLUMN response_json TEXT")
+        if "instructions" not in existing_columns:
+            self._conn.execute("ALTER TABLE responses ADD COLUMN instructions TEXT")
+        if "history_node_id" not in existing_columns:
+            self._conn.execute("ALTER TABLE responses ADD COLUMN history_node_id TEXT")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS history_nodes (
+                node_id TEXT PRIMARY KEY,
+                parent_node_id TEXT,
+                delta_json TEXT NOT NULL,
+                depth INTEGER NOT NULL,
+                is_snapshot INTEGER NOT NULL,
                 accessed_at REAL NOT NULL
             )"""
         )
@@ -91,38 +120,204 @@ class ResponseStore:
                 response_id TEXT NOT NULL
             )"""
         )
-        self._conn.commit()
+
+    def _load_response_payload(self, row: sqlite3.Row) -> Optional[Dict[str, Any]]:
+        if row["response_json"] and row["history_node_id"]:
+            history = self._reconstruct_history(row["history_node_id"])
+            if history is None:
+                return None
+            return {
+                "response": json.loads(row["response_json"]),
+                "conversation_history": history,
+                "instructions": row["instructions"],
+            }
+        if row["data"]:
+            return json.loads(row["data"])
+        return None
+
+    def _reconstruct_history(self, node_id: str) -> Optional[List[Dict[str, Any]]]:
+        segments: List[List[Dict[str, Any]]] = []
+        current = node_id
+        found_snapshot = False
+        while current:
+            row = self._conn.execute(
+                "SELECT parent_node_id, delta_json, is_snapshot FROM history_nodes WHERE node_id = ?",
+                (current,),
+            ).fetchone()
+            if row is None:
+                return None
+            segments.append(json.loads(row["delta_json"]))
+            if row["is_snapshot"]:
+                found_snapshot = True
+                break
+            current = row["parent_node_id"]
+        if not found_snapshot:
+            return None
+        history: List[Dict[str, Any]] = []
+        for segment in reversed(segments):
+            history.extend(segment)
+        return history
+
+    def _history_node_depth(self, node_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT depth FROM history_nodes WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        return int(row["depth"]) if row is not None else 0
+
+    def _insert_history_node(
+        self,
+        delta: List[Dict[str, Any]],
+        *,
+        parent_node_id: Optional[str],
+        is_snapshot: bool,
+        depth: int,
+    ) -> str:
+        node_id = f"hist_{uuid.uuid4().hex[:28]}"
+        self._conn.execute(
+            """INSERT INTO history_nodes (
+                node_id, parent_node_id, delta_json, depth, is_snapshot, accessed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                node_id,
+                parent_node_id,
+                json.dumps(delta, default=str),
+                depth,
+                1 if is_snapshot else 0,
+                time.time(),
+            ),
+        )
+        return node_id
+
+    def _create_history_node(
+        self,
+        full_history: List[Dict[str, Any]],
+        parent_response_id: Optional[str],
+    ) -> str:
+        if not parent_response_id:
+            return self._insert_history_node(
+                full_history,
+                parent_node_id=None,
+                is_snapshot=True,
+                depth=0,
+            )
+
+        parent_row = self._conn.execute(
+            "SELECT history_node_id FROM responses WHERE response_id = ?",
+            (parent_response_id,),
+        ).fetchone()
+        if parent_row is None or not parent_row["history_node_id"]:
+            return self._insert_history_node(
+                full_history,
+                parent_node_id=None,
+                is_snapshot=True,
+                depth=0,
+            )
+
+        parent_node_id = parent_row["history_node_id"]
+        parent_history = self._reconstruct_history(parent_node_id)
+        if (
+            parent_history is None
+            or len(full_history) < len(parent_history)
+            or full_history[: len(parent_history)] != parent_history
+        ):
+            return self._insert_history_node(
+                full_history,
+                parent_node_id=None,
+                is_snapshot=True,
+                depth=0,
+            )
+
+        parent_depth = self._history_node_depth(parent_node_id)
+        if parent_depth + 1 >= HISTORY_SNAPSHOT_INTERVAL:
+            return self._insert_history_node(
+                full_history,
+                parent_node_id=None,
+                is_snapshot=True,
+                depth=0,
+            )
+
+        return self._insert_history_node(
+            full_history[len(parent_history):],
+            parent_node_id=parent_node_id,
+            is_snapshot=False,
+            depth=parent_depth + 1,
+        )
+
+    def _gc_history_nodes(self) -> None:
+        self._conn.execute(
+            """WITH RECURSIVE reachable(node_id) AS (
+                SELECT history_node_id
+                FROM responses
+                WHERE history_node_id IS NOT NULL
+                UNION
+                SELECT history_nodes.parent_node_id
+                FROM history_nodes
+                JOIN reachable ON history_nodes.node_id = reachable.node_id
+                WHERE history_nodes.parent_node_id IS NOT NULL
+            )
+            DELETE FROM history_nodes
+            WHERE node_id NOT IN (
+                SELECT node_id FROM reachable WHERE node_id IS NOT NULL
+            )"""
+        )
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
         row = self._conn.execute(
-            "SELECT data FROM responses WHERE response_id = ?", (response_id,)
+            "SELECT response_id, data, response_json, instructions, history_node_id FROM responses WHERE response_id = ?",
+            (response_id,),
         ).fetchone()
         if row is None:
             return None
-        import time
         self._conn.execute(
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
             (time.time(), response_id),
         )
+        if row["history_node_id"]:
+            self._conn.execute(
+                "UPDATE history_nodes SET accessed_at = ? WHERE node_id = ?",
+                (time.time(), row["history_node_id"]),
+            )
         self._conn.commit()
-        return json.loads(row[0])
+        return self._load_response_payload(row)
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
-        import time
+        history_node_id = self._create_history_node(
+            list(data.get("conversation_history", [])),
+            data.get("parent_response_id"),
+        )
         self._conn.execute(
-            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            """INSERT OR REPLACE INTO responses (
+                response_id, data, response_json, instructions, history_node_id, accessed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                response_id,
+                json.dumps(data, default=str) if "response" not in data else None,
+                json.dumps(data.get("response", {}), default=str) if "response" in data else None,
+                data.get("instructions"),
+                history_node_id if "response" in data else None,
+                time.time(),
+            ),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id IN "
-                "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
+            oldest_rows = self._conn.execute(
+                "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
                 (count - self._max_size,),
-            )
+            ).fetchall()
+            for row in oldest_rows:
+                self._conn.execute(
+                    "DELETE FROM responses WHERE response_id = ?",
+                    (row["response_id"],),
+                )
+                self._conn.execute(
+                    "DELETE FROM conversations WHERE response_id = ?",
+                    (row["response_id"],),
+                )
+            self._gc_history_nodes()
         self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
@@ -130,6 +325,12 @@ class ResponseStore:
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
+        if cursor.rowcount > 0:
+            self._conn.execute(
+                "DELETE FROM conversations WHERE response_id = ?",
+                (response_id,),
+            )
+            self._gc_history_nodes()
         self._conn.commit()
         return cursor.rowcount > 0
 
@@ -866,6 +1067,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
+                "parent_response_id": previous_response_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response

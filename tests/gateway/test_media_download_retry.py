@@ -170,6 +170,40 @@ class TestCacheImageFromUrl:
         assert mock_client.get.call_count == 1
         mock_sleep.assert_not_called()
 
+    def test_concurrent_same_url_singleflight(self, tmp_path, monkeypatch):
+        """Concurrent downloads for the same image URL should share one fetch."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        monkeypatch.setattr("gateway.platforms.base._MEDIA_URL_RESULT_CACHE", {})
+        monkeypatch.setattr("gateway.platforms.base._MEDIA_URL_INFLIGHT", {})
+
+        fake_response = MagicMock()
+        fake_response.content = b"image data"
+        fake_response.raise_for_status = MagicMock()
+
+        gate = asyncio.Event()
+
+        async def fake_get(*args, **kwargs):
+            await gate.wait()
+            return fake_response
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_image_from_url
+                task1 = asyncio.create_task(cache_image_from_url("http://example.com/img.jpg", ext=".jpg"))
+                task2 = asyncio.create_task(cache_image_from_url("http://example.com/img.jpg", ext=".jpg"))
+                await asyncio.sleep(0)
+                gate.set()
+                return await asyncio.gather(task1, task2)
+
+        path1, path2 = asyncio.run(run())
+        assert path1 == path2
+        assert mock_client.get.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # cache_audio_from_url (base.py)
@@ -231,6 +265,32 @@ class TestCacheAudioFromUrl:
         assert path.endswith(".ogg")
         assert mock_client.get.call_count == 2
         mock_sleep.assert_called_once()
+
+    def test_second_call_reuses_cached_audio_path(self, tmp_path, monkeypatch):
+        """Sequential requests for the same audio URL should reuse the cached file path."""
+        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
+        monkeypatch.setattr("gateway.platforms.base._MEDIA_URL_RESULT_CACHE", {})
+        monkeypatch.setattr("gateway.platforms.base._MEDIA_URL_INFLIGHT", {})
+
+        fake_response = MagicMock()
+        fake_response.content = b"audio data"
+        fake_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=fake_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_audio_from_url
+                first = await cache_audio_from_url("http://example.com/voice.ogg", ext=".ogg")
+                second = await cache_audio_from_url("http://example.com/voice.ogg", ext=".ogg")
+                return first, second
+
+        path1, path2 = asyncio.run(run())
+        assert path1 == path2
+        assert mock_client.get.call_count == 1
 
     def test_retries_on_429_then_succeeds(self, tmp_path, monkeypatch):
         """A 429 response on the first attempt is retried; second attempt succeeds."""

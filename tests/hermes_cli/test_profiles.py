@@ -6,6 +6,7 @@ and shell completion generation.
 """
 
 import json
+import io
 import os
 import tarfile
 from pathlib import Path
@@ -448,6 +449,40 @@ class TestExportImport:
         # Importing to same existing name should fail
         with pytest.raises(FileExistsError):
             import_profile(str(archive_path), name="coder")
+
+    def test_import_rejects_traversal_archive_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "evil.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        escape_path = tmp_path / "escape.txt"
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo("../../escape.txt")
+            data = b"pwned"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not escape_path.exists()
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_absolute_archive_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "evil-abs.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_target = tmp_path / "abs-escape.txt"
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo(str(absolute_target))
+            data = b"pwned"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not absolute_target.exists()
+        assert not get_profile_dir("coder").exists()
 
     def test_export_nonexistent_raises(self, profile_env, tmp_path):
         with pytest.raises(FileNotFoundError):

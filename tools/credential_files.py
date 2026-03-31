@@ -141,11 +141,27 @@ def _load_config_files() -> List[Dict[str, str]]:
                 cfg = yaml.safe_load(f) or {}
             cred_files = cfg.get("terminal", {}).get("credential_files")
             if isinstance(cred_files, list):
+                hermes_home_resolved = hermes_home.resolve()
                 for item in cred_files:
                     if isinstance(item, str) and item.strip():
-                        host_path = hermes_home / item.strip()
+                        rel = item.strip()
+                        if os.path.isabs(rel):
+                            logger.warning(
+                                "credential_files: rejected absolute config path %r", rel,
+                            )
+                            continue
+                        host_path = (hermes_home / rel).resolve()
+                        try:
+                            host_path.relative_to(hermes_home_resolved)
+                        except ValueError:
+                            logger.warning(
+                                "credential_files: rejected config path traversal %r "
+                                "(resolves to %s, outside HERMES_HOME %s)",
+                                rel, host_path, hermes_home_resolved,
+                            )
+                            continue
                         if host_path.is_file():
-                            container_path = f"/root/.hermes/{item.strip()}"
+                            container_path = f"/root/.hermes/{rel}"
                             result.append({
                                 "host_path": str(host_path),
                                 "container_path": container_path,

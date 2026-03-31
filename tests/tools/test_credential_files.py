@@ -304,3 +304,57 @@ class TestPathTraversalSecurity:
         # The resolved path escapes HERMES_HOME — must be rejected
         assert result is False
         assert get_credential_file_mounts() == []
+
+
+# ---------------------------------------------------------------------------
+# Config-based credential files — same containment checks
+# ---------------------------------------------------------------------------
+
+class TestConfigPathTraversal:
+    """terminal.credential_files in config.yaml must also reject traversal."""
+
+    def _write_config(self, hermes_home: Path, cred_files: list):
+        import yaml
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.dump({"terminal": {"credential_files": cred_files}}))
+
+    def test_config_traversal_rejected(self, tmp_path, monkeypatch):
+        """'../secret' in config.yaml must not escape HERMES_HOME."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        sensitive = tmp_path / "secret.json"
+        sensitive.write_text("{}")
+        self._write_config(hermes_home, ["../secret.json"])
+
+        mounts = get_credential_file_mounts()
+        host_paths = [m["host_path"] for m in mounts]
+        assert str(sensitive) not in host_paths
+        assert str(sensitive.resolve()) not in host_paths
+
+    def test_config_absolute_path_rejected(self, tmp_path, monkeypatch):
+        """Absolute paths in config.yaml must be rejected."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        sensitive = tmp_path / "abs.json"
+        sensitive.write_text("{}")
+        self._write_config(hermes_home, [str(sensitive)])
+
+        mounts = get_credential_file_mounts()
+        assert mounts == []
+
+    def test_config_legitimate_file_works(self, tmp_path, monkeypatch):
+        """Normal files inside HERMES_HOME via config must still mount."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        (hermes_home / "oauth.json").write_text("{}")
+        self._write_config(hermes_home, ["oauth.json"])
+
+        mounts = get_credential_file_mounts()
+        assert len(mounts) == 1
+        assert "oauth.json" in mounts[0]["container_path"]

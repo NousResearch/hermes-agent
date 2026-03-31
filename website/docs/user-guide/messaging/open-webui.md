@@ -147,11 +147,15 @@ When you send a message in Open WebUI:
 1. Open WebUI sends a `POST /v1/chat/completions` request with your message and conversation history
 2. Hermes Agent creates an AIAgent instance with its full toolset
 3. The agent processes your request — it may call tools (terminal, file operations, web search, etc.)
-4. Tool calls happen invisibly server-side
-5. The agent's final text response is returned to Open WebUI
+4. As tools execute, **inline progress messages stream to the UI** so you can see what the agent is doing (e.g. `` `💻 ls -la` ``, `` `🔍 Python 3.12 release` ``)
+5. The agent's final text response streams back to Open WebUI
 6. Open WebUI displays the response in its chat interface
 
 Your agent has access to all the same tools and capabilities as when using the CLI or Telegram — the only difference is the frontend.
+
+:::tip Tool Progress
+With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.
+:::
 
 ## Configuration Reference
 

@@ -56,7 +56,7 @@ def cron_list(show_all: bool = False):
     print()
 
     for job in jobs:
-        job_id = job.get("id", "?")[:8]
+        job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")

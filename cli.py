@@ -1124,9 +1124,9 @@ class HermesCLI:
         self.acp_args: list[str] = []
         self.base_url = (
             base_url
-            or os.getenv("OPENAI_BASE_URL")
-            or os.getenv("OPENROUTER_BASE_URL", CLI_CONFIG["model"]["base_url"])
-        )
+            or CLI_CONFIG["model"].get("base_url", "")
+            or os.getenv("OPENROUTER_BASE_URL", "")
+        ) or None
         # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
         # custom endpoint → prefer OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.
@@ -1955,6 +1955,7 @@ class HermesCLI:
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
+        resolved_credential_pool = runtime.get("credential_pool")
         if not isinstance(api_key, str) or not api_key:
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
             # don't require authentication.  When a base_url IS configured but
@@ -1987,6 +1988,7 @@ class HermesCLI:
         self.api_mode = resolved_api_mode
         self.acp_command = resolved_acp_command
         self.acp_args = resolved_acp_args
+        self._credential_pool = resolved_credential_pool
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -2088,6 +2090,7 @@ class HermesCLI:
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
+                "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
@@ -2098,6 +2101,7 @@ class HermesCLI:
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
+                credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
@@ -3239,7 +3243,7 @@ class HermesCLI:
                         print(f"      {mid}{current_marker}")
                 elif p["id"] == "custom":
                     from hermes_cli.models import _get_custom_base_url
-                    custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
+                    custom_url = _get_custom_base_url()
                     if custom_url:
                         print(f"      endpoint: {custom_url}")
                     if is_active:
@@ -3904,6 +3908,8 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "btw":
+            self._handle_btw_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -4188,6 +4194,121 @@ class HermesCLI:
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
+        thread.start()
+
+    def _handle_btw_command(self, cmd: str):
+        """Handle /btw <question> — ephemeral side question using session context.
+
+        Snapshots the current conversation history, spawns a no-tools agent in
+        a background thread, and prints the answer without persisting anything
+        to the main session.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /btw <question>")
+            _cprint("  Example: /btw what module owns session title sanitization?")
+            _cprint("  Answers using session context. No tools, not persisted.")
+            return
+
+        question = parts[1].strip()
+        task_id = f"btw_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start /btw: no valid credentials.")
+            return
+
+        turn_route = self._resolve_turn_agent_config(question)
+        history_snapshot = list(self.conversation_history)
+
+        preview = question[:60] + ("..." if len(question) > 60 else "")
+        _cprint(f'  💬 /btw: "{preview}"')
+
+        def run_btw():
+            try:
+                btw_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_iterations=8,
+                    enabled_toolsets=[],
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    reasoning_config=self.reasoning_config,
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    fallback_model=self._fallback_model,
+                    session_db=None,
+                    skip_memory=True,
+                    skip_context_files=True,
+                    persist_session=False,
+                )
+
+                btw_prompt = (
+                    "[Ephemeral /btw side question. Answer using the conversation "
+                    "context. No tools available. Be direct and concise.]\n\n"
+                    + question
+                )
+                result = btw_agent.run_conversation(
+                    user_message=btw_prompt,
+                    conversation_history=history_snapshot,
+                    task_id=task_id,
+                    sync_honcho=False,
+                )
+
+                response = (result.get("final_response") or "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+
+                # TUI refresh before printing
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+
+                if response:
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        _resp_color = _skin.get_color("response_border", "#4F6D4A")
+                    except Exception:
+                        _resp_color = "#4F6D4A"
+
+                    ChatConsole().print(Panel(
+                        _rich_text_from_ansi(response),
+                        title=f"[{_resp_color} bold]⚕ /btw[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
+                else:
+                    _cprint("  💬 /btw: (no response)")
+
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+
+            except Exception as e:
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ /btw failed: {e}")
+            finally:
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_btw, daemon=True, name=f"btw-{task_id}")
         thread.start()
 
     @staticmethod
@@ -5597,6 +5718,8 @@ class HermesCLI:
             self.agent = None
 
         # Initialize agent if needed
+        if self.agent is None:
+            _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
@@ -7445,6 +7568,20 @@ class HermesCLI:
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         
+        # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
+        def _signal_handler(signum, frame):
+            """Handle SIGHUP/SIGTERM by triggering graceful cleanup."""
+            logger.debug("Received signal %s, triggering graceful shutdown", signum)
+            raise KeyboardInterrupt()
+        
+        try:
+            import signal as _signal
+            _signal.signal(_signal.SIGTERM, _signal_handler)
+            if hasattr(_signal, 'SIGHUP'):
+                _signal.signal(_signal.SIGHUP, _signal_handler)
+        except Exception:
+            pass  # Signal handlers may fail in restricted environments
+        
         # Install a custom asyncio exception handler that suppresses the
         # "Event loop is closed" RuntimeError from httpx transport cleanup.
         # This is defense-in-depth — the primary fix is neuter_async_httpx_del
@@ -7468,7 +7605,7 @@ class HermesCLI:
                 except Exception:
                     pass
                 app.run()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         finally:
             self._should_exit = True
@@ -7507,6 +7644,23 @@ class HermesCLI:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+            # Plugin hook: on_session_end — safety net for interrupted exits.
+            # run_conversation() already fires this per-turn on normal completion,
+            # so only fire here if the agent was mid-turn (_agent_running) when
+            # the exit occurred, meaning run_conversation's hook didn't fire.
+            if self.agent and getattr(self, '_agent_running', False):
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_session_end",
+                        session_id=self.agent.session_id,
+                        completed=False,
+                        interrupted=True,
+                        model=getattr(self.agent, 'model', None),
+                        platform=getattr(self.agent, 'platform', None) or "cli",
+                    )
+                except Exception:
+                    pass
             _run_cleanup()
             self._print_exit_summary()
 

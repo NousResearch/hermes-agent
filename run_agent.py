@@ -505,9 +505,11 @@ class AIAgent:
         honcho_config=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        persist_session: bool = True,
     ):
         """
         Initialize the AI Agent.
@@ -573,6 +575,8 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        self.persist_session = persist_session
+        self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -1700,7 +1704,10 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
+        Skipped when ``persist_session=False`` (ephemeral helper flows).
         """
+        if not self.persist_session:
+            return
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
@@ -3769,6 +3776,93 @@ class AIAgent:
         from agent.anthropic_adapter import _is_oauth_token
         self._is_anthropic_oauth = _is_oauth_token(new_token)
         return True
+
+    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+        from agent.auxiliary_client import _OR_HEADERS
+
+        normalized = (base_url or "").lower()
+        if "openrouter" in normalized:
+            self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "api.githubcopilot.com" in normalized:
+            from hermes_cli.models import copilot_default_headers
+
+            self._client_kwargs["default_headers"] = copilot_default_headers()
+        elif "api.kimi.com" in normalized:
+            self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+        else:
+            self._client_kwargs.pop("default_headers", None)
+
+    def _swap_credential(self, entry) -> None:
+        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+        runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+
+            try:
+                self._anthropic_client.close()
+            except Exception:
+                pass
+
+            self._anthropic_api_key = runtime_key
+            self._anthropic_base_url = runtime_base
+            self._anthropic_client = build_anthropic_client(runtime_key, runtime_base)
+            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+            self.api_key = runtime_key
+            self.base_url = runtime_base
+            return
+
+        self.api_key = runtime_key
+        self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._apply_client_headers_for_base_url(self.base_url)
+        self._replace_primary_openai_client(reason="credential_rotation")
+
+    def _recover_with_credential_pool(
+        self,
+        *,
+        status_code: Optional[int],
+        has_retried_429: bool,
+    ) -> tuple[bool, bool]:
+        """Attempt credential recovery via pool rotation.
+
+        Returns (recovered, has_retried_429).
+        On 429: first occurrence retries same credential (sets flag True).
+                second consecutive 429 rotates to next credential (resets flag).
+        On 402: immediately rotates (billing exhaustion won't resolve with retry).
+        On 401: attempts token refresh before rotating.
+        """
+        pool = self._credential_pool
+        if pool is None or status_code is None:
+            return False, has_retried_429
+
+        if status_code == 402:
+            next_entry = pool.mark_exhausted_and_rotate(status_code=402)
+            if next_entry is not None:
+                logger.info(f"Credential 402 (billing) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
+            return False, has_retried_429
+
+        if status_code == 429:
+            if not has_retried_429:
+                return False, True
+            next_entry = pool.mark_exhausted_and_rotate(status_code=429)
+            if next_entry is not None:
+                logger.info(f"Credential 429 (rate limit) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
+            return False, True
+
+        if status_code == 401:
+            refreshed = pool.try_refresh_current()
+            if refreshed is not None:
+                logger.info(f"Credential 401 — refreshed pool entry {getattr(refreshed, 'id', '?')}")
+                self._swap_credential(refreshed)
+                return True, has_retried_429
+
+        return False, has_retried_429
 
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
@@ -6250,6 +6344,12 @@ class AIAgent:
                     )
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
+                    # Compression created a new session — clear the history
+                    # reference so _flush_messages_to_session_db writes ALL
+                    # compressed messages to the new session's SQLite, not
+                    # skipping them because conversation_history is still the
+                    # pre-compression length.
+                    conversation_history = None
                     # Re-estimate after compression
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
@@ -6449,6 +6549,7 @@ class AIAgent:
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False
             nous_auth_retry_attempted = False
+            has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
 
@@ -6884,6 +6985,7 @@ class AIAgent:
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
+                    has_retried_429 = False  # Reset on success
                     break  # Success, exit retry loop
 
                 except InterruptedError:
@@ -6926,6 +7028,12 @@ class AIAgent:
                         # prompt or prefill.  Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
+                    recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
+                        status_code=status_code,
+                        has_retried_429=has_retried_429,
+                    )
+                    if recovered_with_pool:
+                        continue
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"
@@ -7050,6 +7158,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
                             self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7074,6 +7183,7 @@ class AIAgent:
                             break
                         else:
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7150,6 +7260,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
                             self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7176,7 +7287,7 @@ class AIAgent:
                         else:
                             # Can't compress further and already at minimum tier
                             self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7765,6 +7876,10 @@ class AIAgent:
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,
                         )
+                        # Compression created a new session — clear history so
+                        # _flush_messages_to_session_db writes compressed messages
+                        # to the new session (see preflight compression comment).
+                        conversation_history = None
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages

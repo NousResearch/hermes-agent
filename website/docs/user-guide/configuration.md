@@ -71,631 +71,7 @@ delegation:
 
 Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
 
-## Inference Providers
-
-You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:
-
-| Provider | Setup |
-|----------|-------|
-| **Nous Portal** | `hermes model` (OAuth, subscription-based) |
-| **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
-| **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
-| **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
-| **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
-| **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
-| **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
-| **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
-| **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
-| **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
-| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
-| **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
-| **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
-| **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
-| **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
-| **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
-
-:::tip Model key alias
-In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
-:::
-
-:::info Codex Note
-The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
-:::
-
-:::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](#auxiliary-models) below.
-:::
-
-### Anthropic (Native)
-
-Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
-
-```bash
-# With an API key (pay-per-token)
-export ANTHROPIC_API_KEY=***
-hermes chat --provider anthropic --model claude-sonnet-4-6
-
-# Preferred: authenticate through `hermes model`
-# Hermes will use Claude Code's credential store directly when available
-hermes model
-
-# Manual override with a setup-token (fallback / legacy)
-export ANTHROPIC_TOKEN=***  # setup-token or manual OAuth token
-hermes chat --provider anthropic
-
-# Auto-detect Claude Code credentials (if you already use Claude Code)
-hermes chat --provider anthropic  # reads Claude Code credential files automatically
-```
-
-When you choose Anthropic OAuth through `hermes model`, Hermes prefers Claude Code's own credential store over copying the token into `~/.hermes/.env`. That keeps refreshable Claude credentials refreshable.
-
-Or set it permanently:
-```yaml
-model:
-  provider: "anthropic"
-  default: "claude-sonnet-4-6"
-```
-
-:::tip Aliases
-`--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
-:::
-
-### GitHub Copilot
-
-Hermes supports GitHub Copilot as a first-class provider with two modes:
-
-**`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
-
-```bash
-hermes chat --provider copilot --model gpt-5.4
-```
-
-**Authentication options** (checked in this order):
-
-1. `COPILOT_GITHUB_TOKEN` environment variable
-2. `GH_TOKEN` environment variable
-3. `GITHUB_TOKEN` environment variable
-4. `gh auth token` CLI fallback
-
-If no token is found, `hermes model` offers an **OAuth device code login** — the same flow used by the Copilot CLI and opencode.
-
-:::warning Token types
-The Copilot API does **not** support classic Personal Access Tokens (`ghp_*`). Supported token types:
-
-| Type | Prefix | How to get |
-|------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → Login with GitHub |
-| Fine-grained PAT | `github_pat_` | GitHub Settings → Developer settings → Fine-grained tokens (needs **Copilot Requests** permission) |
-| GitHub App token | `ghu_` | Via GitHub App installation |
-
-If your `gh auth token` returns a `ghp_*` token, use `hermes model` to authenticate via OAuth instead.
-:::
-
-**API routing**: GPT-5+ models (except `gpt-5-mini`) automatically use the Responses API. All other models (GPT-4o, Claude, Gemini, etc.) use Chat Completions. Models are auto-detected from the live Copilot catalog.
-
-**`copilot-acp` — Copilot ACP agent backend**. Spawns the local Copilot CLI as a subprocess:
-
-```bash
-hermes chat --provider copilot-acp --model copilot-acp
-# Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
-```
-
-**Permanent config:**
-```yaml
-model:
-  provider: "copilot"
-  default: "gpt-5.4"
-```
-
-| Environment variable | Description |
-|---------------------|-------------|
-| `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
-| `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
-| `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
-
-### First-Class Chinese AI Providers
-
-These providers have built-in support with dedicated provider IDs. Set the API key and use `--provider` to select:
-
-```bash
-# z.ai / ZhipuAI GLM
-hermes chat --provider zai --model glm-4-plus
-# Requires: GLM_API_KEY in ~/.hermes/.env
-
-# Kimi / Moonshot AI
-hermes chat --provider kimi-coding --model moonshot-v1-auto
-# Requires: KIMI_API_KEY in ~/.hermes/.env
-
-# MiniMax (global endpoint)
-hermes chat --provider minimax --model MiniMax-M2.7
-# Requires: MINIMAX_API_KEY in ~/.hermes/.env
-
-# MiniMax (China endpoint)
-hermes chat --provider minimax-cn --model MiniMax-M2.7
-# Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
-
-# Alibaba Cloud / DashScope (Qwen models)
-hermes chat --provider alibaba --model qwen3.5-plus
-# Requires: DASHSCOPE_API_KEY in ~/.hermes/.env
-```
-
-Or set the provider permanently in `config.yaml`:
-```yaml
-model:
-  provider: "zai"       # or: kimi-coding, minimax, minimax-cn, alibaba
-  default: "glm-4-plus"
-```
-
-Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, or `DASHSCOPE_BASE_URL` environment variables.
-
-### Hugging Face Inference Providers
-
-[Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers) routes to 20+ open models through a unified OpenAI-compatible endpoint (`router.huggingface.co/v1`). Requests are automatically routed to the fastest available backend (Groq, Together, SambaNova, etc.) with automatic failover.
-
-```bash
-# Use any available model
-hermes chat --provider huggingface --model Qwen/Qwen3-235B-A22B-Thinking-2507
-# Requires: HF_TOKEN in ~/.hermes/.env
-
-# Short alias
-hermes chat --provider hf --model deepseek-ai/DeepSeek-V3.2
-```
-
-Or set it permanently in `config.yaml`:
-```yaml
-model:
-  provider: "huggingface"
-  default: "Qwen/Qwen3-235B-A22B-Thinking-2507"
-```
-
-Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — make sure to enable the "Make calls to Inference Providers" permission. Free tier included ($0.10/month credit, no markup on provider rates).
-
-You can append routing suffixes to model names: `:fastest` (default), `:cheapest`, or `:provider_name` to force a specific backend.
-
-The base URL can be overridden with `HF_BASE_URL`.
-
-## Custom & Self-Hosted LLM Providers
-
-Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server implements `/v1/chat/completions`, you can point Hermes at it. This means you can use local models, GPU inference servers, multi-provider routers, or any third-party API.
-
-### General Setup
-
-Three ways to configure a custom endpoint:
-
-**Interactive setup (recommended):**
-```bash
-hermes model
-# Select "Custom endpoint (self-hosted / VLLM / etc.)"
-# Enter: API base URL, API key, Model name
-```
-
-**Manual config (`config.yaml`):**
-```yaml
-# In ~/.hermes/config.yaml
-model:
-  default: your-model-name
-  provider: custom
-  base_url: http://localhost:8000/v1
-  api_key: your-key-or-leave-empty-for-local
-```
-
-**Environment variables (`.env` file):**
-```bash
-# Add to ~/.hermes/.env
-OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=your-key     # Any non-empty string for local servers
-LLM_MODEL=your-model-name
-```
-
-All three approaches end up in the same runtime path. `hermes model` persists provider, model, and base URL to `config.yaml` so later sessions keep using that endpoint even if env vars are not set.
-
-### Switching Models with `/model`
-
-Once a custom endpoint is configured, you can switch models mid-session:
-
-```
-/model custom:qwen-2.5          # Switch to a model on your custom endpoint
-/model custom                    # Auto-detect the model from the endpoint
-/model openrouter:claude-sonnet-4 # Switch back to a cloud provider
-```
-
-If you have **named custom providers** configured (see below), use the triple syntax:
-
-```
-/model custom:local:qwen-2.5    # Use the "local" custom provider with model qwen-2.5
-/model custom:work:llama3       # Use the "work" custom provider with llama3
-```
-
-When switching providers, Hermes persists the base URL and provider to config so the change survives restarts. When switching away from a custom endpoint to a built-in provider, the stale base URL is automatically cleared.
-
-:::tip
-`/model custom` (bare, no model name) queries your endpoint's `/models` API and auto-selects the model if exactly one is loaded. Useful for local servers running a single model.
-:::
-
-Everything below follows this same pattern — just change the URL, key, and model name.
-
----
-
-### Ollama — Local Models, Zero Config
-
-[Ollama](https://ollama.com/) runs open-weight models locally with one command. Best for: quick local experimentation, privacy-sensitive work, offline use.
-
-```bash
-# Install and run a model
-ollama pull llama3.1:70b
-ollama serve   # Starts on port 11434
-
-# Configure Hermes
-OPENAI_BASE_URL=http://localhost:11434/v1
-OPENAI_API_KEY=ollama           # Any non-empty string
-LLM_MODEL=llama3.1:70b
-```
-
-Ollama's OpenAI-compatible endpoint supports chat completions, streaming, and tool calling (for supported models). No GPU required for smaller models — Ollama handles CPU inference automatically.
-
-:::tip
-List available models with `ollama list`. Pull any model from the [Ollama library](https://ollama.com/library) with `ollama pull <model>`.
-:::
-
----
-
-### vLLM — High-Performance GPU Inference
-
-[vLLM](https://docs.vllm.ai/) is the standard for production LLM serving. Best for: maximum throughput on GPU hardware, serving large models, continuous batching.
-
-```bash
-# Start vLLM server
-pip install vllm
-vllm serve meta-llama/Llama-3.1-70B-Instruct \
-  --port 8000 \
-  --tensor-parallel-size 2    # Multi-GPU
-
-# Configure Hermes
-OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=dummy
-LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
-```
-
-vLLM supports tool calling, structured output, and multi-modal models. Use `--enable-auto-tool-choice` and `--tool-call-parser hermes` for Hermes-format tool calling with NousResearch models.
-
----
-
-### SGLang — Fast Serving with RadixAttention
-
-[SGLang](https://github.com/sgl-project/sglang) is an alternative to vLLM with RadixAttention for KV cache reuse. Best for: multi-turn conversations (prefix caching), constrained decoding, structured output.
-
-```bash
-# Start SGLang server
-pip install "sglang[all]"
-python -m sglang.launch_server \
-  --model meta-llama/Llama-3.1-70B-Instruct \
-  --port 8000 \
-  --tp 2
-
-# Configure Hermes
-OPENAI_BASE_URL=http://localhost:8000/v1
-OPENAI_API_KEY=dummy
-LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
-```
-
----
-
-### llama.cpp / llama-server — CPU & Metal Inference
-
-[llama.cpp](https://github.com/ggml-org/llama.cpp) runs quantized models on CPU, Apple Silicon (Metal), and consumer GPUs. Best for: running models without a datacenter GPU, Mac users, edge deployment.
-
-```bash
-# Build and start llama-server
-cmake -B build && cmake --build build --config Release
-./build/bin/llama-server \
-  -m models/llama-3.1-8b-instruct-Q4_K_M.gguf \
-  --port 8080 --host 0.0.0.0
-
-# Configure Hermes
-OPENAI_BASE_URL=http://localhost:8080/v1
-OPENAI_API_KEY=dummy
-LLM_MODEL=llama-3.1-8b-instruct
-```
-
-:::tip
-Download GGUF models from [Hugging Face](https://huggingface.co/models?library=gguf). Q4_K_M quantization offers the best balance of quality vs. memory usage.
-:::
-
----
-
-### LiteLLM Proxy — Multi-Provider Gateway
-
-[LiteLLM](https://docs.litellm.ai/) is an OpenAI-compatible proxy that unifies 100+ LLM providers behind a single API. Best for: switching between providers without config changes, load balancing, fallback chains, budget controls.
-
-```bash
-# Install and start
-pip install "litellm[proxy]"
-litellm --model anthropic/claude-sonnet-4 --port 4000
-
-# Or with a config file for multiple models:
-litellm --config litellm_config.yaml --port 4000
-
-# Configure Hermes
-OPENAI_BASE_URL=http://localhost:4000/v1
-OPENAI_API_KEY=sk-your-litellm-key
-LLM_MODEL=anthropic/claude-sonnet-4
-```
-
-Example `litellm_config.yaml` with fallback:
-```yaml
-model_list:
-  - model_name: "best"
-    litellm_params:
-      model: anthropic/claude-sonnet-4
-      api_key: sk-ant-...
-  - model_name: "best"
-    litellm_params:
-      model: openai/gpt-4o
-      api_key: sk-...
-router_settings:
-  routing_strategy: "latency-based-routing"
-```
-
----
-
-### ClawRouter — Cost-Optimized Routing
-
-[ClawRouter](https://github.com/BlockRunAI/ClawRouter) by BlockRunAI is a local routing proxy that auto-selects models based on query complexity. It classifies requests across 14 dimensions and routes to the cheapest model that can handle the task. Payment is via USDC cryptocurrency (no API keys).
-
-```bash
-# Install and start
-npx @blockrun/clawrouter    # Starts on port 8402
-
-# Configure Hermes
-OPENAI_BASE_URL=http://localhost:8402/v1
-OPENAI_API_KEY=dummy
-LLM_MODEL=blockrun/auto     # or: blockrun/eco, blockrun/premium, blockrun/agentic
-```
-
-Routing profiles:
-| Profile | Strategy | Savings |
-|---------|----------|---------|
-| `blockrun/auto` | Balanced quality/cost | 74-100% |
-| `blockrun/eco` | Cheapest possible | 95-100% |
-| `blockrun/premium` | Best quality models | 0% |
-| `blockrun/free` | Free models only | 100% |
-| `blockrun/agentic` | Optimized for tool use | varies |
-
-:::note
-ClawRouter requires a USDC-funded wallet on Base or Solana for payment. All requests route through BlockRun's backend API. Run `npx @blockrun/clawrouter doctor` to check wallet status.
-:::
-
----
-
-### Other Compatible Providers
-
-Any service with an OpenAI-compatible API works. Some popular options:
-
-| Provider | Base URL | Notes |
-|----------|----------|-------|
-| [Together AI](https://together.ai) | `https://api.together.xyz/v1` | Cloud-hosted open models |
-| [Groq](https://groq.com) | `https://api.groq.com/openai/v1` | Ultra-fast inference |
-| [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
-| [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
-| [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
-| [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
-| [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
-| [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |
-| [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |
-| [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models |
-
-```bash
-# Example: Together AI
-OPENAI_BASE_URL=https://api.together.xyz/v1
-OPENAI_API_KEY=your-together-key
-LLM_MODEL=meta-llama/Llama-3.1-70B-Instruct-Turbo
-```
-
----
-
-### Context Length Detection
-
-Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
-
-1. **Config override** — `model.context_length` in config.yaml (highest priority)
-2. **Custom provider per-model** — `custom_providers[].models.<id>.context_length`
-3. **Persistent cache** — previously discovered values (survives restarts)
-4. **Endpoint `/models`** — queries your server's API (local/custom endpoints)
-5. **Anthropic `/v1/models`** — queries Anthropic's API for `max_input_tokens` (API-key users only)
-6. **OpenRouter API** — live model metadata from OpenRouter
-7. **Nous Portal** — suffix-matches Nous model IDs against OpenRouter metadata
-8. **[models.dev](https://models.dev)** — community-maintained registry with provider-specific context lengths for 3800+ models across 100+ providers
-9. **Fallback defaults** — broad model family patterns (128K default)
-
-For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
-
-To set the context length explicitly, add `context_length` to your model config:
-
-```yaml
-model:
-  default: "qwen3.5:9b"
-  base_url: "http://localhost:8080/v1"
-  context_length: 131072  # tokens
-```
-
-For custom endpoints, you can also set context length per model:
-
-```yaml
-custom_providers:
-  - name: "My Local LLM"
-    base_url: "http://localhost:11434/v1"
-    models:
-      qwen3.5:27b:
-        context_length: 32768
-      deepseek-r1:70b:
-        context_length: 65536
-```
-
-`hermes model` will prompt for context length when configuring a custom endpoint. Leave it blank for auto-detection.
-
-:::tip When to set this manually
-- You're using Ollama with a custom `num_ctx` that's lower than the model's maximum
-- You want to limit context below the model's maximum (e.g., 8k on a 128k model to save VRAM)
-- You're running behind a proxy that doesn't expose `/v1/models`
-:::
-
----
-
-### Named Custom Providers
-
-If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`:
-
-```yaml
-custom_providers:
-  - name: local
-    base_url: http://localhost:8080/v1
-    # api_key omitted — Hermes uses "no-key-required" for keyless local servers
-  - name: work
-    base_url: https://gpu-server.internal.corp/v1
-    api_key: corp-api-key
-    api_mode: chat_completions   # optional, auto-detected from URL
-  - name: anthropic-proxy
-    base_url: https://proxy.example.com/anthropic
-    api_key: proxy-key
-    api_mode: anthropic_messages  # for Anthropic-compatible proxies
-```
-
-Switch between them mid-session with the triple syntax:
-
-```
-/model custom:local:qwen-2.5       # Use the "local" endpoint with qwen-2.5
-/model custom:work:llama3-70b      # Use the "work" endpoint with llama3-70b
-/model custom:anthropic-proxy:claude-sonnet-4  # Use the proxy
-```
-
-You can also select named custom providers from the interactive `hermes model` menu.
-
----
-
-### Choosing the Right Setup
-
-| Use Case | Recommended |
-|----------|-------------|
-| **Just want it to work** | OpenRouter (default) or Nous Portal |
-| **Local models, easy setup** | Ollama |
-| **Production GPU serving** | vLLM or SGLang |
-| **Mac / no GPU** | Ollama or llama.cpp |
-| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
-| **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
-| **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
-| **Enterprise / Azure** | Azure OpenAI with custom endpoint |
-| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot, or MiniMax (first-class providers) |
-
-:::tip
-You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.
-:::
-
-## Optional API Keys
-
-| Feature | Provider | Env Variable |
-|---------|----------|--------------|
-| Web scraping | [Firecrawl](https://firecrawl.dev/) | `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` |
-| Browser automation | [Browserbase](https://browserbase.com/) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` |
-| Image generation | [FAL](https://fal.ai/) | `FAL_KEY` |
-| Premium TTS voices | [ElevenLabs](https://elevenlabs.io/) | `ELEVENLABS_API_KEY` |
-| OpenAI TTS + voice transcription | [OpenAI](https://platform.openai.com/api-keys) | `VOICE_TOOLS_OPENAI_KEY` |
-| RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
-| Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
-
-### Self-Hosting Firecrawl
-
-By default, Hermes uses the [Firecrawl cloud API](https://firecrawl.dev/) for web search and scraping. If you prefer to run Firecrawl locally, you can point Hermes at a self-hosted instance instead. See Firecrawl's [SELF_HOST.md](https://github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md) for complete setup instructions.
-
-**What you get:** No API key required, no rate limits, no per-page costs, full data sovereignty.
-
-**What you lose:** The cloud version uses Firecrawl's proprietary "Fire-engine" for advanced anti-bot bypassing (Cloudflare, CAPTCHAs, IP rotation). Self-hosted uses basic fetch + Playwright, so some protected sites may fail. Search uses DuckDuckGo instead of Google.
-
-**Setup:**
-
-1. Clone and start the Firecrawl Docker stack (5 containers: API, Playwright, Redis, RabbitMQ, PostgreSQL — requires ~4-8 GB RAM):
-   ```bash
-   git clone https://github.com/firecrawl/firecrawl
-   cd firecrawl
-   # In .env, set: USE_DB_AUTHENTICATION=false, HOST=0.0.0.0, PORT=3002
-   docker compose up -d
-   ```
-
-2. Point Hermes at your instance (no API key needed):
-   ```bash
-   hermes config set FIRECRAWL_API_URL http://localhost:3002
-   ```
-
-You can also set both `FIRECRAWL_API_KEY` and `FIRECRAWL_API_URL` if your self-hosted instance has authentication enabled.
-
-## OpenRouter Provider Routing
-
-When using OpenRouter, you can control how requests are routed across providers. Add a `provider_routing` section to `~/.hermes/config.yaml`:
-
-```yaml
-provider_routing:
-  sort: "throughput"          # "price" (default), "throughput", or "latency"
-  # only: ["anthropic"]      # Only use these providers
-  # ignore: ["deepinfra"]    # Skip these providers
-  # order: ["anthropic", "google"]  # Try providers in this order
-  # require_parameters: true  # Only use providers that support all request params
-  # data_collection: "deny"   # Exclude providers that may store/train on data
-```
-
-**Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
-
-## Fallback Model
-
-Configure a backup provider:model that Hermes switches to automatically when your primary model fails (rate limits, server errors, auth failures):
-
-```yaml
-fallback_model:
-  provider: openrouter                    # required
-  model: anthropic/claude-sonnet-4        # required
-  # base_url: http://localhost:8000/v1    # optional, for custom endpoints
-  # api_key_env: MY_CUSTOM_KEY           # optional, env var name for custom endpoint API key
-```
-
-When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
-
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `custom`.
-
-:::tip
-Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
-:::
-
-## Smart Model Routing
-
-Optional cheap-vs-strong routing lets Hermes keep your main model for complex work while sending very short/simple turns to a cheaper model.
-
-```yaml
-smart_model_routing:
-  enabled: true
-  max_simple_chars: 160
-  max_simple_words: 28
-  cheap_model:
-    provider: openrouter
-    model: google/gemini-2.5-flash
-    # base_url: http://localhost:8000/v1  # optional custom endpoint
-    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
-```
-
-How it works:
-- If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
-- If the turn looks complex, Hermes stays on your primary model/provider
-- If the cheap route cannot be resolved cleanly, Hermes falls back to the primary model automatically
-
-This is intentionally conservative. It is meant for quick, low-stakes turns like:
-- short factual questions
-- quick rewrites
-- lightweight summaries
-
-It will avoid routing prompts that look like:
-- coding/debugging work
-- tool-heavy requests
-- long or multi-line analysis asks
-
-Use this when you want lower latency or cost without fully changing your default model.
+For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/docs/integrations/providers).
 
 ## Terminal Backend Configuration
 
@@ -706,6 +82,10 @@ terminal:
   backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Working directory ("." = current dir for local, "/root" for containers)
   timeout: 180      # Per-command timeout in seconds
+  env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
+  singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
+  modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
+  daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
 ### Backend Overview
@@ -1012,6 +392,8 @@ All compression settings live in `config.yaml` (no environment variables).
 compression:
   enabled: true                                     # Toggle compression on/off
   threshold: 0.50                                   # Compress at this % of context limit
+  target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
+  protect_last_n: 20                                # Min recent messages to keep uncompressed
   summary_model: "google/gemini-3-flash-preview"    # Model for summarization
   summary_provider: "auto"                          # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
   summary_base_url: null                            # Custom OpenAI-compatible endpoint (overrides provider)
@@ -1096,6 +478,18 @@ If auto-compression is disabled, the warning tells you context may be truncated 
 
 Context pressure is automatic — no configuration needed. It fires purely as a user-facing notification and does not modify the message stream or inject anything into the model's context.
 
+## Credential Pool Strategies
+
+When you have multiple API keys or OAuth tokens for the same provider, configure the rotation strategy:
+
+```yaml
+credential_pool_strategies:
+  openrouter: round_robin    # cycle through keys evenly
+  anthropic: least_used      # always pick the least-used key
+```
+
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
+
 ## Auxiliary Models
 
 Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via auto-detection — you don't need to configure anything.
@@ -1146,6 +540,38 @@ auxiliary:
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
+
+  # Session search — summarizes past session matches
+  session_search:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+
+  # Skills hub — skill matching and search
+  skills_hub:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+
+  # MCP tool dispatch
+  mcp:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
+
+  # Memory flush — summarizes conversation for persistent memory
+  flush_memories:
+    provider: "auto"
+    model: ""
+    base_url: ""
+    api_key: ""
+    timeout: 30
 ```
 
 :::tip
@@ -1153,7 +579,7 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own top-level `compression:` block with `summary_provider`, `summary_model`, and `summary_base_url` — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](#fallback-model) above. All three follow the same provider/model/base_url pattern.
+Context compression has its own top-level `compression:` block with `summary_provider`, `summary_model`, and `summary_base_url` — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
 :::
 
 ### Changing the Vision Model
@@ -1340,6 +766,7 @@ display:
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   background_process_notifications: all  # all | result | error | off (gateway only)
   show_cost: false        # Show estimated $ cost in the CLI status bar
+  tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
 ```
 
 ### Theme mode
@@ -1445,12 +872,15 @@ When enabled, responses appear token-by-token inside a streaming box. Tool calls
 ```yaml
 streaming:
   enabled: true           # Enable progressive message editing
+  transport: edit         # "edit" (progressive message editing) or "off"
   edit_interval: 0.3      # Seconds between message edits
   buffer_threshold: 40    # Characters before forcing an edit flush
   cursor: " ▉"            # Cursor shown during streaming
 ```
 
-When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email) gracefully skip streaming and deliver the final response normally.
+When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
+
+**Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
 
 :::note
 Streaming is disabled by default. Enable it in `~/.hermes/config.yaml` to try the streaming UX.
@@ -1514,23 +944,6 @@ Usage: type `/status`, `/disk`, `/update`, or `/gpu` in the CLI or any messaging
 - **Type** — only `exec` is supported (runs a shell command); other types show an error
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
 
-## Gateway Streaming
-
-Enable progressive token delivery on messaging platforms. When streaming is enabled, responses appear character-by-character in Telegram, Discord, and Slack via message editing, rather than waiting for the full response.
-
-```yaml
-streaming:
-  enabled: false              # Enable streaming token delivery (default: off)
-  transport: edit             # "edit" (progressive message editing) or "off"
-  edit_interval: 0.3          # Min seconds between message edits
-  buffer_threshold: 40        # Characters accumulated before forcing an edit
-  cursor: " ▉"               # Cursor character shown during streaming
-```
-
-**Platform support:** Telegram, Discord, and Slack support edit-based streaming. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
-
-**Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
-
 ## Human Delay
 
 Simulate human-like response pacing in messaging platforms:
@@ -1554,11 +967,11 @@ code_execution:
 
 ## Web Search Backends
 
-The `web_search`, `web_extract`, and `web_crawl` tools support three backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search`, `web_extract`, and `web_crawl` tools support four backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily
+  backend: firecrawl    # firecrawl | parallel | tavily | exa
 ```
 
 | Backend | Env Var | Search | Extract | Crawl |
@@ -1566,8 +979,9 @@ web:
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
+| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
 
-**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
+**Backend selection:** If `web.backend` is not set, the backend is auto-detected from available API keys. If only `EXA_API_KEY` is set, Exa is used. If only `TAVILY_API_KEY` is set, Tavily is used. If only `PARALLEL_API_KEY` is set, Parallel is used. Otherwise Firecrawl is the default.
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=false` on the server to disable auth).
 
@@ -1580,10 +994,59 @@ Configure browser automation behavior:
 ```yaml
 browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
+  command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
 ```
 
 The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
+
+## Timezone
+
+Override the server-local timezone with an IANA timezone string. Affects timestamps in logs, cron scheduling, and system prompt time injection.
+
+```yaml
+timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)
+```
+
+Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe/London`, `Asia/Kolkata`, `UTC`). Leave empty or omit for server-local time.
+
+## Discord
+
+Configure Discord-specific behavior for the messaging gateway:
+
+```yaml
+discord:
+  require_mention: true          # Require @mention to respond in server channels
+  free_response_channels: ""     # Comma-separated channel IDs where bot responds without @mention
+  auto_thread: true              # Auto-create threads on @mention in channels
+```
+
+- `require_mention` — when `true` (default), the bot only responds in server channels when mentioned with `@BotName`. DMs always work without mention.
+- `free_response_channels` — comma-separated list of channel IDs where the bot responds to every message without requiring a mention.
+- `auto_thread` — when `true` (default), mentions in channels automatically create a thread for the conversation, keeping channels clean (similar to Slack threading).
+
+## Security
+
+Pre-execution security scanning and secret redaction:
+
+```yaml
+security:
+  redact_secrets: true           # Redact API key patterns in tool output and logs
+  tirith_enabled: true           # Enable Tirith security scanning for terminal commands
+  tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
+  tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
+  tirith_fail_open: true         # Allow command execution if tirith is unavailable
+  website_blocklist:             # See Website Blocklist section below
+    enabled: false
+    domains: []
+    shared_files: []
+```
+
+- `redact_secrets` — automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs.
+- `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/StackGuardian/tirith) before execution to detect potentially dangerous operations.
+- `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
+- `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
+- `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
 
 ## Website Blocklist
 
@@ -1635,7 +1098,7 @@ Setting `approvals.mode: off` disables all safety checks for terminal commands. 
 
 ## Checkpoints
 
-Automatic filesystem snapshots before destructive file operations. See the [Checkpoints feature page](/docs/user-guide/features/checkpoints) for details.
+Automatic filesystem snapshots before destructive file operations. See the [Checkpoints & Rollback](/docs/user-guide/checkpoints-and-rollback) for details.
 
 ```yaml
 checkpoints:

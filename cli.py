@@ -11510,6 +11510,40 @@ class HermesCLI:
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
 
+                    # Inline shell: !command runs directly, no LLM.
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and user_input.startswith("!")
+                    ):
+                        shell_cmd = user_input[1:].strip()
+                        if shell_cmd:
+                            _cprint(f"\n{_DIM}$ {shell_cmd}{_RST}")
+                            import subprocess as _sp
+
+                            try:
+                                _result = _sp.run(
+                                    shell_cmd,
+                                    shell=True,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=60,
+                                )
+                                _out = _result.stdout.rstrip()
+                                if _result.stderr.strip():
+                                    _out = (
+                                        _out + "\n" + _result.stderr.rstrip()
+                                    ).strip()
+                                if _out:
+                                    self.console.print(_rich_text_from_ansi(_out))
+                                if _result.returncode != 0:
+                                    _cprint(f"{_DIM}(exit {_result.returncode}){_RST}")
+                            except _sp.TimeoutExpired:
+                                _cprint(f"{_DIM}Command timed out (60s){_RST}")
+                            except Exception as _e:
+                                _cprint(f"{_DIM}Shell error: {_e}{_RST}")
+                        continue
+
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):

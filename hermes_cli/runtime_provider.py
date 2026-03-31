@@ -229,28 +229,22 @@ def _resolve_openrouter_runtime(
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
 
-    env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
+    # Use config base_url when available and the provider context matches.
+    # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
+    # the single source of truth for endpoint URLs.
     use_config_base_url = False
     if cfg_base_url.strip() and not explicit_base_url:
         if requested_norm == "auto":
-            if (not cfg_provider or cfg_provider == "auto") and not env_openai_base_url:
+            if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
         elif requested_norm == "custom" and cfg_provider == "custom":
-            # provider: custom — use base_url from config (Fixes #1760).
             use_config_base_url = True
 
-    # When the user explicitly requested the openrouter provider, skip
-    # OPENAI_BASE_URL — it typically points to a custom / non-OpenRouter
-    # endpoint and would prevent switching back to OpenRouter (#874).
-    skip_openai_base = requested_norm == "openrouter"
-
-    # For custom, prefer config base_url over env so config.yaml is honored (#1760).
     base_url = (
         (explicit_base_url or "").strip()
         or (cfg_base_url.strip() if use_config_base_url else "")
-        or ("" if skip_openai_base else env_openai_base_url)
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")

@@ -467,6 +467,6 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     output = capsys.readouterr().out
 
     assert "Saving the working base URL instead" in output
-    assert saved_env["OPENAI_BASE_URL"] == "http://localhost:8000/v1"
-    assert saved_env["OPENAI_API_KEY"] == "local-key"
+    # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
+    assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"

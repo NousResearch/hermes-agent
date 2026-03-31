@@ -1050,10 +1050,6 @@ def _model_flow_openrouter(config, current_model=""):
 
     selected = _prompt_model_selection(openrouter_models, current_model=current_model)
     if selected:
-        # Clear any custom endpoint and set provider to openrouter
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _save_model_choice(selected)
 
         # Update config provider and deactivate any OAuth provider
@@ -1143,10 +1139,6 @@ def _model_flow_nous(config, current_model=""):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
-        # Clear any custom endpoint that might conflict
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via Nous Portal)")
     else:
         print("No change.")
@@ -1191,10 +1183,6 @@ def _model_flow_openai_codex(config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-        # Clear custom endpoint env vars that would otherwise override Codex.
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
@@ -1274,11 +1262,6 @@ def _model_flow_custom(config):
         )
         if probe.get("suggested_base_url"):
             print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
-
-    if base_url:
-        save_env_value("OPENAI_BASE_URL", effective_url)
-    if api_key:
-        save_env_value("OPENAI_API_KEY", api_key)
 
     if model_name:
         _save_model_choice(model_name)
@@ -1439,9 +1422,6 @@ def _model_flow_named_custom(config, provider_info):
 
     # If a model is saved, just activate immediately — no probing needed
     if saved_model:
-        save_env_value("OPENAI_BASE_URL", base_url)
-        if api_key:
-            save_env_value("OPENAI_API_KEY", api_key)
         _save_model_choice(saved_model)
 
         cfg = load_config()
@@ -1513,9 +1493,6 @@ def _model_flow_named_custom(config, provider_info):
             return
 
     # Activate and save the model to the custom_providers entry
-    save_env_value("OPENAI_BASE_URL", base_url)
-    if api_key:
-        save_env_value("OPENAI_API_KEY", api_key)
     _save_model_choice(model_name)
 
     cfg = load_config()
@@ -1829,11 +1806,6 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         ) or selected
-        # Clear stale custom-endpoint overrides so the Copilot provider wins cleanly.
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         initial_cfg = load_config()
         current_effort = _current_reasoning_effort(initial_cfg)
         reasoning_efforts = github_model_reasoning_efforts(
@@ -2058,11 +2030,6 @@ def _model_flow_kimi(config, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set (avoid confusion)
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -2165,11 +2132,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set (avoid confusion)
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -2381,11 +2343,6 @@ def _model_flow_anthropic(config, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider — clear base_url since

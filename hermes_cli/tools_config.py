@@ -983,8 +983,13 @@ def _configure_simple_requirements(ts_key: str):
             key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
-                save_env_value("OPENAI_BASE_URL", base_url)
                 save_env_value("OPENAI_API_KEY", api_key.strip())
+                # Save vision base URL to config (not .env — only secrets go there)
+                from hermes_cli.config import load_config, save_config
+                _cfg = load_config()
+                _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
+                _aux["base_url"] = base_url
+                save_config(_cfg)
                 if "api.openai.com" in base_url.lower():
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")

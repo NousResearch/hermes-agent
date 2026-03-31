@@ -129,16 +129,13 @@ def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
 
     env = _read_env(tmp_path)
 
-    # _model_flow_custom saves env vars and config to disk
-    assert env.get("OPENAI_BASE_URL") == "http://localhost:8000/v1"
-    assert env.get("OPENAI_API_KEY") == "local-key"
-
-    # The model config is saved as a dict by _model_flow_custom
+    # _model_flow_custom saves config to disk (base_url in config, not .env)
     reloaded = load_config()
     model_cfg = reloaded.get("model", {})
     if isinstance(model_cfg, dict):
         assert model_cfg.get("provider") == "custom"
         assert model_cfg.get("default") == "llm"
+        assert model_cfg.get("base_url") == "http://localhost:8000/v1"
 
 
 def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tmp_path, monkeypatch):
@@ -232,8 +229,11 @@ def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_pa
     env = _read_env(tmp_path)
 
     assert env.get("OPENAI_API_KEY") == "sk-openai"
-    assert env.get("OPENAI_BASE_URL") == "https://api.openai.com/v1"
     assert env.get("AUXILIARY_VISION_MODEL") == "gpt-4o-mini"
+    # Vision base URL saved to config.yaml, not .env
+    reloaded = load_config()
+    vision_cfg = reloaded.get("auxiliary", {}).get("vision", {})
+    assert vision_cfg.get("base_url") == "https://api.openai.com/v1"
 
 
 def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
@@ -433,8 +433,7 @@ def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(
     env = _read_env(tmp_path)
     reloaded = load_config()
 
-    assert env.get("OPENAI_BASE_URL") == ""
-    assert env.get("OPENAI_API_KEY") == ""
+    # OPENAI_BASE_URL is no longer written/cleared in .env — config is authoritative
     assert reloaded["model"]["provider"] == "openai-codex"
     assert reloaded["model"]["default"] == "openai/gpt-5.3-codex"
     assert reloaded["model"]["base_url"] == "https://chatgpt.com/backend-api/codex"

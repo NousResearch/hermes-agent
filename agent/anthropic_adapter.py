@@ -342,7 +342,14 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
                 if new_access:
                     new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
-                    _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
+                    # Parse scopes from refresh response — Claude Code >=2.1.81
+                    # requires a "scopes" field in the credential store and checks
+                    # for "user:inference" before accepting the token as valid.
+                    scope_str = result.get("scope", "")
+                    scopes = scope_str.split() if scope_str else None
+                    _write_claude_code_credentials(
+                        new_access, new_refresh, new_expires_ms, scopes=scopes,
+                    )
                     logger.debug("Refreshed Claude Code OAuth token via %s", endpoint)
                     return new_access
         except Exception as e:
@@ -351,8 +358,20 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _write_claude_code_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
-    """Write refreshed credentials back to ~/.claude/.credentials.json."""
+def _write_claude_code_credentials(
+    access_token: str,
+    refresh_token: str,
+    expires_at_ms: int,
+    *,
+    scopes: Optional[list] = None,
+) -> None:
+    """Write refreshed credentials back to ~/.claude/.credentials.json.
+
+    The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
+    is persisted so that Claude Code's own auth check recognises the credential
+    as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
+    in the stored scopes before it will use the token.
+    """
     cred_path = Path.home() / ".claude" / ".credentials.json"
     try:
         # Read existing file to preserve other fields
@@ -360,11 +379,19 @@ def _write_claude_code_credentials(access_token: str, refresh_token: str, expire
         if cred_path.exists():
             existing = json.loads(cred_path.read_text(encoding="utf-8"))
 
-        existing["claudeAiOauth"] = {
+        oauth_data: Dict[str, Any] = {
             "accessToken": access_token,
             "refreshToken": refresh_token,
             "expiresAt": expires_at_ms,
         }
+        if scopes is not None:
+            oauth_data["scopes"] = scopes
+        elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
+            # Preserve previously-stored scopes when the refresh response
+            # does not include a scope field.
+            oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
+
+        existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
         cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")

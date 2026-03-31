@@ -301,6 +301,50 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _check_unavailable_skill(command_name: str) -> str | None:
+    """Check if a command matches a known-but-inactive skill.
+
+    Returns a helpful message if the skill exists but is disabled or only
+    available as an optional install. Returns None if no match found.
+    """
+    # Normalize: command uses hyphens, skill names may use hyphens or underscores
+    normalized = command_name.lower().replace("_", "-")
+    try:
+        from tools.skills_tool import SKILLS_DIR, _get_disabled_skill_names
+        disabled = _get_disabled_skill_names()
+
+        # Check disabled built-in skills
+        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                continue
+            name = skill_md.parent.name.lower().replace("_", "-")
+            if name == normalized and name in disabled:
+                return (
+                    f"The **{command_name}** skill is installed but disabled.\n"
+                    f"Enable it with: `hermes skills config`"
+                )
+
+        # Check optional skills (shipped with repo but not installed)
+        from hermes_constants import get_hermes_home
+        repo_root = Path(__file__).resolve().parent.parent
+        optional_dir = repo_root / "optional-skills"
+        if optional_dir.exists():
+            for skill_md in optional_dir.rglob("SKILL.md"):
+                name = skill_md.parent.name.lower().replace("_", "-")
+                if name == normalized:
+                    # Build install path: official/<category>/<name>
+                    rel = skill_md.parent.relative_to(optional_dir)
+                    parts = list(rel.parts)
+                    install_path = f"official/{'/'.join(parts)}"
+                    return (
+                        f"The **{command_name}** skill is available but not installed.\n"
+                        f"Install it with: `hermes skills install {install_path}`"
+                    )
+    except Exception:
+        pass
+    return None
+
+
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
@@ -431,6 +475,13 @@ class GatewayRunner:
         # per-message AIAgent instances.
         self._honcho_managers: Dict[str, Any] = {}
         self._honcho_configs: Dict[str, Any] = {}
+
+        # Rate-limit compression warning messages sent to users.
+        # Keyed by chat_id — value is the timestamp of the last warning sent.
+        # Prevents the warning from firing on every message when a session
+        # remains above the threshold after compression.
+        self._compression_warn_sent: Dict[str, float] = {}
+        self._compression_warn_cooldown: int = 3600  # seconds (1 hour)
 
         # Ensure tirith security scanner is available (downloads if needed)
         try:
@@ -1651,6 +1702,11 @@ class GatewayRunner:
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
+                # Rate-limit ALL pairing responses (code or rejection) to
+                # prevent spamming the user with repeated messages when
+                # multiple DMs arrive in quick succession.
+                if self.pairing_store._is_rate_limited(platform_name, source.user_id):
+                    return None
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
                 )
@@ -1672,6 +1728,8 @@ class GatewayRunner:
                             "Too many pairing requests right now~ "
                             "Please try again later!"
                         )
+                    # Record rate limit so subsequent messages are silently ignored
+                    self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
         # PRIORITY handling when an agent is already running for this session.
@@ -1817,7 +1875,13 @@ class GatewayRunner:
         
         if canonical == "help":
             return await self._handle_help_command(event)
+
+        if canonical == "commands":
+            return await self._handle_commands_command(event)
         
+        if canonical == "profile":
+            return await self._handle_profile_command(event)
+
         if canonical == "status":
             return await self._handle_status_command(event)
         
@@ -1829,6 +1893,9 @@ class GatewayRunner:
 
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
+
+        if canonical == "yolo":
+            return await self._handle_yolo_command(event)
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -1974,6 +2041,12 @@ class GatewayRunner:
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
+                else:
+                    # Not an active skill — check if it's a known-but-disabled or
+                    # uninstalled skill and give actionable guidance.
+                    _unavail_msg = _check_unavailable_skill(command)
+                    if _unavail_msg:
+                        return _unavail_msg
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
@@ -2344,13 +2417,18 @@ class GatewayRunner:
                                         pass
 
                                 # Still too large after compression — warn user
+                                # Rate-limited to once per cooldown period per
+                                # chat to avoid spamming on every message.
                                 if _new_tokens >= _warn_token_threshold:
                                     logger.warning(
                                         "Session hygiene: still ~%s tokens after "
                                         "compression — suggesting /reset",
                                         f"{_new_tokens:,}",
                                     )
-                                    if _hyg_adapter:
+                                    _now = time.time()
+                                    _last_warn = self._compression_warn_sent.get(source.chat_id, 0)
+                                    if _hyg_adapter and _now - _last_warn >= self._compression_warn_cooldown:
+                                        self._compression_warn_sent[source.chat_id] = _now
                                         try:
                                             await _hyg_adapter.send(
                                                 source.chat_id,
@@ -2372,7 +2450,10 @@ class GatewayRunner:
                         if _approx_tokens >= _warn_token_threshold:
                             _hyg_adapter = self.adapters.get(source.platform)
                             _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                            if _hyg_adapter:
+                            _now = time.time()
+                            _last_warn = self._compression_warn_sent.get(source.chat_id, 0)
+                            if _hyg_adapter and _now - _last_warn >= self._compression_warn_cooldown:
+                                self._compression_warn_sent[source.chat_id] = _now
                                 try:
                                     await _hyg_adapter.send(
                                         source.chat_id,
@@ -2999,6 +3080,36 @@ class GatewayRunner:
             return f"{header}\n\n{session_info}"
         return header
     
+    async def _handle_profile_command(self, event: MessageEvent) -> str:
+        """Handle /profile — show active profile name and home directory."""
+        from hermes_constants import get_hermes_home, display_hermes_home
+        from pathlib import Path
+
+        home = get_hermes_home()
+        display = display_hermes_home()
+
+        # Detect profile name from HERMES_HOME path
+        # Profile paths look like: ~/.hermes/profiles/<name>
+        profiles_parent = Path.home() / ".hermes" / "profiles"
+        try:
+            rel = home.relative_to(profiles_parent)
+            profile_name = str(rel).split("/")[0]
+        except ValueError:
+            profile_name = None
+
+        if profile_name:
+            lines = [
+                f"👤 **Profile:** `{profile_name}`",
+                f"📂 **Home:** `{display}`",
+            ]
+        else:
+            lines = [
+                "👤 **Profile:** default",
+                f"📂 **Home:** `{display}`",
+            ]
+
+        return "\n".join(lines)
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -3065,11 +3176,68 @@ class GatewayRunner:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
             if skill_cmds:
-                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} installed):")
-                for cmd in sorted(skill_cmds):
+                lines.append(f"\n⚡ **Skill Commands** ({len(skill_cmds)} active):")
+                # Show first 10, then point to /commands for the rest
+                sorted_cmds = sorted(skill_cmds)
+                for cmd in sorted_cmds[:10]:
                     lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
+                if len(sorted_cmds) > 10:
+                    lines.append(f"\n... and {len(sorted_cmds) - 10} more. Use `/commands` for the full paginated list.")
         except Exception:
             pass
+        return "\n".join(lines)
+
+    async def _handle_commands_command(self, event: MessageEvent) -> str:
+        """Handle /commands [page] - paginated list of all commands and skills."""
+        from hermes_cli.commands import gateway_help_lines
+
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                requested_page = int(raw_args)
+            except ValueError:
+                return "Usage: `/commands [page]`"
+        else:
+            requested_page = 1
+
+        # Build combined entry list: built-in commands + skill commands
+        entries = list(gateway_help_lines())
+        try:
+            from agent.skill_commands import get_skill_commands
+            skill_cmds = get_skill_commands()
+            if skill_cmds:
+                entries.append("")
+                entries.append("⚡ **Skill Commands**:")
+                for cmd in sorted(skill_cmds):
+                    desc = skill_cmds[cmd].get("description", "").strip() or "Skill command"
+                    entries.append(f"`{cmd}` — {desc}")
+        except Exception:
+            pass
+
+        if not entries:
+            return "No commands available."
+
+        from gateway.config import Platform
+        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
+        page = max(1, min(requested_page, total_pages))
+        start = (page - 1) * page_size
+        page_entries = entries[start:start + page_size]
+
+        lines = [
+            f"📚 **Commands** ({len(entries)} total, page {page}/{total_pages})",
+            "",
+            *page_entries,
+        ]
+        if total_pages > 1:
+            nav_parts = []
+            if page > 1:
+                nav_parts.append(f"`/commands {page - 1}` ← prev")
+            if page < total_pages:
+                nav_parts.append(f"next → `/commands {page + 1}`")
+            lines.extend(["", " | ".join(nav_parts)])
+        if page != requested_page:
+            lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
     
     async def _handle_provider_command(self, event: MessageEvent) -> str:
@@ -3891,7 +4059,7 @@ class GatewayRunner:
                 # Send media files
                 for media_path in (media_files or []):
                     try:
-                        await adapter.send_file(
+                        await adapter.send_document(
                             chat_id=source.chat_id,
                             file_path=media_path,
                         )
@@ -3998,6 +4166,16 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+    async def _handle_yolo_command(self, event: MessageEvent) -> str:
+        """Handle /yolo — toggle dangerous command approval bypass."""
+        current = bool(os.environ.get("HERMES_YOLO_MODE"))
+        if current:
+            os.environ.pop("HERMES_YOLO_MODE", None)
+            return "⚠️ YOLO mode **OFF** — dangerous commands will require approval."
+        else:
+            os.environ["HERMES_YOLO_MODE"] = "1"
+            return "⚡ YOLO mode **ON** — all commands auto-approved. Use with caution."
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

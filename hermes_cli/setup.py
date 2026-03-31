@@ -616,24 +616,32 @@ def _print_setup_summary(config: dict, hermes_home):
     else:
         tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
 
-    # Browser tools (local Chromium or Browserbase cloud)
-    import shutil
-
-    _ab_found = (
-        shutil.which("agent-browser")
-        or (
-            Path(__file__).parent.parent / "node_modules" / ".bin" / "agent-browser"
-        ).exists()
-    )
+    # Browser tools (local Chromium, Camofox, Browserbase, or Browser Use)
+    browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
         tool_status.append(("Browser Automation (Nous Browserbase)", True, None))
-    elif subscription_features.browser.current_provider == "Browserbase" and subscription_features.browser.available:
-        tool_status.append(("Browser Automation (Browserbase)", True, None))
-    elif _ab_found:
-        tool_status.append(("Browser Automation (local)", True, None))
+    elif subscription_features.browser.available:
+        label = "Browser Automation"
+        if browser_provider:
+            label = f"Browser Automation ({browser_provider})"
+        tool_status.append((label, True, None))
     else:
+        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browserbase"
+        if browser_provider == "Browserbase":
+            missing_browser_hint = (
+                "npm install -g agent-browser and set "
+                "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
+            )
+        elif browser_provider == "Browser Use":
+            missing_browser_hint = (
+                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
+            )
+        elif browser_provider == "Camofox":
+            missing_browser_hint = "CAMOFOX_URL"
+        elif browser_provider == "Local browser":
+            missing_browser_hint = "npm install -g agent-browser"
         tool_status.append(
-            ("Browser Automation", False, "npm install -g agent-browser")
+            ("Browser Automation", False, missing_browser_hint)
         )
 
     # FAL (image generation)
@@ -1045,10 +1053,9 @@ def setup_model_provider(config: dict):
                     min_key_ttl_seconds=5 * 60,
                     timeout_seconds=15.0,
                 )
-                nous_models = fetch_nous_models(
-                    inference_base_url=creds.get("base_url", ""),
-                    api_key=creds.get("api_key", ""),
-                )
+                # Use curated model list instead of full /models dump
+                from hermes_cli.models import _PROVIDER_MODELS
+                nous_models = _PROVIDER_MODELS.get("nous", [])
             except Exception as e:
                 logger.debug("Could not fetch Nous models after login: %s", e)
 
@@ -2821,10 +2828,38 @@ def setup_gateway(config: dict):
         if token or get_env_value("MATRIX_PASSWORD"):
             # E2EE
             print()
-            if prompt_yes_no("Enable end-to-end encryption (E2EE)?", False):
+            want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
+            if want_e2ee:
                 save_env_value("MATRIX_ENCRYPTION", "true")
                 print_success("E2EE enabled")
-                print_info("   Requires: pip install 'matrix-nio[e2e]'")
+
+            # Auto-install matrix-nio
+            matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
+            try:
+                __import__("nio")
+            except ImportError:
+                print_info(f"Installing {matrix_pkg}...")
+                import subprocess
+
+                uv_bin = shutil.which("uv")
+                if uv_bin:
+                    result = subprocess.run(
+                        [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
+                        capture_output=True,
+                        text=True,
+                    )
+                else:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", matrix_pkg],
+                        capture_output=True,
+                        text=True,
+                    )
+                if result.returncode == 0:
+                    print_success(f"{matrix_pkg} installed")
+                else:
+                    print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
+                    if result.stderr:
+                        print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
             # Allowed users
             print()

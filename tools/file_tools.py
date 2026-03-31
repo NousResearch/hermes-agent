@@ -4,7 +4,9 @@
 import errno
 import json
 import logging
+import os
 import threading
+from pathlib import Path
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
@@ -12,6 +14,31 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+
+# Paths that file tools should refuse to write to without going through the
+# terminal tool's approval system.  These match prefixes after os.path.realpath.
+_SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
+_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+
+
+def _check_sensitive_path(filepath: str) -> str | None:
+    """Return an error message if the path targets a sensitive system location."""
+    try:
+        resolved = os.path.realpath(os.path.expanduser(filepath))
+    except (OSError, ValueError):
+        resolved = filepath
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix):
+            return (
+                f"Refusing to write to sensitive system path: {filepath}\n"
+                "Use the terminal tool with sudo if you need to modify system files."
+            )
+    if resolved in _SENSITIVE_EXACT_PATHS:
+        return (
+            f"Refusing to write to sensitive system path: {filepath}\n"
+            "Use the terminal tool with sudo if you need to modify system files."
+        )
+    return None
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:
@@ -287,6 +314,9 @@ def notify_other_tool_call(task_id: str = "default"):
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    sensitive_err = _check_sensitive_path(path)
+    if sensitive_err:
+        return json.dumps({"error": sensitive_err}, ensure_ascii=False)
     try:
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
@@ -303,6 +333,18 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
+    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
+    _paths_to_check = []
+    if path:
+        _paths_to_check.append(path)
+    if mode == "patch" and patch:
+        import re as _re
+        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+            _paths_to_check.append(_m.group(1).strip())
+    for _p in _paths_to_check:
+        sensitive_err = _check_sensitive_path(_p)
+        if sensitive_err:
+            return json.dumps({"error": sensitive_err}, ensure_ascii=False)
     try:
         file_ops = _get_file_ops(task_id)
         

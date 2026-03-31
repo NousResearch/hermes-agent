@@ -80,6 +80,14 @@ from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
+# Camofox local anti-detection browser backend (optional).
+# When CAMOFOX_URL is set, all browser operations route through the
+# camofox REST API instead of the agent-browser CLI.
+try:
+    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+except ImportError:
+    _is_camofox_mode = lambda: False  # noqa: E731
+
 logger = logging.getLogger(__name__)
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
@@ -1080,6 +1088,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
 
+    # Camofox backend — delegate after safety checks pass
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_navigate
+        return camofox_navigate(url, task_id)
+
     effective_task_id = task_id or "default"
     
     # Get session info to check if this is a new session
@@ -1169,6 +1182,10 @@ def browser_snapshot(
     Returns:
         JSON string with page snapshot
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_snapshot
+        return camofox_snapshot(full, task_id, user_task)
+
     effective_task_id = task_id or "default"
     
     # Build command args based on full flag
@@ -1214,6 +1231,10 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with click result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_click
+        return camofox_click(ref, task_id)
+
     effective_task_id = task_id or "default"
     
     # Ensure ref starts with @
@@ -1246,6 +1267,10 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with type result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_type
+        return camofox_type(ref, text, task_id)
+
     effective_task_id = task_id or "default"
     
     # Ensure ref starts with @
@@ -1279,6 +1304,10 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with scroll result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_scroll
+        return camofox_scroll(direction, task_id)
+
     effective_task_id = task_id or "default"
     
     # Validate direction
@@ -1312,6 +1341,10 @@ def browser_back(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_back
+        return camofox_back(task_id)
+
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "back", [])
     
@@ -1339,6 +1372,10 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with key press result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_press
+        return camofox_press(key, task_id)
+
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "press", [key])
     
@@ -1364,6 +1401,10 @@ def browser_close(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with close result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_close
+        return camofox_close(task_id)
+
     effective_task_id = task_id or "default"
     with _cleanup_lock:
         had_session = effective_task_id in _active_sessions
@@ -1392,6 +1433,10 @@ def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with console messages and JS errors
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_console
+        return camofox_console(clear, task_id)
+
     effective_task_id = task_id or "default"
     
     console_args = ["--clear"] if clear else []
@@ -1486,6 +1531,10 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with list of images (src and alt)
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_get_images
+        return camofox_get_images(task_id)
+
     effective_task_id = task_id or "default"
     
     # Use eval to run JavaScript that extracts images
@@ -1550,6 +1599,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Returns:
         JSON string with vision analysis results and screenshot_path
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_vision
+        return camofox_vision(question, annotate, task_id)
+
     import base64
     import uuid as uuid_mod
     from pathlib import Path
@@ -1838,6 +1891,10 @@ def check_browser_requirements() -> bool:
     Returns:
         True if all requirements are met, False otherwise
     """
+    # Camofox backend — only needs the server URL, no agent-browser CLI
+    if _is_camofox_mode():
+        return True
+
     # The agent-browser CLI is always required
     try:
         _find_agent_browser()

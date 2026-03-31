@@ -5,7 +5,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Getting Started',
-      collapsed: false,
+      collapsed: true,
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
@@ -17,7 +17,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Guides & Tutorials',
-      collapsed: false,
+      collapsed: true,
       items: [
         'guides/tips',
         'guides/daily-briefing-bot',
@@ -26,12 +26,13 @@ const sidebars: SidebarsConfig = {
         'guides/use-mcp-with-hermes',
         'guides/use-soul-with-hermes',
         'guides/use-voice-mode-with-hermes',
+        'guides/migrate-from-openclaw',
       ],
     },
     {
       type: 'category',
       label: 'User Guide',
-      collapsed: false,
+      collapsed: true,
       items: [
         'user-guide/cli',
         'user-guide/configuration',

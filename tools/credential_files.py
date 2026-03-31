@@ -83,7 +83,7 @@ def register_credential_files(
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
-            rel_path = (entry.get("path") or "").strip()
+            rel_path = (entry.get("path") or entry.get("name") or "").strip()
         else:
             continue
         if not rel_path:
@@ -150,6 +150,107 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
         {"host_path": hp, "container_path": cp}
         for cp, hp in mounts.items()
     ]
+
+
+def get_skills_directory_mount(
+    container_base: str = "/root/.hermes",
+) -> Dict[str, str] | None:
+    """Return mount info for a symlink-safe copy of the skills directory.
+
+    Skills may include ``scripts/``, ``templates/``, and ``references/``
+    subdirectories that the agent needs to execute inside remote sandboxes.
+
+    **Security:** Bind mounts follow symlinks, so a malicious symlink inside
+    the skills tree could expose arbitrary host files to the container.  When
+    symlinks are detected, this function creates a sanitized copy (regular
+    files only) in a temp directory and returns that path instead.  When no
+    symlinks are present (the common case), the original directory is returned
+    directly with zero overhead.
+
+    Returns a dict with ``host_path`` and ``container_path`` keys, or None.
+    """
+    hermes_home = _resolve_hermes_home()
+    skills_dir = hermes_home / "skills"
+    if not skills_dir.is_dir():
+        return None
+
+    host_path = _safe_skills_path(skills_dir)
+    return {
+        "host_path": host_path,
+        "container_path": f"{container_base.rstrip('/')}/skills",
+    }
+
+
+_safe_skills_tempdir: Path | None = None
+
+
+def _safe_skills_path(skills_dir: Path) -> str:
+    """Return *skills_dir* if symlink-free, else a sanitized temp copy."""
+    global _safe_skills_tempdir
+
+    symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
+    if not symlinks:
+        return str(skills_dir)
+
+    for link in symlinks:
+        logger.warning("credential_files: skipping symlink in skills dir: %s -> %s",
+                       link, os.readlink(link))
+
+    import atexit
+    import shutil
+    import tempfile
+
+    # Reuse the same temp dir across calls to avoid accumulation.
+    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
+        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
+
+    safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
+    _safe_skills_tempdir = safe_dir
+
+    for item in skills_dir.rglob("*"):
+        if item.is_symlink():
+            continue
+        rel = item.relative_to(skills_dir)
+        target = safe_dir / rel
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif item.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(item), str(target))
+
+    def _cleanup():
+        if safe_dir.is_dir():
+            shutil.rmtree(safe_dir, ignore_errors=True)
+
+    atexit.register(_cleanup)
+    logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
+    return str(safe_dir)
+
+
+def iter_skills_files(
+    container_base: str = "/root/.hermes",
+) -> List[Dict[str, str]]:
+    """Yield individual (host_path, container_path) entries for skills files.
+
+    Skips symlinks entirely.  Preferred for backends that upload files
+    individually (Daytona, Modal) rather than mounting a directory.
+    """
+    hermes_home = _resolve_hermes_home()
+    skills_dir = hermes_home / "skills"
+    if not skills_dir.is_dir():
+        return []
+
+    container_root = f"{container_base.rstrip('/')}/skills"
+    result: List[Dict[str, str]] = []
+    for item in skills_dir.rglob("*"):
+        if item.is_symlink() or not item.is_file():
+            continue
+        rel = item.relative_to(skills_dir)
+        result.append({
+            "host_path": str(item),
+            "container_path": f"{container_root}/{rel}",
+        })
+    return result
 
 
 def clear_credential_files() -> None:

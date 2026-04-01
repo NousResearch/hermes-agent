@@ -1030,6 +1030,7 @@ def resolve_profile_env(profile_name: str) -> str:
 
     Called early in the CLI entry point, before any hermes modules
     are imported, to set the HERMES_HOME environment variable.
+    Also injects a per-profile HOME directory to isolate system tools.
     """
     validate_profile_name(profile_name)
     profile_dir = get_profile_dir(profile_name)
@@ -1039,5 +1040,10 @@ def resolve_profile_env(profile_name: str) -> str:
             f"Profile '{profile_name}' does not exist. "
             f"Create it with: hermes profile create {profile_name}"
         )
+
+    # Isolate system credentials (git, ssh, etc.) per profile
+    profile_home = profile_dir / "home"
+    profile_home.mkdir(parents=True, exist_ok=True)
+    os.environ["HOME"] = str(profile_home)
 
     return str(profile_dir)

@@ -8016,8 +8016,18 @@ class HermesCLI:
         choice_wrapped: list[tuple[int, str]] = []
         for i, choice in enumerate(choices):
             label = choice_labels.get(choice, choice)
-            prefix = '❯ ' if i == selected else '  '
-            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="  "):
+            # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
+            if i < 9:
+                num_prefix = str(i + 1)
+            elif i == 9:
+                num_prefix = '0'
+            else:
+                num_prefix = ' '  # No number for items beyond 10th
+            if i == selected:
+                prefix = f'❯ {num_prefix}. '
+            else:
+                prefix = f'  {num_prefix}. '
+            for wrapped in _wrap_panel_text(f"{prefix}{label}", inner_text_width, subsequent_indent="    "):
                 choice_wrapped.append((i, wrapped))
 
         # Budget vertical space so HSplit never clips the command or choices.
@@ -9192,6 +9202,29 @@ class HermesCLI:
                 self._clarify_state["selected"] = min(max_idx, self._clarify_state["selected"] + 1)
                 event.app.invalidate()
 
+        # Number keys for quick clarify selection (1-9, 0 for 10th item)
+        def _make_clarify_number_handler(idx):
+            def handler(event):
+                if self._clarify_state and not self._clarify_freetext:
+                    choices = self._clarify_state.get("choices") or []
+                    # Map index to choice (treating "Other" as the last option)
+                    if idx < len(choices):
+                        # Select a numbered choice
+                        self._clarify_state["response_queue"].put(choices[idx])
+                        self._clarify_state = None
+                        self._clarify_freetext = False
+                        event.app.invalidate()
+                    elif idx == len(choices):
+                        # Select "Other" option
+                        self._clarify_freetext = True
+                        event.app.invalidate()
+            return handler
+
+        for _num in range(10):
+            # 1-9 select items 0-8, 0 selects item 9 (10thitem)
+            _idx = 9 if _num == 0 else _num - 1
+            kb.add(str(_num), filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))(_make_clarify_number_handler(_idx))
+
         # --- Dangerous command approval: arrow-key navigation ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._approval_state)))
@@ -9232,6 +9265,20 @@ class HermesCLI:
             self._close_model_picker()
             event.app.current_buffer.reset()
             event.app.invalidate()
+
+        # Number keys for quick approval selection (1-9, 0 for 10th item)
+        def _make_approval_number_handler(idx):
+            def handler(event):
+                if self._approval_state and idx < len(self._approval_state["choices"]):
+                    self._approval_state["selected"] = idx
+                    self._handle_approval_selection()
+                    event.app.invalidate()
+            return handler
+
+        for _num in range(10):
+            # 1-9 select items 0-8, 0 selects item 9 (10th item)
+            _idx = 9 if _num == 0 else _num - 1
+            kb.add(str(_num), filter=Condition(lambda: bool(self._approval_state)))(_make_approval_number_handler(_idx))
 
         # --- History navigation: up/down browse history in normal input mode ---
         # The TextArea is multiline, so by default up/down only move the cursor.
@@ -9801,14 +9848,32 @@ class HermesCLI:
             selected = state.get("selected", 0)
             preview_lines = _wrap_panel_text(question, 60)
             for i, choice in enumerate(choices):
-                prefix = "❯ " if i == selected and not cli_ref._clarify_freetext else "  "
-                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice}", 60, subsequent_indent="  "))
+                # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
+                if i < 9:
+                    num_prefix = str(i + 1)
+                elif i == 9:
+                    num_prefix = '0'
+                else:
+                    num_prefix = ' '
+                if i == selected and not cli_ref._clarify_freetext:
+                    prefix = f"❯ {num_prefix}. "
+                else:
+                    prefix = f"  {num_prefix}. "
+                preview_lines.extend(_wrap_panel_text(f"{prefix}{choice}", 60, subsequent_indent="    "))
+            # "Other" option in preview
+            other_num = len(choices) + 1
+            if other_num < 10:
+                other_num_prefix = str(other_num)
+            elif other_num == 10:
+                other_num_prefix = '0'
+            else:
+                other_num_prefix = ' '
             other_label = (
-                "❯ Other (type below)" if cli_ref._clarify_freetext
-                else "❯ Other (type your answer)" if selected == len(choices)
-                else "  Other (type your answer)"
+                f"❯ {other_num_prefix}. Other (type below)" if cli_ref._clarify_freetext
+                else f"❯ {other_num_prefix}. Other (type your answer)" if selected == len(choices)
+                else f"  {other_num_prefix}. Other (type your answer)"
             )
-            preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="  "))
+            preview_lines.extend(_wrap_panel_text(other_label, 60, subsequent_indent="    "))
             box_width = _panel_box_width("Hermes needs your input", preview_lines)
             inner_text_width = max(8, box_width - 2)
 
@@ -9816,18 +9881,35 @@ class HermesCLI:
             choice_wrapped: list[tuple[int, str]] = []
             if choices:
                 for i, choice in enumerate(choices):
-                    prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
-                    for wrapped in _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="  "):
+                    # Show number prefix for quick selection (1-9 for items 1-9, 0 for 10th item)
+                    if i < 9:
+                        num_prefix = str(i + 1)
+                    elif i == 9:
+                        num_prefix = '0'
+                    else:
+                        num_prefix = ' '
+                    if i == selected and not cli_ref._clarify_freetext:
+                        prefix = f'❯ {num_prefix}. '
+                    else:
+                        prefix = f'  {num_prefix}. '
+                    for wrapped in _wrap_panel_text(f"{prefix}{choice}", inner_text_width, subsequent_indent="    "):
                         choice_wrapped.append((i, wrapped))
                 # Trailing Other row(s)
                 other_idx = len(choices)
-                if selected == other_idx and not cli_ref._clarify_freetext:
-                    other_label_mand = '❯ Other (type your answer)'
-                elif cli_ref._clarify_freetext:
-                    other_label_mand = '❯ Other (type below)'
+                other_num = other_idx + 1
+                if other_num < 10:
+                    other_num_prefix = str(other_num)
+                elif other_num == 10:
+                    other_num_prefix = '0'
                 else:
-                    other_label_mand = '  Other (type your answer)'
-                other_wrapped = _wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="  ")
+                    other_num_prefix = ' '
+                if selected == other_idx and not cli_ref._clarify_freetext:
+                    other_label_mand = f'❯ {other_num_prefix}. Other (type your answer)'
+                elif cli_ref._clarify_freetext:
+                    other_label_mand = f'❯ {other_num_prefix}. Other (type below)'
+                else:
+                    other_label_mand = f'  {other_num_prefix}. Other (type your answer)'
+                other_wrapped = _wrap_panel_text(other_label_mand, inner_text_width, subsequent_indent="    ")
             elif cli_ref._clarify_freetext:
                 # Freetext-only mode: the guidance line takes the place of choices.
                 other_wrapped = _wrap_panel_text(
@@ -9892,6 +9974,15 @@ class HermesCLI:
 
                 # "Other" option (trailing row(s), only shown when choices exist)
                 other_idx = len(choices)
+                # Calculate number prefix for "Other" option
+                other_num = other_idx + 1
+                if other_num < 10:
+                    other_num_prefix = str(other_num)
+                elif other_num == 10:
+                    other_num_prefix = '0'
+                else:
+                    other_num_prefix = ' '
+                
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = 'class:clarify-selected'
                 elif cli_ref._clarify_freetext:

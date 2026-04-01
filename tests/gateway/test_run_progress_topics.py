@@ -85,6 +85,7 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
+    runner._running_agent_started_at = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     return runner
 

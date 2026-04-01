@@ -5650,6 +5650,8 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
+        turn_route_holder = [None]
+
         def run_sync():
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
@@ -5722,6 +5724,7 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route_holder[0] = turn_route
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -6067,7 +6070,8 @@ class GatewayRunner:
                     self._effective_model = _agent.model
                     self._effective_provider = getattr(_agent, 'provider', None)
                     _cb = ProviderCircuitBreaker.get_instance()
-                    _primary_provider = turn_route.get("runtime", {}).get("provider") or getattr(_agent, 'provider', '')
+                    _turn_route = turn_route_holder[0] or {}
+                    _primary_provider = _turn_route.get("runtime", {}).get("provider") or getattr(_agent, 'provider', '')
                     if _cb.should_use_fallback(_primary_provider, session_key=session_key):
                         logger.info(
                             "Keeping fallback agent cached for session %s because circuit breaker is open for %s",

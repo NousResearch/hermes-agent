@@ -658,6 +658,7 @@ class AIAgent:
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
+        self._configured_max_tokens = max_tokens
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
@@ -4505,6 +4506,36 @@ class AIAgent:
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
             self._fallback_activated = True
+
+            fallback_token_cap = None
+            for key in ("max_tokens_cap", "max_tokens", "max_output_tokens"):
+                value = fb.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    fallback_token_cap = parsed
+                    break
+            if fallback_token_cap is None and fb_provider == "openrouter":
+                try:
+                    env_cap = int(str(os.getenv("HERMES_OPENROUTER_FALLBACK_MAX_TOKENS", "2048")).strip())
+                except (TypeError, ValueError):
+                    env_cap = 0
+                if env_cap > 0:
+                    fallback_token_cap = env_cap
+
+            if fallback_token_cap is not None:
+                if self.max_tokens is None or self.max_tokens > fallback_token_cap:
+                    self.max_tokens = fallback_token_cap
+                    logging.info(
+                        "Applied fallback max_tokens cap %s for %s (%s)",
+                        fallback_token_cap,
+                        fb_model,
+                        fb_provider,
+                    )
 
             if fb_api_mode == "anthropic_messages":
                 # Build native Anthropic client instead of using OpenAI client

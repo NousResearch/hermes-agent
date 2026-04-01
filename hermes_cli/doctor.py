@@ -63,17 +63,48 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+def _doctor_active_toolsets():
+    """Return explicitly configured platform toolsets, or None if not configured."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import PLATFORMS, _get_platform_tools
+
+        cfg = load_config()
+        platform_toolsets = cfg.get("platform_toolsets")
+        if not isinstance(platform_toolsets, dict) or not platform_toolsets:
+            return None
+
+        active = set()
+        for platform in platform_toolsets:
+            if platform in PLATFORMS:
+                active.update(_get_platform_tools(cfg, platform))
+        return active or None
+    except Exception:
+        return None
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    if not _honcho_is_configured_for_doctor():
-        return available, unavailable
+    honcho_enabled = _honcho_is_configured_for_doctor()
+    active_toolsets = _doctor_active_toolsets()
+    configurable_toolsets = set()
+    if active_toolsets is not None:
+        try:
+            from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+            configurable_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+        except Exception:
+            configurable_toolsets = set()
 
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
-        if item.get("name") == "honcho":
+        item_name = item.get("name")
+        if item_name == "honcho" and honcho_enabled:
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
+            continue
+        if active_toolsets is not None and item_name in configurable_toolsets and item_name not in active_toolsets:
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable

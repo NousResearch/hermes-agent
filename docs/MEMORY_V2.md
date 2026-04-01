@@ -15,7 +15,7 @@ Memory V2 provides:
 - Semantic search (embedding cosine similarity)
 - Tiered lifecycle with automatic archival and supersession
 - Budget enforcement (hard caps per target)
-- Knowledge graph with auto-edges and traversal
+- Knowledge graph with auto-edges and BFS traversal
 - Auto-extraction of memories from conversations
 - Periodic consolidation (merge, update, archive)
 - Session-scoped structured notes
@@ -45,11 +45,11 @@ Memory V2 provides:
              |                    |         +------------+
              |                    |         |
     +--------v--------------------v---------v-----------+
-    |              memory_engine.py (2010 lines)        |
+    |              memory_engine.py (1429 lines)        |
     |                                                   |
     |  Core engine: CRUD, search, lifecycle, graph,     |
     |  embeddings, chunking, budgets, migration,        |
-    |  procedures, events, snapshots                    |
+    |  snapshots                                        |
     +--------+------------------------------------------+
              |                    |
     +--------v----------+  +-----v-----------+
@@ -67,8 +67,7 @@ Memory V2 provides:
     |  ~/.hermes/memories/memory_v2.db                 |
     |                                                  |
     |  Tables: memories, memories_fts, memory_meta,    |
-    |  chunks, chunks_fts, embeddings, edges,          |
-    |  entities, procedures, events                    |
+    |  chunks, chunks_fts, embeddings, edges           |
     +--------------------------------------------------+
 ```
 
@@ -149,42 +148,6 @@ created_at  TEXT NOT NULL
 PRIMARY KEY (source_id, target_id, relation)
 ```
 
-**entities** — tracked named entities
-```
-id          TEXT PRIMARY KEY
-name        TEXT NOT NULL
-entity_type TEXT NOT NULL       -- 'person', 'project', 'tool', etc.
-metadata    TEXT DEFAULT '{}'   -- JSON
-created_at  TEXT NOT NULL
-updated_at  TEXT NOT NULL
-```
-
-**procedures** — learned tool chain patterns
-```
-id            TEXT PRIMARY KEY
-name          TEXT NOT NULL
-description   TEXT NOT NULL
-tool_chain    TEXT NOT NULL     -- JSON array
-success_count INTEGER DEFAULT 0
-fail_count    INTEGER DEFAULT 0
-last_used     TEXT
-created_at    TEXT NOT NULL
-updated_at    TEXT NOT NULL
-```
-
-**events** — episodic event log
-```
-id          TEXT PRIMARY KEY
-event_type  TEXT NOT NULL       -- tool_success|tool_failure|memory_write|
-                                -- session_start|session_end|consolidation|
-                                -- error|milestone
-summary     TEXT NOT NULL
-details     TEXT DEFAULT '{}'   -- JSON
-session_id  TEXT
-created_at  TEXT NOT NULL
-```
-Auto-purged after 90 days.
-
 
 4. Search System
 ----------------
@@ -246,7 +209,6 @@ correction: 1.3    preference: 1.2    project: 1.0    general: 1.0    reference:
 2. BM25-only — when no embeddings available
 3. Graph expansion — top 3 results get 1-hop traversal, related memories
    added at 0.5x score weight
-4. LLM reranking — optional, uses auxiliary_client when candidate set > limit
 
 Minimum relevance threshold: 0.1 (configurable).
 
@@ -339,6 +301,10 @@ Threshold: importance >= 5 to be saved.
 - `_pending_context` stash: coalesces overlapping extraction requests into
   a trailing run
 
+NOTE: The cleanup commit (611a546d) fixed the wiring of the mutual exclusion
+flag — previously `_agent_wrote_memory` was set but never checked in the
+extraction path.
+
 ### Threading
 
 Runs in a background daemon thread. State is protected by a threading.Lock.
@@ -371,6 +337,10 @@ Gate 4: Lock check
 Gate 5: Run
         Execute consolidation via auxiliary LLM
 ```
+
+NOTE: The cleanup commit (611a546d) fixed the gate wiring — previously the
+`consolidation_session_count` was read from meta but never incremented on
+session end, so Gate 3 never advanced.
 
 ### Actions
 
@@ -409,23 +379,8 @@ weight 0.5 are created automatically. Existing edges are not duplicated.
 memory node. Both incoming and outgoing edges are followed. Returns related
 memory records.
 
-**Path Finding** (`find_path`): Shortest path between two memories via BFS.
-Returns list of memory IDs forming the path. Max 5 hops.
-
-**Subgraph Extraction** (`get_subgraph`): Connected component around a
-memory up to N hops. Returns `{nodes: [...], edges: [...]}` for
-visualization.
-
 **Manual Edges** (`add_edge`): Custom typed relationships with configurable
 weight.
-
-**Graph Stats** (`graph_stats`): Node/edge/entity/procedure/event counts,
-edge relation distribution, entity type distribution, most-connected nodes.
-
-### Entity Tracking
-
-Named entities (people, projects, tools, etc.) tracked in a dedicated table.
-Upsert semantics: same name+type updates metadata. LIKE-based search.
 
 
 9. Embedding Cascade
@@ -542,6 +497,10 @@ Initial creation requires 10,000 tokens minimum.
 - Max 500 words per section
 - Update prompt explicitly marked as NOT part of user conversation
 
+NOTE: The cleanup commit (611a546d) fixed the session_memory init bug —
+previously `session_memory` was instantiated but never assigned to the
+state object, so the per-turn update hook was a no-op.
+
 
 12. Security
 -------------
@@ -619,22 +578,20 @@ After each assistant response (respecting extract_interval):
 ### Session End (lifecycle)
 
 1. Session memory saved (if session_memory enabled)
-2. Log session_end event
-3. Consolidation gate check (may trigger consolidation)
-4. Stale memory archival
-5. Dead memory purge
+2. Consolidation gate check (may trigger consolidation)
+3. Stale memory archival
+4. Dead memory purge
 
 
 14. Provenance
 --------------
 
-### From HiveMind (memory.rs, GraphQueryTool, ProcedureLearnTool)
+### From HiveMind (memory.rs, GraphQueryTool)
 
 - SQLite schema design (memories table structure)
 - FTS5 full-text search with BM25 ranking
 - YAKE keyword extraction (5-feature scoring, n-gram candidates)
-- Knowledge graph (edges, BFS traversal, find_path, subgraph)
-- Procedure learning (tool chain patterns, success/fail reinforcement)
+- Knowledge graph (edges, BFS traversal)
 - Budget enforcement concept (hard caps on active memories)
 - Power-law recency decay (exponent -0.3)
 - Cosine similarity (numpy with pure Python fallback)
@@ -651,7 +608,6 @@ After each assistant response (respecting extract_interval):
 - Session memory (9-section template, token+tool_call thresholds)
 - Staleness suffix for old memories (memoryAge.ts pattern)
 - Frozen snapshot pattern (capture at session start, immutable during session)
-- LLM reranking of search results (findRelevantMemories pattern)
 - Manifest for extraction dedup
 - Entry delimiter (section sign)
 - Type tag prefixes for prompt rendering ([pref], [corr], [proj], etc.)
@@ -661,12 +617,32 @@ After each assistant response (respecting extract_interval):
 - Dual-backend architecture (SQLite engine + flat file legacy, switchable)
 - Security scanning (injection detection, exfiltration detection, invisible unicode)
 - Embedding cascade (local fastembed -> configured -> auto-detect -> BM25 fallback)
-- Entity tracking table (named entities with metadata, upsert semantics)
-- Events table (episodic event log with auto-purge)
 - Graph-augmented search (1-hop expansion from top results at 0.5x weight)
 - Strength-protected budget enforcement (corrections/preferences sort last)
 - Supersession via BM25 threshold (8.0) with cosine confirmation
 - Background embedding generation (daemon thread, non-blocking)
+
+### Removed in Cleanup (611a546d)
+
+The following were cut because they were dead code — implemented but never
+called from any agent path, tool interface, or test:
+
+- **entities table** + `search_entities()` — named entity tracking. No tool
+  action wired, no extraction path populated it. 0 callers.
+- **procedures table** + `learn_procedure()` — tool chain pattern learning.
+  Never called. Reinforcement counters never incremented.
+- **events table** + `log_event()` — episodic event log. Written to but
+  never read. No query path consumed the data.
+- `find_path()` — shortest path between memories via BFS. No tool action.
+- `get_subgraph()` — connected component extraction. No tool action.
+- `graph_stats()` — node/edge/entity counts. No tool action.
+- `search_by_embedding()` — standalone embedding search. Duplicated logic
+  already in `search()`.
+- `rerank_with_llm()` — LLM reranking of search results. Never called from
+  search pipeline despite being implemented.
+
+Total: 15 methods removed, 3 tables removed, ~581 lines cut. The engine
+went from 2010 to 1429 lines.
 
 
 15. Migration
@@ -724,13 +700,36 @@ session_memory:
 ```
 
 
+17. Bug Fixes (611a546d)
+------------------------
+
+The cleanup commit fixed 5 bugs in the original implementation:
+
+1. **session_memory init bug** — `SessionMemory` was instantiated but never
+   assigned to `state.session_memory`, making per-turn updates a no-op.
+
+2. **extraction mutual exclusion wiring** — `_agent_wrote_memory` flag was
+   set in memory_tool but never checked in the extraction path, so both the
+   agent and extractor could write duplicate memories in the same turn.
+
+3. **consolidation gate wiring** — `consolidation_session_count` was read
+   from memory_meta but never incremented on session end, so Gate 3 (session
+   threshold) never advanced past 0.
+
+4. **N+1 query in search** — `search()` issued one embedding lookup per
+   candidate. Replaced with a single batch query using `WHERE chunk_id IN (...)`.
+
+5. **connection leak** — `get_connection()` created new connections without
+   tracking or closing them. Changed to thread-local connection reuse.
+
+
 ---
 
 File Inventory
 --------------
 
 ```
-tools/memory_engine.py         2010 lines   Core engine
+tools/memory_engine.py         1429 lines   Core engine
 tools/memory_tool.py            693 lines   Agent-facing tool interface
 agent/memory_extractor.py       428 lines   Auto-extraction subsystem
 agent/memory_consolidator.py    266 lines   Consolidation scheduler

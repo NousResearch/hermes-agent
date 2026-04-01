@@ -149,22 +149,6 @@ class TestTelegramSlashCommands:
 class TestSessionLifecycle:
     """Verify session state changes across command sequences."""
 
-    @pytest.fixture()
-    def source(self):
-        return make_source()
-
-    @pytest.fixture()
-    def session_entry(self, source):
-        return make_session_entry(source)
-
-    @pytest.fixture()
-    def runner(self, session_entry):
-        return make_runner(session_entry)
-
-    @pytest.fixture()
-    def adapter(self, runner):
-        return make_adapter(runner)
-
     @pytest.mark.asyncio
     async def test_new_then_status_reflects_reset(self, adapter, runner, session_entry):
         """After /new, /status should report the fresh session."""
@@ -187,22 +171,6 @@ class TestSessionLifecycle:
 
 class TestAuthorization:
     """Verify the pipeline handles unauthorized users."""
-
-    @pytest.fixture()
-    def source(self):
-        return make_source()
-
-    @pytest.fixture()
-    def session_entry(self, source):
-        return make_session_entry(source)
-
-    @pytest.fixture()
-    def runner(self, session_entry):
-        return make_runner(session_entry)
-
-    @pytest.fixture()
-    def adapter(self, runner):
-        return make_adapter(runner)
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_gets_pairing_response(self, adapter, runner):
@@ -238,22 +206,6 @@ class TestAuthorization:
 
 class TestSendFailureResilience:
     """Verify the pipeline handles send failures gracefully."""
-
-    @pytest.fixture()
-    def source(self):
-        return make_source()
-
-    @pytest.fixture()
-    def session_entry(self, source):
-        return make_session_entry(source)
-
-    @pytest.fixture()
-    def runner(self, session_entry):
-        return make_runner(session_entry)
-
-    @pytest.fixture()
-    def adapter(self, runner):
-        return make_adapter(runner)
 
     @pytest.mark.asyncio
     async def test_send_failure_does_not_crash_pipeline(self, adapter):

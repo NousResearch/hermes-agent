@@ -17,6 +17,7 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    replay_validate_skill_candidate,
     skill_manage,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
@@ -337,6 +338,34 @@ class TestDeleteSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
             _delete_skill("my-skill")
         assert not (tmp_path / "devops").exists()
+
+
+class TestReplayValidateSkillCandidate:
+    def test_replay_validation_accepts_create_candidate(self, tmp_path):
+        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+            result = replay_validate_skill_candidate(
+                action="create",
+                name="my-skill",
+                content=VALID_SKILL_CONTENT,
+            )
+
+        assert result["valid"] is True
+        assert result["action"] == "create"
+        assert result["name"] == "my-skill"
+
+    def test_replay_validation_rejects_patch_candidate_when_replay_fails(self, tmp_path):
+        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = replay_validate_skill_candidate(
+                action="patch",
+                name="my-skill",
+                old_string="missing text",
+                new_string="replacement",
+            )
+
+        assert result["valid"] is False
+        assert result["action"] == "patch"
+        assert "not found" in result["error"]
 
 
 # ---------------------------------------------------------------------------

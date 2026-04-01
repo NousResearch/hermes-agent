@@ -2114,6 +2114,44 @@ class AIAgent:
             return list(getattr(self._memory_store, "user_entries", []) or [])
         return list(getattr(self._memory_store, "memory_entries", []) or [])
 
+    def _validate_auto_learning_skill_candidate(self, candidate: Dict[str, Any]) -> Dict[str, Any] | None:
+        if str(candidate.get("category") or "").strip().lower() != "skill":
+            return None
+        payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        action = str(payload.get("action") or "").strip().lower()
+        target_name = str(candidate.get("target") or payload.get("name") or "").strip()
+        if action not in {"create", "patch", "edit"}:
+            return None
+        if not target_name:
+            return {
+                "valid": False,
+                "action": action,
+                "name": target_name,
+                "error": "Skill target name is required for replay validation.",
+                "fatal": True,
+            }
+        try:
+            from tools.skill_manager_tool import replay_validate_skill_candidate
+
+            return replay_validate_skill_candidate(
+                action=action,
+                name=target_name,
+                content=payload.get("content"),
+                category=payload.get("category"),
+                file_path=payload.get("file_path"),
+                file_content=payload.get("file_content"),
+                old_string=payload.get("old_string"),
+                new_string=payload.get("new_string"),
+                replace_all=bool(payload.get("replace_all", False)),
+            )
+        except Exception as exc:
+            return {
+                "valid": False,
+                "action": action,
+                "name": target_name,
+                "error": f"Replay validation unavailable: {exc}",
+            }
+
     def _assess_auto_learning_candidate_quality(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         from agent.auto_learning import candidate_semantic_key, detect_candidate_contradictions
 
@@ -2131,16 +2169,69 @@ class AIAgent:
             staged_candidates=staged_candidates,
         )
         review_required = bool(contradictions.get("review_required"))
-        shadow_decision = "candidate"
-        if contradictions.get("has_contradiction"):
-            shadow_decision = "manual_review"
+        shadow_decision = "manual_review" if contradictions.get("has_contradiction") else "candidate"
 
-        return {
+        quality = {
             "semantic_key": candidate_semantic_key(candidate),
             "contradictions": contradictions,
             "review_required": review_required,
             "shadow_decision": shadow_decision,
         }
+
+        threshold = float(self._auto_learning_config.get("promotion_threshold", 0.80) or 0.80)
+        if (
+            self._auto_learning_config.get("auto_promote_skills", False)
+            and not review_required
+            and str(candidate.get("category") or "").strip().lower() == "skill"
+        ):
+            from agent.auto_learning import should_promote_candidate
+
+            if should_promote_candidate(candidate, threshold):
+                skill_validation = self._validate_auto_learning_skill_candidate(candidate)
+                if skill_validation is not None:
+                    quality["skill_validation"] = skill_validation
+                    if not skill_validation.get("valid"):
+                        quality["review_required"] = True
+                        quality["shadow_decision"] = "rejected" if skill_validation.get("fatal") else "manual_review"
+
+        return quality
+
+    def _build_auto_learning_promotion_notification(self, entry: Dict[str, Any]) -> str | None:
+        category = str(entry.get("category") or "").strip().lower()
+        summary = " ".join(str(entry.get("summary") or "").split()).strip()
+        target = str(entry.get("target") or "").strip()
+        if category == "memory":
+            label = "Memory upgraded"
+            detail = summary or target or "durable memory"
+        elif category == "skill":
+            label = "Skill upgraded"
+            detail = target or summary or "skill"
+        else:
+            return None
+        return f"💾 {label}: {detail}"
+
+    def _emit_auto_learning_promotion_notification(self, entry: Dict[str, Any]) -> None:
+        notification = self._build_auto_learning_promotion_notification(entry)
+        if not notification:
+            return
+        self._safe_print(f"  {notification}")
+        callback = self.background_review_callback
+        if callback:
+            try:
+                callback(notification)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _status_from_auto_learning_write_result(result_text: str) -> str:
+        try:
+            result = json.loads(result_text)
+        except (TypeError, json.JSONDecodeError):
+            return "rejected"
+        if not result.get("success"):
+            return "rejected"
+        message = str(result.get("message", "")).lower()
+        return "superseded" if "already exists" in message else "promoted"
 
     def _promote_auto_learning_candidate(self, entry: Dict[str, Any]) -> str:
         category = entry.get("category", "unknown")
@@ -2162,50 +2253,44 @@ class AIAgent:
             action = payload.get("action")
             if action not in {"add", "replace", "remove"}:
                 return "rejected"
-            result_text = _memory_tool(
-                action=action,
-                target=target,
-                content=payload.get("content"),
-                old_text=payload.get("old_text"),
-                store=self._memory_store,
+            status = self._status_from_auto_learning_write_result(
+                _memory_tool(
+                    action=action,
+                    target=target,
+                    content=payload.get("content"),
+                    old_text=payload.get("old_text"),
+                    store=self._memory_store,
+                )
             )
-            try:
-                result = json.loads(result_text)
-            except (TypeError, json.JSONDecodeError):
-                return "rejected"
-            if result.get("success"):
-                message = str(result.get("message", "")).lower()
-                return "superseded" if "already exists" in message else "promoted"
-            return "rejected"
+            if status == "promoted":
+                self._emit_auto_learning_promotion_notification(entry)
+            return status
 
         if category == "skill" and self._auto_learning_config.get("auto_promote_skills", False):
             skill_validation = quality.get("skill_validation") if isinstance(quality.get("skill_validation"), dict) else None
             action = payload.get("action")
-            if skill_validation and not skill_validation.get("valid") and action in {"create", "patch", "edit"}:
-                return "manual_review"
             from tools.skill_manager_tool import skill_manage as _skill_manage
             target_name = entry.get("target") or payload.get("name") or ""
             if action not in {"create", "patch", "edit", "delete", "write_file", "remove_file"} or not target_name:
                 return "rejected"
-            result_text = _skill_manage(
-                action=action,
-                name=target_name,
-                content=payload.get("content"),
-                category=payload.get("category"),
-                file_path=payload.get("file_path"),
-                file_content=payload.get("file_content"),
-                old_string=payload.get("old_string"),
-                new_string=payload.get("new_string"),
-                replace_all=bool(payload.get("replace_all", False)),
+            if skill_validation and not skill_validation.get("valid") and action in {"create", "patch", "edit"}:
+                return "manual_review"
+            status = self._status_from_auto_learning_write_result(
+                _skill_manage(
+                    action=action,
+                    name=target_name,
+                    content=payload.get("content"),
+                    category=payload.get("category"),
+                    file_path=payload.get("file_path"),
+                    file_content=payload.get("file_content"),
+                    old_string=payload.get("old_string"),
+                    new_string=payload.get("new_string"),
+                    replace_all=bool(payload.get("replace_all", False)),
+                )
             )
-            try:
-                result = json.loads(result_text)
-            except (TypeError, json.JSONDecodeError):
-                return "rejected"
-            if result.get("success"):
-                message = str(result.get("message", "")).lower()
-                return "superseded" if "already exists" in message else "promoted"
-            return "rejected"
+            if status == "promoted":
+                self._emit_auto_learning_promotion_notification(entry)
+            return status
 
         return entry.get("status") or "candidate"
 
@@ -2501,7 +2586,7 @@ class AIAgent:
             elif verifier_disposition == "reject":
                 new_status = "rejected"
             elif quality.get("review_required"):
-                new_status = "manual_review"
+                new_status = quality.get("shadow_decision") or "manual_review"
             else:
                 new_status = self._promote_auto_learning_candidate(entry)
 

@@ -567,6 +567,73 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     }
 
 
+def replay_validate_skill_candidate(
+    *,
+    action: str,
+    name: str,
+    content: str = None,
+    category: str = None,
+    file_path: str = None,
+    file_content: str = None,
+    old_string: str = None,
+    new_string: str = None,
+    replace_all: bool = False,
+) -> Dict[str, Any]:
+    """Dry-run skill mutations in an isolated temporary skills root.
+
+    This replays the exact skill_manage operation locally without touching the
+    durable skills directory. Existing target skills are copied into the replay
+    sandbox when needed so patch/edit/write/remove/delete candidates fail closed
+    if they depend on missing or malformed context.
+    """
+    action_name = str(action or "").strip()
+    skill_name = str(name or "").strip()
+    replay_result: Dict[str, Any] = {"valid": False, "action": action_name, "name": skill_name}
+
+    if not action_name or not skill_name:
+        replay_result["error"] = "action and name are required for replay validation."
+        return replay_result
+
+    with tempfile.TemporaryDirectory(prefix="skill-replay-") as temp_dir:
+        temp_skills_dir = Path(temp_dir) / "skills"
+        temp_skills_dir.mkdir(parents=True, exist_ok=True)
+
+        existing = _find_skill(skill_name)
+        if existing and existing.get("path") and Path(existing["path"]).exists():
+            source_dir = Path(existing["path"])
+            relative_parent = source_dir.parent.relative_to(SKILLS_DIR) if source_dir.parent != SKILLS_DIR else Path()
+            sandbox_parent = temp_skills_dir / relative_parent
+            sandbox_parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source_dir, sandbox_parent / source_dir.name, dirs_exist_ok=True)
+
+        original_skills_dir = SKILLS_DIR
+        try:
+            globals()["SKILLS_DIR"] = temp_skills_dir
+            if action_name == "create":
+                result = _create_skill(skill_name, content or "", category)
+            elif action_name == "edit":
+                result = _edit_skill(skill_name, content or "")
+            elif action_name == "patch":
+                result = _patch_skill(skill_name, old_string or "", new_string, file_path, replace_all)
+            elif action_name == "delete":
+                result = _delete_skill(skill_name)
+            elif action_name == "write_file":
+                result = _write_file(skill_name, file_path or "", file_content)
+            elif action_name == "remove_file":
+                result = _remove_file(skill_name, file_path or "")
+            else:
+                result = {"success": False, "error": f"Unknown action '{action_name}'."}
+        finally:
+            globals()["SKILLS_DIR"] = original_skills_dir
+
+    replay_result["valid"] = bool(result.get("success"))
+    if result.get("success"):
+        replay_result["result"] = result.get("message") or result.get("path") or "ok"
+    else:
+        replay_result["error"] = result.get("error") or "Replay validation failed."
+    return replay_result
+
+
 # =============================================================================
 # Main entry point
 # =============================================================================

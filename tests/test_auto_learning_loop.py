@@ -21,6 +21,15 @@ def _make_tool_defs(*names: str) -> list:
 
 
 
+def _base_config(auto_learning_config: dict) -> dict:
+    return {
+        "memory": {"memory_enabled": False, "user_profile_enabled": False},
+        "skills": {"creation_nudge_interval": 10},
+        "auto_learning": auto_learning_config,
+    }
+
+
+
 def _make_agent(auto_learning_config: dict):
     with (
         patch(
@@ -29,14 +38,7 @@ def _make_agent(auto_learning_config: dict):
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
-        patch(
-            "hermes_cli.config.load_config",
-            return_value={
-                "memory": {"memory_enabled": False, "user_profile_enabled": False},
-                "skills": {"creation_nudge_interval": 10},
-                "auto_learning": auto_learning_config,
-            },
-        ),
+        patch("hermes_cli.config.load_config", return_value=_base_config(auto_learning_config)),
     ):
         agent = AIAgent(
             api_key="***",
@@ -421,7 +423,10 @@ def test_auto_learning_review_promotes_skill_candidate_when_enabled(tmp_path):
         }
     )
 
-    with patch("tools.skill_manager_tool.skill_manage", return_value='{"success": true, "message": "Skill updated."}') as mock_skill_manage:
+    with (
+        patch("tools.skill_manager_tool.replay_validate_skill_candidate", return_value={"valid": True, "action": "patch", "name": "openvino-qwen-no-think"}) as mock_validate,
+        patch("tools.skill_manager_tool.skill_manage", return_value='{"success": true, "message": "Skill updated."}') as mock_skill_manage,
+    ):
         review_text = (
             '{"candidates": ['
             '{"category": "skill", "summary": "Patch outdated OpenVINO steps", '
@@ -434,7 +439,47 @@ def test_auto_learning_review_promotes_skill_candidate_when_enabled(tmp_path):
     items = agent._auto_learning_store.list_candidates(status="promoted")
     assert result["promoted"] == 1
     assert len(items) == 1
+    mock_validate.assert_called_once()
     mock_skill_manage.assert_called_once()
+
+
+
+def test_auto_learning_review_blocks_skill_promotion_on_invalid_replay_validation(tmp_path):
+    agent = _make_agent(
+        {
+            "enabled": True,
+            "review_interval": 1,
+            "min_tool_iterations": 1,
+            "candidate_char_limit": 12000,
+            "candidate_max_entries": 10,
+            "promotion_threshold": 0.8,
+            "auto_promote_memory": True,
+            "auto_promote_skills": True,
+            "store_path": str(tmp_path / "candidates.jsonl"),
+            "debug": False,
+        }
+    )
+
+    with (
+        patch("tools.skill_manager_tool.replay_validate_skill_candidate", return_value={"valid": False, "action": "patch", "name": "openvino-qwen-no-think", "error": "old_string not found in the file."}) as mock_validate,
+        patch("tools.skill_manager_tool.skill_manage") as mock_skill_manage,
+    ):
+        review_text = (
+            '{"candidates": ['
+            '{"category": "skill", "summary": "Patch outdated OpenVINO steps", '
+            '"confidence": 0.99, "reason": "reusable workflow fix", "target": "openvino-qwen-no-think", '
+            '"payload": {"action": "patch", "old_string": "old", "new_string": "new"}}]}'
+        )
+
+        result = agent._process_auto_learning_review_result(review_text)
+
+    items = agent._auto_learning_store.list_candidates(status="manual_review")
+    assert result["manual_review"] == 1
+    assert len(items) == 1
+    assert items[0]["evidence"]["quality"]["skill_validation"]["valid"] is False
+    assert "not found" in items[0]["evidence"]["quality"]["skill_validation"]["error"]
+    mock_validate.assert_called_once()
+    mock_skill_manage.assert_not_called()
 
 
 
@@ -592,6 +637,80 @@ def test_run_conversation_spawns_background_auto_learning_review_when_triggered(
         agent.run_conversation("hello")
 
     mock_auto_review.assert_called_once()
+
+
+def test_auto_learning_review_notifies_on_successful_memory_promotion(tmp_path):
+    agent = _make_agent(
+        {
+            "enabled": True,
+            "review_interval": 1,
+            "min_tool_iterations": 1,
+            "candidate_char_limit": 12000,
+            "candidate_max_entries": 10,
+            "promotion_threshold": 0.8,
+            "auto_promote_memory": True,
+            "auto_promote_skills": False,
+            "store_path": str(tmp_path / "candidates.jsonl"),
+            "debug": False,
+        }
+    )
+    agent._memory_store = MagicMock()
+    agent.background_review_callback = MagicMock()
+
+    with patch("tools.memory_tool.memory_tool", return_value='{"success": true, "message": "Entry added.", "target": "user"}'):
+        review_text = (
+            '{"candidates": ['
+            '{"category": "memory", "summary": "User prefers concise responses", '
+            '"confidence": 0.95, "reason": "repeated explicit correction", "target": "user", '
+            '"payload": {"action": "add", "content": "User prefers concise responses."}}]}'
+        )
+
+        result = agent._process_auto_learning_review_result(review_text)
+
+    assert result["promoted"] == 1
+    agent.background_review_callback.assert_called_once()
+    notification = agent.background_review_callback.call_args.args[0]
+    assert "Memory upgraded" in notification
+    assert "User prefers concise responses" in notification
+
+
+
+def test_auto_learning_review_notifies_on_successful_skill_promotion(tmp_path):
+    agent = _make_agent(
+        {
+            "enabled": True,
+            "review_interval": 1,
+            "min_tool_iterations": 1,
+            "candidate_char_limit": 12000,
+            "candidate_max_entries": 10,
+            "promotion_threshold": 0.8,
+            "auto_promote_memory": True,
+            "auto_promote_skills": True,
+            "store_path": str(tmp_path / "candidates.jsonl"),
+            "debug": False,
+        }
+    )
+    agent.background_review_callback = MagicMock()
+
+    with (
+        patch("tools.skill_manager_tool.replay_validate_skill_candidate", return_value={"valid": True, "action": "patch", "name": "openvino-qwen-no-think"}),
+        patch("tools.skill_manager_tool.skill_manage", return_value='{"success": true, "message": "Skill updated."}'),
+    ):
+        review_text = (
+            '{"candidates": ['
+            '{"category": "skill", "summary": "Patch outdated OpenVINO steps", '
+            '"confidence": 0.99, "reason": "reusable workflow fix", "target": "openvino-qwen-no-think", '
+            '"payload": {"action": "patch", "old_string": "old", "new_string": "new"}}]}'
+        )
+
+        result = agent._process_auto_learning_review_result(review_text)
+
+    assert result["promoted"] == 1
+    agent.background_review_callback.assert_called_once()
+    notification = agent.background_review_callback.call_args.args[0]
+    assert "Skill upgraded" in notification
+    assert "openvino-qwen-no-think" in notification
+
 
 
 def test_run_conversation_does_not_spawn_background_auto_learning_review_when_not_triggered(tmp_path):

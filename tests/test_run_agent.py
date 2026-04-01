@@ -4032,3 +4032,106 @@ class TestAutoLearningActorRouting:
         assert review_context["transcript_refs"] == [{"message_index": 0, "role": "user"}]
         assert "hello" in review_context["transcript_excerpt"]
 
+    def test_assess_auto_learning_candidate_quality_skips_skill_replay_validation_when_auto_promotion_disabled(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": False,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        candidate = {
+            "category": "skill",
+            "summary": "Patch outdated OpenVINO steps",
+            "confidence": 0.96,
+            "reason": "reusable workflow fix",
+            "target": "openvino-qwen-no-think",
+            "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+        }
+
+        with patch("tools.skill_manager_tool.replay_validate_skill_candidate") as mock_validate:
+            quality = agent._assess_auto_learning_candidate_quality(candidate)
+
+        assert "skill_validation" not in quality
+        mock_validate.assert_not_called()
+
+    def test_promote_auto_learning_candidate_does_not_notify_when_skill_replay_validation_blocks_promotion(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": True,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+        agent.background_review_callback = MagicMock()
+
+        status = agent._promote_auto_learning_candidate(
+            {
+                "category": "skill",
+                "summary": "Patch outdated OpenVINO steps",
+                "confidence": 0.96,
+                "target": "openvino-qwen-no-think",
+                "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+                "evidence": {
+                    "quality": {
+                        "review_required": False,
+                        "skill_validation": {
+                            "valid": False,
+                            "action": "patch",
+                            "name": "openvino-qwen-no-think",
+                            "error": "old_string not found",
+                        },
+                    }
+                },
+            }
+        )
+
+        assert status == "manual_review"
+        agent.background_review_callback.assert_not_called()
+
+    def test_assess_auto_learning_candidate_quality_skips_skill_replay_validation_below_threshold(self):
+        agent = self._make_agent(
+            {
+                "enabled": True,
+                "review_interval": 1,
+                "min_tool_iterations": 1,
+                "candidate_char_limit": 12000,
+                "candidate_max_entries": 10,
+                "promotion_threshold": 0.8,
+                "auto_promote_memory": False,
+                "auto_promote_skills": True,
+                "store_path": "",
+                "debug": False,
+            }
+        )
+
+        candidate = {
+            "category": "skill",
+            "summary": "Patch outdated OpenVINO steps",
+            "confidence": 0.41,
+            "reason": "single weak signal",
+            "target": "openvino-qwen-no-think",
+            "payload": {"action": "patch", "old_string": "old", "new_string": "new"},
+        }
+
+        with patch("tools.skill_manager_tool.replay_validate_skill_candidate") as mock_validate:
+            quality = agent._assess_auto_learning_candidate_quality(candidate)
+
+        assert "skill_validation" not in quality
+        mock_validate.assert_not_called()
+

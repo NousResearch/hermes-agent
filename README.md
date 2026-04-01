@@ -64,6 +64,27 @@ hermes doctor       # Diagnose any issues
 
 ## Karpathy auto-learning quality engine
 
+### TL;DR
+
+Auto-learning means Hermes can look at work it just finished, decide whether it learned something useful, and save that learning carefully instead of forgetting it.
+
+In the simplest possible terms:
+- Hermes finishes a task
+- Hermes may notice: "this user prefers X" or "this procedure should become a reusable skill"
+- Hermes first saves that idea as a staged candidate
+- Hermes checks if that candidate looks safe, useful, duplicated, or contradictory
+- only then can it be promoted into durable memory or a durable skill
+
+What artifacts can improve:
+- staged learning candidates in the local auto-learning store
+- durable memory entries (user preferences, environment facts, conventions)
+- durable skills (repeatable workflows / procedures Hermes can reuse later)
+
+What it does not do:
+- it does not train model weights
+- it does not silently rewrite everything
+- it does not skip review/safety gates
+
 Hermes now has a staged, local-first auto-learning loop that grows in steps:
 - M001: stage reviewer candidates in a local store and optionally promote safe memory/skill learnings
 - M002: add reviewer/verifier routing, richer evidence, and more reliable hook selection

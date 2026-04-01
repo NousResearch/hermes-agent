@@ -596,6 +596,14 @@ def execute_code(
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
+        # Redact secrets (API keys, tokens, etc.) from sandbox output.
+        # The sandbox env-var filter (lines 434-454) blocks os.environ access,
+        # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
+        # This ensures leaked secrets never enter the model context.
+        from agent.redact import redact_sensitive_text
+        stdout_text = redact_sensitive_text(stdout_text)
+        stderr_text = redact_sensitive_text(stderr_text)
+
         # Build response
         result: Dict[str, Any] = {
             "status": status,

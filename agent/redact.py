@@ -43,7 +43,6 @@ _PREFIX_PATTERNS = [
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
-    re.IGNORECASE,
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.

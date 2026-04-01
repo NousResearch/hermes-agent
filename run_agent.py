@@ -471,7 +471,7 @@ class AIAgent:
         acp_args: list[str] | None = None,
         command: str = None,
         args: list[str] | None = None,
-        model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
+        model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -586,10 +586,9 @@ class AIAgent:
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
-        # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
-        self.base_url = base_url or OPENROUTER_BASE_URL
+        self.base_url = base_url or ""
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-        self.provider = provider_name or "openrouter"
+        self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
@@ -8520,9 +8519,9 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "anthropic/claude-opus-4.6",
+    model: str = "",
     api_key: str = None,
-    base_url: str = "https://openrouter.ai/api/v1",
+    base_url: str = "",
     max_turns: int = 10,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,

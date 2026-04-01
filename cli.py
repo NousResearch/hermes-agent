@@ -144,8 +144,8 @@ def load_cli_config() -> Dict[str, Any]:
     # Default configuration
     defaults = {
         "model": {
-            "default": "anthropic/claude-opus-4.6",
-            "base_url": OPENROUTER_BASE_URL,
+            "default": "",
+            "base_url": "",
             "provider": "auto",
         },
         "terminal": {
@@ -1103,7 +1103,7 @@ class HermesCLI:
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
-        _DEFAULT_CONFIG_MODEL = "anthropic/claude-opus-4.6"
+        _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
         # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:

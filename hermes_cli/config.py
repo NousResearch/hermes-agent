@@ -196,7 +196,7 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-opus-4.6",
+    "model": "",
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],

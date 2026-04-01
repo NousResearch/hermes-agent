@@ -25,9 +25,7 @@ from tests.e2e.conftest import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+#Fixtures
 
 @pytest.fixture()
 def source():
@@ -49,9 +47,7 @@ def adapter(runner):
     return make_adapter(runner)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+#Tests
 
 class TestTelegramSlashCommands:
     """Gateway slash commands dispatched through the full adapter pipeline."""

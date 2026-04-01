@@ -226,6 +226,31 @@ def test_bootstrap_modal_home_writes_sanitized_files(tmp_path, monkeypatch):
     assert commit_calls == ["commit"]
 
 
+def test_bootstrap_modal_home_ignores_invalid_yaml_config(tmp_path, monkeypatch):
+    hermes_home = Path(tmp_path)
+    commit_calls: list[str] = []
+
+    monkeypatch.setenv("HERMES_MODAL_CONFIG_B64", _b64("model: ["))
+    monkeypatch.delenv("HERMES_MODAL_ENV_B64", raising=False)
+    monkeypatch.delenv("HERMES_MODAL_AUTH_B64", raising=False)
+
+    bootstrap_modal_home(
+        hermes_home,
+        project_root="/opt/hermes/hermes-agent",
+        commit_fn=lambda: commit_calls.append("commit"),
+    )
+
+    written_config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+    assert written_config["terminal"]["backend"] == "local"
+    assert written_config["terminal"]["cwd"] == "/opt/hermes/hermes-agent"
+
+    bootstrap_metadata = json.loads((hermes_home / "modal-bootstrap.json").read_text())
+    assert bootstrap_metadata["project_root"] == "/opt/hermes/hermes-agent"
+    assert bootstrap_metadata["has_auth"] is False
+    assert "config_error" in bootstrap_metadata
+    assert commit_calls == ["commit"]
+
+
 def test_modal_gateway_service_snapshot_reads_state_and_logs(tmp_path):
     hermes_home = Path(tmp_path)
     logs_dir = hermes_home / "logs"
@@ -265,3 +290,22 @@ def test_modal_gateway_service_snapshot_reads_state_and_logs(tmp_path):
     assert "third line" in snapshot["gateway_log_tail"]
     assert "error line" in snapshot["error_log_tail"]
     assert snapshot["last_error"] is None
+
+
+def test_modal_gateway_service_records_bad_project_root(tmp_path):
+    hermes_home = Path(tmp_path)
+    commit_calls: list[str] = []
+    missing_root = hermes_home / "missing-project-root"
+
+    service = ModalGatewayService(
+        hermes_home=hermes_home,
+        project_root=str(missing_root),
+        commit_fn=lambda: commit_calls.append("commit"),
+    )
+
+    service._run_gateway()
+
+    assert service._last_error is not None
+    assert "FileNotFoundError" in service._last_error
+    assert str(missing_root) in service._last_error
+    assert commit_calls == ["commit"]

@@ -206,10 +206,15 @@ def bootstrap_modal_home(
 
     config_text = _decode_base64_env(BOOTSTRAP_ENV_MAP["config"])
     config_payload: dict[str, Any] = {}
+    config_error: Optional[str] = None
     if config_text:
-        loaded = yaml.safe_load(config_text) or {}
-        if isinstance(loaded, dict):
-            config_payload = loaded
+        try:
+            loaded = yaml.safe_load(config_text) or {}
+        except yaml.YAMLError as exc:
+            config_error = str(exc)
+        else:
+            if isinstance(loaded, dict):
+                config_payload = loaded
     sanitized_config = sanitize_config_for_modal(config_payload, project_root=project_root)
     _write_text_file(
         home_dir / "config.yaml",
@@ -228,6 +233,8 @@ def bootstrap_modal_home(
         "project_root": project_root,
         "has_auth": bool(auth_text),
     }
+    if config_error:
+        bootstrap_metadata["config_error"] = config_error
     _write_text_file(
         home_dir / "modal-bootstrap.json",
         json.dumps(bootstrap_metadata, indent=2),
@@ -331,9 +338,9 @@ class ModalGatewayService:
         os.environ["HERMES_HOME"] = str(self.hermes_home)
         os.environ["HERMES_MODAL_HOSTED"] = "1"
         normalize_github_token_env()
-        os.chdir(self.project_root)
 
         try:
+            os.chdir(self.project_root)
             from gateway.run import start_gateway
 
             result = asyncio.run(start_gateway(replace=True))

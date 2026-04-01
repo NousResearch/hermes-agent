@@ -26,3 +26,4 @@ RUN uv pip install -e ".[all]" --no-cache --system --break-system-packages &&\
 ENV HERMES_HOME=/opt/data
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
+CMD [ "bash" ]

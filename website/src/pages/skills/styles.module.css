@@ -1,8 +1,3 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   Skills Hub — Hermes Agent
-   Terminal-inspired amber-on-dark with depth, warmth, and real hierarchy.
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
 .page {
@@ -10,7 +5,6 @@
   min-height: 100vh;
 }
 
-/* ── Hero ──────────────────────────────────────────────────────────────────── */
 
 .hero {
   position: relative;
@@ -75,7 +69,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Stats */
 .statsRow {
   display: flex;
   justify-content: center;
@@ -104,7 +97,6 @@
   color: var(--ifm-font-color-secondary, #9a968e);
 }
 
-/* ── Controls bar ──────────────────────────────────────────────────────────── */
 
 .controlsBar {
   position: sticky;
@@ -123,7 +115,6 @@
   background: rgba(7, 7, 13, 0.85);
 }
 
-/* Search */
 .searchWrap {
   position: relative;
   width: 100%;
@@ -182,7 +173,6 @@
   color: #ffd700;
 }
 
-/* Source pills row */
 .sourcePills {
   display: flex;
   gap: 0.4rem;
@@ -229,7 +219,6 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* ── Layout: sidebar + main ────────────────────────────────────────────────── */
 
 .layout {
   display: grid;
@@ -240,7 +229,6 @@
   min-height: 60vh;
 }
 
-/* ── Sidebar ───────────────────────────────────────────────────────────────── */
 
 .sidebar {
   position: sticky;
@@ -349,19 +337,16 @@
   color: rgba(255, 215, 0, 0.6);
 }
 
-/* Mobile sidebar toggle */
 .sidebarToggle {
   display: none;
 }
 
-/* ── Main ──────────────────────────────────────────────────────────────────── */
 
 .main {
   padding: 1.25rem 1.5rem 3rem;
   min-width: 0;
 }
 
-/* Filter summary */
 .filterSummary {
   display: flex;
   align-items: center;
@@ -423,7 +408,6 @@
   color: #ffd700;
 }
 
-/* ── Grid ──────────────────────────────────────────────────────────────────── */
 
 .grid {
   display: grid;
@@ -431,7 +415,6 @@
   gap: 0.75rem;
 }
 
-/* ── Card ──────────────────────────────────────────────────────────────────── */
 
 @keyframes cardIn {
   from {
@@ -487,7 +470,6 @@
   padding: 1rem 1rem 0.85rem 1.15rem;
 }
 
-/* Top row: icon + title + source */
 .cardTop {
   display: flex;
   align-items: flex-start;
@@ -536,7 +518,6 @@
   margin-top: 0.1rem;
 }
 
-/* Description */
 .cardDesc {
   font-size: 0.82rem;
   line-height: 1.55;
@@ -552,7 +533,6 @@
   -webkit-line-clamp: unset;
 }
 
-/* Meta: category + platform */
 .cardMeta {
   display: flex;
   align-items: center;
@@ -587,7 +567,6 @@
   border: 1px solid rgba(96, 165, 250, 0.1);
 }
 
-/* ── Card expanded detail ──────────────────────────────────────────────────── */
 
 .cardDetail {
   margin-top: 0.75rem;
@@ -659,7 +638,6 @@
   padding: 0;
 }
 
-/* Search highlight */
 .highlight {
   background: rgba(255, 215, 0, 0.2);
   color: #ffd700;
@@ -667,7 +645,6 @@
   padding: 0 1px;
 }
 
-/* ── Load more ─────────────────────────────────────────────────────────────── */
 
 .loadMoreWrap {
   display: flex;
@@ -694,7 +671,6 @@
   color: #ffd700;
 }
 
-/* ── Empty state ───────────────────────────────────────────────────────────── */
 
 .empty {
   display: flex;
@@ -740,7 +716,6 @@
   background: rgba(255, 215, 0, 0.08);
 }
 
-/* ── Mobile sidebar overlay ────────────────────────────────────────────────── */
 
 .backdrop {
   display: none;
@@ -754,7 +729,6 @@
   color: rgba(255, 215, 0, 0.8);
 }
 
-/* ── Responsive ────────────────────────────────────────────────────────────── */
 
 @media (max-width: 900px) {
   .layout {

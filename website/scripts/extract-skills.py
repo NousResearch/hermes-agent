@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-"""Extract skill metadata from SKILL.md files and index caches into JSON for the dashboard.
-
-Sources:
-  1. skills/         — built-in skills (shipped with hermes-agent)
-  2. optional-skills/ — optional skills (shipped but not active by default)
-  3. skills/index-cache/*.json — cached indexes from external registries
-
-Usage:
-    python3 website/scripts/extract-skills.py
-
-Outputs:
-    website/src/data/skills.json
-"""
+"""Extract skill metadata from SKILL.md files and index caches into JSON."""
 
 import json
 import os
-import sys
+from collections import Counter
 
 import yaml
 
@@ -27,7 +15,6 @@ LOCAL_SKILL_DIRS = [
 INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
 OUTPUT = os.path.join(REPO_ROOT, "website", "src", "data", "skills.json")
 
-# Friendly display names for categories
 CATEGORY_LABELS = {
     "apple": "Apple",
     "autonomous-ai-agents": "AI Agents",
@@ -62,7 +49,6 @@ CATEGORY_LABELS = {
     "other": "Other",
 }
 
-# Map external source identifiers to friendly labels
 SOURCE_LABELS = {
     "anthropics_skills": "Anthropic",
     "openai_skills": "OpenAI",
@@ -72,7 +58,6 @@ SOURCE_LABELS = {
 
 
 def extract_local_skills():
-    """Parse SKILL.md frontmatter from local skill directories."""
     skills = []
 
     for base_dir, source_label in LOCAL_SKILL_DIRS:
@@ -103,11 +88,9 @@ def extract_local_skills():
             if not fm or not isinstance(fm, dict):
                 continue
 
-            # Category from directory structure
             rel = os.path.relpath(root, base_path)
             category = rel.split(os.sep)[0]
 
-            # Tags — can be in metadata.hermes.tags or top-level tags
             tags = []
             metadata = fm.get("metadata")
             if isinstance(metadata, dict):
@@ -135,7 +118,6 @@ def extract_local_skills():
 
 
 def extract_cached_index_skills():
-    """Parse skills from index cache JSON files (external registries)."""
     skills = []
 
     if not os.path.isdir(INDEX_CACHE_DIR):
@@ -152,7 +134,6 @@ def extract_cached_index_skills():
         except (json.JSONDecodeError, OSError):
             continue
 
-        # Determine source label from filename
         stem = filename.replace(".json", "")
         source_label = "community"
         for key, label in SOURCE_LABELS.items():
@@ -160,14 +141,13 @@ def extract_cached_index_skills():
                 source_label = label
                 break
 
-        # LobeHub format: {"agents": [...], "tags": [...]}
         if isinstance(data, dict) and "agents" in data:
             for agent in data["agents"]:
                 if not isinstance(agent, dict):
                     continue
                 skills.append({
                     "name": agent.get("identifier", agent.get("meta", {}).get("title", "unknown")),
-                    "description": _first_line(agent.get("meta", {}).get("description", "")),
+                    "description": (agent.get("meta", {}).get("description", "") or "").split("\n")[0][:200],
                     "category": _guess_category(agent.get("meta", {}).get("tags", [])),
                     "categoryLabel": "",  # filled below
                     "source": source_label,
@@ -178,18 +158,16 @@ def extract_cached_index_skills():
                 })
             continue
 
-        # SkillMeta list format (Anthropic, OpenAI caches)
         if isinstance(data, list):
             for entry in data:
                 if not isinstance(entry, dict) or not entry.get("name"):
                     continue
-                # Skip meta-packages (claude marketplace bundles)
                 if "skills" in entry and isinstance(entry["skills"], list):
                     continue
                 skills.append({
                     "name": entry.get("name", ""),
                     "description": entry.get("description", ""),
-                    "category": _category_from_identifier(entry.get("identifier", "")),
+                    "category": "uncategorized",
                     "categoryLabel": "",
                     "source": source_label,
                     "tags": entry.get("tags", []),
@@ -198,7 +176,6 @@ def extract_cached_index_skills():
                     "version": "",
                 })
 
-    # Fill in category labels
     for s in skills:
         if not s["categoryLabel"]:
             s["categoryLabel"] = CATEGORY_LABELS.get(
@@ -209,88 +186,44 @@ def extract_cached_index_skills():
     return skills
 
 
-def _first_line(text: str) -> str:
-    """Return the first sentence or first 200 chars."""
-    if not text:
-        return ""
-    line = text.split("\n")[0].strip()
-    return line[:200]
+TAG_TO_CATEGORY = {}
+for _cat, _tags in {
+    "software-development": [
+        "programming", "code", "coding", "software-development",
+        "frontend-development", "backend-development", "web-development",
+        "react", "python", "typescript", "java", "rust",
+    ],
+    "creative": ["writing", "design", "creative", "art", "image-generation"],
+    "research": ["education", "academic", "research"],
+    "social-media": ["marketing", "seo", "social-media"],
+    "productivity": ["productivity", "business"],
+    "data-science": ["data", "data-science"],
+    "mlops": ["machine-learning", "deep-learning"],
+    "devops": ["devops"],
+    "gaming": ["gaming", "game", "game-development"],
+    "media": ["music", "media", "video"],
+    "health": ["health", "fitness"],
+    "translation": ["translation", "language-learning"],
+    "security": ["security", "cybersecurity"],
+}.items():
+    for _t in _tags:
+        TAG_TO_CATEGORY[_t] = _cat
 
 
 def _guess_category(tags: list) -> str:
-    """Map LobeHub tags to our category names (best effort)."""
     if not tags:
         return "uncategorized"
-    tag_lower = [t.lower() for t in tags]
-    mapping = {
-        "programming": "software-development",
-        "code": "software-development",
-        "coding": "software-development",
-        "software-development": "software-development",
-        "frontend-development": "software-development",
-        "backend-development": "software-development",
-        "web-development": "software-development",
-        "react": "software-development",
-        "python": "software-development",
-        "typescript": "software-development",
-        "java": "software-development",
-        "rust": "software-development",
-        "writing": "creative",
-        "design": "creative",
-        "creative": "creative",
-        "art": "creative",
-        "image-generation": "creative",
-        "education": "research",
-        "academic": "research",
-        "research": "research",
-        "marketing": "social-media",
-        "seo": "social-media",
-        "social-media": "social-media",
-        "productivity": "productivity",
-        "business": "productivity",
-        "data": "data-science",
-        "data-science": "data-science",
-        "machine-learning": "mlops",
-        "deep-learning": "mlops",
-        "devops": "devops",
-        "gaming": "gaming",
-        "game": "gaming",
-        "game-development": "gaming",
-        "music": "media",
-        "media": "media",
-        "video": "media",
-        "health": "health",
-        "fitness": "health",
-        "translation": "translation",
-        "language-learning": "translation",
-        "security": "security",
-        "cybersecurity": "security",
-    }
-    for tag in tag_lower:
-        if tag in mapping:
-            return mapping[tag]
-    return tags[0].lower().replace(" ", "-") if tags else "uncategorized"
+    for tag in tags:
+        cat = TAG_TO_CATEGORY.get(tag.lower())
+        if cat:
+            return cat
+    return tags[0].lower().replace(" ", "-")
 
 
-def _category_from_identifier(identifier: str) -> str:
-    """Extract a rough category from source identifier like 'anthropics/skills/skills/name'.
-
-    For external registries we can't reliably infer a category from the path,
-    so we return 'uncategorized' and let the consolidation step handle it.
-    """
-    return "uncategorized"
-
-
-# Minimum number of skills a category must have to be shown independently.
-# Categories below this threshold are merged into "Other".
 MIN_CATEGORY_SIZE = 4
 
 
 def _consolidate_small_categories(skills: list) -> list:
-    """Merge categories with fewer than MIN_CATEGORY_SIZE skills into 'other'."""
-    from collections import Counter
-
-    # First, fold "uncategorized" into "other"
     for s in skills:
         if s["category"] in ("uncategorized", ""):
             s["category"] = "other"
@@ -311,12 +244,8 @@ def main():
     local = extract_local_skills()
     external = extract_cached_index_skills()
 
-    all_skills = local + external
+    all_skills = _consolidate_small_categories(local + external)
 
-    # Roll small / one-off categories into "Other"
-    all_skills = _consolidate_small_categories(all_skills)
-
-    # Sort: local first (built-in, optional), then external; "other" last within each source
     source_order = {"built-in": 0, "optional": 1}
     all_skills.sort(key=lambda s: (
         source_order.get(s["source"], 2),

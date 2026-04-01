@@ -17,7 +17,6 @@ interface Skill {
 
 const allSkills: Skill[] = skills as Skill[];
 
-// ── Category icons (mapped to category slugs) ──────────────────────────────
 const CATEGORY_ICONS: Record<string, string> = {
   apple: "\u{f179}",
   "autonomous-ai-agents": "\u{1F916}",
@@ -48,23 +47,10 @@ const CATEGORY_ICONS: Record<string, string> = {
   "smart-home": "\u{1F3E0}",
   "social-media": "\u{1F4F1}",
   "software-development": "\u{1F4BB}",
-  cybersecurity: "\u{1F512}",
-  ecommerce: "\u{1F6D2}",
-  "game-development": "\u{1F3AE}",
-  game: "\u{1F3AE}",
   translation: "\u{1F30D}",
-  copywriting: "\u{270D}",
-  "english-conversation": "\u{1F4AC}",
-  naming: "\u{1F4A1}",
-  prompt: "\u{2328}",
-  "stable-diffusion": "\u{1F5BC}",
-  "academic-writing": "\u{1F393}",
-  "3d-animation": "\u{1F4A0}",
   other: "\u{1F4E6}",
-  uncategorized: "\u{1F4E6}",
 };
 
-// ── Source config ────────────────────────────────────────────────────────────
 const SOURCE_CONFIG: Record<
   string,
   { label: string; color: string; bg: string; border: string; icon: string }
@@ -108,7 +94,6 @@ const SOURCE_CONFIG: Record<
 
 const SOURCE_ORDER = ["all", "built-in", "optional", "Anthropic", "LobeHub", "Claude Marketplace"];
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
 function highlightMatch(text: string, query: string): React.ReactNode {
   if (!query || !text) return text;
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
@@ -122,7 +107,6 @@ function highlightMatch(text: string, query: string): React.ReactNode {
   );
 }
 
-// ── Skill Card ───────────────────────────────────────────────────────────────
 function SkillCard({
   skill,
   query,
@@ -149,11 +133,9 @@ function SkillCard({
       onClick={onToggle}
       style={style}
     >
-      {/* Accent line */}
       <div className={styles.cardAccent} style={{ background: src.color }} />
 
       <div className={styles.cardInner}>
-        {/* Top row */}
         <div className={styles.cardTop}>
           <span className={styles.cardIcon}>{icon}</span>
           <div className={styles.cardTitleGroup}>
@@ -173,12 +155,10 @@ function SkillCard({
           </div>
         </div>
 
-        {/* Description */}
         <p className={`${styles.cardDesc} ${expanded ? styles.cardDescFull : ""}`}>
           {highlightMatch(skill.description || "No description available.", query)}
         </p>
 
-        {/* Category + platform row */}
         <div className={styles.cardMeta}>
           <button
             className={styles.catButton}
@@ -197,7 +177,6 @@ function SkillCard({
           ))}
         </div>
 
-        {/* Expanded detail */}
         {expanded && (
           <div className={styles.cardDetail}>
             {skill.tags?.length > 0 && (
@@ -238,7 +217,6 @@ function SkillCard({
   );
 }
 
-// ── Stat Card ────────────────────────────────────────────────────────────────
 function StatCard({ value, label, color }: { value: number; label: string; color: string }) {
   return (
     <div className={styles.stat}>
@@ -250,7 +228,6 @@ function StatCard({ value, label, color }: { value: number; label: string; color
   );
 }
 
-// ── Main Dashboard ───────────────────────────────────────────────────────────
 const PAGE_SIZE = 60;
 
 export default function SkillsDashboard() {
@@ -263,7 +240,6 @@ export default function SkillsDashboard() {
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
-  // Focus search on / key
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
@@ -279,13 +255,11 @@ export default function SkillsDashboard() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Sources present in data
   const sources = useMemo(() => {
     const set = new Set(allSkills.map((s) => s.source));
     return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
   }, []);
 
-  // Category list for sidebar (with counts, filtered by source)
   const categoryEntries = useMemo(() => {
     const pool =
       sourceFilter === "all"
@@ -309,7 +283,6 @@ export default function SkillsDashboard() {
       .map(([key, { label, count }]) => ({ key, label, count }));
   }, [sourceFilter]);
 
-  // Filtered results
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
     return allSkills.filter((s) => {
@@ -325,7 +298,6 @@ export default function SkillsDashboard() {
     });
   }, [search, sourceFilter, categoryFilter]);
 
-  // Reset pagination when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     setExpandedCard(null);
@@ -365,7 +337,6 @@ export default function SkillsDashboard() {
       description="Browse all skills and plugins available for Hermes Agent"
     >
       <div className={styles.page}>
-        {/* ── Hero ── */}
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
           <div className={styles.heroContent}>
@@ -377,7 +348,6 @@ export default function SkillsDashboard() {
               across {sources.length - 1} registries
             </p>
 
-            {/* Stats row */}
             <div className={styles.statsRow}>
               <StatCard
                 value={allSkills.filter((s) => s.source === "built-in").length}
@@ -407,9 +377,7 @@ export default function SkillsDashboard() {
           </div>
         </header>
 
-        {/* ── Controls bar ── */}
         <div className={styles.controlsBar}>
-          {/* Search */}
           <div className={styles.searchWrap}>
             <svg className={styles.searchIcon} viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
               <path
@@ -439,7 +407,6 @@ export default function SkillsDashboard() {
             )}
           </div>
 
-          {/* Source pills */}
           <div className={styles.sourcePills}>
             {sources.map((src) => {
               const active = sourceFilter === src;
@@ -471,9 +438,7 @@ export default function SkillsDashboard() {
           </div>
         </div>
 
-        {/* ── Main layout: sidebar + grid ── */}
         <div className={styles.layout}>
-          {/* Mobile sidebar toggle */}
           <button
             className={styles.sidebarToggle}
             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -493,7 +458,6 @@ export default function SkillsDashboard() {
             )}
           </button>
 
-          {/* Sidebar */}
           <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}>
             <div className={styles.sidebarHeader}>
               <h2 className={styles.sidebarTitle}>Categories</h2>
@@ -531,9 +495,7 @@ export default function SkillsDashboard() {
             </nav>
           </aside>
 
-          {/* Grid area */}
           <main className={styles.main} ref={gridRef}>
-            {/* Active filters summary */}
             {(search || sourceFilter !== "all" || categoryFilter !== "all") && (
               <div className={styles.filterSummary}>
                 <span className={styles.filterCount}>
@@ -564,7 +526,6 @@ export default function SkillsDashboard() {
               </div>
             )}
 
-            {/* Cards */}
             {visible.length > 0 ? (
               <>
                 <div className={styles.grid}>
@@ -613,7 +574,6 @@ export default function SkillsDashboard() {
         </div>
       </div>
 
-      {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div className={styles.backdrop} onClick={() => setSidebarOpen(false)} />
       )}

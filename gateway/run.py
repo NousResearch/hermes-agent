@@ -427,7 +427,15 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._circuit_breaker_config = self._load_circuit_breaker_config()
         self._smart_model_routing = self._load_smart_model_routing()
+
+        try:
+            from agent.circuit_breaker import ProviderCircuitBreaker
+
+            ProviderCircuitBreaker.get_instance().configure(**self._circuit_breaker_config)
+        except Exception:
+            logger.exception("Failed to configure provider circuit breaker")
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -1027,6 +1035,27 @@ class GatewayRunner:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _load_circuit_breaker_config() -> dict:
+        """Load circuit breaker settings from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                cb_cfg = cfg.get("circuit_breaker") or {}
+                if not isinstance(cb_cfg, dict):
+                    return {}
+                return {
+                    "failure_threshold": cb_cfg.get("failure_threshold", 2),
+                    "reset_timeout": cb_cfg.get("reset_timeout", 300),
+                    "half_open_timeout": cb_cfg.get("half_open_timeout", 30),
+                }
+        except Exception:
+            pass
+        return {}
 
     @staticmethod
     def _load_smart_model_routing() -> dict:
@@ -3089,6 +3118,23 @@ class GatewayRunner:
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ]
+
+        try:
+            from agent.circuit_breaker import ProviderCircuitBreaker
+
+            cb_status = ProviderCircuitBreaker.get_instance().get_status()
+            if cb_status:
+                lines.extend(["", "🔌 **Provider Circuit Breaker**"])
+                for provider, info in sorted(cb_status.items()):
+                    state = info.get("state", "closed")
+                    icon = "🟢" if state == "closed" else ("🔴" if state == "open" else "🟡")
+                    line = f"{icon} `{provider}`: {state}"
+                    reset_in = info.get("reset_in")
+                    if reset_in:
+                        line += f" (resets in {int(reset_in)}s)"
+                    lines.append(line)
+        except Exception:
+            logger.exception("Failed to render circuit breaker status")
         
         return "\n".join(lines)
     

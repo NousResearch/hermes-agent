@@ -31,6 +31,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
+| **Atomic Chat** | `hermes model` (auto-detected at `127.0.0.1:1337`, provider: `atomic-chat`, macOS only) |
 | **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
 
 :::tip Model key alias
@@ -478,6 +479,46 @@ To set persistent per-model defaults: My Models tab → gear icon on the model �
 
 ---
 
+### Atomic Chat — Local LLMs on macOS
+
+[Atomic Chat](https://atomic.chat/) is a macOS desktop app for running local LLMs with an OpenAI-compatible API server at `127.0.0.1:1337`. Best for: Mac users who want a one-click local LLM experience with automatic model management.
+
+Hermes has first-class integration with Atomic Chat — it auto-detects whether the app is running and which model is loaded:
+
+```bash
+hermes model
+# Select "Atomic Chat" from the provider list
+# If running with a model loaded → auto-configures immediately
+# If not running → shows download/launch instructions
+# If running without a model → prompts you to download one
+```
+
+Or configure directly in `config.yaml`:
+
+```yaml
+model:
+  provider: "custom"
+  base_url: "http://127.0.0.1:1337/v1"
+  default: "Qwen3_5-9B-Q4_K_M"  # your downloaded model name
+```
+
+**Setup:**
+
+1. Download Atomic Chat from [atomic.chat](https://atomic.chat/) or [GitHub Releases](https://github.com/AtomicBot-ai/Atomic-Chat/releases)
+2. Launch the app and download a model (Qwen, Llama, Gemma, etc.)
+3. Make sure the Local API Server is enabled in the app settings
+4. Run `hermes model` and select "Atomic Chat"
+
+**System requirements:** macOS 13.6+ (8 GB RAM for 3B models, 16 GB for 7B, 32 GB for 13B).
+
+No API key is needed — the local server runs without authentication.
+
+:::tip
+The provider list dynamically shows the active model name when Atomic Chat is running, e.g. `Atomic Chat (127.0.0.1:1337/v1) — Qwen3_5-9B-Q4_K_M`.
+:::
+
+---
+
 ### Troubleshooting Local Models
 
 These issues affect **all** local inference servers when used with Hermes.
@@ -495,6 +536,7 @@ The model outputs something like `{"name": "web_search", "arguments": {...}}` as
 | **SGLang** | Add `--tool-call-parser qwen` (or appropriate parser) |
 | **Ollama** | Tool calling is enabled by default — make sure your model supports it (check with `ollama show model-name`) |
 | **LM Studio** | Update to 0.3.6+ and use a model with native tool support |
+| **Atomic Chat** | Uses turboquant llama.cpp under the hood — tool calling depends on the model (Qwen, Llama 3.x, Hermes work best) |
 
 #### Model seems to forget context or give incoherent responses
 

@@ -506,6 +506,7 @@ class AIAgent:
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
+        session_key: str = "",
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
@@ -971,6 +972,7 @@ class AIAgent:
         
         # Session logging setup - auto-save conversation trajectories for debugging
         self.session_start = datetime.now()
+        self._session_key = session_key or ""
         if session_id:
             # Use provided session ID (e.g., from CLI)
             self.session_id = session_id
@@ -6558,6 +6560,15 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
+                    from agent.circuit_breaker import ProviderCircuitBreaker
+
+                    _cb = ProviderCircuitBreaker.get_instance()
+                    if _cb.should_use_fallback(self.provider, session_key=self._session_key):
+                        self._emit_status("⚡ Provider rate-limited (circuit breaker) — switching to fallback...")
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
+
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
@@ -6741,6 +6752,8 @@ class AIAgent:
                                 }
                             time.sleep(0.2)
                         continue  # Retry the API call
+
+                    ProviderCircuitBreaker.get_instance().record_success(self.provider)
 
                     # Check finish_reason before proceeding
                     if self.api_mode == "codex_responses":
@@ -7141,6 +7154,19 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
+                    if is_rate_limited or status_code == 529:
+                        _retry_after_val = None
+                        _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                        if _resp_headers:
+                            try:
+                                _retry_after_val = int(_resp_headers.get("retry-after", 0))
+                            except (TypeError, ValueError):
+                                _retry_after_val = None
+                        ProviderCircuitBreaker.get_instance().record_failure(
+                            self.provider,
+                            status_code=status_code,
+                            retry_after=_retry_after_val,
+                        )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if self._try_activate_fallback():

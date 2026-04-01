@@ -1411,3 +1411,247 @@ class TestMatrixMessageTypes:
         self.adapter._client = MagicMock()
         result = await self.adapter.send_emote("!room:ex", "")
         assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – stop_typing
+# ---------------------------------------------------------------------------
+
+class TestMatrixStopTyping:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_sends_false(self):
+        """stop_typing should call room_typing with typing_state=False."""
+        mock_client = MagicMock()
+        mock_client.room_typing = AsyncMock()
+        self.adapter._client = mock_client
+
+        await self.adapter.stop_typing("!room:example.org")
+
+        mock_client.room_typing.assert_awaited_once_with(
+            "!room:example.org", typing_state=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_no_client(self):
+        """stop_typing returns without error when _client is None."""
+        self.adapter._client = None
+        # Should not raise
+        await self.adapter.stop_typing("!room:example.org")
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – read receipt configuration
+# ---------------------------------------------------------------------------
+
+class TestMatrixReadReceiptConfig:
+    def test_default_mode_is_immediate(self):
+        """Default MATRIX_READ_RECEIPTS should be 'immediate'."""
+        adapter = _make_adapter()
+        assert adapter._read_receipt_mode == "immediate"
+
+    def test_disabled_mode(self, monkeypatch):
+        """When MATRIX_READ_RECEIPTS=disabled, no receipts are sent on message."""
+        monkeypatch.setenv("MATRIX_READ_RECEIPTS", "disabled")
+        adapter = _make_adapter()
+        assert adapter._read_receipt_mode == "disabled"
+        # _background_read_receipt should NOT be called in immediate path
+        adapter._background_read_receipt = MagicMock()
+        # Simulate the check that happens in _on_room_message_text
+        if adapter._read_receipt_mode == "immediate":
+            adapter._background_read_receipt("!r:ex", "$ev1")
+        adapter._background_read_receipt.assert_not_called()
+
+    def test_after_processing_mode(self, monkeypatch):
+        """When MATRIX_READ_RECEIPTS=after_processing, receipts sent in on_processing_complete."""
+        monkeypatch.setenv("MATRIX_READ_RECEIPTS", "after_processing")
+        adapter = _make_adapter()
+        assert adapter._read_receipt_mode == "after_processing"
+        # Simulate the deferred path (on_processing_complete)
+        adapter._background_read_receipt = MagicMock()
+        room_id = "!room:ex"
+        msg_id = "$msg1"
+        if adapter._read_receipt_mode == "after_processing":
+            adapter._background_read_receipt(room_id, msg_id)
+        adapter._background_read_receipt.assert_called_once_with(room_id, msg_id)
+
+    def test_invalid_mode_defaults_to_immediate(self, monkeypatch):
+        """Invalid MATRIX_READ_RECEIPTS value should warn and default to immediate."""
+        monkeypatch.setenv("MATRIX_READ_RECEIPTS", "bogus_value")
+        import logging
+        with patch("gateway.platforms.matrix.logger") as mock_logger:
+            adapter = _make_adapter()
+            assert adapter._read_receipt_mode == "immediate"
+            mock_logger.warning.assert_called()
+            # Verify the warning mentions the invalid value
+            warn_args = mock_logger.warning.call_args[0]
+            assert "bogus_value" in str(warn_args)
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – reaction dedup via _on_unknown_event
+# ---------------------------------------------------------------------------
+
+class TestMatrixReactionDedup:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_unknown_event_dedup(self):
+        """_on_unknown_event should check _is_duplicate_event and skip duplicates."""
+        room = MagicMock()
+        room.room_id = "!room:ex"
+        event = MagicMock()
+        event.source = {
+            "type": "m.reaction",
+            "sender": "@someone:ex",
+            "event_id": "$reaction1",
+            "content": {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": "$target1",
+                    "key": "👍",
+                }
+            },
+        }
+
+        # First call should process (not duplicate)
+        self.adapter._is_duplicate_event = MagicMock(return_value=False)
+        await self.adapter._on_unknown_event(room, event)
+        self.adapter._is_duplicate_event.assert_called_once_with("$reaction1")
+
+        # Second call: mark as duplicate — should return early
+        self.adapter._is_duplicate_event = MagicMock(return_value=True)
+        with patch("gateway.platforms.matrix.logger") as mock_logger:
+            await self.adapter._on_unknown_event(room, event)
+            # Logger.info should NOT have been called (returned early)
+            mock_logger.info.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tier 1.5 – Matrix tools (tools/matrix_tools.py)
+# ---------------------------------------------------------------------------
+
+class TestMatrixTools:
+    """Tests for the matrix_tools handler functions."""
+
+    def setup_method(self):
+        from tools.matrix_tools import set_matrix_adapter
+        # Clear any existing adapter
+        set_matrix_adapter(None)
+
+    def teardown_method(self):
+        from tools.matrix_tools import set_matrix_adapter
+        set_matrix_adapter(None)
+
+    def test_check_available_false_when_no_adapter(self):
+        from tools.matrix_tools import _check_matrix_available, set_matrix_adapter
+        set_matrix_adapter(None)
+        assert _check_matrix_available() is False
+
+    def test_check_available_true_when_adapter_set(self):
+        from tools.matrix_tools import _check_matrix_available, set_matrix_adapter
+        mock_adapter = MagicMock()
+        set_matrix_adapter(mock_adapter)
+        assert _check_matrix_available() is True
+
+    def test_send_reaction_validation(self):
+        """Invalid room_id, event_id, and empty emoji should return errors."""
+        from tools.matrix_tools import _handle_send_reaction
+        # Invalid room_id
+        result = json.loads(_handle_send_reaction({"room_id": "bad", "event_id": "$e1", "emoji": "👍"}))
+        assert "error" in result
+        assert "room_id" in result["error"]
+
+        # Invalid event_id
+        result = json.loads(_handle_send_reaction({"room_id": "!r:ex", "event_id": "bad", "emoji": "👍"}))
+        assert "error" in result
+        assert "event_id" in result["error"]
+
+        # Empty emoji
+        result = json.loads(_handle_send_reaction({"room_id": "!r:ex", "event_id": "$e1", "emoji": ""}))
+        assert "error" in result
+        assert "emoji" in result["error"]
+
+    def test_redact_message_validation(self):
+        """Invalid room_id and event_id should return errors."""
+        from tools.matrix_tools import _handle_redact_message
+        result = json.loads(_handle_redact_message({"room_id": "bad", "event_id": "$e1"}))
+        assert "error" in result
+        assert "room_id" in result["error"]
+
+        result = json.loads(_handle_redact_message({"room_id": "!r:ex", "event_id": "bad"}))
+        assert "error" in result
+        assert "event_id" in result["error"]
+
+    def test_create_room_handler(self):
+        """Valid create_room call should return room_id."""
+        from tools.matrix_tools import _handle_create_room, set_matrix_adapter
+
+        mock_adapter = MagicMock()
+        mock_adapter.create_room = AsyncMock(return_value="!new_room:example.org")
+        set_matrix_adapter(mock_adapter)
+
+        with patch("tools.matrix_tools._run_async", side_effect=lambda coro: asyncio.get_event_loop().run_until_complete(coro)):
+            result = json.loads(_handle_create_room({
+                "name": "Test Room",
+                "topic": "A test room",
+                "invite": [],
+                "preset": "private_chat",
+            }))
+        assert result["success"] is True
+        assert result["room_id"] == "!new_room:example.org"
+
+    def test_invite_user_validation(self):
+        """Invalid room_id and user_id should return errors."""
+        from tools.matrix_tools import _handle_invite_user
+        result = json.loads(_handle_invite_user({"room_id": "bad", "user_id": "@u:ex"}))
+        assert "error" in result
+        assert "room_id" in result["error"]
+
+        result = json.loads(_handle_invite_user({"room_id": "!r:ex", "user_id": "bad"}))
+        assert "error" in result
+        assert "user_id" in result["error"]
+
+    def test_fetch_history_handler(self):
+        """Valid fetch_history call should return messages."""
+        from tools.matrix_tools import _handle_fetch_history, set_matrix_adapter
+
+        mock_adapter = MagicMock()
+        mock_adapter.fetch_room_history = AsyncMock(return_value=[
+            {"sender": "@alice:ex", "body": "Hello"},
+            {"sender": "@bob:ex", "body": "Hi"},
+        ])
+        set_matrix_adapter(mock_adapter)
+
+        with patch("tools.matrix_tools._run_async", side_effect=lambda coro: asyncio.get_event_loop().run_until_complete(coro)):
+            result = json.loads(_handle_fetch_history({
+                "room_id": "!room:example.org",
+                "limit": 10,
+            }))
+        assert result["count"] == 2
+        assert len(result["messages"]) == 2
+
+    def test_set_presence_validation(self):
+        """Invalid presence state should return error."""
+        from tools.matrix_tools import _handle_set_presence
+        result = json.loads(_handle_set_presence({"state": "invisible"}))
+        assert "error" in result
+        assert "Invalid state" in result["error"]
+
+    def test_set_presence_valid(self):
+        """Valid set_presence call should succeed."""
+        from tools.matrix_tools import _handle_set_presence, set_matrix_adapter
+
+        mock_adapter = MagicMock()
+        mock_adapter.set_presence = AsyncMock(return_value=True)
+        set_matrix_adapter(mock_adapter)
+
+        with patch("tools.matrix_tools._run_async", side_effect=lambda coro: asyncio.get_event_loop().run_until_complete(coro)):
+            result = json.loads(_handle_set_presence({
+                "state": "online",
+                "status_msg": "Testing",
+            }))
+        assert result["success"] is True

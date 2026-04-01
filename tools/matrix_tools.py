@@ -14,6 +14,8 @@ The adapter instance is injected at runtime via ``set_matrix_adapter()``.
 import asyncio
 import json
 import logging
+import os
+import threading
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -23,12 +25,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _adapter: Optional[Any] = None
-
-
+_adapter_lock = threading.Lock()
 def set_matrix_adapter(adapter: Optional[Any]) -> None:
     """Set (or clear) the running MatrixAdapter instance."""
     global _adapter
-    _adapter = adapter
+    with _adapter_lock:
+        _adapter = adapter
 
 
 def _check_matrix_available() -> bool:
@@ -60,7 +62,11 @@ def _run_async(coro):
     adapter_loop = getattr(_adapter, "_loop", None) if _adapter else None
     if adapter_loop is not None and adapter_loop.is_running():
         future = asyncio.run_coroutine_threadsafe(coro, adapter_loop)
-        return future.result(timeout=30)
+        try:
+            return future.result(timeout=30)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     try:
         loop = asyncio.get_running_loop()
@@ -70,7 +76,11 @@ def _run_async(coro):
     if loop and loop.is_running():
         # Schedule on the current running loop.
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=30)
+        try:
+            return future.result(timeout=30)
+        except TimeoutError:
+            future.cancel()
+            raise
     else:
         return asyncio.run(coro)
 
@@ -81,9 +91,11 @@ def _run_async(coro):
 
 def _ensure_adapter():
     """Return the adapter or raise if unavailable."""
-    if _adapter is None:
+    with _adapter_lock:
+        adapter = _adapter
+    if adapter is None:
         raise RuntimeError("Matrix adapter is not connected")
-    return _adapter
+    return adapter
 
 
 def _handle_send_reaction(args: dict, **kw) -> str:
@@ -151,6 +163,8 @@ def _handle_create_room(args: dict, **kw) -> str:
             return json.dumps({"error": f"Invalid user ID in invite list: {uid!r} (must start with '@')"})
     if preset not in _ALLOWED_PRESETS:
         return json.dumps({"error": f"Invalid preset: {preset!r}. Must be one of: {', '.join(sorted(_ALLOWED_PRESETS))}"})
+    if preset == "public_chat" and os.getenv("MATRIX_ALLOW_PUBLIC_ROOMS", "").lower() not in ("true", "1", "yes"):
+        return json.dumps({"error": "Public room creation is disabled by default. Set MATRIX_ALLOW_PUBLIC_ROOMS=true to allow."})
 
     try:
         adapter = _ensure_adapter()
@@ -317,7 +331,7 @@ MATRIX_CREATE_ROOM_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Room preset: 'private_chat' (default), 'public_chat', "
-                    "or 'trusted_private_chat'."
+                    "or see allowed presets."
                 ),
             },
         },

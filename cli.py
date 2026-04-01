@@ -6345,6 +6345,17 @@ class HermesCLI:
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
+        # Push the entire TUI to the bottom of the terminal so the banner,
+        # responses, and prompt all appear pinned to the bottom — empty
+        # space stays above, not below.  This prints enough blank lines to
+        # scroll the cursor to the last row before any content is rendered.
+        try:
+            _term_lines = shutil.get_terminal_size().lines
+            if _term_lines > 2:
+                print("\n" * (_term_lines - 1), end="", flush=True)
+        except Exception:
+            pass
+
         self.show_banner()
 
         # One-line Honcho session indicator (TTY-only, not captured by agent).
@@ -7570,18 +7581,6 @@ class HermesCLI:
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
-
-                        # Push the input prompt toward the bottom of the
-                        # terminal so it doesn't sit mid-screen after short
-                        # responses.  patch_stdout renders these newlines
-                        # above the input area, creating visual separation
-                        # and anchoring the prompt near the bottom.
-                        try:
-                            _pad = shutil.get_terminal_size().lines // 2
-                            if _pad > 2:
-                                _cprint("\n" * _pad)
-                        except Exception:
-                            pass
 
                         app.invalidate()  # Refresh status line
 

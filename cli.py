@@ -262,6 +262,14 @@ def load_cli_config() -> Dict[str, Any]:
                 elif isinstance(file_config["model"], dict):
                     # Old format: model is a dict with default/base_url
                     defaults["model"].update(file_config["model"])
+                    # If the user config sets model.model but not model.default,
+                    # promote model.model to model.default so the user's explicit
+                    # choice isn't shadowed by the hardcoded default.  Without this,
+                    # profile configs that only set "model:" (not "default:") silently
+                    # fall back to claude-opus because the merge preserves the
+                    # hardcoded default and HermesCLI.__init__ checks "default" first.
+                    if "model" in file_config["model"] and "default" not in file_config["model"]:
+                        defaults["model"]["default"] = file_config["model"]["model"]
 
             # Legacy root-level provider/base_url fallback.
             # Some users (or old code) put provider: / base_url: at the

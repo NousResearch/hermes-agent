@@ -31,8 +31,4 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
-hermes doctor --fix || true
-
 exec hermes gateway run
-
-

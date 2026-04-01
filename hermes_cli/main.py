@@ -2490,6 +2490,12 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_record(args):
+    """Action recording management."""
+    from hermes_cli.record import record_command
+    record_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -3384,7 +3390,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     """
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
-        "status", "cron", "doctor", "config", "pairing", "skills", "tools",
+        "status", "cron", "record", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile",
     }
@@ -4104,6 +4110,47 @@ For more help on a command:
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
 
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # record command
+    # =========================================================================
+    record_parser = subparsers.add_parser(
+        "record",
+        help="Action recording management",
+        description="Record, replay, and schedule action sequences",
+    )
+    record_subparsers = record_parser.add_subparsers(dest="record_command")
+
+    # record list
+    record_subparsers.add_parser("list", help="List saved recordings")
+
+    # record show
+    record_show = record_subparsers.add_parser("show", help="Show recording details")
+    record_show.add_argument("name", help="Recording name")
+
+    # record start
+    record_start = record_subparsers.add_parser("start", help="Start recording tool calls")
+    record_start.add_argument("name", help="Recording name")
+    record_start.add_argument("--description", default="", help="Optional description")
+
+    # record stop
+    record_subparsers.add_parser("stop", help="Stop the active recording")
+
+    # record run
+    record_run = record_subparsers.add_parser("run", help="Replay a recording")
+    record_run.add_argument("name", help="Recording name to replay")
+
+    # record schedule
+    record_schedule = record_subparsers.add_parser("schedule", help="Schedule a recording as a cron job")
+    record_schedule.add_argument("name", help="Recording name")
+    record_schedule.add_argument("schedule", help="Schedule string (e.g., 'every 1h', '0 9 * * *')")
+    record_schedule.add_argument("--job-name", dest="name_override", help="Optional cron job name")
+
+    # record delete
+    record_delete = record_subparsers.add_parser("delete", aliases=["rm"], help="Delete a recording")
+    record_delete.add_argument("name", help="Recording name to delete")
+
+    record_parser.set_defaults(func=cmd_record)
 
     # =========================================================================
     # webhook command

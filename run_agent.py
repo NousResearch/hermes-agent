@@ -5630,6 +5630,15 @@ class AIAgent:
                     result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
+                # Recording capture hook — record tool calls for action replay
+                try:
+                    from recording.capture import get_active_session as _get_rec_session
+                    _rec = _get_rec_session()
+                    if _rec is not None:
+                        _rec.capture_tool_call(function_name, function_args, function_result, not is_error)
+                except Exception:
+                    pass  # never block tool execution for recording
+
                 if self.verbose_logging:
                     logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                     logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
@@ -5905,6 +5914,15 @@ class AIAgent:
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+
+            # Recording capture hook — record tool calls for action replay
+            try:
+                from recording.capture import get_active_session as _get_rec_session
+                _rec = _get_rec_session()
+                if _rec is not None:
+                    _rec.capture_tool_call(function_name, function_args, function_result, not _is_error_result)
+            except Exception:
+                pass  # never block tool execution for recording
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")

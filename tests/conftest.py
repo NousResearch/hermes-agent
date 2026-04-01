@@ -25,6 +25,7 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     (fake_home / "cron").mkdir()
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
+    (fake_home / "recordings").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
     # Reset plugin singleton so tests don't leak plugins from ~/.hermes/plugins/
     try:

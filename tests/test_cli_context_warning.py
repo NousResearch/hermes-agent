@@ -32,6 +32,8 @@ def cli_obj(_isolate):
         obj.session_id = None
         obj.api_key = "test"
         obj.base_url = ""
+        obj.provider = "test"
+        obj._provider_source = None
         # Mock agent with context compressor
         obj.agent = SimpleNamespace(
             context_compressor=SimpleNamespace(context_length=None)

@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 try:
     from tools.environments.local import _pidns_wrap as _pidns_wrap_exec
 except ImportError:
-    _pidns_wrap_exec = lambda cmd: cmd  # noqa: E731
+    def _pidns_wrap_exec(cmd):
+        return cmd
 
 SANDBOX_AVAILABLE = sys.platform != "win32"
 

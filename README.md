@@ -87,6 +87,54 @@ Current milestone blocks:
 - preserves backward-compatible defaults when specialized actors are not configured
 - records role-specific audit trails so staged decisions remain inspectable
 
+### Auto-learning flow
+
+```mermaid
+flowchart TD
+    start["Conversation finishes\npost-task review hook fires"] --> m1
+
+    subgraph m1["M001 — staged candidate store"]
+        reviewer["Reviewer\n(or default review actor)"] --> candidate["Candidate created\nlocal staged store"]
+        candidate --> manual["Operator can inspect\nlist / search / show"]
+    end
+
+    candidate --> m2gate
+
+    subgraph m2["M002 — reviewer / verifier gates"]
+        m2gate["Verifier checks evidence,\nconfidence, and trigger quality"] --> verified["Evidence-enriched candidate"]
+    end
+
+    verified --> m3gate
+
+    subgraph m3["M003 — trust layer"]
+        m3gate["Dedupe + contradiction checks\n+ shadow analytics"] --> decision{"Decision"}
+        decision -->|conflict / ambiguous| reviewbox["manual_review\nstays staged and reviewable"]
+        decision -->|clean candidate| eligible["Eligible for promotion"]
+    end
+
+    eligible --> m4gate
+
+    subgraph m4["M004 — specialized roles"]
+        proposer["Proposer\noptional specialized proposal actor"] --> candidate
+        eligible --> verifier2["Verifier\ncan downscore / approve / reject"]
+        verifier2 --> critic["Critic\noptional rejection / caution audit"]
+        verifier2 --> promoter["Promoter\noptional promotion audit"]
+    end
+
+    promoter --> promote{"Promotion path"}
+    critic --> reviewbox
+    verifier2 --> reviewbox
+
+    promote -->|memory candidate| memory["memory tool\nupdates durable memory"]
+    promote -->|skill candidate| skill["skill_manage tool\ncreates / patches skill"]
+
+    memory --> durable["Durable learning"]
+    skill --> durable
+    manual --> candidate
+```
+
+This is intentionally conservative: everything stages locally first, conflicting items remain reviewable, and only eligible candidates reach durable memory or skill promotion.
+
 Useful commands:
 
 ```bash

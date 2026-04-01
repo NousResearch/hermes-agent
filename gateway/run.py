@@ -428,6 +428,7 @@ class GatewayRunner:
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
         self._circuit_breaker_config = self._load_circuit_breaker_config()
+        self._session_watchdog_config = self._load_session_watchdog_config()
         self._smart_model_routing = self._load_smart_model_routing()
 
         try:
@@ -453,6 +454,7 @@ class GatewayRunner:
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
+        self._running_agent_started_at: Dict[str, float] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
         # Cache AIAgent instances per session to preserve prompt caching.
@@ -1058,6 +1060,27 @@ class GatewayRunner:
         return {}
 
     @staticmethod
+    def _load_session_watchdog_config() -> dict:
+        """Load stale-session watchdog settings from config.yaml."""
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                wd_cfg = cfg.get("session_watchdog") or {}
+                if not isinstance(wd_cfg, dict):
+                    return {}
+                return {
+                    "enabled": wd_cfg.get("enabled", True),
+                    "max_duration": wd_cfg.get("max_duration", 1800),
+                    "check_interval": wd_cfg.get("check_interval", 60),
+                }
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
     def _load_smart_model_routing() -> dict:
         """Load optional smart cheap-vs-strong model routing config."""
         try:
@@ -1288,6 +1311,9 @@ class GatewayRunner:
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
+        if self._session_watchdog_config.get("enabled", True):
+            asyncio.create_task(self._session_watchdog())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -1431,6 +1457,42 @@ class GatewayRunner:
                     return
                 await asyncio.sleep(1)
 
+    async def _session_watchdog(self) -> None:
+        """Interrupt stale running sessions before they wedge the gateway forever."""
+        cfg = self._session_watchdog_config or {}
+        max_duration = int(cfg.get("max_duration", 1800) or 1800)
+        check_interval = int(cfg.get("check_interval", 60) or 60)
+
+        await asyncio.sleep(min(check_interval, 10))
+        while self._running:
+            try:
+                now = time.time()
+                for session_key, started_at in list(self._running_agent_started_at.items()):
+                    agent = self._running_agents.get(session_key)
+                    if not agent or agent is _AGENT_PENDING_SENTINEL:
+                        continue
+                    elapsed = now - started_at
+                    if elapsed <= max_duration:
+                        continue
+                    logger.warning(
+                        "Session watchdog: interrupting stale session %s after %.0fs",
+                        session_key,
+                        elapsed,
+                    )
+                    try:
+                        agent.interrupt("Session timed out (watchdog)")
+                    except Exception as e:
+                        logger.debug("Session watchdog interrupt failed for %s: %s", session_key, e)
+                    self._evict_cached_agent(session_key)
+                    self._running_agent_started_at.pop(session_key, None)
+            except Exception as e:
+                logger.debug("Session watchdog error: %s", e)
+
+            for _ in range(check_interval):
+                if not self._running:
+                    return
+                await asyncio.sleep(1)
+
     async def stop(self) -> None:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
@@ -1463,6 +1525,7 @@ class GatewayRunner:
 
         self.adapters.clear()
         self._running_agents.clear()
+        self._running_agent_started_at.clear()
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_all_gateway_honcho()
@@ -5960,6 +6023,7 @@ class GatewayRunner:
                 await asyncio.sleep(0.05)
             if session_key:
                 self._running_agents[session_key] = agent_holder[0]
+                self._running_agent_started_at[session_key] = time.time()
         
         tracking_task = asyncio.create_task(track_agent())
         
@@ -6115,6 +6179,8 @@ class GatewayRunner:
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:
                 del self._running_agents[session_key]
+            if session_key:
+                self._running_agent_started_at.pop(session_key, None)
             
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task]:

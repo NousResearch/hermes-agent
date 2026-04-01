@@ -7,18 +7,50 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+import run_agent
 from run_agent import AIAgent
 
 
-def _make_agent(fallback_model=None):
+@pytest.fixture(autouse=True)
+def _clear_hot_failover_state():
+    run_agent._HOT_FAILOVER_COOLDOWNS.clear()
+    yield
+    run_agent._HOT_FAILOVER_COOLDOWNS.clear()
+
+
+def _make_agent(
+    fallback_model=None,
+    *,
+    provider=None,
+    model="claude-opus-4-6",
+    provider_logged_in=False,
+    default_model=None,
+):
     """Create a minimal AIAgent with optional fallback config."""
+    provider_patch = (
+        patch("run_agent._provider_is_logged_in", side_effect=provider_logged_in)
+        if callable(provider_logged_in)
+        else patch("run_agent._provider_is_logged_in", return_value=provider_logged_in)
+    )
+    explicit_base_url = None
+    if provider == "openai-codex":
+        explicit_base_url = "https://chatgpt.com/backend-api/codex"
+    elif provider == "anthropic":
+        explicit_base_url = "https://api.anthropic.com"
+
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
+        provider_patch,
+        patch("run_agent._default_model_for_provider", return_value=default_model),
     ):
         agent = AIAgent(
-            api_key="test-key",
+            api_key="***",
+            base_url=explicit_base_url,
+            provider=provider,
+            model=model,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -44,6 +76,28 @@ class TestFallbackChainInit:
         assert agent._fallback_chain == []
         assert agent._fallback_index == 0
         assert agent._fallback_model is None
+
+    def test_auto_appends_codex_for_anthropic_primary(self):
+        agent = _make_agent(
+            fallback_model=None,
+            provider="anthropic",
+            model="claude-opus-4-6",
+            provider_logged_in=lambda provider: provider == "openai-codex",
+            default_model="gpt-5.4",
+        )
+
+        assert agent._fallback_chain == [{"provider": "openai-codex", "model": "gpt-5.4"}]
+
+    def test_auto_appends_anthropic_for_codex_primary(self):
+        agent = _make_agent(
+            fallback_model=None,
+            provider="openai-codex",
+            model="gpt-5.4",
+            provider_logged_in=lambda provider: provider == "anthropic",
+            default_model="claude-opus-4-6",
+        )
+
+        assert agent._fallback_chain == [{"provider": "anthropic", "model": "claude-opus-4-6"}]
 
     def test_single_dict_backwards_compat(self):
         fb = {"provider": "openai", "model": "gpt-4o"}
@@ -154,3 +208,30 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+    def test_skips_rate_limited_provider_to_next(self):
+        fbs = [
+            {"provider": "openai-codex", "model": "gpt-5.4"},
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs, provider="anthropic", model="claude-opus-4-6")
+        with (
+            patch.object(agent, "_provider_rate_limit_hint", side_effect=[{"source": "cooldown", "retry_after_seconds": 90}, None]),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "glm-4.7")),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.model == "glm-4.7"
+            assert agent._fallback_index == 2
+
+    def test_preflight_hot_failover_switches_before_request(self):
+        agent = _make_agent(
+            fallback_model={"provider": "anthropic", "model": "claude-opus-4-6"},
+            provider="openai-codex",
+            model="gpt-5.4",
+        )
+        with (
+            patch.object(agent, "_provider_rate_limit_hint", return_value={"provider": "openai-codex", "retry_after_seconds": 120, "source": "codexbar"}),
+            patch.object(agent, "_try_activate_fallback", return_value=True) as mock_activate,
+        ):
+            assert agent._maybe_activate_hot_failover_before_request() is True
+            mock_activate.assert_called_once()

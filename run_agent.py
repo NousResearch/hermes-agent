@@ -109,6 +109,103 @@ HONCHO_TOOL_NAMES = {
     "honcho_conclude",
 }
 
+_HOT_FAILOVER_COOLDOWNS: dict[str, float] = {}
+_HOT_FAILOVER_LOCK = threading.Lock()
+_HOT_FAILOVER_SUPPORTED_PROVIDERS = ("anthropic", "openai-codex")
+_HOT_FAILOVER_DEFAULT_COOLDOWN_SECONDS = 5 * 60
+
+
+def _provider_is_logged_in(provider: str) -> bool:
+    provider_name = (provider or "").strip().lower()
+    if not provider_name:
+        return False
+    try:
+        from hermes_cli.auth import get_auth_status
+
+        status = get_auth_status(provider_name) or {}
+    except Exception:
+        logger.debug("Failed to resolve auth status for provider %s", provider_name, exc_info=True)
+        return False
+    return bool(status.get("logged_in") or status.get("configured"))
+
+
+
+def _default_model_for_provider(provider: str) -> str | None:
+    provider_name = (provider or "").strip().lower()
+    if not provider_name:
+        return None
+    try:
+        from hermes_cli.models import get_provider_models
+
+        models = get_provider_models(provider_name)
+    except Exception:
+        logger.debug("Failed to resolve default model for provider %s", provider_name, exc_info=True)
+        return None
+    if not models:
+        return None
+    first = models[0]
+    if isinstance(first, (list, tuple)) and first:
+        return str(first[0]).strip() or None
+    if isinstance(first, str):
+        return first.strip() or None
+    return None
+
+
+
+def _mark_provider_cooldown(provider: str, *, retry_after_seconds: int | float | None = None) -> float:
+    provider_name = (provider or "").strip().lower()
+    if not provider_name:
+        return 0.0
+    try:
+        retry_after = max(0.0, float(retry_after_seconds or 0.0))
+    except (TypeError, ValueError):
+        retry_after = 0.0
+    cooldown_seconds = retry_after or float(_HOT_FAILOVER_DEFAULT_COOLDOWN_SECONDS)
+    until = time.time() + cooldown_seconds
+    with _HOT_FAILOVER_LOCK:
+        _HOT_FAILOVER_COOLDOWNS[provider_name] = until
+    return until
+
+
+
+def _provider_cooldown_remaining(provider: str) -> float:
+    provider_name = (provider or "").strip().lower()
+    if not provider_name:
+        return 0.0
+    now = time.time()
+    with _HOT_FAILOVER_LOCK:
+        until = _HOT_FAILOVER_COOLDOWNS.get(provider_name, 0.0)
+        if until <= now:
+            _HOT_FAILOVER_COOLDOWNS.pop(provider_name, None)
+            return 0.0
+    return max(0.0, until - now)
+
+
+
+def _codexbar_rate_limit_hint() -> dict[str, Any] | None:
+    try:
+        from cron.usage_governor import get_codex_usage_snapshot
+
+        snapshot = get_codex_usage_snapshot() or {}
+    except Exception:
+        logger.debug("Failed to read CodexBar usage snapshot", exc_info=True)
+        return None
+    if not snapshot or snapshot.get("stale"):
+        return None
+    limited = (not snapshot.get("allowed", True)) or bool(snapshot.get("limit_reached", False))
+    if not limited:
+        return None
+    retry_after = max(
+        int(snapshot.get("primary_reset_after_seconds") or 0),
+        int(snapshot.get("secondary_reset_after_seconds") or 0),
+        60,
+    )
+    return {
+        "provider": "openai-codex",
+        "retry_after_seconds": retry_after,
+        "source": snapshot.get("source") or "codexbar",
+    }
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -910,17 +1007,13 @@ class AIAgent:
         
         # Provider fallback chain — ordered list of backup providers tried
         # when the primary is exhausted (rate-limit, overload, connection
-        # failure).  Supports both legacy single-dict ``fallback_model`` and
-        # new list ``fallback_providers`` format.
-        if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
-        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
-        else:
-            self._fallback_chain = []
+        # failure). Supports both legacy single-dict ``fallback_model`` and
+        # new list ``fallback_providers`` format, then augments the chain with
+        # symmetric hot-failover entries (Anthropic <-> Codex) when both
+        # providers are available.
+        self._primary_provider = self.provider
+        self._primary_model = self.model
+        self._fallback_chain = self._build_fallback_chain(fallback_model)
         self._fallback_index = 0
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)
@@ -4491,6 +4584,77 @@ class AIAgent:
             raise result["error"]
         return result["response"]
 
+    def _build_fallback_chain(self, fallback_model: Dict[str, Any] | list[Dict[str, Any]] | None) -> list[dict[str, str]]:
+        chain: list[dict[str, str]] = []
+        raw_entries = fallback_model if isinstance(fallback_model, list) else [fallback_model]
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+            provider = str(entry.get("provider") or "").strip().lower()
+            model = str(entry.get("model") or "").strip()
+            if not provider or not model:
+                continue
+            chain.append({"provider": provider, "model": model})
+
+        seen_pairs = {
+            (str(self.provider or "").strip().lower(), str(self.model or "").strip())
+        }
+        normalized: list[dict[str, str]] = []
+        for entry in chain:
+            key = (entry["provider"], entry["model"])
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            normalized.append(entry)
+
+        current_provider = str(self.provider or "").strip().lower()
+        if current_provider in _HOT_FAILOVER_SUPPORTED_PROVIDERS:
+            alternate_provider = (
+                "openai-codex" if current_provider == "anthropic" else "anthropic"
+            )
+            if _provider_is_logged_in(alternate_provider):
+                alternate_model = _default_model_for_provider(alternate_provider)
+                if alternate_model:
+                    key = (alternate_provider, alternate_model)
+                    if key not in seen_pairs:
+                        normalized.append({
+                            "provider": alternate_provider,
+                            "model": alternate_model,
+                        })
+                        seen_pairs.add(key)
+
+        return normalized
+
+    def _provider_rate_limit_hint(self, provider: str) -> dict[str, Any] | None:
+        provider_name = (provider or "").strip().lower()
+        if not provider_name:
+            return None
+        cooldown_remaining = _provider_cooldown_remaining(provider_name)
+        if cooldown_remaining > 0:
+            return {
+                "provider": provider_name,
+                "retry_after_seconds": int(max(1, round(cooldown_remaining))),
+                "source": "cooldown",
+            }
+        if provider_name == "openai-codex":
+            return _codexbar_rate_limit_hint()
+        return None
+
+    def _maybe_activate_hot_failover_before_request(self) -> bool:
+        hint = self._provider_rate_limit_hint(self.provider)
+        if not hint:
+            return False
+        provider_name = str(hint.get("provider") or self.provider or "").strip().lower()
+        retry_after = int(hint.get("retry_after_seconds") or 0)
+        source = str(hint.get("source") or "rate-limit").strip()
+        _mark_provider_cooldown(provider_name, retry_after_seconds=retry_after)
+        if self._fallback_index >= len(self._fallback_chain):
+            return False
+        self._emit_status(
+            f"⚠️ {provider_name} unavailable ({source}) — switching provider immediately..."
+        )
+        return self._try_activate_fallback()
+
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self) -> bool:
@@ -4514,6 +4678,20 @@ class AIAgent:
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+        if fb_provider == (self.provider or "").strip().lower() and fb_model == (self.model or "").strip():
+            return self._try_activate_fallback()
+
+        rate_limit_hint = self._provider_rate_limit_hint(fb_provider)
+        if rate_limit_hint:
+            retry_after = int(rate_limit_hint.get("retry_after_seconds") or 0)
+            _mark_provider_cooldown(fb_provider, retry_after_seconds=retry_after)
+            logger.info(
+                "Skipping fallback %s (%s) because provider is temporarily unavailable via %s",
+                fb_model,
+                fb_provider,
+                rate_limit_hint.get("source") or "cooldown",
+            )
+            return self._try_activate_fallback()
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -6646,6 +6824,9 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
+                    if self._maybe_activate_hot_failover_before_request():
+                        retry_count = 0
+                        continue
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
@@ -6755,8 +6936,10 @@ class AIAgent:
                         retry_count += 1
                         
                         # Eager fallback: empty/malformed responses are a common
-                        # rate-limit symptom.  Switch to fallback immediately
-                        # rather than retrying with extended backoff.
+                        # rate-limit symptom. Mark the current provider as cooling
+                        # down and switch immediately instead of retrying with
+                        # extended backoff.
+                        _mark_provider_cooldown(self.provider)
                         if self._fallback_index < len(self._fallback_chain):
                             self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
                         if self._try_activate_fallback():
@@ -7229,6 +7412,12 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
+                    if is_rate_limited:
+                        _retry_after_header = None
+                        _headers = getattr(getattr(api_error, "response", None), "headers", None)
+                        if _headers and hasattr(_headers, "get"):
+                            _retry_after_header = _headers.get("retry-after") or _headers.get("Retry-After")
+                        _mark_provider_cooldown(self.provider, retry_after_seconds=_retry_after_header)
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  The pool's retry-then-rotate cycle needs

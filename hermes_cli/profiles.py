@@ -58,6 +58,32 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+# Directories/files to exclude when exporting the default (~/.hermes) profile.
+# The default profile contains infrastructure (repo checkout, worktrees, DBs,
+# caches, binaries) that named profiles don't have.  We exclude those so the
+# export is a portable, reasonable-size archive of actual profile data.
+_DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-export
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.lock", "active_profile", ".update_check",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+})
+
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
     "hermes", "default", "test", "tmp", "root", "sudo",
@@ -685,11 +711,37 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+def _default_export_ignore(root_dir: Path):
+    """Return an *ignore* callable for :func:`shutil.copytree`.
+
+    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
+    At all levels it excludes ``__pycache__``, sockets, and temp files.
+    """
+
+    def _ignore(directory: str, contents: list) -> set:
+        ignored: set = set()
+        for entry in contents:
+            # Universal exclusions (any depth)
+            if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+                ignored.add(entry)
+            # npm lockfiles can appear at root
+            elif entry in ("package.json", "package-lock.json"):
+                ignored.add(entry)
+        # Root-level exclusions
+        if Path(directory) == root_dir:
+            ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
+        return ignored
+
+    return _ignore
+
+
 def export_profile(name: str, output_path: str) -> Path:
     """Export a profile to a tar.gz archive.
 
     Returns the output file path.
     """
+    import tempfile
+
     validate_profile_name(name)
     profile_dir = get_profile_dir(name)
     if not profile_dir.is_dir():
@@ -700,15 +752,15 @@ def export_profile(name: str, output_path: str) -> Path:
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
 
     if name == "default":
-        import tempfile
-        import shutil
+        # The default profile IS ~/.hermes itself — its parent is ~/ and its
+        # directory name is ".hermes", not "default".  We stage a clean copy
+        # under a temp dir so the archive contains ``default/...``.
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_default_dir = Path(tmpdir) / "default"
-            # Copy root profile contents to a dummy 'default' folder, ignoring other profiles and runtime state
+            staged = Path(tmpdir) / "default"
             shutil.copytree(
                 profile_dir,
-                tmp_default_dir,
-                ignore=shutil.ignore_patterns("profiles", "gateway.pid", "*.sock", "__pycache__")
+                staged,
+                ignore=_default_export_ignore(profile_dir),
             )
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
             return Path(result)
@@ -801,6 +853,15 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         raise ValueError(
             "Cannot determine profile name from archive. "
             "Specify it explicitly: hermes profile import <archive> --name <name>"
+        )
+
+    # Archives exported from the default profile have "default/" as top-level
+    # dir.  Importing as "default" would target ~/.hermes itself — disallow
+    # that and guide the user toward a named profile.
+    if inferred_name == "default":
+        raise ValueError(
+            "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
+            "Specify a different name: hermes profile import <archive> --name <name>"
         )
 
     validate_profile_name(inferred_name)

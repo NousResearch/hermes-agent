@@ -42,6 +42,17 @@ def cli_obj(_isolate):
 class TestLowContextWarning:
     """Tests that the CLI warns about low context lengths."""
 
+    def test_compact_banner_does_not_crash_when_context_length_unknown(self, cli_obj):
+        """Compact banner path should not reference an uninitialized ctx_len."""
+        cli_obj.compact = True
+        cli_obj.agent.context_compressor.context_length = None
+        with patch("cli._build_compact_banner", return_value="compact"), \
+             patch.object(cli_obj, "_show_status"):
+            cli_obj.show_banner()
+
+        calls = [str(c) for c in cli_obj.console.print.call_args_list]
+        assert any("compact" in c for c in calls)
+
     def test_no_warning_for_normal_context(self, cli_obj):
         """No warning when context is 32k+."""
         cli_obj.agent.context_compressor.context_length = 32768

@@ -1,4 +1,4 @@
-FROM astral/uv:python3.14-trixie-slim
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim
 
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \

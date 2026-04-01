@@ -2733,13 +2733,42 @@ class GatewayRunner:
                     cmd_preview = pending.get("command", "")
                     if len(cmd_preview) > 200:
                         cmd_preview = cmd_preview[:200] + "..."
+                    allow_permanent = bool(pending.get("allow_permanent", True))
                     approval_hint = (
                         f"\n\n⚠️ **Dangerous command requires approval:**\n"
                         f"```\n{cmd_preview}\n```\n"
-                        f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                        f"for the session, or `/deny` to cancel."
+                        + (
+                            "Use the buttons below to approve once, approve for this session, "
+                            + ("approve always, " if allow_permanent else "")
+                            + "or deny."
+                            if source.platform.value == "telegram"
+                            else f"Reply `/approve` to execute, `/approve session` to approve this pattern "
+                              + ("permanently with `/approve always`, " if allow_permanent else "")
+                              + "or `/deny` to cancel."
+                        )
                     )
-                    response = (response or "") + approval_hint
+                    if source.platform.value == "telegram":
+                        adapter = self.adapters.get(source.platform)
+                        send_buttons = getattr(adapter, "send_approval_prompt", None)
+                        if callable(send_buttons):
+                            thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                            button_message = (response or "") + approval_hint
+                            try:
+                                await send_buttons(
+                                    chat_id=source.chat_id,
+                                    content=button_message,
+                                    reply_to=event.message_id,
+                                    metadata=thread_meta,
+                                    allow_permanent=allow_permanent,
+                                )
+                                response = ""
+                            except Exception as button_err:
+                                logger.debug("Telegram approval prompt buttons failed: %s", button_err)
+                                response = (response or "") + approval_hint
+                        else:
+                            response = (response or "") + approval_hint
+                    else:
+                        response = (response or "") + approval_hint
             except Exception as e:
                 logger.debug("Failed to check pending approvals: %s", e)
             

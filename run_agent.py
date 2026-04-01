@@ -109,6 +109,10 @@ HONCHO_TOOL_NAMES = {
     "honcho_conclude",
 }
 
+_SKIPPY_ACTIVITY_QUERY = 'skippy OR openclaw OR "inter-session"'
+_SKIPPY_ACTIVITY_MAX_MATCHES = 3
+_SKIPPY_ACTIVITY_SNIPPET_RE = re.compile(r">>>|<<<")
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -2745,6 +2749,111 @@ class AIAgent:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
+
+    def _find_previous_user_session(self) -> Optional[Dict[str, Any]]:
+        """Return the most recent prior session for the current platform/source."""
+        if not self._session_db:
+            return None
+
+        current_row = None
+        try:
+            current_row = self._session_db.get_session(self.session_id)
+        except Exception:
+            current_row = None
+
+        current_source = (
+            (current_row or {}).get("source")
+            or self.platform
+            or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        )
+
+        try:
+            sessions = self._session_db.list_sessions_rich(source=current_source, limit=10)
+        except Exception:
+            return None
+
+        for session in sessions:
+            if session.get("id") != self.session_id:
+                return session
+        return None
+
+    @staticmethod
+    def _clean_activity_snippet(snippet: str) -> str:
+        """Normalize FTS snippet markup for prompt injection."""
+        if not snippet:
+            return ""
+        cleaned = _SKIPPY_ACTIVITY_SNIPPET_RE.sub("", snippet)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) > 120:
+            cleaned = cleaned[:117].rstrip() + "..."
+        return cleaned
+
+    def _build_skippy_activity_notice(self, is_first_turn: bool) -> str:
+        """Build an ephemeral notice about new Skippy/OpenClaw activity since the last chat."""
+        if not is_first_turn or not self._session_db:
+            return ""
+
+        previous_session = self._find_previous_user_session()
+        if not previous_session:
+            return ""
+
+        cutoff = previous_session.get("last_active") or previous_session.get("started_at")
+        if not cutoff:
+            return ""
+
+        try:
+            matches = self._session_db.search_messages(
+                query=_SKIPPY_ACTIVITY_QUERY,
+                exclude_sources=["tool"],
+                role_filter=["user", "assistant"],
+                limit=20,
+            )
+        except Exception:
+            return ""
+
+        recent = []
+        seen_sessions = set()
+        for match in matches:
+            if match.get("session_id") == self.session_id:
+                continue
+            if (match.get("timestamp") or 0) <= cutoff:
+                continue
+            session_id = match.get("session_id")
+            if not session_id or session_id in seen_sessions:
+                continue
+            seen_sessions.add(session_id)
+            recent.append(match)
+            if len(recent) >= _SKIPPY_ACTIVITY_MAX_MATCHES:
+                break
+
+        if not recent:
+            return ""
+
+        bullets = []
+        for match in recent:
+            snippet = self._clean_activity_snippet(match.get("snippet") or "")
+            started = match.get("session_started")
+            if started:
+                try:
+                    started_label = datetime.fromtimestamp(float(started)).strftime("%b %d %H:%M")
+                except Exception:
+                    started_label = None
+            else:
+                started_label = None
+            if started_label and snippet:
+                bullets.append(f"- {started_label}: {snippet}")
+            elif snippet:
+                bullets.append(f"- {snippet}")
+
+        if not bullets:
+            return ""
+
+        return (
+            "# New linked activity since the last chat\n"
+            f"I found {len(recent)} newer session(s) mentioning Skippy/OpenClaw after the previous conversation with this user. "
+            "Use this as a continuity nudge; pull full details with session_search if it matters.\n"
+            + "\n".join(bullets)
+        )
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -6637,6 +6746,12 @@ class AIAgent:
         # that will be appended to the ephemeral system prompt for every
         # API call in this turn (not persisted to session DB or cache).
         _plugin_turn_context = ""
+        _turn_context_parts = []
+        _skippy_activity_notice = self._build_skippy_activity_notice(
+            is_first_turn=(not bool(conversation_history))
+        )
+        if _skippy_activity_notice:
+            _turn_context_parts.append(_skippy_activity_notice)
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _pre_results = _invoke_hook(
@@ -6648,16 +6763,15 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
             )
-            _ctx_parts = []
             for r in _pre_results:
                 if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
+                    _turn_context_parts.append(str(r["context"]))
                 elif isinstance(r, str) and r.strip():
-                    _ctx_parts.append(r)
-            if _ctx_parts:
-                _plugin_turn_context = "\n\n".join(_ctx_parts)
+                    _turn_context_parts.append(r)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
+        if _turn_context_parts:
+            _plugin_turn_context = "\n\n".join(_turn_context_parts)
 
         # Main conversation loop
         api_call_count = 0

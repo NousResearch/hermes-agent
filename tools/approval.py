@@ -630,6 +630,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,        # backward compat
             "pattern_keys": all_keys,           # all keys for replay
             "description": combined_desc,
+            "allow_permanent": not has_tirith,
         })
         return {
             "approved": False,

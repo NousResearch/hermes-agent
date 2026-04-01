@@ -17,10 +17,11 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
         CommandHandler,
+        CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -35,8 +36,11 @@ except ImportError:
     Message = Any
     Application = Any
     CommandHandler = Any
+    CallbackQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
+    InlineKeyboardButton = Any
+    InlineKeyboardMarkup = Any
     filters = None
     ParseMode = None
     ChatType = None
@@ -77,6 +81,14 @@ def check_telegram_requirements() -> bool:
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
+
+_TELEGRAM_APPROVAL_CALLBACK_PREFIX = "approval:"
+_TELEGRAM_APPROVAL_CALLBACK_TO_COMMAND = {
+    "once": "/approve",
+    "session": "/approve session",
+    "always": "/approve always",
+    "deny": "/deny",
+}
 
 
 def _escape_mdv2(text: str) -> str:
@@ -543,6 +555,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -851,6 +864,59 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_approval_prompt(
+        self,
+        chat_id: str,
+        content: str,
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+    ) -> SendResult:
+        """Send an approval request with inline buttons in Telegram."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        buttons = [
+            [InlineKeyboardButton("Approve once", callback_data=f"{_TELEGRAM_APPROVAL_CALLBACK_PREFIX}once")],
+            [InlineKeyboardButton("Approve session", callback_data=f"{_TELEGRAM_APPROVAL_CALLBACK_PREFIX}session")],
+        ]
+        if allow_permanent:
+            buttons.append([
+                InlineKeyboardButton("Approve always", callback_data=f"{_TELEGRAM_APPROVAL_CALLBACK_PREFIX}always")
+            ])
+        buttons.append([
+            InlineKeyboardButton("Deny", callback_data=f"{_TELEGRAM_APPROVAL_CALLBACK_PREFIX}deny")
+        ])
+        markup = InlineKeyboardMarkup(buttons)
+        formatted = self.format_message(content)
+        thread_id = metadata.get("thread_id") if metadata else None
+        reply_to_id = int(reply_to) if reply_to else None
+        effective_thread_id = int(thread_id) if thread_id else None
+        try:
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=formatted,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_to_message_id=reply_to_id,
+                message_thread_id=effective_thread_id,
+                reply_markup=markup,
+            )
+        except Exception as md_error:
+            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
+                msg = await self._bot.send_message(
+                    chat_id=int(chat_id),
+                    text=_strip_mdv2(formatted),
+                    parse_mode=None,
+                    reply_to_message_id=reply_to_id,
+                    message_thread_id=effective_thread_id,
+                    reply_markup=markup,
+                )
+            else:
+                logger.error("[%s] Failed to send Telegram approval prompt: %s", self.name, md_error, exc_info=True)
+                return SendResult(success=False, error=str(md_error))
+        return SendResult(success=True, message_id=str(msg.message_id), raw_response={"message_id": msg.message_id})
 
     async def edit_message(
         self,
@@ -1550,6 +1616,53 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND)
+        await self.handle_message(event)
+
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline-button callback queries for approval actions."""
+        query = getattr(update, "callback_query", None)
+        if not query:
+            return
+        data = getattr(query, "data", None) or ""
+        if not isinstance(data, str) or not data.startswith(_TELEGRAM_APPROVAL_CALLBACK_PREFIX):
+            try:
+                await query.answer()
+            except Exception:
+                pass
+            return
+
+        action = data[len(_TELEGRAM_APPROVAL_CALLBACK_PREFIX):].strip().lower()
+        command_text = _TELEGRAM_APPROVAL_CALLBACK_TO_COMMAND.get(action)
+        if not command_text:
+            try:
+                await query.answer("Unknown action", show_alert=False)
+            except Exception:
+                pass
+            return
+
+        msg = getattr(query, "message", None)
+        if msg is None:
+            try:
+                await query.answer("Message unavailable", show_alert=False)
+            except Exception:
+                pass
+            return
+
+        event = self._build_message_event(msg, MessageType.COMMAND)
+        event.text = command_text
+        event.message_type = MessageType.COMMAND
+        if getattr(query, "from_user", None):
+            event.source.user_id = str(query.from_user.id)
+            event.source.user_name = query.from_user.username or query.from_user.full_name or event.source.user_name
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        try:
+            if msg.reply_markup:
+                await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

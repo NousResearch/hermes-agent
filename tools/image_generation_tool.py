@@ -12,9 +12,11 @@ import datetime
 import json
 import logging
 import os
+import subprocess
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from openai import OpenAI
 
@@ -87,6 +89,12 @@ def _generated_image_dir() -> Path:
     return out_dir
 
 
+def _prepared_edit_image_dir() -> Path:
+    out_dir = get_hermes_home() / "cache" / "prepared_edit_images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 def _save_generated_image_bytes(data: bytes, output_format: str) -> str:
     ext = (output_format or DEFAULT_OUTPUT_FORMAT).lower().strip()
     if ext == "jpg":
@@ -97,6 +105,103 @@ def _save_generated_image_bytes(data: bytes, output_format: str) -> str:
     path = _generated_image_dir() / filename
     path.write_bytes(data)
     return str(path.resolve())
+
+
+def _prepare_dalle_edit_image(source_path: Path) -> Path:
+    """Convert any supported image into a square PNG suitable for dall-e-2 edits."""
+    output_path = _prepared_edit_image_dir() / f"edit_input_{uuid.uuid4().hex[:12]}.png"
+    ffmpeg_cmd = [
+        "/usr/bin/ffmpeg",
+        "-y",
+        "-i",
+        str(source_path),
+        "-vf",
+        "pad=max(iw\\,ih):max(iw\\,ih):(ow-iw)/2:(oh-ih)/2:color=white,"
+        "scale=1024:1024:flags=lanczos,format=rgba",
+        "-pix_fmt",
+        "rgba",
+        "-frames:v",
+        "1",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise ValueError("ffmpeg is required for the OpenAI image edit fallback path") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise ValueError(f"Failed to prepare edit image with ffmpeg: {stderr}") from exc
+
+    if not output_path.exists():
+        raise ValueError("Prepared edit image was not created")
+    if output_path.stat().st_size > 4 * 1024 * 1024:
+        raise ValueError("Prepared edit image exceeds the 4MB limit for dall-e-2 edits")
+    return output_path
+
+
+def _detect_local_image_mime_type(image_path: Path) -> Optional[str]:
+    """Return a MIME type when the file looks like a supported image."""
+    with image_path.open("rb") as f:
+        header = f.read(64)
+
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    if image_path.suffix.lower() == ".svg":
+        head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
+        if "<svg" in head:
+            return "image/svg+xml"
+    return None
+
+
+def _resolve_existing_file(path_value: Any, label: str) -> Path:
+    """Validate and normalize a local file path passed to the image tool."""
+    if path_value in (None, ""):
+        raise ValueError(f"{label} is required")
+    if not isinstance(path_value, str):
+        raise ValueError(f"{label} must be a string path")
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = path.resolve()
+    if not path.exists():
+        raise ValueError(f"{label} not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"{label} is not a file: {path}")
+    return path
+
+
+def _resolve_edit_image_paths(
+    image_path: Optional[str] = None,
+    image_paths: Optional[List[str]] = None,
+) -> List[Path]:
+    """Collect and validate one or more local image paths for OpenAI edits."""
+    raw_paths: List[str] = []
+    if image_path:
+        raw_paths.append(image_path)
+    if image_paths:
+        if not isinstance(image_paths, list):
+            raise ValueError("image_paths must be a list of local file paths")
+        raw_paths.extend(str(item) for item in image_paths if item)
+
+    resolved: List[Path] = []
+    seen = set()
+    for idx, raw in enumerate(raw_paths):
+        path = _resolve_existing_file(raw, f"image_path[{idx}]")
+        mime = _detect_local_image_mime_type(path)
+        if mime not in {"image/png", "image/jpeg", "image/webp"}:
+            raise ValueError(
+                f"Unsupported edit image type for {path}. Supported inputs: PNG, JPEG, WEBP."
+            )
+        key = str(path.resolve())
+        if key not in seen:
+            resolved.append(path)
+            seen.add(key)
+    return resolved
 
 
 def _resolve_image_provider() -> str:
@@ -284,6 +389,9 @@ def _generate_via_openai(
     prompt: str,
     aspect_ratio_lower: str,
     output_format: str,
+    edit_image_paths: Optional[List[Path]] = None,
+    mask_path: Optional[Path] = None,
+    input_fidelity: Optional[str] = None,
 ) -> Dict[str, Any]:
     api_key = (os.getenv("OPENAI_API_KEY", "").strip() or os.getenv("VOICE_TOOLS_OPENAI_KEY", "").strip())
     if not api_key:
@@ -296,22 +404,81 @@ def _generate_via_openai(
 
     client = OpenAI(**client_kwargs)
     model = os.getenv("OPENAI_IMAGE_MODEL", DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
+    edit_model = os.getenv("OPENAI_IMAGE_EDIT_MODEL", "").strip() or model
     quality = os.getenv("OPENAI_IMAGE_QUALITY", DEFAULT_OPENAI_QUALITY).strip() or DEFAULT_OPENAI_QUALITY
     background = os.getenv("OPENAI_IMAGE_BACKGROUND", DEFAULT_OPENAI_BACKGROUND).strip() or DEFAULT_OPENAI_BACKGROUND
     size = OPENAI_ASPECT_RATIO_MAP[aspect_ratio_lower]
     normalized_format = (output_format or DEFAULT_OUTPUT_FORMAT).lower().strip()
     if normalized_format == "jpg":
         normalized_format = "jpeg"
+    fidelity = (input_fidelity or "high").strip().lower()
+    if fidelity not in {"high", "low"}:
+        fidelity = "high"
 
-    logger.info("Submitting generation request to OpenAI image model %s", model)
-    result = client.images.generate(
-        model=model,
-        prompt=prompt.strip(),
-        size=size,
-        quality=quality,
-        background=background,
-        output_format=normalized_format,
-    )
+    with ExitStack() as stack:
+        if edit_image_paths:
+            logger.info(
+                "Submitting image edit request to OpenAI image model %s using %d input image(s)",
+                edit_model,
+                len(edit_image_paths),
+            )
+            images = [stack.enter_context(path.open("rb")) for path in edit_image_paths]
+            image_input: Union[Any, List[Any]]
+            if len(images) == 1:
+                image_input = images[0]
+            else:
+                image_input = images
+            edit_kwargs: Dict[str, Any] = {
+                "model": edit_model,
+                "image": image_input,
+                "prompt": prompt.strip(),
+                "size": size,
+                "response_format": "b64_json",
+                "n": 1,
+            }
+            if mask_path is not None:
+                edit_kwargs["mask"] = stack.enter_context(mask_path.open("rb"))
+            try:
+                result = client.images.edit(**edit_kwargs)
+                model = edit_model
+            except Exception as exc:
+                if edit_model == "dall-e-2":
+                    raise
+                logger.warning(
+                    "Primary OpenAI image edit model %s failed (%s). Falling back to dall-e-2 edit mode.",
+                    edit_model,
+                    exc,
+                )
+                with ExitStack() as fallback_stack:
+                    prepared_image = _prepare_dalle_edit_image(edit_image_paths[0])
+                    fallback_kwargs: Dict[str, Any] = {
+                        "model": "dall-e-2",
+                        "image": fallback_stack.enter_context(prepared_image.open("rb")),
+                        "prompt": prompt.strip(),
+                        "size": "1024x1024",
+                        "response_format": "b64_json",
+                        "n": 1,
+                    }
+                    if mask_path is not None:
+                        prepared_mask = _prepare_dalle_edit_image(mask_path)
+                        fallback_kwargs["mask"] = fallback_stack.enter_context(prepared_mask.open("rb"))
+                    result = client.images.edit(**fallback_kwargs)
+                    model = "dall-e-2"
+                    normalized_format = "png"
+                    size = "1024x1024"
+                    quality = "standard"
+                    background = "auto"
+        else:
+            logger.info("Submitting generation request to OpenAI image model %s", model)
+            result = client.images.generate(
+                model=model,
+                prompt=prompt.strip(),
+                size=size,
+                quality=quality,
+                background=background,
+                output_format=normalized_format,
+                response_format="b64_json",
+            )
 
     data = getattr(result, "data", None) or []
     if not data:
@@ -337,6 +504,9 @@ def _generate_via_openai(
             "quality": quality,
             "background": background,
             "size": size,
+            "operation": "edit" if edit_image_paths else "generate",
+            "source_images": [str(path.resolve()) for path in edit_image_paths] if edit_image_paths else [],
+            "input_fidelity": fidelity if edit_image_paths else None,
         }
 
     if image_url:
@@ -350,6 +520,9 @@ def _generate_via_openai(
             "quality": quality,
             "background": background,
             "size": size,
+            "operation": "edit" if edit_image_paths else "generate",
+            "source_images": [str(path.resolve()) for path in edit_image_paths] if edit_image_paths else [],
+            "input_fidelity": fidelity if edit_image_paths else None,
         }
 
     raise ValueError("OpenAI image generation returned neither b64_json nor url")
@@ -363,6 +536,10 @@ def image_generate_tool(
     num_images: int = DEFAULT_NUM_IMAGES,
     output_format: str = DEFAULT_OUTPUT_FORMAT,
     seed: Optional[int] = None,
+    image_path: Optional[str] = None,
+    image_paths: Optional[List[str]] = None,
+    mask_path: Optional[str] = None,
+    input_fidelity: str = "high",
 ) -> str:
     aspect_ratio_lower = aspect_ratio.lower().strip() if aspect_ratio else DEFAULT_ASPECT_RATIO
     if aspect_ratio_lower not in VALID_ASPECT_RATIOS:
@@ -378,6 +555,10 @@ def image_generate_tool(
             "num_images": num_images,
             "output_format": output_format,
             "seed": seed,
+            "image_path": image_path,
+            "image_paths": image_paths,
+            "mask_path": mask_path,
+            "input_fidelity": input_fidelity,
         },
         "provider": None,
         "model": None,
@@ -400,14 +581,32 @@ def image_generate_tool(
         if output_format == "jpg":
             output_format = "jpeg"
 
-        logger.info("Generating image with provider %s: %s", provider, prompt[:80])
+        edit_image_paths = _resolve_edit_image_paths(image_path=image_path, image_paths=image_paths)
+        resolved_mask_path = None
+        if mask_path:
+            resolved_mask_path = _resolve_existing_file(mask_path, "mask_path")
+            mask_mime = _detect_local_image_mime_type(resolved_mask_path)
+            if mask_mime not in {"image/png", "image/jpeg", "image/webp"}:
+                raise ValueError("mask_path must point to a PNG, JPEG, or WEBP image")
+
+        logger.info(
+            "%s image with provider %s: %s",
+            "Editing" if edit_image_paths else "Generating",
+            provider,
+            prompt[:80],
+        )
         if provider == "openai":
             result_data = _generate_via_openai(
                 prompt=prompt,
                 aspect_ratio_lower=aspect_ratio_lower,
                 output_format=output_format,
+                edit_image_paths=edit_image_paths,
+                mask_path=resolved_mask_path,
+                input_fidelity=input_fidelity,
             )
         else:
+            if edit_image_paths:
+                raise ValueError("Editing an existing image currently requires the OpenAI image provider")
             result_data = _generate_via_fal(
                 prompt=prompt,
                 aspect_ratio_lower=aspect_ratio_lower,
@@ -428,6 +627,10 @@ def image_generate_tool(
         }
         if result_data.get("image_mode"):
             response_data["image_mode"] = result_data["image_mode"]
+        if result_data.get("operation"):
+            response_data["operation"] = result_data["operation"]
+        if result_data.get("source_images"):
+            response_data["source_images"] = result_data["source_images"]
 
         debug_call_data["provider"] = result_data["provider"]
         debug_call_data["model"] = result_data["model"]
@@ -492,10 +695,13 @@ from tools.registry import registry
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate an image from a text prompt. OpenAI image generation is preferred when "
-        "OPENAI_API_KEY is configured. Returns JSON with either a hosted image URL or a local "
-        "absolute image file path plus a MEDIA:/path tag. If a local media_tag is returned, "
-        "include it verbatim in your response so Hermes can send the image as an attachment."
+        "Generate a new image or edit an existing local image from a text prompt. "
+        "For edits, pass image_path or image_paths pointing to local cached images "
+        "(for example Telegram/Discord cached image paths that Hermes already saw). "
+        "OpenAI image generation/editing is preferred when OPENAI_API_KEY is configured. "
+        "Returns JSON with either a hosted image URL or a local absolute image file path plus "
+        "a MEDIA:/path tag. If a local media_tag is returned, include it verbatim in your "
+        "response so Hermes can send the image as an attachment."
     ),
     "parameters": {
         "type": "object",
@@ -509,6 +715,25 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": ["landscape", "square", "portrait"],
                 "description": "The aspect ratio of the generated image. landscape is wide, portrait is tall, square is 1:1.",
                 "default": "landscape",
+            },
+            "image_path": {
+                "type": "string",
+                "description": "Optional local absolute path to an existing image to edit instead of generating from scratch.",
+            },
+            "image_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of local absolute image paths to use as edit/reference inputs.",
+            },
+            "mask_path": {
+                "type": "string",
+                "description": "Optional local absolute path to a mask image for selective edits.",
+            },
+            "input_fidelity": {
+                "type": "string",
+                "enum": ["high", "low"],
+                "description": "How closely OpenAI should preserve the uploaded image(s) during edits.",
+                "default": "high",
             },
         },
         "required": ["prompt"],
@@ -528,6 +753,10 @@ def _handle_image_generate(args, **kw):
         num_images=1,
         output_format="png",
         seed=None,
+        image_path=args.get("image_path"),
+        image_paths=args.get("image_paths"),
+        mask_path=args.get("mask_path"),
+        input_fidelity=args.get("input_fidelity", "high"),
     )
 
 

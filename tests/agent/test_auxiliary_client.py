@@ -528,6 +528,7 @@ class TestGetTextAuxiliaryClient:
     def test_task_direct_endpoint_without_openai_key_uses_placeholder(self, monkeypatch):
         """Local endpoints without an API key should use 'no-key-required' placeholder."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
         monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -790,6 +791,7 @@ class TestAuxiliaryPoolAwareness:
     def test_vision_direct_endpoint_without_key_uses_placeholder(self, monkeypatch):
         """Vision endpoint without API key should use 'no-key-required' placeholder."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:

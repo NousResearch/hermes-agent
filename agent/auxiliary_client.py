@@ -1027,6 +1027,7 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
+                or os.getenv("OLLAMA_API_KEY", "").strip()  # Ollama cloud
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

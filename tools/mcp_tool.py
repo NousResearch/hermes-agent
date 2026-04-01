@@ -1406,6 +1406,17 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     return schema
 
 
+def sanitize_mcp_name_component(value: str) -> str:
+    """Return an MCP name component safe for tool and prefix generation.
+
+    Preserves Hermes's historical behavior of converting hyphens to
+    underscores, and also replaces any other character outside
+    ``[A-Za-z0-9_]`` with ``_`` so generated tool names are compatible with
+    provider validation rules.
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -1417,9 +1428,8 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
     """
-    # Sanitize: replace hyphens and dots with underscores for LLM API compatibility
-    safe_tool_name = mcp_tool.name.replace("-", "_").replace(".", "_")
-    safe_server_name = server_name.replace("-", "_").replace(".", "_")
+    safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
+    safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
     return {
         "name": prefixed_name,
@@ -1449,7 +1459,7 @@ def _sync_mcp_toolsets(server_names: Optional[List[str]] = None) -> None:
     all_mcp_tools: List[str] = []
 
     for server_name in server_names:
-        safe_prefix = f"mcp_{server_name.replace('-', '_').replace('.', '_')}_"
+        safe_prefix = f"mcp_{sanitize_mcp_name_component(server_name)}_"
         server_tools = sorted(
             t for t in existing if t.startswith(safe_prefix)
         )
@@ -1485,7 +1495,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     Returns a list of (schema, handler_factory_name) tuples encoded as dicts
     with keys: schema, handler_key.
     """
-    safe_name = server_name.replace("-", "_").replace(".", "_")
+    safe_name = sanitize_mcp_name_component(server_name)
     return [
         {
             "schema": {
@@ -1772,6 +1782,72 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+    """Connect to explicit MCP servers and register their tools.
+
+    Idempotent for already-connected server names. Servers with
+    ``enabled: false`` are skipped without disconnecting existing sessions.
+
+    Args:
+        servers: Mapping of ``{server_name: server_config}``.
+
+    Returns:
+        List of all currently registered MCP tool names.
+    """
+    if not _MCP_AVAILABLE:
+        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+        return []
+
+    if not servers:
+        logger.debug("No explicit MCP servers provided")
+        return []
+
+    # Only attempt servers that aren't already connected and are enabled
+    # (enabled: false skips the server entirely without removing its config)
+    with _lock:
+        new_servers = {
+            k: v
+            for k, v in servers.items()
+            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+        }
+
+    if not new_servers:
+        _sync_mcp_toolsets(list(servers.keys()))
+        return _existing_tool_names()
+
+    # Start the background event loop for MCP connections
+    _ensure_mcp_loop()
+
+    async def _discover_one(name: str, cfg: dict) -> List[str]:
+        """Connect to a single server and return its registered tool names."""
+        return await _discover_and_register_server(name, cfg)
+
+    async def _discover_all():
+        server_names = list(new_servers.keys())
+        # Connect to all servers in PARALLEL
+        results = await asyncio.gather(
+            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
+            return_exceptions=True,
+        )
+        for name, result in zip(server_names, results):
+            if isinstance(result, Exception):
+                command = new_servers.get(name, {}).get("command")
+                logger.warning(
+                    "Failed to connect to MCP server '%s'%s: %s",
+                    name,
+                    f" (command={command})" if command else "",
+                    _format_connect_error(result),
+                )
+
+    # Per-server timeouts are handled inside _discover_and_register_server.
+    # The outer timeout is generous: 120s total for parallel discovery.
+    _run_on_mcp_loop(_discover_all(), timeout=120)
+
+    _sync_mcp_toolsets(list(servers.keys()))
+
+    return _existing_tool_names()
+
+
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
@@ -1793,69 +1869,32 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
     with _lock:
-        new_servers = {
-            k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
-        }
+        new_server_names = [
+            name
+            for name, cfg in servers.items()
+            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+        ]
 
-    if not new_servers:
-        _sync_mcp_toolsets(list(servers.keys()))
-        return _existing_tool_names()
+    tool_names = register_mcp_servers(servers)
+    if not new_server_names:
+        return tool_names
 
-    # Start the background event loop for MCP connections
-    _ensure_mcp_loop()
-
-    all_tools: List[str] = []
-    failed_count = 0
-
-    async def _discover_one(name: str, cfg: dict) -> List[str]:
-        """Connect to a single server and return its registered tool names."""
-        return await _discover_and_register_server(name, cfg)
-
-    async def _discover_all():
-        nonlocal failed_count
-        server_names = list(new_servers.keys())
-        # Connect to all servers in PARALLEL
-        results = await asyncio.gather(
-            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
-            return_exceptions=True,
+    with _lock:
+        connected_server_names = [name for name in new_server_names if name in _servers]
+        new_tool_count = sum(
+            len(getattr(_servers[name], "_registered_tool_names", []))
+            for name in connected_server_names
         )
-        for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
-                failed_count += 1
-                command = new_servers.get(name, {}).get("command")
-                logger.warning(
-                    "Failed to connect to MCP server '%s'%s: %s",
-                    name,
-                    f" (command={command})" if command else "",
-                    _format_connect_error(result),
-                )
-            elif isinstance(result, list):
-                all_tools.extend(result)
-            else:
-                failed_count += 1
 
-    # Per-server timeouts are handled inside _discover_and_register_server.
-    # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
-
-    _sync_mcp_toolsets(list(servers.keys()))
-
-    # Print summary
-    total_servers = len(new_servers)
-    ok_servers = total_servers - failed_count
-    if all_tools or failed_count:
-        summary = f"  MCP: {len(all_tools)} tool(s) from {ok_servers} server(s)"
+    failed_count = len(new_server_names) - len(connected_server_names)
+    if new_tool_count or failed_count:
+        summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
         if failed_count:
             summary += f" ({failed_count} failed)"
         logger.info(summary)
 
-    # Return ALL registered tools (existing + newly discovered)
-    return _existing_tool_names()
+    return tool_names
 
 
 def get_mcp_status() -> List[dict]:

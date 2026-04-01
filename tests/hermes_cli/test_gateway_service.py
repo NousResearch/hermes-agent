@@ -271,7 +271,7 @@ class TestGatewaySystemServiceRouting:
         )
 
         run_calls = []
-        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=False, replace=False: run_calls.append((verbose, replace)))
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda verbose=0, quiet=False, replace=False: run_calls.append((verbose, quiet, replace)))
         monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda force=False: 0)
 
         try:

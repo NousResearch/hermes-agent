@@ -1,15 +1,23 @@
-# Git
-.git
-.gitignore
-.gitmodules
-
 # Dependencies
 node_modules
-
-# CI/CD
-.github
+**/node_modules
+venv
+.venv
+__pycache__
+*.pyc
 
 # Environment files
 .env
 
-*.md
+# Python / test / local junk
+.pytest_cache
+.mypy_cache
+.coverage
+dist
+build
+*.egg-info
+
+# OS / editor junk
+.DS_Store
+.vscode
+.idea

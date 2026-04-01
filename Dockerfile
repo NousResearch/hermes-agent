@@ -20,7 +20,7 @@ RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm cache clean --force
 
 COPY . .
-RUN uv pip install -e ".[all]" --no-cache --system --break-system-packages && \
+RUN uv pip install -e ".[all]" --no-cache --system --break-system-packages &&\
     chmod +x /opt/hermes/docker/entrypoint.sh
 
 ENV HERMES_HOME=/opt/data

@@ -7574,10 +7574,15 @@ class HermesCLI:
                         # responses.  patch_stdout renders these newlines
                         # above the input area, creating visual separation
                         # and anchoring the prompt near the bottom.
+                        # Only pad when the response was short enough to
+                        # leave the prompt stranded mid-screen (#4359).
                         try:
-                            _pad = shutil.get_terminal_size().lines // 2
-                            if _pad > 2:
-                                _cprint("\n" * _pad)
+                            _term_h = shutil.get_terminal_size().lines
+                            _resp_lines = response.count('\n') + 1 if response else 0
+                            if _resp_lines < _term_h // 3:
+                                _pad = (_term_h // 3) - _resp_lines
+                                if _pad > 2:
+                                    _cprint("\n" * _pad)
                         except Exception:
                             pass
 

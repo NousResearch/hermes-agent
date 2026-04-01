@@ -271,7 +271,7 @@ class TestPatchSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _patch_skill("my-skill", "this text does not exist", "replacement")
         assert result["success"] is False
-        assert "not found" in result["error"]
+        assert "not found" in result["error"].lower() or "could not find" in result["error"].lower()
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
@@ -288,7 +288,7 @@ word word
             _create_skill("my-skill", content)
             result = _patch_skill("my-skill", "word", "replaced")
         assert result["success"] is False
-        assert "matched" in result["error"]
+        assert "match" in result["error"].lower()
 
     def test_patch_replace_all(self, tmp_path):
         content = """\

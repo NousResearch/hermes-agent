@@ -2022,7 +2022,7 @@ def gateway_command(args):
 
             # Start fresh
             print("Starting gateway...")
-            run_gateway(verbose=False)
+            run_gateway(verbose=0)
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)

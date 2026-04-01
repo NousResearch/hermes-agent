@@ -6297,7 +6297,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
         _stderr_handler = logging.StreamHandler()
         _stderr_handler.setLevel(_stderr_level)
-        _stderr_handler.setFormatter(logging.Formatter('%(levelname)s %(name)s: %(message)s'))
+        _stderr_handler.setFormatter(RedactingFormatter('%(levelname)s %(name)s: %(message)s'))
         logging.getLogger().addHandler(_stderr_handler)
         # Lower root logger level if needed so DEBUG records can reach the handler
         if _stderr_level < logging.getLogger().level:

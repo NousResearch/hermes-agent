@@ -170,39 +170,11 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
 
-        # Filter out tool progress output for github_comment delivery
-        # The agent may post its own review via gh pr review, and we don't want
-        # to post tool progress as a separate comment.
         if deliver_type == "github_comment":
-            # Skip if content is just tool progress (starts with tool indicators)
-            content_stripped = content.strip()
-            
-            # Tool progress patterns to skip
-            tool_patterns = [
-                "💻 terminal:",
-                "💻 $",
-                "💻 terminal",
-                "📖 read",
-                "🔍 grep",
-                "🔎 search",
-                "📄 fetch",
-                "🐍 exec",
-                "[tool]",
-            ]
-            
-            # Check if content is primarily tool output
-            is_tool_output = any(
-                content_stripped.startswith(pattern) 
-                for pattern in tool_patterns
-            )
-            
-            # Also skip if content is too short (likely just progress)
-            is_too_short = len(content_stripped) < 100
-            
-            # Skip if it looks like a single tool call
-            if is_tool_output or is_too_short:
+            # Skip empty or trivially short content
+            if not content or len(content.strip()) < 50:
                 logger.info(
-                    "[webhook] Skipping github_comment delivery - content is tool progress or too short"
+                    "[webhook] Skipping github_comment delivery - content too short"
                 )
                 return SendResult(success=True)
             

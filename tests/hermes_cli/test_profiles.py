@@ -505,7 +505,7 @@ class TestExportImport:
         assert tarfile.is_tarfile(str(result))
 
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
-        """Profile data files end up in the archive."""
+        """Profile data files end up in the archive (credentials excluded)."""
         default_dir = get_profile_dir("default")
         (default_dir / "config.yaml").write_text("model: test")
         (default_dir / ".env").write_text("KEY=val")
@@ -522,7 +522,7 @@ class TestExportImport:
             names = tf.getnames()
 
         assert "default/config.yaml" in names
-        assert "default/.env" in names
+        assert "default/.env" not in names  # credentials excluded
         assert "default/SOUL.md" in names
         assert "default/memories/MEMORY.md" in names
 

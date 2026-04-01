@@ -72,6 +72,7 @@ DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEFAULT_ATOMIC_CHAT_BASE_URL = "http://127.0.0.1:1337/v1"
 
 
 # =============================================================================
@@ -219,6 +220,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://router.huggingface.co/v1",
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
+    ),
+    "atomic-chat": ProviderConfig(
+        id="atomic-chat",
+        name="Atomic Chat",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_ATOMIC_CHAT_BASE_URL,
+        api_key_env_vars=(),
     ),
 }
 

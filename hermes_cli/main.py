@@ -924,6 +924,7 @@ def select_provider_and_model():
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "atomic-chat": "Atomic Chat",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -935,6 +936,7 @@ def select_provider_and_model():
 
     # Step 1: Provider selection — put active provider first with marker
     providers = [
+        ("atomic-chat", "Atomic Chat (local LLMs)"),
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
@@ -1023,6 +1025,8 @@ def select_provider_and_model():
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider == "atomic-chat":
+        _model_flow_atomic_chat(config, current_model)
     elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -1602,6 +1606,136 @@ def _model_flow_named_custom(config, provider_info):
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")
+
+
+ATOMIC_CHAT_BASE_URL = "http://127.0.0.1:1337/v1"
+
+
+def _model_flow_atomic_chat(config, current_model=""):
+    """Handle Atomic Chat — local LLMs provider at 127.0.0.1:1337.
+
+    Three-branch detection:
+    1. Not running → tell user to download / launch
+    2. Running but no model loaded → tell user to download a model
+    3. Running with model(s) → auto-select or show picker, then configure
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import probe_api_models
+
+    print("  Atomic Chat — local LLMs inference")
+    print(f"  Endpoint: {ATOMIC_CHAT_BASE_URL}")
+    print()
+    print("Checking Atomic Chat status...")
+
+    probe = probe_api_models(None, ATOMIC_CHAT_BASE_URL, timeout=3.0)
+    models = probe.get("models")
+
+    if models is None:
+        print()
+        print("❌ Atomic Chat is not running (could not connect to 127.0.0.1:1337).")
+        print()
+        print("   To get started:")
+        print("   1. Download Atomic Chat from https://atomic.chat/")
+        print("   2. Launch the application")
+        print("   3. Download a model inside the app")
+        print("   4. Select Atomic Chat here again")
+        print()
+        print("   Note: If Atomic Chat is already running, make sure")
+        print("   the Local API Server is enabled in the app settings.")
+        print()
+        try:
+            from hermes_cli.colors import Colors, color
+            input(color("  Press Enter to return to provider selection... ", Colors.YELLOW))
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        print()
+        select_provider_and_model()
+        return
+
+    if not models:
+        print()
+        print("⚠️  Atomic Chat is running but no model is loaded.")
+        print()
+        print("   Open Atomic Chat and download or start a model first,")
+        print("   then select Atomic Chat here again.")
+        print()
+        try:
+            from hermes_cli.colors import Colors, color
+            input(color("  Press Enter to return to provider selection... ", Colors.YELLOW))
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        print()
+        select_provider_and_model()
+        return
+
+    if len(models) == 1:
+        model_name = models[0]
+        print(f"  Detected model: {model_name}")
+        print()
+        try:
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if confirm not in ("", "y", "yes"):
+            print("Cancelled.")
+            return
+    else:
+        print(f"  Found {len(models)} model(s):\n")
+        try:
+            from simple_term_menu import TerminalMenu
+            menu_items = [f"  {m}" for m in models] + ["  Cancel"]
+            menu = TerminalMenu(
+                menu_items, cursor_index=0,
+                menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
+                menu_highlight_style=("fg_green",),
+                cycle_cursor=True, clear_screen=False,
+                title="Select model from Atomic Chat:",
+            )
+            idx = menu.show()
+            print()
+            if idx is None or idx >= len(models):
+                print("Cancelled.")
+                return
+            model_name = models[idx]
+        except (ImportError, NotImplementedError):
+            for i, m in enumerate(models, 1):
+                print(f"  {i}. {m}")
+            print(f"  {len(models) + 1}. Cancel")
+            print()
+            try:
+                val = input(f"Choice [1-{len(models) + 1}]: ").strip()
+                if not val:
+                    print("Cancelled.")
+                    return
+                idx = int(val) - 1
+                if idx < 0 or idx >= len(models):
+                    print("Cancelled.")
+                    return
+                model_name = models[idx]
+            except (ValueError, KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+
+    _save_model_choice(model_name)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "custom"
+    model["base_url"] = ATOMIC_CHAT_BASE_URL
+    save_config(cfg)
+    deactivate_provider()
+
+    _save_custom_provider(ATOMIC_CHAT_BASE_URL, "", model_name)
+
+    print(f"\n✅ Model set to: {model_name}")
+    print(f"   Provider: Atomic Chat ({ATOMIC_CHAT_BASE_URL})")
 
 
 # Curated model lists for direct API-key providers

@@ -788,6 +788,7 @@ class GatewayRunner:
             "api_mode": runtime_kwargs.get("api_mode"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
+            "credential_pool": runtime_kwargs.get("credential_pool"),
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 

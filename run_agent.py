@@ -7178,10 +7178,17 @@ class AIAgent:
                         or "quota" in error_msg
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
-                        self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            continue
+                        # Don't eagerly fallback if credential pool rotation may
+                        # still recover.  The pool's retry-then-rotate cycle needs
+                        # at least one more attempt to fire — jumping to a fallback
+                        # provider here short-circuits it.
+                        pool = self._credential_pool
+                        pool_may_recover = pool is not None and pool.has_available()
+                        if not pool_may_recover:
+                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
 
                     is_payload_too_large = (
                         status_code == 413

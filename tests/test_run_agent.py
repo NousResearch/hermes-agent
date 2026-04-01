@@ -2741,6 +2741,46 @@ def test_is_openai_client_closed_honors_custom_client_flag():
     assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=False)) is False
 
 
+def test_is_openai_client_closed_handles_method_form():
+    """Fix for issue #4377: is_closed as method (openai SDK) vs property (httpx).
+
+    The openai SDK's is_closed is a method, not a property. Prior to this fix,
+    getattr(client, "is_closed", False) returned the bound method object, which
+    is always truthy, causing the function to incorrectly report all clients as
+    closed and triggering unnecessary client recreation on every API call.
+    """
+
+    class MethodFormClient:
+        """Mimics openai.OpenAI where is_closed() is a method."""
+
+        def __init__(self, closed: bool):
+            self._closed = closed
+
+        def is_closed(self) -> bool:
+            return self._closed
+
+    # Method returning False - client is open
+    open_client = MethodFormClient(closed=False)
+    assert AIAgent._is_openai_client_closed(open_client) is False
+
+    # Method returning True - client is closed
+    closed_client = MethodFormClient(closed=True)
+    assert AIAgent._is_openai_client_closed(closed_client) is True
+
+
+def test_is_openai_client_closed_falls_back_to_http_client():
+    """Verify fallback to _client.is_closed when top-level is_closed is None."""
+
+    class ClientWithHttpClient:
+        is_closed = None  # No top-level is_closed
+
+        def __init__(self, http_closed: bool):
+            self._client = SimpleNamespace(is_closed=http_closed)
+
+    assert AIAgent._is_openai_client_closed(ClientWithHttpClient(http_closed=False)) is False
+    assert AIAgent._is_openai_client_closed(ClientWithHttpClient(http_closed=True)) is True
+
+
 class TestAnthropicBaseUrlPassthrough:
     """Bug fix: base_url was filtered with 'anthropic in base_url', blocking proxies."""
 

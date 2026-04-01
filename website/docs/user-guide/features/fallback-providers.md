@@ -124,6 +124,37 @@ fallback_model:
   model: gpt-5.3-codex
 ```
 
+### Silent Fallback
+
+By default, Hermes displays status messages when activating fallback (e.g., "🔄 Primary model failed — switching to fallback"). In automated or headless environments, these messages can be noisy. Set `silent_fallback: true` to suppress them.
+
+**Single fallback model:**
+```yaml
+fallback_model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  silent_fallback: true  # Suppress fallback status messages
+```
+
+**Fallback chain** — set `silent_fallback` on each entry (all must be true to silence):
+```yaml
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+    silent_fallback: true
+  - provider: nous
+    model: nous-hermes-3
+    silent_fallback: true
+```
+
+When `silent_fallback` is enabled, the following messages are suppressed:
+- Initial fallback chain/model announcement at startup
+- "🔄 Primary model failed — switching to fallback"
+- "⚠️ Empty/malformed response — switching to fallback..."
+- "⚠️ Rate limited — switching to fallback provider..."
+
+Logging to the log file continues regardless — only user-facing status messages are affected.
+
 ### Where Fallback Works
 
 | Context | Fallback Supported |

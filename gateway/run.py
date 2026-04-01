@@ -427,6 +427,7 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._silent_fallback = self._extract_silent_fallback(self._fallback_model)
         self._smart_model_routing = self._load_smart_model_routing()
 
         # Wire process registry into session store for reset protection
@@ -1027,6 +1028,17 @@ class GatewayRunner:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _extract_silent_fallback(fallback_model) -> bool:
+        """Extract silent_fallback from fallback_model config."""
+        if not fallback_model:
+            return False
+        if isinstance(fallback_model, dict):
+            return bool(fallback_model.get("silent_fallback", False))
+        if isinstance(fallback_model, list):
+            return all(bool(f.get("silent_fallback", False)) for f in fallback_model if isinstance(f, dict))
+        return False
 
     @staticmethod
     def _load_smart_model_routing() -> dict:
@@ -3974,6 +3986,7 @@ class GatewayRunner:
                     platform=platform_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    silent_fallback=getattr(self, "_silent_fallback", False),
                 )
 
                 return agent.run_conversation(
@@ -4148,6 +4161,7 @@ class GatewayRunner:
                     platform=platform_key,
                     session_db=None,
                     fallback_model=self._fallback_model,
+                    silent_fallback=getattr(self, "_silent_fallback", False),
                     skip_memory=True,
                     skip_context_files=True,
                     persist_session=False,
@@ -5663,6 +5677,7 @@ class GatewayRunner:
                     honcho_config=honcho_config,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    silent_fallback=getattr(self, "_silent_fallback", False),
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

@@ -106,11 +106,11 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from tools.mcp_tool import register_mcp_servers, sanitize_mcp_name_component
+            from tools.mcp_tool import register_mcp_servers
 
             config_map: dict[str, dict] = {}
             for server in mcp_servers:
-                name = sanitize_mcp_name_component(server.name)
+                name = server.name
                 if isinstance(server, McpServerStdio):
                     config = {
                         "command": server.command,

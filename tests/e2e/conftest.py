@@ -21,9 +21,7 @@ from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-# ---------------------------------------------------------------------------
-# Ensure telegram module is available (mock it if not installed)
-# ---------------------------------------------------------------------------
+#Ensure telegram module is available (mock it if not installed)
 
 def _ensure_telegram_mock():
     """Install mock telegram modules so TelegramAdapter can be imported."""
@@ -58,9 +56,7 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# GatewayRunner factory (based on tests/gateway/test_status_command.py)
-# ---------------------------------------------------------------------------
+#GatewayRunner factory (based on tests/gateway/test_status_command.py)
 
 def make_runner(session_entry: SessionEntry) -> "GatewayRunner":
     """Create a GatewayRunner with mocked internals for e2e testing.
@@ -111,9 +107,7 @@ def make_runner(session_entry: SessionEntry) -> "GatewayRunner":
     return runner
 
 
-# ---------------------------------------------------------------------------
-# TelegramAdapter factory
-# ---------------------------------------------------------------------------
+#TelegramAdapter factory
 
 def make_adapter(runner) -> TelegramAdapter:
     """Create a TelegramAdapter wired to *runner*, with send methods mocked.
@@ -134,9 +128,7 @@ def make_adapter(runner) -> TelegramAdapter:
     return adapter
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+#Helpers
 
 def make_source(chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> SessionSource:
     return SessionSource(

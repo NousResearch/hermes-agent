@@ -1072,8 +1072,8 @@ class GatewayRunner:
                 if not isinstance(wd_cfg, dict):
                     return {}
                 return {
-                    "enabled": wd_cfg.get("enabled", True),
-                    "max_duration": wd_cfg.get("max_duration", 1800),
+                    "enabled": wd_cfg.get("enabled", False),
+                    "max_duration": wd_cfg.get("max_duration", 3600),
                     "check_interval": wd_cfg.get("check_interval", 60),
                 }
         except Exception:

@@ -916,6 +916,8 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        self._original_provider = self.provider  # for fall-forward
+        self._original_model = self.model
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -4454,6 +4456,23 @@ class AIAgent:
         mappings.
         """
         if self._fallback_index >= len(self._fallback_chain):
+            # Fall forward: if we already activated a fallback and it failed,
+            # check if the original primary provider has recovered.
+            if self._fallback_activated and getattr(self, '_original_provider', None):
+                try:
+                    from agent.circuit_breaker import ProviderCircuitBreaker
+                    _cb = ProviderCircuitBreaker.get_instance()
+                    _orig_provider = self._original_provider or ""
+                    if _orig_provider and not _cb.should_use_fallback(_orig_provider, session_key=self._session_key):
+                        logging.info(
+                            "Fall-forward: original provider %s may have recovered, resetting fallback chain",
+                            _orig_provider,
+                        )
+                        self._fallback_index = 0
+                        self._fallback_activated = False
+                        return self._try_activate_fallback()
+                except Exception:
+                    pass
             return False
 
         fb = self._fallback_chain[self._fallback_index]
@@ -6544,6 +6563,8 @@ class AIAgent:
                 logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
                 logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
+            from agent.circuit_breaker import ProviderCircuitBreaker
+
             api_start_time = time.time()
             retry_count = 0
             max_retries = 3
@@ -6560,14 +6581,16 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
-                    from agent.circuit_breaker import ProviderCircuitBreaker
-
                     _cb = ProviderCircuitBreaker.get_instance()
                     if _cb.should_use_fallback(self.provider, session_key=self._session_key):
-                        self._emit_status("⚡ Provider rate-limited (circuit breaker) — switching to fallback...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            continue
+                        # Check if credential pool has untried credentials before falling back
+                        _pool = getattr(self, '_credential_pool', None)
+                        _pool_can_rotate = _pool and hasattr(_pool, 'has_available') and _pool.has_available()
+                        if not _pool_can_rotate:
+                            self._emit_status("⚡ Provider rate-limited (circuit breaker) — switching to fallback...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
 
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
@@ -7167,11 +7190,12 @@ class AIAgent:
                             status_code=status_code,
                             retry_after=_retry_after_val,
                         )
-                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
-                        self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            continue
+                    if is_rate_limited:
+                        if self._fallback_index < len(self._fallback_chain) or self._fallback_activated:
+                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
 
                     is_payload_too_large = (
                         status_code == 413

@@ -104,7 +104,7 @@ def _build_skill_message(
                 f"[Skill setup note: {loaded_skill['gateway_setup_hint']}]",
             ]
         )
-    elif loaded_skill.get("setup_needed") and loaded_skill.get("setup_note"):
+    elif loaded_skill.get("setup_note"):
         parts.extend(
             [
                 "",
@@ -126,6 +126,22 @@ def _build_skill_message(
                     if f.is_file():
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
+
+    # If no explicit setup note made it through, synthesize a remote reminder when on remote backends
+    try:
+        import os as _os_for_msg
+        _backend_for_msg = str(_os_for_msg.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+        _REMOTE_ENV_BACKENDS_FOR_MSG = {"docker", "singularity", "modal", "ssh", "daytona"}
+    except Exception:
+        _backend_for_msg = "local"
+        _REMOTE_ENV_BACKENDS_FOR_MSG = set()
+    if (not any("[Skill setup note:" in p for p in parts)
+        and _backend_for_msg in _REMOTE_ENV_BACKENDS_FOR_MSG
+        and (loaded_skill.get("required_environment_variables") or [])):
+        parts.extend([
+            "",
+            f"[Skill setup note: {_backend_for_msg.upper()}-backed skills need these requirements available inside the remote environment as well.]",
+        ])
 
     if supporting and skill_dir:
         try:
@@ -292,6 +308,7 @@ def build_preloaded_skills_prompt(
                 activation_note,
             )
         )
+
         loaded_names.append(skill_name)
 
     return "\n\n".join(prompt_parts), loaded_names, missing

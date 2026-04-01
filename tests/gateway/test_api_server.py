@@ -1576,3 +1576,24 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+    @pytest.mark.asyncio
+    async def test_cors_expose_headers_present(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"]) 
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models", headers={"Origin": "http://localhost:3000"})
+            assert resp.status == 200
+            # Exposed headers should include our list; present on simple responses
+            assert "Location" in resp.headers.get("Access-Control-Expose-Headers", "")
+            assert "X-Request-Id" in resp.headers.get("Access-Control-Expose-Headers", "")
+            assert "Idempotency-Key" in resp.headers.get("Access-Control-Expose-Headers", "")
+
+    @pytest.mark.asyncio
+    async def test_security_headers_include_cache_control(self):
+        adapter = _make_adapter()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            assert resp.status == 200
+            assert resp.headers.get("Cache-Control") == "no-store"

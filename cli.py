@@ -132,7 +132,7 @@ def load_cli_config() -> Dict[str, Any]:
     Returns default values if no config file exists.
     """
     # Check user config first ({HERMES_HOME}/config.yaml)
-    user_config_path = _hermes_home / 'config.yaml'
+    user_config_path = get_hermes_home() / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
 
     # Use user config if it exists, otherwise project config

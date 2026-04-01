@@ -242,6 +242,34 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    "mistral": [
+        "mistral-large-latest",
+        "mistral-medium-latest",
+        "mistral-small-latest",
+        "codestral-latest",
+        "devstral-small-latest",
+        "mistral-saba-latest",
+        "ministral-8b-latest",
+        "ministral-3b-latest",
+    ],
+    "nebius": [
+        "deepseek-ai/DeepSeek-R1-0528",
+        "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
+        "openai/gpt-oss-120b",
+        "moonshotai/Kimi-K2-Instruct",
+        "moonshotai/Kimi-K2-Thinking",
+        "zai-org/GLM-4.5",
+        "meta-llama/Llama-3.3-70B-Instruct",
+    ],
+    "scaleway": [
+        "llama-3.3-70b-instruct",
+        "llama-3.1-8b-instruct",
+        "mistral-nemo-instruct-2407",
+        "qwen2.5-coder-32b-instruct",
+        "deepseek-r1",
+        "deepseek-r1-distill-llama-70b",
+        "phi-4",
+    ],
 }
 
 _PROVIDER_LABELS = {
@@ -262,6 +290,9 @@ _PROVIDER_LABELS = {
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "huggingface": "Hugging Face",
+    "mistral": "Mistral AI",
+    "nebius": "Nebius AI",
+    "scaleway": "Scaleway Generative APIs",
     "custom": "Custom endpoint",
 }
 
@@ -300,6 +331,12 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "mistral-ai": "mistral",
+    "mistralai": "mistral",
+    "nebius-ai": "nebius",
+    "nebius-studio": "nebius",
+    "scw": "scaleway",
+    "scaleway-ai": "scaleway",
 }
 
 
@@ -335,7 +372,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "deepseek", "mistral", "nebius", "scaleway", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

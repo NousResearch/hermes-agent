@@ -220,6 +220,30 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "mistral": ProviderConfig(
+        id="mistral",
+        name="Mistral AI",
+        auth_type="api_key",
+        inference_base_url="https://api.mistral.ai/v1",
+        api_key_env_vars=("MISTRAL_API_KEY",),
+        base_url_env_var="MISTRAL_BASE_URL",
+    ),
+    "nebius": ProviderConfig(
+        id="nebius",
+        name="Nebius AI",
+        auth_type="api_key",
+        inference_base_url="https://api.tokenfactory.nebius.com/v1",
+        api_key_env_vars=("NEBIUS_API_KEY",),
+        base_url_env_var="NEBIUS_BASE_URL",
+    ),
+    "scaleway": ProviderConfig(
+        id="scaleway",
+        name="Scaleway Generative APIs",
+        auth_type="api_key",
+        inference_base_url="https://api.scaleway.ai/v1",
+        api_key_env_vars=("SCALEWAY_API_KEY", "SCW_SECRET_KEY"),
+        base_url_env_var="SCALEWAY_BASE_URL",
+    ),
 }
 
 

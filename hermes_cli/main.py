@@ -951,6 +951,9 @@ def select_provider_and_model():
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("mistral", "Mistral AI (direct API)"),
+        ("nebius", "Nebius AI Studio (Llama, Qwen, DeepSeek)"),
+        ("scaleway", "Scaleway Generative APIs (EU cloud, OpenAI-compatible)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1023,7 +1026,7 @@ def select_provider_and_model():
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "mistral", "nebius", "scaleway"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 

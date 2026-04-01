@@ -137,6 +137,76 @@ class TestBuildApiKwargsOpenRouter:
         assert "codex_reasoning_items" in messages[1]
 
 
+class TestDeveloperRoleSwap:
+    """GPT-5 and Codex models should get 'developer' instead of 'system' role."""
+
+    @pytest.mark.parametrize("model", [
+        "openai/gpt-5",
+        "openai/gpt-5-turbo",
+        "openai/gpt-5.4",
+        "gpt-5-mini",
+        "openai/codex-mini",
+        "codex-mini-latest",
+        "openai/codex-pro",
+    ])
+    def test_gpt5_codex_get_developer_role(self, monkeypatch, model):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = model
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["messages"][0]["role"] == "developer"
+        assert kwargs["messages"][0]["content"] == "You are helpful."
+        assert kwargs["messages"][1]["role"] == "user"
+
+    @pytest.mark.parametrize("model", [
+        "anthropic/claude-opus-4.6",
+        "openai/gpt-4o",
+        "google/gemini-2.5-pro",
+        "deepseek/deepseek-chat",
+        "openai/o3-mini",
+    ])
+    def test_non_matching_models_keep_system_role(self, monkeypatch, model):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = model
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["messages"][0]["role"] == "system"
+
+    def test_no_system_message_no_crash(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "openai/gpt-5"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["messages"][0]["role"] == "user"
+
+    def test_original_messages_not_mutated(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "openai/gpt-5"
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ]
+        agent._build_api_kwargs(messages)
+        # Original messages must be untouched (internal representation stays "system")
+        assert messages[0]["role"] == "system"
+
+    def test_developer_role_via_nous_portal(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")
+        agent.model = "gpt-5"
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+        ]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["messages"][0]["role"] == "developer"
+
+
 class TestBuildApiKwargsAIGateway:
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")

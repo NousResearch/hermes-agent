@@ -17,6 +17,10 @@ class TestCredentialExclusion:
         """auth.json must be in the default export exclusion set."""
         assert "auth.json" in _DEFAULT_EXPORT_EXCLUDE_ROOT
 
+    def test_dotenv_in_default_exclude_set(self):
+        """.env must be in the default export exclusion set."""
+        assert ".env" in _DEFAULT_EXPORT_EXCLUDE_ROOT
+
     def test_named_profile_export_excludes_auth(self, tmp_path, monkeypatch):
         """Named profile export must not contain auth.json or .env."""
         profiles_root = tmp_path / "profiles"

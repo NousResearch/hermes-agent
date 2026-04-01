@@ -75,6 +75,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "response_store.db", "response_store.db-shm", "response_store.db-wal",
     "gateway.pid", "gateway_state.json", "processes.json",
     "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
     "auth.lock", "active_profile", ".update_check",
     "errors.log",
     ".hermes_history",

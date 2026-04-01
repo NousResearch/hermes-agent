@@ -66,10 +66,9 @@ def _honcho_is_configured_for_doctor() -> bool:
 def _doctor_active_toolsets():
     """Return explicitly configured platform toolsets, or None if not configured."""
     try:
-        from hermes_cli.config import load_config
         from hermes_cli.tools_config import PLATFORMS, _get_platform_tools
 
-        cfg = load_config()
+        cfg = _doctor_load_config()
         platform_toolsets = cfg.get("platform_toolsets")
         if not isinstance(platform_toolsets, dict) or not platform_toolsets:
             return None
@@ -81,6 +80,53 @@ def _doctor_active_toolsets():
         return active or None
     except Exception:
         return None
+
+
+def _doctor_load_config() -> dict:
+    """Return the current Hermes config for doctor checks."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _configured_provider_ids(config: dict | None = None) -> set[str]:
+    """Return explicit provider ids referenced by the active config."""
+    cfg = config if isinstance(config, dict) else _doctor_load_config()
+    providers: set[str] = set()
+
+    def add_provider(value) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.strip()
+        if normalized and normalized not in {"auto", "main"}:
+            providers.add(normalized)
+
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        add_provider(model_cfg.get("provider"))
+    elif isinstance(model_cfg, str):
+        add_provider(model_cfg)
+
+    for entry in cfg.get("fallback_providers") or []:
+        if isinstance(entry, dict):
+            add_provider(entry.get("provider"))
+
+    auxiliary = cfg.get("auxiliary") or {}
+    if isinstance(auxiliary, dict):
+        for aux_cfg in auxiliary.values():
+            if isinstance(aux_cfg, dict):
+                add_provider(aux_cfg.get("provider"))
+
+    return providers
+
+
+def _auth_provider_in_active_path(provider_id: str) -> bool:
+    """Return True when the auth provider is part of the configured runtime path."""
+    return provider_id in _configured_provider_ids()
 
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
@@ -298,26 +344,36 @@ def run_doctor(args):
     try:
         from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
 
+        nous_required = _auth_provider_in_active_path("nous")
+        codex_required = _auth_provider_in_active_path("openai-codex")
+
         nous_status = get_nous_auth_status()
         if nous_status.get("logged_in"):
             check_ok("Nous Portal auth", "(logged in)")
-        else:
+        elif nous_required:
             check_warn("Nous Portal auth", "(not logged in)")
+        else:
+            check_ok("Nous Portal auth", "(not in active provider path)")
 
         codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
             check_ok("OpenAI Codex auth", "(logged in)")
-        else:
+        elif codex_required:
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
+        else:
+            check_ok("OpenAI Codex auth", "(not in active provider path)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
+        codex_required = True
 
     if shutil.which("codex"):
         check_ok("codex CLI")
-    else:
+    elif codex_required:
         check_warn("codex CLI not found", "(required for openai-codex login)")
+    else:
+        check_ok("codex CLI", "(not required for active provider path)")
 
     # =========================================================================
     # Check: Directory structure

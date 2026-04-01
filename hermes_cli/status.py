@@ -77,6 +77,36 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _configured_provider_ids(config: dict) -> set[str]:
+    """Return explicit provider ids referenced by the active config."""
+    providers: set[str] = set()
+
+    def add_provider(value) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.strip()
+        if normalized and normalized not in {"auto", "main"}:
+            providers.add(normalized)
+
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        add_provider(model_cfg.get("provider"))
+    elif isinstance(model_cfg, str):
+        add_provider(model_cfg)
+
+    for entry in config.get("fallback_providers") or []:
+        if isinstance(entry, dict):
+            add_provider(entry.get("provider"))
+
+    auxiliary = config.get("auxiliary") or {}
+    if isinstance(auxiliary, dict):
+        for aux_cfg in auxiliary.values():
+            if isinstance(aux_cfg, dict):
+                add_provider(aux_cfg.get("provider"))
+
+    return providers
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -157,10 +187,15 @@ def show_status(args):
         nous_status = {}
         codex_status = {}
 
+    configured_provider_ids = _configured_provider_ids(config)
+    nous_in_path = "nous" in configured_provider_ids
+    codex_in_path = "openai-codex" in configured_provider_ids
+
     nous_logged_in = bool(nous_status.get("logged_in"))
+    nous_ok = nous_logged_in or not nous_in_path
     print(
-        f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes model)'}"
+        f"  {'Nous Portal':<12}  {check_mark(nous_ok)} "
+        f"{'logged in' if nous_logged_in else ('not logged in (run: hermes model)' if nous_in_path else 'not in active provider path')}"
     )
     if nous_logged_in:
         portal_url = nous_status.get("portal_base_url") or "(unknown)"
@@ -173,17 +208,18 @@ def show_status(args):
         print(f"    Refresh:    {refresh_label}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
+    codex_ok = codex_logged_in or not codex_in_path
     print(
-        f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
-        f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
+        f"  {'OpenAI Codex':<12}  {check_mark(codex_ok)} "
+        f"{'logged in' if codex_logged_in else ('not logged in (run: hermes model)' if codex_in_path else 'not in active provider path')}"
     )
     codex_auth_file = codex_status.get("auth_store")
-    if codex_auth_file:
+    if codex_auth_file and (codex_logged_in or codex_in_path):
         print(f"    Auth file:  {codex_auth_file}")
     codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))
     if codex_status.get("last_refresh"):
         print(f"    Refreshed:  {codex_last_refresh}")
-    if codex_status.get("error") and not codex_logged_in:
+    if codex_status.get("error") and not codex_logged_in and codex_in_path:
         print(f"    Error:      {codex_status.get('error')}")
 
     # =========================================================================
@@ -231,7 +267,9 @@ def show_status(args):
         print(f"  SSH Host:     {ssh_host or '(not set)'}")
         print(f"  SSH User:     {ssh_user or '(not set)'}")
     elif terminal_env == "docker":
-        docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
+        docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "")
+        if not docker_image:
+            docker_image = (config.get("terminal") or {}).get("docker_image", "python:3.11-slim")
         print(f"  Docker Image: {docker_image}")
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
@@ -281,22 +319,43 @@ def show_status(args):
     
     if sys.platform.startswith('linux'):
         try:
-            from hermes_cli.gateway import get_service_name
+            from hermes_cli.gateway import get_service_name, get_systemd_unit_path
             _gw_svc = get_service_name()
+            user_unit_exists = get_systemd_unit_path(system=False).exists()
+            system_unit_exists = get_systemd_unit_path(system=True).exists()
         except Exception:
             _gw_svc = "hermes-gateway"
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", _gw_svc],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_active = result.stdout.strip() == "active"
-        except subprocess.TimeoutExpired:
-            is_active = False
+            user_unit_exists = True
+            system_unit_exists = False
+
+        is_active = False
+        manager_label = "systemd (user)"
+        if user_unit_exists:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", _gw_svc],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                is_active = result.stdout.strip() == "active"
+            except subprocess.TimeoutExpired:
+                is_active = False
+            manager_label = "systemd (user)"
+        if system_unit_exists and not is_active:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", _gw_svc],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                is_active = result.stdout.strip() == "active"
+            except subprocess.TimeoutExpired:
+                is_active = False
+            manager_label = "systemd (system)"
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print("  Manager:      systemd (user)")
+        print(f"  Manager:      {manager_label}")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label

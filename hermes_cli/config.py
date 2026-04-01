@@ -556,6 +556,7 @@ DEFAULT_CONFIG = {
         "show_reasoning": False,
         "streaming": False,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        "markdown": True,         # Render responses as styled markdown (bold, tables, code blocks)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages

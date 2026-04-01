@@ -133,6 +133,8 @@ def _resolve_runtime_from_pool_entry(
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
+    elif provider == "openrouter":
+        base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":

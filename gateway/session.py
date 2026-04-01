@@ -364,6 +364,12 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
     
+    # Set by the background expiry watcher after it successfully flushes
+    # memories for this session.  Persisted to sessions.json so the flag
+    # survives gateway restarts (the old in-memory _pre_flushed_sessions
+    # set was lost on restart, causing redundant re-flushes).
+    memory_flushed: bool = False
+    
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -381,6 +387,7 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
+            "memory_flushed": self.memory_flushed,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -416,6 +423,7 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
+            memory_flushed=data.get("memory_flushed", False),
         )
 
 
@@ -479,9 +487,6 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
-        # on_auto_reset is deprecated — memory flush now runs proactively
-        # via the background session expiry watcher in GatewayRunner.
-        self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
         
         # Initialize SQLite session database
         self._db = None
@@ -684,15 +689,12 @@ class SessionStore:
                     self._save()
                     return entry
                 else:
-                    # Session is being auto-reset.  The background expiry watcher
-                    # should have already flushed memories proactively; discard
-                    # the marker so it doesn't accumulate.
+                    # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
-                    self._pre_flushed_sessions.discard(entry.session_id)
             else:
                 was_auto_reset = False
                 auto_reset_reason = None

@@ -1979,10 +1979,12 @@ class HermesCLI:
                     base_url, _source,
                 )
             else:
-                self.console.print("[bold red]Provider resolver returned an empty API key.[/]")
+                print("\n⚠️  Provider resolver returned an empty API key. "
+                      "Set OPENROUTER_API_KEY or run: hermes setup")
                 return False
         if not isinstance(base_url, str) or not base_url:
-            self.console.print("[bold red]Provider resolver returned an empty base URL.[/]")
+            print("\n⚠️  Provider resolver returned an empty base URL. "
+                  "Check your provider config or run: hermes setup")
             return False
 
         credentials_changed = api_key != self.api_key or base_url != self.base_url

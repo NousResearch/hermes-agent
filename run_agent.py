@@ -3543,15 +3543,78 @@ class AIAgent:
         )
         return client
 
+    @staticmethod
+    def _force_close_tcp_sockets(client: Any) -> int:
+        """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
+
+        When a provider drops a connection mid-stream, httpx's ``client.close()``
+        performs a graceful shutdown which leaves sockets in CLOSE-WAIT until the
+        OS times them out (often minutes).  This method walks the httpx transport
+        pool and issues ``socket.shutdown(SHUT_RDWR)`` + ``socket.close()`` to
+        force an immediate TCP RST, freeing the file descriptors.
+
+        Returns the number of sockets force-closed.
+        """
+        import socket as _socket
+
+        closed = 0
+        try:
+            http_client = getattr(client, "_client", None)
+            if http_client is None:
+                return 0
+            transport = getattr(http_client, "_transport", None)
+            if transport is None:
+                return 0
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                return 0
+            # httpx uses httpcore connection pools; connections live in
+            # _connections (list) or _pool (list) depending on version.
+            connections = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            for conn in list(connections):
+                stream = (
+                    getattr(conn, "_network_stream", None)
+                    or getattr(conn, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    sock = getattr(stream, "stream", None)
+                    if sock is not None:
+                        sock = getattr(sock, "_sock", None)
+                if sock is None:
+                    continue
+                try:
+                    sock.shutdown(_socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                closed += 1
+        except Exception as exc:
+            logger.debug("Force-close TCP sockets sweep error: %s", exc)
+        return closed
+
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
             return
+        # Force-close TCP sockets first to prevent CLOSE-WAIT accumulation,
+        # then do the graceful SDK-level close.
+        force_closed = self._force_close_tcp_sockets(client)
         try:
             client.close()
             logger.info(
-                "OpenAI client closed (%s, shared=%s) %s",
+                "OpenAI client closed (%s, shared=%s, tcp_force_closed=%d) %s",
                 reason,
                 shared,
+                force_closed,
                 self._client_log_context(),
             )
         except Exception as exc:
@@ -3595,6 +3658,76 @@ class AIAgent:
             raise RuntimeError("Failed to recreate closed OpenAI client")
         with self._openai_client_lock():
             return self.client
+
+    def _cleanup_dead_connections(self) -> bool:
+        """Detect and clean up dead TCP connections on the primary client.
+
+        Inspects the httpx connection pool for sockets in unhealthy states
+        (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
+        and rebuilds the primary client from scratch.
+
+        Returns True if dead connections were found and cleaned up.
+        """
+        client = getattr(self, "client", None)
+        if client is None:
+            return False
+        try:
+            http_client = getattr(client, "_client", None)
+            if http_client is None:
+                return False
+            transport = getattr(http_client, "_transport", None)
+            if transport is None:
+                return False
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                return False
+            connections = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            dead_count = 0
+            for conn in list(connections):
+                # Check for connections that are idle but have closed sockets
+                stream = (
+                    getattr(conn, "_network_stream", None)
+                    or getattr(conn, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    sock = getattr(stream, "stream", None)
+                    if sock is not None:
+                        sock = getattr(sock, "_sock", None)
+                if sock is None:
+                    continue
+                # Probe socket health with a non-blocking recv peek
+                import socket as _socket
+                try:
+                    sock.setblocking(False)
+                    data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
+                    if data == b"":
+                        dead_count += 1
+                except BlockingIOError:
+                    pass  # No data available — socket is healthy
+                except OSError:
+                    dead_count += 1
+                finally:
+                    try:
+                        sock.setblocking(True)
+                    except OSError:
+                        pass
+            if dead_count > 0:
+                logger.warning(
+                    "Found %d dead connection(s) in client pool — rebuilding client",
+                    dead_count,
+                )
+                self._replace_primary_openai_client(reason="dead_connection_cleanup")
+                return True
+        except Exception as exc:
+            logger.debug("Dead connection check error: %s", exc)
+        return False
 
     def _create_request_openai_client(self, *, reason: str) -> Any:
         from unittest.mock import Mock
@@ -4387,6 +4520,11 @@ class AIAgent:
                                     type(e).__name__,
                                     e,
                                 )
+                                self._emit_status(
+                                    f"⚠️ Connection to provider dropped "
+                                    f"({type(e).__name__}). Reconnecting… "
+                                    f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
+                                )
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
                                 if stale is not None:
@@ -4394,7 +4532,21 @@ class AIAgent:
                                         stale, reason="stream_retry_cleanup"
                                     )
                                     request_client_holder["client"] = None
+                                # Also rebuild the primary client to purge
+                                # any dead connections from the pool.
+                                try:
+                                    self._replace_primary_openai_client(
+                                        reason="stream_retry_pool_cleanup"
+                                    )
+                                except Exception:
+                                    pass
                                 continue
+                            self._emit_status(
+                                "❌ Connection to provider failed after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
                             logger.warning(
                                 "Streaming exhausted %s retries on transient error, "
                                 "falling back to non-streaming: %s",
@@ -4464,6 +4616,12 @@ class AIAgent:
                     rc = request_client_holder.get("client")
                     if rc is not None:
                         self._close_request_openai_client(rc, reason="stale_stream_kill")
+                except Exception:
+                    pass
+                # Rebuild the primary client too — its connection pool
+                # may hold dead sockets from the same provider outage.
+                try:
+                    self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
                 except Exception:
                     pass
                 # Reset the timer so we don't kill repeatedly while
@@ -6254,6 +6412,20 @@ class AIAgent:
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
+
+        # Pre-turn connection health check: detect and clean up dead TCP
+        # connections left over from provider outages or dropped streams.
+        # This prevents the next API call from hanging on a zombie socket.
+        if self.api_mode != "anthropic_messages":
+            try:
+                if self._cleanup_dead_connections():
+                    self._emit_status(
+                        "🔌 Detected stale connections from a previous provider "
+                        "issue — cleaned up automatically. Proceeding with fresh "
+                        "connection."
+                    )
+            except Exception:
+                pass
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.

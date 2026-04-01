@@ -1280,8 +1280,8 @@ class GatewayRunner:
             try:
                 self.session_store._ensure_loaded()
                 for key, entry in list(self.session_store._entries.items()):
-                    if entry.session_id in self.session_store._pre_flushed_sessions:
-                        continue  # already flushed this session
+                    if entry.memory_flushed:
+                        continue  # already flushed this session (persisted to disk)
                     if not self.session_store._is_session_expired(entry):
                         continue  # session still active
                     # Session has expired — flush memories in the background
@@ -1292,7 +1292,15 @@ class GatewayRunner:
                     try:
                         await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
-                        self.session_store._pre_flushed_sessions.add(entry.session_id)
+                        # Mark as flushed and persist to disk so the flag
+                        # survives gateway restarts.
+                        with self.session_store._lock:
+                            entry.memory_flushed = True
+                            self.session_store._save()
+                        logger.info(
+                            "Pre-reset memory flush completed for session %s",
+                            entry.session_id,
+                        )
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
             except Exception as e:

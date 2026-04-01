@@ -20,7 +20,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -116,7 +116,7 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers()) as resp:
+            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
                     logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
@@ -134,7 +134,8 @@ class MattermostAdapter(BasePlatformAdapter):
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.post(
-                url, headers=self._headers(), json=payload
+                url, headers=self._headers(), json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
@@ -180,7 +181,7 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form) as resp:
+        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status >= 400:
                 body = await resp.text()
                 logger.error("MM file upload → %s: %s", resp.status, body[:200])
@@ -201,7 +202,9 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("Mattermost: URL or token not configured")
             return False
 
-        self._session = aiohttp.ClientSession()
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        )
         self._closing = False
 
         # Verify credentials and fetch bot identity.
@@ -404,18 +407,38 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
+        import asyncio
         import aiohttp
-        try:
-            async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status >= 400:
-                    # Fall back to sending the URL as text.
-                    return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
-                file_data = await resp.read()
-                ct = resp.content_type or "application/octet-stream"
-                # Derive filename from URL.
-                fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
-        except Exception as exc:
-            logger.warning("Mattermost: failed to download %s: %s", url, exc)
+
+        last_exc = None
+        file_data = None
+        ct = "application/octet-stream"
+        fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"
+
+        for attempt in range(3):
+            try:
+                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    if resp.status >= 500 or resp.status == 429:
+                        if attempt < 2:
+                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                                         attempt + 1, url[:80], resp.status)
+                            await asyncio.sleep(1.5 * (attempt + 1))
+                            continue
+                    if resp.status >= 400:
+                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                    file_data = await resp.read()
+                    ct = resp.content_type or "application/octet-stream"
+                    break
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
+                return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+
+        if file_data is None:
+            logger.warning("Mattermost: download returned no data for %s", url)
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         file_id = await self._upload_file(chat_id, file_data, fname, ct)
@@ -580,9 +603,19 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
-        # Mention-only mode: skip channel messages that don't @mention the bot.
-        # DMs (type "D") are always processed.
+        # Mention-gating for non-DM channels.
+        # Config (env vars):
+        #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
+        #   MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
         if channel_type_raw != "D":
+            require_mention = os.getenv(
+                "MATTERMOST_REQUIRE_MENTION", "true"
+            ).lower() not in ("false", "0", "no")
+
+            free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
+            free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
+            is_free_channel = channel_id in free_channels
+
             mention_patterns = [
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
@@ -591,12 +624,20 @@ class MattermostAdapter(BasePlatformAdapter):
                 pattern.lower() in message_text.lower()
                 for pattern in mention_patterns
             )
-            if not has_mention:
+
+            if require_mention and not is_free_channel and not has_mention:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
                 )
                 return
+
+            # Strip @mention from the message text so the agent sees clean input.
+            if has_mention:
+                for pattern in mention_patterns:
+                    message_text = re.sub(
+                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
+                    ).strip()
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")

@@ -259,6 +259,12 @@ def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
+    # Invalidate the module-level cache so the new HERMES_HOME is picked up.
+    # A prior test may have cached a default policy (enabled=False) under the
+    # old HERMES_HOME set by the autouse _isolate_hermes_home fixture.
+    from tools.website_policy import invalidate_cache
+    invalidate_cache()
+
     blocked = check_website_access("https://dynamic.example/path")
 
     assert blocked is not None
@@ -292,6 +298,8 @@ def test_check_website_access_blocks_scheme_less_urls(tmp_path):
 def test_browser_navigate_returns_policy_block(monkeypatch):
     from tools import browser_tool
 
+    # Allow SSRF check to pass so the policy check is reached
+    monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
     monkeypatch.setattr(
         browser_tool,
         "check_website_access",

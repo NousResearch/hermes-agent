@@ -28,6 +28,7 @@ from gateway.platforms.api_server import (
     _CORS_HEADERS,
     check_api_server_requirements,
     cors_middleware,
+    security_headers_middleware,
 )
 
 
@@ -214,9 +215,11 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    app = web.Application(middlewares=[cors_middleware])
+    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
@@ -242,10 +245,31 @@ def auth_adapter():
 
 class TestHealthEndpoint:
     @pytest.mark.asyncio
+    async def test_security_headers_present(self, adapter):
+        """Responses should include basic security headers."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("Referrer-Policy") == "no-referrer"
+
+    @pytest.mark.asyncio
     async def test_health_returns_ok(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+            assert data["platform"] == "hermes-agent"
+
+    @pytest.mark.asyncio
+    async def test_v1_health_alias_returns_ok(self, adapter):
+        """GET /v1/health should return the same response as /health."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/health")
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "ok"
@@ -354,6 +378,129 @@ class TestChatCompletionsEndpoint:
                 assert "data: " in body
                 assert "[DONE]" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_survives_tool_call_none_sentinel(self, adapter):
+        """stream_delta_callback(None) mid-stream (tool calls) must NOT kill the SSE stream.
+
+        The agent fires stream_delta_callback(None) to tell the CLI display to
+        close its response box before executing tool calls.  The API server's
+        _on_delta must filter this out so the SSE response stays open and the
+        final answer (streamed after tool execution) reaches the client.
+        """
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    # Simulate: agent streams partial text, then fires None
+                    # (tool call box-close signal), then streams the final answer
+                    cb("Thinking")
+                    cb(None)          # mid-stream None from tool calls
+                    await asyncio.sleep(0.05)  # simulate tool execution delay
+                    cb(" about it...")
+                    cb(None)          # another None (possible second tool round)
+                    await asyncio.sleep(0.05)
+                    cb(" The answer is 42.")
+                return (
+                    {"final_response": "Thinking about it... The answer is 42.", "messages": [], "api_calls": 3},
+                    {"input_tokens": 20, "output_tokens": 15, "total_tokens": 35},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "What is the answer?"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # The final answer text must appear in the SSE stream
+                assert "The answer is 42." in body
+                # All partial text must be present too
+                assert "Thinking" in body
+                assert " about it..." in body
+
+    @pytest.mark.asyncio
+    async def test_stream_includes_tool_progress(self, adapter):
+        """tool_progress_callback fires → progress appears in the SSE stream."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                # Simulate tool progress before streaming content
+                if tp_cb:
+                    tp_cb("terminal", "ls -la", {"command": "ls -la"})
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Here are the files.")
+                return (
+                    {"final_response": "Here are the files.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "list files"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # Tool progress message must appear in the stream
+                assert "ls -la" in body
+                # Final content must also be present
+                assert "Here are the files." in body
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_progress_skips_internal_events(self, adapter):
+        """Internal events (name starting with _) are not streamed."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                if tp_cb:
+                    tp_cb("_thinking", "some internal state", {})
+                    tp_cb("web_search", "Python docs", {"query": "Python docs"})
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Found it.")
+                return (
+                    {"final_response": "Found it.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "search"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                # Internal _thinking event should NOT appear
+                assert "some internal state" not in body
+                # Real tool progress should appear
+                assert "Python docs" in body
 
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
@@ -1253,6 +1400,31 @@ class TestCORS:
             assert "DELETE" in resp.headers.get("Access-Control-Allow-Methods", "")
 
     @pytest.mark.asyncio
+    async def test_cors_allows_idempotency_key_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Idempotency-Key",
+                },
+            )
+            assert resp.status == 200
+            assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+    @pytest.mark.asyncio
+    async def test_cors_sets_vary_origin_header(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health", headers={"Origin": "http://localhost:3000"})
+            assert resp.status == 200
+            assert resp.headers.get("Vary") == "Origin"
+
+    @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
@@ -1271,6 +1443,21 @@ class TestCORS:
             assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
 
 
+    @pytest.mark.asyncio
+    async def test_cors_preflight_sets_max_age(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/chat/completions",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Authorization, Content-Type",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Max-Age") == "600"
 # ---------------------------------------------------------------------------
 # Conversation parameter
 # ---------------------------------------------------------------------------
@@ -1389,3 +1576,110 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+
+# ---------------------------------------------------------------------------
+# X-Hermes-Session-Id header (session continuity)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdHeader:
+    @pytest.mark.asyncio
+    async def test_new_session_response_includes_session_id_header(self, adapter):
+        """Without X-Hermes-Session-Id, a new session is created and returned in the header."""
+        mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Session-Id") is not None
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_is_used_and_echoed(self, adapter):
+        """When X-Hermes-Session-Id is provided, it's passed to the agent and echoed in the response."""
+        mock_result = {"final_response": "Continuing!", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "previous message"},
+            {"role": "assistant", "content": "previous reply"},
+        ]
+        adapter._session_db = mock_db
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "my-session-123"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == "my-session-123"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_loads_history_from_db(self, adapter):
+        """When X-Hermes-Session-Id is provided, history comes from SessionDB not request body."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        db_history = [
+            {"role": "user", "content": "stored message 1"},
+            {"role": "assistant", "content": "stored reply 1"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        adapter._session_db = mock_db
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "existing-session"},
+                    # Request body has different history — should be ignored
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [
+                            {"role": "user", "content": "old msg from client"},
+                            {"role": "assistant", "content": "old reply from client"},
+                            {"role": "user", "content": "new question"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            # History must come from DB, not from the request body
+            assert call_kwargs["conversation_history"] == db_history
+            assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_db_failure_falls_back_to_empty_history(self, adapter):
+        """If SessionDB raises, history falls back to empty and request still succeeds."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        # Simulate DB failure: _session_db is None and SessionDB() constructor raises
+        adapter._session_db = None
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+                 patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "some-session"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == []
+            assert call_kwargs["session_id"] == "some-session"

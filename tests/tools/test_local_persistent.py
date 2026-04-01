@@ -63,6 +63,18 @@ class TestLocalOneShotRegression:
         assert r["output"].strip() == ""
         env.cleanup()
 
+    def test_oneshot_heredoc_does_not_leak_fence_wrapper(self):
+        """Heredoc closing line must not be merged with the fence wrapper tail."""
+        env = LocalEnvironment(persistent=False)
+        cmd = "cat <<'H_EOF'\nheredoc body line\nH_EOF"
+        r = env.execute(cmd)
+        env.cleanup()
+        assert r["returncode"] == 0
+        assert "heredoc body line" in r["output"]
+        assert "__hermes_rc" not in r["output"]
+        assert "printf '" not in r["output"]
+        assert "exit $" not in r["output"]
+
 
 class TestLocalPersistent:
     @pytest.fixture

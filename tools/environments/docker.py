@@ -312,6 +312,38 @@ class DockerEnvironment(BaseEnvironment):
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
+        # Mount credential files (OAuth tokens, etc.) declared by skills.
+        # Read-only so the container can authenticate but not modify host creds.
+        try:
+            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
+
+            for mount_entry in get_credential_file_mounts():
+                volume_args.extend([
+                    "-v",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+
+            # Mount the skills directory so skill scripts/templates are
+            # available inside the container at the same relative path.
+            skills_mount = get_skills_directory_mount()
+            if skills_mount:
+                volume_args.extend([
+                    "-v",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Docker: could not load credential file mounts: %s", e)
+
         logger.info(f"Docker volume_args: {volume_args}")
         all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
         logger.info(f"Docker run_args: {all_run_args}")
@@ -406,8 +438,17 @@ class DockerEnvironment(BaseEnvironment):
         if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
-        hermes_env = _load_hermes_env_vars() if self._forward_env else {}
-        for key in self._forward_env:
+        # Combine explicit docker_forward_env with skill-declared env_passthrough
+        # vars so skills that declare required_environment_variables (e.g. Notion)
+        # have their keys forwarded into the container automatically.
+        forward_keys = set(self._forward_env)
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            forward_keys |= get_all_passthrough()
+        except Exception:
+            pass
+        hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        for key in sorted(forward_keys):
             value = os.getenv(key)
             if value is None:
                 value = hermes_env.get(key)

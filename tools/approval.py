@@ -13,9 +13,25 @@ import os
 import re
 import sys
 import threading
+import unicodedata
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Sensitive write targets that should trigger approval even when referenced
+# via shell expansions like $HOME or $HERMES_HOME.
+_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+_HERMES_ENV_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'\.env\b'
+)
+_SENSITIVE_WRITE_TARGET = (
+    r'(?:/etc/|/dev/sd|'
+    rf'{_SSH_SENSITIVE_PATH}|'
+    rf'{_HERMES_ENV_PATH})'
+)
 
 # =========================================================================
 # Dangerous command patterns
@@ -25,8 +41,8 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),
+    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
+    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
@@ -45,13 +61,20 @@ DANGEROUS_PATTERNS = [
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    (r'\btee\b.*(/etc/|/dev/sd|\.ssh/|\.hermes/\.env)', "overwrite system file via tee"),
+    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    # Self-termination protection: prevent agent from killing its own process
+    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # File copy/move/edit into sensitive system paths
+    (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
+    (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
+    (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
 ]
 
 
@@ -82,13 +105,31 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+def _normalize_command_for_detection(command: str) -> str:
+    """Normalize a command string before dangerous-pattern matching.
+
+    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
+    null bytes, and normalizes Unicode fullwidth characters so that
+    obfuscation techniques cannot bypass the pattern-based detection.
+    """
+    from tools.ansi_strip import strip_ansi
+
+    # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
+    command = strip_ansi(command)
+    # Strip null bytes
+    command = command.replace('\x00', '')
+    # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
+    command = unicodedata.normalize('NFKC', command)
+    return command
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = command.lower()
+    command_lower = _normalize_command_for_detection(command).lower()
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
             pattern_key = description
@@ -200,7 +241,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int = 60,
+                              timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
@@ -215,6 +256,9 @@ def prompt_dangerous_approval(command: str, description: str,
 
     Returns: 'once', 'session', 'always', or 'deny'
     """
+    if timeout_seconds is None:
+        timeout_seconds = _get_approval_timeout()
+
     if approval_callback is not None:
         try:
             return approval_callback(command, description,
@@ -295,15 +339,28 @@ def _normalize_approval_mode(mode) -> str:
     return "manual"
 
 
-def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+def _get_approval_config() -> dict:
+    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        mode = config.get("approvals", {}).get("mode", "manual")
-        return _normalize_approval_mode(mode)
+        return config.get("approvals", {}) or {}
     except Exception:
-        return "manual"
+        return {}
+
+
+def _get_approval_mode() -> str:
+    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    mode = _get_approval_config().get("mode", "manual")
+    return _normalize_approval_mode(mode)
+
+
+def _get_approval_timeout() -> int:
+    """Read the approval timeout from config. Defaults to 60 seconds."""
+    try:
+        return int(_get_approval_config().get("timeout", 60))
+    except (ValueError, TypeError):
+        return 60
 
 
 def _smart_approve(command: str, description: str) -> str:
@@ -437,6 +494,33 @@ def check_dangerous_command(command: str, env_type: str,
 # Combined pre-exec guard (tirith + dangerous command detection)
 # =========================================================================
 
+def _format_tirith_description(tirith_result: dict) -> str:
+    """Build a human-readable description from tirith findings.
+
+    Includes severity, title, and description for each finding so users
+    can make an informed approval decision.
+    """
+    findings = tirith_result.get("findings") or []
+    if not findings:
+        summary = tirith_result.get("summary") or "security issue detected"
+        return f"Security scan: {summary}"
+
+    parts = []
+    for f in findings:
+        severity = f.get("severity", "")
+        title = f.get("title", "")
+        desc = f.get("description", "")
+        if title and desc:
+            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+        elif title:
+            parts.append(f"[{severity}] {title}" if severity else title)
+    if not parts:
+        summary = tirith_result.get("summary") or "security issue detected"
+        return f"Security scan: {summary}"
+
+    return "Security scan — " + "; ".join(parts)
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
@@ -480,24 +564,20 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 2: Decide ---
 
-    # If tirith blocks, block immediately (no approval possible)
-    if tirith_result["action"] == "block":
-        summary = tirith_result.get("summary") or "security issue detected"
-        return {
-            "approved": False,
-            "message": f"BLOCKED: Command blocked by security scan ({summary}). Do NOT retry.",
-        }
-
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
     session_key = os.getenv("HERMES_SESSION_KEY", "default")
 
-    if tirith_result["action"] == "warn":
+    # Tirith block/warn → approvable warning with rich findings.
+    # Previously, tirith "block" was a hard block with no approval prompt.
+    # Now both block and warn go through the approval flow so users can
+    # inspect the explanation and approve if they understand the risk.
+    if tirith_result["action"] in ("block", "warn"):
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
-        tirith_desc = f"Security scan: {tirith_result.get('summary') or 'security warning detected'}"
+        tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 

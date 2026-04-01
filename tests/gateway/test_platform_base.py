@@ -62,6 +62,18 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="/")
         assert event.get_command() == ""
 
+    def test_command_with_at_botname(self):
+        event = MessageEvent(text="/new@TigerNanoBot")
+        assert event.get_command() == "new"
+
+    def test_command_with_at_botname_and_args(self):
+        event = MessageEvent(text="/compress@TigerNanoBot")
+        assert event.get_command() == "compress"
+
+    def test_command_mixed_case_with_at_botname(self):
+        event = MessageEvent(text="/RESET@TigerNanoBot")
+        assert event.get_command() == "reset"
+
 
 class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):

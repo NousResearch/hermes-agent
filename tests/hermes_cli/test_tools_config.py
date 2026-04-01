@@ -35,6 +35,39 @@ def test_platform_toolset_summary_uses_explicit_platform_list():
     assert summary["cli"] == _get_platform_tools(config, "cli")
 
 
+def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
+    config = {
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+            "disabled-server": {"url": "https://example.com/mcp", "enabled": False},
+        }
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "exa" in enabled
+    assert "web-search-prime" in enabled
+    assert "disabled-server" not in enabled
+
+
+def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
+    config = {
+        "platform_toolsets": {"cli": ["web", "memory"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
+    assert "memory" in enabled
+    assert "exa" in enabled
+    assert "web-search-prime" in enabled
+
+
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text(
@@ -204,3 +237,53 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
 
     # Deselected configurable toolset removed
     assert "terminal" not in saved
+
+
+# ── Platform / toolset consistency ────────────────────────────────────────────
+
+
+class TestPlatformToolsetConsistency:
+    """Every platform in tools_config.PLATFORMS must have a matching toolset."""
+
+    def test_all_platforms_have_toolset_definitions(self):
+        """Each platform's default_toolset must exist in TOOLSETS."""
+        from hermes_cli.tools_config import PLATFORMS
+        from toolsets import TOOLSETS
+
+        for platform, meta in PLATFORMS.items():
+            ts_name = meta["default_toolset"]
+            assert ts_name in TOOLSETS, (
+                f"Platform {platform!r} references toolset {ts_name!r} "
+                f"which is not defined in toolsets.py"
+            )
+
+    def test_gateway_toolset_includes_all_messaging_platforms(self):
+        """hermes-gateway includes list should cover all messaging platforms."""
+        from hermes_cli.tools_config import PLATFORMS
+        from toolsets import TOOLSETS
+
+        gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
+        # Exclude non-messaging platforms from the check
+        non_messaging = {"cli", "api_server"}
+        for platform, meta in PLATFORMS.items():
+            if platform in non_messaging:
+                continue
+            ts_name = meta["default_toolset"]
+            assert ts_name in gateway_includes, (
+                f"Platform {platform!r} toolset {ts_name!r} missing from "
+                f"hermes-gateway includes"
+            )
+
+    def test_skills_config_covers_tools_config_platforms(self):
+        """skills_config.PLATFORMS should have entries for all gateway platforms."""
+        from hermes_cli.tools_config import PLATFORMS as TOOLS_PLATFORMS
+        from hermes_cli.skills_config import PLATFORMS as SKILLS_PLATFORMS
+
+        non_messaging = {"api_server"}
+        for platform in TOOLS_PLATFORMS:
+            if platform in non_messaging:
+                continue
+            assert platform in SKILLS_PLATFORMS, (
+                f"Platform {platform!r} in tools_config but missing from "
+                f"skills_config PLATFORMS"
+            )

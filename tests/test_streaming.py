@@ -39,10 +39,15 @@ def _make_stream_chunk(
     return chunk
 
 
-def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None):
+def _make_tool_call_delta(index=0, tc_id=None, name=None, arguments=None, extra_content=None, model_extra=None):
     """Build a mock tool call delta."""
     func = SimpleNamespace(name=name, arguments=arguments)
-    return SimpleNamespace(index=index, id=tc_id, function=func)
+    delta = SimpleNamespace(index=index, id=tc_id, function=func)
+    if extra_content is not None:
+        delta.extra_content = extra_content
+    if model_extra is not None:
+        delta.model_extra = model_extra
+    return delta
 
 
 def _make_empty_chunk(model=None, usage=None):
@@ -131,6 +136,52 @@ class TestStreamingAccumulator:
         assert tc[0].id == "call_123"
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_call_extra_content_preserved(self, mock_close, mock_create):
+        """Streamed tool calls preserve provider-specific extra_content metadata."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_gemini",
+                    name="cronjob",
+                    model_extra={
+                        "extra_content": {
+                            "google": {"thought_signature": "sig-123"}
+                        }
+                    },
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"task": "deep index on ."}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tc = response.choices[0].message.tool_calls
+        assert tc is not None
+        assert tc[0].extra_content == {
+            "google": {"thought_signature": "sig-123"}
+        }
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
@@ -311,9 +362,11 @@ class TestStreamingCallbacks:
 
         # Text before tool call IS fired (we don't know yet it will have tools)
         assert "thinking..." in deltas
-        # Text after tool call is NOT fired
-        assert " more text" not in deltas
-        # But content is still accumulated in the response
+        # Text after tool call IS still routed to stream_delta_callback so that
+        # reasoning tag extraction can fire (PR #3566).  Display-level suppression
+        # of non-reasoning text happens in the CLI's _stream_delta, not here.
+        assert " more text" in deltas
+        # Content is still accumulated in the response
         assert response.choices[0].message.content == "thinking... more text"
 
 
@@ -435,6 +488,166 @@ class TestStreamingFallback:
 
         with pytest.raises(Exception, match="Rate limit exceeded"):
             agent._interruptible_streaming_api_call({})
+
+    @patch("run_agent.AIAgent._interruptible_api_call")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_exhausted_transient_stream_error_falls_back(self, mock_close, mock_create, mock_non_stream):
+        """Transient stream errors retry first, then fall back after retries are exhausted."""
+        from run_agent import AIAgent
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = httpx.ConnectError("socket closed")
+        mock_create.return_value = mock_client
+
+        fallback_response = SimpleNamespace(
+            id="fallback",
+            model="test",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="fallback after retries exhausted",
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        mock_non_stream.return_value = fallback_response
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "fallback after retries exhausted"
+        assert mock_client.chat.completions.create.call_count == 3
+        mock_non_stream.assert_called_once()
+        assert mock_close.call_count >= 1
+
+    @patch("run_agent.AIAgent._interruptible_api_call")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create, mock_non_stream):
+        """SSE 'Network connection lost' (APIError w/ no status_code) retries like httpx errors.
+
+        OpenRouter sends {"error":{"message":"Network connection lost."}} as an SSE
+        event when the upstream stream drops.  The OpenAI SDK raises APIError from
+        this.  It should be retried at the streaming level, same as httpx connection
+        errors, before falling back to non-streaming.
+        """
+        from run_agent import AIAgent
+        import httpx
+
+        # Create an APIError that mimics what the OpenAI SDK raises from SSE error events.
+        # Key: no status_code attribute (unlike APIStatusError which has one).
+        from openai import APIError as OAIAPIError
+        sse_error = OAIAPIError(
+            message="Network connection lost.",
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+            body={"message": "Network connection lost."},
+        )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = sse_error
+        mock_create.return_value = mock_client
+
+        fallback_response = SimpleNamespace(
+            id="fallback",
+            model="test",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="fallback after SSE retries",
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        mock_non_stream.return_value = fallback_response
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "fallback after SSE retries"
+        # Should retry 3 times (default HERMES_STREAM_RETRIES=2 → 3 attempts)
+        # before falling back to non-streaming
+        assert mock_client.chat.completions.create.call_count == 3
+        mock_non_stream.assert_called_once()
+        # Connection cleanup should happen for each failed retry
+        assert mock_close.call_count >= 2
+
+    @patch("run_agent.AIAgent._interruptible_api_call")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sse_non_connection_error_falls_back_immediately(self, mock_close, mock_create, mock_non_stream):
+        """SSE errors that aren't connection-related still fall back immediately (no stream retry)."""
+        from run_agent import AIAgent
+        import httpx
+
+        from openai import APIError as OAIAPIError
+        sse_error = OAIAPIError(
+            message="Invalid model configuration.",
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+            body={"message": "Invalid model configuration."},
+        )
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = sse_error
+        mock_create.return_value = mock_client
+
+        fallback_response = SimpleNamespace(
+            id="fallback",
+            model="test",
+            choices=[SimpleNamespace(
+                index=0,
+                message=SimpleNamespace(
+                    role="assistant",
+                    content="fallback no retry",
+                    tool_calls=None,
+                    reasoning_content=None,
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        mock_non_stream.return_value = fallback_response
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "fallback no retry"
+        # Should NOT retry — goes straight to non-streaming fallback
+        assert mock_client.chat.completions.create.call_count == 1
+        mock_non_stream.assert_called_once()
 
 
 # ── Test: Reasoning Streaming ────────────────────────────────────────────
@@ -569,3 +782,35 @@ class TestCodexStreamCallbacks:
 
         response = agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
+
+    def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
+        from run_agent import AIAgent
+        import httpx
+
+        fallback_response = SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="fallback from create stream")],
+            )],
+            status="completed",
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.side_effect = httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body"
+        )
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        with patch.object(agent, "_run_codex_create_stream_fallback", return_value=fallback_response) as mock_fallback:
+            response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response is fallback_response
+        mock_fallback.assert_called_once_with({}, client=mock_client)

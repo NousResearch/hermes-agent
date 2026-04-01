@@ -126,9 +126,20 @@ class TestAppMentionHandler:
             "user": "testbot",
         })
 
+        # Mock AsyncWebClient so multi-workspace auth_test is awaitable
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+
         with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
              patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("asyncio.create_task"):
             asyncio.run(adapter.connect())
 
@@ -946,3 +957,100 @@ class TestFallbackPreservesThreadContext:
 
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "important screenshot" in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
+# TestProgressMessageThread
+# ---------------------------------------------------------------------------
+
+class TestProgressMessageThread:
+    """Verify that progress messages go to the correct thread.
+
+    Issue #2954: For Slack DM top-level messages, source.thread_id is None
+    but the final reply is threaded under the user's message via reply_to.
+    Progress messages must use the same thread anchor (the original message's
+    ts) so they appear in the thread instead of the DM root.
+    """
+
+    @pytest.mark.asyncio
+    async def test_dm_toplevel_progress_uses_message_ts_as_thread(self, adapter):
+        """Progress messages for a top-level DM should go into the reply thread."""
+        # Simulate a top-level DM: no thread_ts in the event
+        event = {
+            "channel": "D_DM",
+            "channel_type": "im",
+            "user": "U_USER",
+            "text": "Hello bot",
+            "ts": "1234567890.000001",
+            # No thread_ts — this is a top-level DM
+        }
+
+        captured_events = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+
+        # Patch _resolve_user_name to avoid async Slack API call
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured_events) == 1
+        msg_event = captured_events[0]
+        source = msg_event.source
+
+        # For a top-level DM: source.thread_id should remain None
+        # (session keying must not be affected)
+        assert source.thread_id is None, (
+            "source.thread_id must stay None for top-level DMs "
+            "so they share one continuous session"
+        )
+
+        # The message_id should be the event's ts — this is what the gateway
+        # passes as event_message_id so progress messages can thread correctly
+        assert msg_event.message_id == "1234567890.000001", (
+            "message_id must equal the event ts so _run_agent can use it as "
+            "the fallback thread anchor for progress messages"
+        )
+
+        # Verify that the Slack send() method correctly threads a message
+        # when metadata contains thread_id equal to the original ts
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+        result = await adapter.send(
+            chat_id="D_DM",
+            content="⚙️ working...",
+            metadata={"thread_id": msg_event.message_id},
+        )
+        assert result.success
+        call_kwargs = adapter._app.client.chat_postMessage.call_args[1]
+        assert call_kwargs.get("thread_ts") == "1234567890.000001", (
+            "send() must pass thread_ts when metadata has thread_id, "
+            "ensuring progress messages land in the thread"
+        )
+
+    @pytest.mark.asyncio
+    async def test_channel_mention_progress_uses_thread_ts(self, adapter):
+        """Progress messages for a channel @mention should go into the reply thread."""
+        # Simulate an @mention in a channel: the event ts becomes the thread anchor
+        event = {
+            "channel": "C_CHAN",
+            "channel_type": "channel",
+            "user": "U_USER",
+            "text": f"<@U_BOT> help me",
+            "ts": "2000000000.000001",
+            # No thread_ts — top-level channel message
+        }
+
+        captured_events = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured_events) == 1
+        msg_event = captured_events[0]
+        source = msg_event.source
+
+        # For channel @mention: thread_id should equal the event ts (fallback)
+        assert source.thread_id == "2000000000.000001", (
+            "source.thread_id must equal the event ts for channel messages "
+            "so each @mention starts its own thread"
+        )
+        assert msg_event.message_id == "2000000000.000001"

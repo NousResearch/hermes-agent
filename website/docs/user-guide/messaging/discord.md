@@ -19,6 +19,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
+| **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
 
 :::tip
 If you want a normal bot-help channel where people can talk to Hermes without tagging it every time, add that channel to `DISCORD_FREE_RESPONSE_CHANNELS`.
@@ -95,11 +96,15 @@ You'll land on the **General Information** page. Note the **Application ID** —
 1. In the left sidebar, click **Bot**.
 2. Discord automatically creates a bot user for your application. You'll see the bot's username, which you can customize.
 3. Under **Authorization Flow**:
-   - Set **Public Bot** to **OFF** — this prevents other people from inviting your bot to their servers.
+   - Set **Public Bot** to **ON** — required to use the Discord-provided invite link (recommended). This allows the Installation tab to generate a default authorization URL.
    - Leave **Require OAuth2 Code Grant** set to **OFF**.
 
 :::tip
 You can set a custom avatar and banner for your bot on this page. This is what users will see in Discord.
+:::
+
+:::info[Private Bot Alternative]
+If you prefer to keep your bot private (Public Bot = OFF), you **must** use the **Manual URL** method in Step 5 instead of the Installation tab. The Discord-provided link requires Public Bot to be enabled.
 :::
 
 ## Step 3: Enable Privileged Gateway Intents
@@ -148,6 +153,10 @@ Store the token somewhere safe (a password manager, for example). You'll need it
 You need an OAuth2 URL to invite the bot to your server. There are two ways to do this:
 
 ### Option A: Using the Installation Tab (Recommended)
+
+:::note[Requires Public Bot]
+This method requires **Public Bot** to be set to **ON** in Step 2. If you set Public Bot to OFF, use the Manual URL method below instead.
+:::
 
 1. In the left sidebar, click **Installation**.
 2. Under **Installation Contexts**, enable **Guild Install**.
@@ -245,6 +254,9 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # DISCORD_FREE_RESPONSE_CHANNELS=1234567890,9876543210
+
+# Optional: ignore messages that @mention other users but NOT the bot (default: true)
+# DISCORD_IGNORE_NO_MENTION=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -361,3 +373,6 @@ Always set `DISCORD_ALLOWED_USERS` to restrict who can interact with the bot. Wi
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
+
+
+

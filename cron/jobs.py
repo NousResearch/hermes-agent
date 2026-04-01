@@ -14,6 +14,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_DIR = get_hermes_home()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
@@ -326,7 +327,20 @@ def load_jobs() -> List[Dict[str, Any]]:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
-    except (json.JSONDecodeError, IOError):
+    except json.JSONDecodeError:
+        # Retry with strict=False to handle bare control chars in string values
+        try:
+            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+                data = json.loads(f.read(), strict=False)
+                jobs = data.get("jobs", [])
+                if jobs:
+                    # Auto-repair: rewrite with proper escaping
+                    save_jobs(jobs)
+                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+                return jobs
+        except Exception:
+            return []
+    except IOError:
         return []
 
 
@@ -595,6 +609,34 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             return
     
     save_jobs(jobs)
+
+
+def advance_next_run(job_id: str) -> bool:
+    """Preemptively advance next_run_at for a recurring job before execution.
+
+    Call this BEFORE run_job() so that if the process crashes mid-execution,
+    the job won't re-fire on the next gateway restart.  This converts the
+    scheduler from at-least-once to at-most-once for recurring jobs — missing
+    one run is far better than firing dozens of times in a crash loop.
+
+    One-shot jobs are left unchanged so they can still retry on restart.
+
+    Returns True if next_run_at was advanced, False otherwise.
+    """
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == job_id:
+            kind = job.get("schedule", {}).get("kind")
+            if kind not in ("cron", "interval"):
+                return False
+            now = _hermes_now().isoformat()
+            new_next = compute_next_run(job["schedule"], now)
+            if new_next and new_next != job.get("next_run_at"):
+                job["next_run_at"] = new_next
+                save_jobs(jobs)
+                return True
+            return False
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

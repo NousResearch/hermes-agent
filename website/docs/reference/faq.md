@@ -254,7 +254,7 @@ custom_providers:
         context_length: 32768
 ```
 
-See [Context Length Detection](../user-guide/configuration.md#context-length-detection) for how auto-detection works and all override options.
+See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 
 ---
 
@@ -355,6 +355,23 @@ lsof -i :8080
 
 # Verify configuration
 hermes config show
+```
+
+#### macOS: Node.js / ffmpeg / other tools not found by gateway
+
+**Cause:** launchd services inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that doesn't include Homebrew, nvm, cargo, or other user-installed tool directories. This commonly breaks the WhatsApp bridge (`node not found`) or voice transcription (`ffmpeg not found`).
+
+**Solution:** The gateway captures your shell PATH when you run `hermes gateway install`. If you installed tools after setting up the gateway, re-run the install to capture the updated PATH:
+
+```bash
+hermes gateway install    # Re-snapshots your current PATH
+hermes gateway start      # Detects the updated plist and reloads
+```
+
+You can verify the plist has the correct PATH:
+```bash
+/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" \
+  ~/Library/LaunchAgents/ai.hermes.gateway.plist
 ```
 
 ---
@@ -469,6 +486,44 @@ See also:
 :::warning
 If an MCP server crashes mid-request, Hermes will report a timeout. Check the server's own logs (not just Hermes logs) to diagnose the root cause.
 :::
+
+---
+
+## Profiles
+
+### How do profiles differ from just setting HERMES_HOME?
+
+Profiles are a managed layer on top of `HERMES_HOME`. You *could* manually set `HERMES_HOME=/some/path` before every command, but profiles handle all the plumbing for you: creating the directory structure, generating shell aliases (`hermes-work`), tracking the active profile in `~/.hermes/active_profile`, and syncing skill updates across all profiles automatically. They also integrate with tab completion so you don't have to remember paths.
+
+### Can two profiles share the same bot token?
+
+No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access to a bot token. If two profiles try to use the same token simultaneously, the second gateway will fail to connect. Create a separate bot per profile — for Telegram, talk to [@BotFather](https://t.me/BotFather) to make additional bots.
+
+### Do profiles share memory or sessions?
+
+No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile.
+
+### What happens when I run `hermes update`?
+
+`hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
+
+### Can I move a profile to a different machine?
+
+Yes. Export the profile to a portable archive and import it on the other machine:
+
+```bash
+# On the source machine
+hermes profile export work ./work-backup.tar.gz
+
+# Copy the file to the target machine, then:
+hermes profile import ./work-backup.tar.gz work
+```
+
+The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
+
+### How many profiles can I run?
+
+There is no hard limit. Each profile is just a directory under `~/.hermes/profiles/`. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
 
 ---
 

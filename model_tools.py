@@ -253,7 +253,7 @@ def get_tool_definitions(
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
-    if enabled_toolsets:
+    if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)

@@ -22,6 +22,61 @@ The security model has five layers:
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
 
+### Approval Modes
+
+The approval system supports three modes, configured via `approvals.mode` in `~/.hermes/config.yaml`:
+
+```yaml
+approvals:
+  mode: manual    # manual | smart | off
+  timeout: 60     # seconds to wait for user response (default: 60)
+```
+
+| Mode | Behavior |
+|------|----------|
+| **manual** (default) | Always prompt the user for approval on dangerous commands |
+| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+
+:::warning
+Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
+:::
+
+### YOLO Mode
+
+YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:
+
+1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
+2. **Slash command**: Type `/yolo` during a session to toggle it on/off
+3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
+
+The `/yolo` command is a **toggle** — each use flips the mode on or off:
+
+```
+> /yolo
+  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
+
+> /yolo
+  ⚠ YOLO mode OFF — dangerous commands will require approval.
+```
+
+YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
+
+:::danger
+YOLO mode disables **all** dangerous command safety checks for the session. Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
+:::
+
+### Approval Timeout
+
+When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
+
+Configure the timeout in `~/.hermes/config.yaml`:
+
+```yaml
+approvals:
+  timeout: 60  # seconds (default: 60)
+```
+
 ### What Triggers Approval
 
 The following patterns trigger approval prompts (defined in `tools/approval.py`):
@@ -30,19 +85,32 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 |---------|-------------|
 | `rm -r` / `rm --recursive` | Recursive delete |
 | `rm ... /` | Delete in root path |
-| `chmod 777` | World-writable permissions |
+| `chmod 777/666` / `o+w` / `a+w` | World/other-writable permissions |
+| `chmod --recursive` with unsafe perms | Recursive world/other-writable (long flag) |
+| `chown -R root` / `chown --recursive root` | Recursive chown to root |
 | `mkfs` | Format filesystem |
 | `dd if=` | Disk copy |
+| `> /dev/sd` | Write to block device |
 | `DROP TABLE/DATABASE` | SQL DROP |
 | `DELETE FROM` (without WHERE) | SQL DELETE without WHERE |
 | `TRUNCATE TABLE` | SQL TRUNCATE |
 | `> /etc/` | Overwrite system config |
 | `systemctl stop/disable/mask` | Stop/disable system services |
 | `kill -9 -1` | Kill all processes |
-| `curl ... \| sh` | Pipe remote content to shell |
-| `bash -c`, `python -e` | Shell/script execution via flags |
-| `find -exec rm`, `find -delete` | Find with destructive actions |
+| `pkill -9` | Force kill processes |
 | Fork bomb patterns | Fork bombs |
+| `bash -c` / `sh -c` / `zsh -c` / `ksh -c` | Shell command execution via `-c` flag (including combined flags like `-lc`) |
+| `python -e` / `perl -e` / `ruby -e` / `node -c` | Script execution via `-e`/`-c` flag |
+| `curl ... \| sh` / `wget ... \| sh` | Pipe remote content to shell |
+| `bash <(curl ...)` / `sh <(wget ...)` | Execute remote script via process substitution |
+| `tee` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via tee |
+| `>` / `>>` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via redirection |
+| `xargs rm` | xargs with rm |
+| `find -exec rm` / `find -delete` | Find with destructive actions |
+| `cp`/`mv`/`install` to `/etc/` | Copy/move file into system config |
+| `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
+| `pkill`/`killall` hermes/gateway | Self-termination prevention |
+| `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
 **Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -276,7 +344,11 @@ required_environment_variables:
     help: Get a key from https://developers.google.com/tenor
 ```
 
-After loading this skill, `TENOR_API_KEY` passes through to both `execute_code` and `terminal` subprocesses — no manual configuration needed.
+After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends (Docker, Modal)** — no manual configuration needed.
+
+:::info Docker & Modal
+Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into Docker containers and Modal sandboxes without needing to add them to `docker_forward_env` manually.
+:::
 
 **2. Config-based passthrough (manual)**
 
@@ -289,17 +361,49 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
+
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` in `~/.hermes/`. Skills declare these in frontmatter:
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+When loaded, Hermes checks if these files exist in `~/.hermes/` and registers them for mounting:
+
+- **Docker**: Read-only bind mounts (`-v host:container:ro`)
+- **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)
+- **Local**: No action needed (files already accessible)
+
+You can also list credential files manually in `config.yaml`:
+
+```yaml
+terminal:
+  credential_files:
+    - google_token.json
+    - my_custom_oauth_token.json
+```
+
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container.
+
 ### What Each Sandbox Filters
 
 | Sandbox | Default Filter | Passthrough Override |
 |---------|---------------|---------------------|
 | **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
 | **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
+| **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
 | **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
 
 ### Security Considerations
 
 - The passthrough only affects vars you or your skills explicitly declare — the default security posture is unchanged for arbitrary LLM-generated code
+- Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
 - Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
@@ -392,7 +496,7 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
-Tirith's verdict integrates with the approval flow: safe commands pass through, suspicious commands trigger user approval, and dangerous commands are blocked.
+Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
 ### Context File Injection Protection
 

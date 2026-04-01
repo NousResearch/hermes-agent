@@ -12,10 +12,13 @@ from hermes_cli.commands import (
     SUBCOMMANDS,
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
+    _TG_NAME_LIMIT,
+    _clamp_telegram_names,
     gateway_help_lines,
     resolve_command,
     slack_subcommand_map,
     telegram_bot_commands,
+    telegram_menu_commands,
 )
 
 
@@ -134,11 +137,18 @@ class TestDerivedDicts:
 # ---------------------------------------------------------------------------
 
 class TestGatewayKnownCommands:
-    def test_excludes_cli_only(self):
+    def test_excludes_cli_only_without_config_gate(self):
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
                     f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
+
+    def test_includes_config_gated_cli_only(self):
+        """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
+        for cmd in COMMAND_REGISTRY:
+            if cmd.gateway_config_gate:
+                assert cmd.name in GATEWAY_KNOWN_COMMANDS, \
+                    f"config-gated command '{cmd.name}' should be in GATEWAY_KNOWN_COMMANDS"
 
     def test_includes_gateway_commands(self):
         for cmd in COMMAND_REGISTRY:
@@ -160,11 +170,11 @@ class TestGatewayHelpLines:
         lines = gateway_help_lines()
         assert len(lines) > 10
 
-    def test_excludes_cli_only_commands(self):
+    def test_excludes_cli_only_commands_without_config_gate(self):
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 assert f"`/{cmd.name}" not in joined, \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
@@ -188,10 +198,10 @@ class TestTelegramBotCommands:
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
 
-    def test_excludes_cli_only(self):
+    def test_excludes_cli_only_without_config_gate(self):
         names = {name for name, _ in telegram_bot_commands()}
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 tg_name = cmd.name.replace("-", "_")
                 assert tg_name not in names
 
@@ -211,11 +221,82 @@ class TestSlackSubcommandMap:
         assert "bg" in mapping
         assert "reset" in mapping
 
-    def test_excludes_cli_only(self):
+    def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()
         for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only:
+            if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+
+# ---------------------------------------------------------------------------
+# Config-gated gateway commands
+# ---------------------------------------------------------------------------
+
+class TestGatewayConfigGate:
+    """Tests for the gateway_config_gate mechanism on CommandDef."""
+
+    def test_verbose_has_config_gate(self):
+        cmd = resolve_command("verbose")
+        assert cmd is not None
+        assert cmd.cli_only is True
+        assert cmd.gateway_config_gate == "display.tool_progress_command"
+
+    def test_verbose_in_gateway_known_commands(self):
+        """Config-gated commands are always recognized by the gateway."""
+        assert "verbose" in GATEWAY_KNOWN_COMMANDS
+
+    def test_config_gate_excluded_from_help_when_off(self, tmp_path, monkeypatch):
+        """When the config gate is falsy, the command should not appear in help."""
+        # Write a config with the gate off (default)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/verbose" not in joined
+
+    def test_config_gate_included_in_help_when_on(self, tmp_path, monkeypatch):
+        """When the config gate is truthy, the command should appear in help."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/verbose" in joined
+
+    def test_config_gate_excluded_from_telegram_when_off(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "verbose" not in names
+
+    def test_config_gate_included_in_telegram_when_on(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "verbose" in names
+
+    def test_config_gate_excluded_from_slack_when_off(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: false\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        mapping = slack_subcommand_map()
+        assert "verbose" not in mapping
+
+    def test_config_gate_included_in_slack_when_on(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        mapping = slack_subcommand_map()
+        assert "verbose" in mapping
 
 
 # ---------------------------------------------------------------------------
@@ -389,72 +470,6 @@ class TestSubcommandCompletion:
         assert completions == []
 
 
-# ── Two-stage /model completion ─────────────────────────────────────────
-
-
-def _model_completer() -> SlashCommandCompleter:
-    """Build a completer with mock model/provider info."""
-    return SlashCommandCompleter(
-        model_completer_provider=lambda: {
-            "current_provider": "openrouter",
-            "providers": {
-                "anthropic": "Anthropic",
-                "openrouter": "OpenRouter",
-                "nous": "Nous Research",
-            },
-            "models_for": lambda p: {
-                "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-20250414"],
-                "openrouter": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro"],
-                "nous": ["hermes-3-llama-3.1-405b"],
-            }.get(p, []),
-        }
-    )
-
-
-class TestModelCompletion:
-    def test_stage1_shows_providers(self):
-        completions = _completions(_model_completer(), "/model ")
-        texts = {c.text for c in completions}
-        assert "anthropic:" in texts
-        assert "openrouter:" in texts
-        assert "nous:" in texts
-
-    def test_stage1_current_provider_last(self):
-        completions = _completions(_model_completer(), "/model ")
-        texts = [c.text for c in completions]
-        assert texts[-1] == "openrouter:"
-
-    def test_stage1_current_provider_labeled(self):
-        completions = _completions(_model_completer(), "/model ")
-        for c in completions:
-            if c.text == "openrouter:":
-                assert "current" in c.display_meta_text.lower()
-                break
-        else:
-            raise AssertionError("openrouter: not found in completions")
-
-    def test_stage1_prefix_filters(self):
-        completions = _completions(_model_completer(), "/model an")
-        texts = {c.text for c in completions}
-        assert texts == {"anthropic:"}
-
-    def test_stage2_shows_models(self):
-        completions = _completions(_model_completer(), "/model anthropic:")
-        texts = {c.text for c in completions}
-        assert "anthropic:claude-sonnet-4-20250514" in texts
-        assert "anthropic:claude-opus-4-20250414" in texts
-
-    def test_stage2_prefix_filters_models(self):
-        completions = _completions(_model_completer(), "/model anthropic:claude-s")
-        texts = {c.text for c in completions}
-        assert "anthropic:claude-sonnet-4-20250514" in texts
-        assert "anthropic:claude-opus-4-20250414" not in texts
-
-    def test_stage2_no_model_provider_returns_empty(self):
-        completions = _completions(SlashCommandCompleter(), "/model ")
-        assert completions == []
-
-
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 
 
@@ -493,14 +508,82 @@ class TestGhostText:
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
 
-    def test_model_stage1_ghost_text(self):
-        """/model a → 'nthropic:'"""
-        completer = _model_completer()
-        assert _suggestion("/model a", completer=completer) == "nthropic:"
 
-    def test_model_stage2_ghost_text(self):
-        """/model anthropic:cl → rest of first matching model"""
-        completer = _model_completer()
-        s = _suggestion("/model anthropic:cl", completer=completer)
-        assert s is not None
-        assert s.startswith("aude-")
+# ---------------------------------------------------------------------------
+# Telegram command name clamping (32-char limit)
+# ---------------------------------------------------------------------------
+
+
+class TestClampTelegramNames:
+    """Tests for _clamp_telegram_names() — 32-char enforcement + collision."""
+
+    def test_short_names_unchanged(self):
+        entries = [("help", "Show help"), ("status", "Show status")]
+        result = _clamp_telegram_names(entries, set())
+        assert result == entries
+
+    def test_long_name_truncated(self):
+        long = "a" * 40
+        result = _clamp_telegram_names([(long, "desc")], set())
+        assert len(result) == 1
+        assert result[0][0] == "a" * _TG_NAME_LIMIT
+        assert result[0][1] == "desc"
+
+    def test_collision_with_reserved_gets_digit_suffix(self):
+        # The truncated form collides with a reserved name
+        prefix = "x" * _TG_NAME_LIMIT
+        long_name = "x" * 40
+        result = _clamp_telegram_names([(long_name, "d")], reserved={prefix})
+        assert len(result) == 1
+        name = result[0][0]
+        assert len(name) == _TG_NAME_LIMIT
+        assert name == "x" * (_TG_NAME_LIMIT - 1) + "0"
+
+    def test_collision_between_entries_gets_incrementing_digits(self):
+        # Two long names that truncate to the same 32-char prefix
+        base = "y" * 40
+        entries = [(base + "_alpha", "d1"), (base + "_beta", "d2")]
+        result = _clamp_telegram_names(entries, set())
+        assert len(result) == 2
+        assert result[0][0] == "y" * _TG_NAME_LIMIT
+        assert result[1][0] == "y" * (_TG_NAME_LIMIT - 1) + "0"
+
+    def test_collision_with_reserved_and_entries_skips_taken_digits(self):
+        prefix = "z" * _TG_NAME_LIMIT
+        digit0 = "z" * (_TG_NAME_LIMIT - 1) + "0"
+        # Reserve both the plain truncation and digit-0
+        reserved = {prefix, digit0}
+        long_name = "z" * 50
+        result = _clamp_telegram_names([(long_name, "d")], reserved)
+        assert len(result) == 1
+        assert result[0][0] == "z" * (_TG_NAME_LIMIT - 1) + "1"
+
+    def test_all_digits_exhausted_drops_entry(self):
+        prefix = "w" * _TG_NAME_LIMIT
+        # Reserve the plain truncation + all 10 digit slots
+        reserved = {prefix} | {"w" * (_TG_NAME_LIMIT - 1) + str(d) for d in range(10)}
+        long_name = "w" * 50
+        result = _clamp_telegram_names([(long_name, "d")], reserved)
+        assert result == []
+
+    def test_exact_32_chars_not_truncated(self):
+        name = "a" * _TG_NAME_LIMIT
+        result = _clamp_telegram_names([(name, "desc")], set())
+        assert result[0][0] == name
+
+    def test_duplicate_short_name_deduplicated(self):
+        entries = [("foo", "d1"), ("foo", "d2")]
+        result = _clamp_telegram_names(entries, set())
+        assert len(result) == 1
+        assert result[0] == ("foo", "d1")
+
+
+class TestTelegramMenuCommands:
+    """Integration: telegram_menu_commands enforces the 32-char limit."""
+
+    def test_all_names_within_limit(self):
+        menu, _ = telegram_menu_commands(max_commands=100)
+        for name, _desc in menu:
+            assert 1 <= len(name) <= _TG_NAME_LIMIT, (
+                f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
+            )

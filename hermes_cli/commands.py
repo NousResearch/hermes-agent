@@ -13,8 +13,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
@@ -37,6 +36,7 @@ class CommandDef:
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
     gateway_only: bool = False         # only available in gateway/messaging
+    gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
 
 
 # ---------------------------------------------------------------------------
@@ -67,10 +67,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg",), args_hint="<prompt>"),
+    CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
+               args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session",
                gateway_only=True),
+    CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -79,8 +82,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Show or change the current model", "Configuration",
-               args_hint="[name]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
@@ -90,7 +91,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
-               "Configuration", cli_only=True),
+               "Configuration", cli_only=True,
+               gateway_config_gate="display.tool_progress_command"),
+    CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
+               "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
@@ -119,6 +123,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
 
     # Info
+    CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
+               gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("usage", "Show token usage for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
@@ -208,7 +214,7 @@ def rebuild_lookups() -> None:
     GATEWAY_KNOWN_COMMANDS = frozenset(
         name
         for cmd in COMMAND_REGISTRY
-        if not cmd.cli_only
+        if not cmd.cli_only or cmd.gateway_config_gate
         for name in (cmd.name, *cmd.aliases)
     )
 
@@ -262,20 +268,76 @@ for _cmd in COMMAND_REGISTRY:
 # Gateway helpers
 # ---------------------------------------------------------------------------
 
-# Set of all command names + aliases recognized by the gateway
+# Set of all command names + aliases recognized by the gateway.
+# Includes config-gated commands so the gateway can dispatch them
+# (the handler checks the config gate at runtime).
 GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     name
     for cmd in COMMAND_REGISTRY
-    if not cmd.cli_only
+    if not cmd.cli_only or cmd.gateway_config_gate
     for name in (cmd.name, *cmd.aliases)
 )
 
 
+def _resolve_config_gates() -> set[str]:
+    """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
+
+    Reads ``config.yaml`` and walks the dot-separated key path for each
+    config-gated command.  Returns an empty set on any error so callers
+    degrade gracefully.
+    """
+    gated = [c for c in COMMAND_REGISTRY if c.gateway_config_gate]
+    if not gated:
+        return set()
+    try:
+        import yaml
+        config_path = os.path.join(
+            os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")),
+            "config.yaml",
+        )
+        if os.path.exists(config_path):
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        else:
+            cfg = {}
+    except Exception:
+        return set()
+    result: set[str] = set()
+    for cmd in gated:
+        val: Any = cfg
+        for key in cmd.gateway_config_gate.split("."):
+            if isinstance(val, dict):
+                val = val.get(key)
+            else:
+                val = None
+                break
+        if val:
+            result.add(cmd.name)
+    return result
+
+
+def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
+    """Check if *cmd* should appear in gateway surfaces (help, menus, mappings).
+
+    Unconditionally available when ``cli_only`` is False.  When ``cli_only``
+    is True but ``gateway_config_gate`` is set, the command is available only
+    when the config value is truthy.  Pass *config_overrides* (from
+    ``_resolve_config_gates()``) to avoid re-reading config for every command.
+    """
+    if not cmd.cli_only:
+        return True
+    if cmd.gateway_config_gate:
+        overrides = config_overrides if config_overrides is not None else _resolve_config_gates()
+        return cmd.name in overrides
+    return False
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
+    overrides = _resolve_config_gates()
     lines: list[str] = []
     for cmd in COMMAND_REGISTRY:
-        if cmd.cli_only:
+        if not _is_gateway_available(cmd, overrides):
             continue
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
@@ -296,13 +358,125 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
     """
+    overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
-        if cmd.cli_only:
+        if not _is_gateway_available(cmd, overrides):
             continue
         tg_name = cmd.name.replace("-", "_")
         result.append((tg_name, cmd.description))
     return result
+
+
+_TG_NAME_LIMIT = 32
+
+
+def _clamp_telegram_names(
+    entries: list[tuple[str, str]],
+    reserved: set[str],
+) -> list[tuple[str, str]]:
+    """Enforce Telegram's 32-char command name limit with collision avoidance.
+
+    Names exceeding 32 chars are truncated.  If truncation creates a duplicate
+    (against *reserved* names or earlier entries in the same batch), the name is
+    shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
+    If all 10 digit slots are taken the entry is silently dropped.
+    """
+    used: set[str] = set(reserved)
+    result: list[tuple[str, str]] = []
+    for name, desc in entries:
+        if len(name) > _TG_NAME_LIMIT:
+            candidate = name[:_TG_NAME_LIMIT]
+            if candidate in used:
+                prefix = name[:_TG_NAME_LIMIT - 1]
+                for digit in range(10):
+                    candidate = f"{prefix}{digit}"
+                    if candidate not in used:
+                        break
+                else:
+                    # All 10 digit slots exhausted — skip entry
+                    continue
+            name = candidate
+        if name in used:
+            continue
+        used.add(name)
+        result.append((name, desc))
+    return result
+
+
+def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
+    """Return Telegram menu commands capped to the Bot API limit.
+
+    Priority order (higher priority = never bumped by overflow):
+      1. Core CommandDef commands (always included)
+      2. Plugin slash commands (take precedence over skills)
+      3. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Skills are the only tier that gets trimmed when the cap is hit.
+    User-installed hub skills are excluded — accessible via /skills.
+
+    Returns:
+        (menu_commands, hidden_count) where hidden_count is the number of
+        skill commands omitted due to the cap.
+    """
+    core_commands = list(telegram_bot_commands())
+    # Reserve core names so plugin/skill truncation can't collide with them
+    reserved_names = {n for n, _ in core_commands}
+    all_commands = list(core_commands)
+
+    # Plugin slash commands get priority over skills
+    plugin_entries: list[tuple[str, str]] = []
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        plugin_cmds = getattr(pm, "_plugin_commands", {})
+        for cmd_name in sorted(plugin_cmds):
+            tg_name = cmd_name.replace("-", "_")
+            desc = "Plugin command"
+            if len(desc) > 40:
+                desc = desc[:37] + "..."
+            plugin_entries.append((tg_name, desc))
+    except Exception:
+        pass
+
+    # Clamp plugin names to 32 chars with collision avoidance
+    plugin_entries = _clamp_telegram_names(plugin_entries, reserved_names)
+    reserved_names.update(n for n, _ in plugin_entries)
+    all_commands.extend(plugin_entries)
+
+    # Remaining slots go to built-in skill commands (not hub-installed).
+    skill_entries: list[tuple[str, str]] = []
+    try:
+        from agent.skill_commands import get_skill_commands
+        from tools.skills_tool import SKILLS_DIR
+        _skills_dir = str(SKILLS_DIR.resolve())
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+        skill_cmds = get_skill_commands()
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key]
+            skill_path = info.get("skill_md_path", "")
+            if not skill_path.startswith(_skills_dir):
+                continue
+            if skill_path.startswith(_hub_dir):
+                continue
+            name = cmd_key.lstrip("/").replace("-", "_")
+            desc = info.get("description", "")
+            # Keep descriptions short — setMyCommands has an undocumented
+            # total payload limit.  40 chars fits 100 commands safely.
+            if len(desc) > 40:
+                desc = desc[:37] + "..."
+            skill_entries.append((name, desc))
+    except Exception:
+        pass
+
+    # Clamp skill names to 32 chars with collision avoidance
+    skill_entries = _clamp_telegram_names(skill_entries, reserved_names)
+
+    # Skills fill remaining slots — they're the only tier that gets trimmed
+    remaining_slots = max(0, max_commands - len(all_commands))
+    hidden_count = max(0, len(skill_entries) - remaining_slots)
+    all_commands.extend(skill_entries[:remaining_slots])
+    return all_commands[:max_commands], hidden_count
 
 
 def slack_subcommand_map() -> dict[str, str]:
@@ -311,9 +485,10 @@ def slack_subcommand_map() -> dict[str, str]:
     Maps both canonical names and aliases so /hermes bg do stuff works
     the same as /hermes background do stuff.
     """
+    overrides = _resolve_config_gates()
     mapping: dict[str, str] = {}
     for cmd in COMMAND_REGISTRY:
-        if cmd.cli_only:
+        if not _is_gateway_available(cmd, overrides):
             continue
         mapping[cmd.name] = f"/{cmd.name}"
         for alias in cmd.aliases:
@@ -331,29 +506,8 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
-        model_completer_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
-        # model_completer_provider returns {"current_provider": str,
-        #   "providers": {id: label, ...}, "models_for": callable(provider) -> list[str]}
-        self._model_completer_provider = model_completer_provider
-        self._model_info_cache: dict[str, Any] | None = None
-        self._model_info_cache_time: float = 0
-
-    def _get_model_info(self) -> dict[str, Any]:
-        """Get cached model/provider info for /model autocomplete."""
-        import time
-        now = time.monotonic()
-        if self._model_info_cache is not None and now - self._model_info_cache_time < 60:
-            return self._model_info_cache
-        if self._model_completer_provider is None:
-            return {}
-        try:
-            self._model_info_cache = self._model_completer_provider() or {}
-            self._model_info_cache_time = now
-        except Exception:
-            self._model_info_cache = self._model_info_cache or {}
-        return self._model_info_cache
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
         if self._skill_commands_provider is None:
@@ -592,52 +746,6 @@ class SlashCommandCompleter(Completer):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
 
-            # /model gets two-stage completion:
-            #   Stage 1: provider names (with : suffix)
-            #   Stage 2: after "provider:", list that provider's models
-            if base_cmd == "/model" and " " not in sub_text:
-                info = self._get_model_info()
-                if info:
-                    current_prov = info.get("current_provider", "")
-                    providers = info.get("providers", {})
-                    models_for = info.get("models_for")
-
-                    if ":" in sub_text:
-                        # Stage 2: "anthropic:cl" → models for anthropic
-                        prov_part, model_part = sub_text.split(":", 1)
-                        model_lower = model_part.lower()
-                        if models_for:
-                            try:
-                                prov_models = models_for(prov_part)
-                            except Exception:
-                                prov_models = []
-                            for mid in prov_models:
-                                if mid.lower().startswith(model_lower) and mid.lower() != model_lower:
-                                    full = f"{prov_part}:{mid}"
-                                    yield Completion(
-                                        full,
-                                        start_position=-len(sub_text),
-                                        display=mid,
-                                    )
-                    else:
-                        # Stage 1: providers sorted: non-current first, current last
-                        for pid, plabel in sorted(
-                            providers.items(),
-                            key=lambda kv: (kv[0] == current_prov, kv[0]),
-                        ):
-                            display_name = f"{pid}:"
-                            if display_name.lower().startswith(sub_lower):
-                                meta = f"({plabel})" if plabel != pid else ""
-                                if pid == current_prov:
-                                    meta = f"(current — {plabel})" if plabel != pid else "(current)"
-                                yield Completion(
-                                    display_name,
-                                    start_position=-len(sub_text),
-                                    display=display_name,
-                                    display_meta=meta,
-                                )
-                return
-
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS:
                 for sub in SUBCOMMANDS[base_cmd]:
@@ -718,32 +826,6 @@ class SlashCommandAutoSuggest(AutoSuggest):
         # Command is complete — suggest subcommands or model names
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
-
-        # /model gets two-stage ghost text
-        if base_cmd == "/model" and " " not in sub_text and self._completer:
-            info = self._completer._get_model_info()
-            if info:
-                providers = info.get("providers", {})
-                models_for = info.get("models_for")
-                current_prov = info.get("current_provider", "")
-
-                if ":" in sub_text:
-                    # Stage 2: after provider:, suggest model
-                    prov_part, model_part = sub_text.split(":", 1)
-                    model_lower = model_part.lower()
-                    if models_for:
-                        try:
-                            for mid in models_for(prov_part):
-                                if mid.lower().startswith(model_lower) and mid.lower() != model_lower:
-                                    return Suggestion(mid[len(model_part):])
-                        except Exception:
-                            pass
-                else:
-                    # Stage 1: suggest provider name with :
-                    for pid in sorted(providers, key=lambda p: (p == current_prov, p)):
-                        candidate = f"{pid}:"
-                        if candidate.lower().startswith(sub_lower) and candidate.lower() != sub_lower:
-                            return Suggestion(candidate[len(sub_text):])
 
         # Static subcommands
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:

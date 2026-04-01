@@ -9,17 +9,19 @@ Saves per-platform tool configuration to ~/.hermes/config.yaml under
 the `platform_toolsets` key.
 """
 
+import json as _json
+import logging
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-import os
 
 from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
-    get_hermes_home,
 )
 from hermes_cli.colors import Colors, color
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -110,7 +112,8 @@ def _get_effective_configurable_toolsets():
     """
     result = list(CONFIGURABLE_TOOLSETS)
     try:
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()  # idempotent — ensures plugins are loaded
         result.extend(get_plugin_toolsets())
     except Exception:
         pass
@@ -120,7 +123,8 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
-        from hermes_cli.plugins import get_plugin_toolsets
+        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+        discover_plugins()  # idempotent — ensures plugins are loaded
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
@@ -133,8 +137,14 @@ PLATFORMS = {
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
+    "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
-    "dingtalk": {"label": "💬 DingTalk",   "default_toolset": "hermes-dingtalk"},
+    "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
+ "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
+    "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
+    "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
+    "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
+    "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
 }
 
 
@@ -184,6 +194,14 @@ TOOL_CATEGORIES = {
                 "web_backend": "firecrawl",
                 "env_vars": [
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
+                ],
+            },
+            {
+                "name": "Exa",
+                "tag": "AI-native search and contents",
+                "web_backend": "exa",
+                "env_vars": [
+                    {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://exa.ai"},
                 ],
             },
             {
@@ -255,6 +273,16 @@ TOOL_CATEGORIES = {
                 "browser_provider": "browser-use",
                 "post_setup": "browserbase",
             },
+            {
+                "name": "Camofox",
+                "tag": "Local anti-detection browser (Firefox/Camoufox)",
+                "env_vars": [
+                    {"key": "CAMOFOX_URL", "prompt": "Camofox server URL", "default": "http://localhost:9377",
+                     "url": "https://github.com/jo-inc/camofox-browser"},
+                ],
+                "browser_provider": "camofox",
+                "post_setup": "camofox",
+            },
         ],
     },
     "homeassistant": {
@@ -314,9 +342,32 @@ def _run_post_setup(post_setup_key: str):
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
             else:
-                _print_warning("    npm install failed - run manually: cd ~/.hermes/hermes-agent && npm install")
+                from hermes_constants import display_hermes_home
+                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+
+    elif post_setup_key == "camofox":
+        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camoufox-browser"
+        if not camofox_dir.exists() and shutil.which("npm"):
+            _print_info("    Installing Camofox browser server...")
+            import subprocess
+            result = subprocess.run(
+                ["npm", "install", "--silent"],
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
+            )
+            if result.returncode == 0:
+                _print_success("    Camofox installed")
+            else:
+                _print_warning("    npm install failed - run manually: npm install")
+        if camofox_dir.exists():
+            _print_info("    Start the Camofox server:")
+            _print_info("      npx @askjo/camoufox-browser")
+            _print_info("    First run downloads the Camoufox engine (~300MB)")
+            _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+        elif not shutil.which("npm"):
+            _print_warning("    Node.js not found. Install Camofox via Docker:")
+            _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
 
     elif post_setup_key == "rl_training":
         try:
@@ -380,9 +431,31 @@ def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = Non
     return summary
 
 
-def _get_platform_tools(config: dict, platform: str) -> Set[str]:
+def _parse_enabled_flag(value, default: bool = True) -> bool:
+    """Parse bool-like config values used by tool/platform settings."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _get_platform_tools(
+    config: dict,
+    platform: str,
+    *,
+    include_default_mcp_servers: bool = True,
+) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from toolsets import resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets", {})
     toolset_names = platform_toolsets.get(platform)
@@ -431,6 +504,37 @@ def _get_platform_tools(config: dict, platform: str) -> Set[str]:
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
+
+    # Preserve any explicit non-configurable toolset entries (for example,
+    # custom toolsets or MCP server names saved in platform_toolsets).
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
+    explicit_passthrough = {
+        ts
+        for ts in toolset_names
+        if ts not in configurable_keys
+        and ts not in plugin_ts_keys
+        and ts not in platform_default_keys
+    }
+
+    # MCP servers are expected to be available on all platforms by default.
+    # If the platform explicitly lists one or more MCP server names, treat that
+    # as an allowlist. Otherwise include every globally enabled MCP server.
+    mcp_servers = config.get("mcp_servers", {})
+    enabled_mcp_servers = {
+        name
+        for name, server_cfg in mcp_servers.items()
+        if isinstance(server_cfg, dict)
+        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+    }
+    explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
+    enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
+    if include_default_mcp_servers:
+        if explicit_mcp_servers:
+            enabled_toolsets.update(explicit_mcp_servers)
+        else:
+            enabled_toolsets.update(enabled_mcp_servers)
+    else:
+        enabled_toolsets.update(explicit_mcp_servers)
 
     return enabled_toolsets
 
@@ -493,7 +597,9 @@ def _toolset_has_keys(ts_key: str) -> bool:
     if cat:
         for provider in cat.get("providers", []):
             env_vars = provider.get("env_vars", [])
-            if env_vars and all(get_env_value(e["key"]) for e in env_vars):
+            if not env_vars:
+                return True  # No-key provider (e.g. Local Browser, Edge TTS)
+            if all(get_env_value(e["key"]) for e in env_vars):
                 return True
         return False
 
@@ -587,9 +693,61 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
             return default
 
 
+# ─── Token Estimation ────────────────────────────────────────────────────────
+
+# Module-level cache so discovery + tokenization runs at most once per process.
+_tool_token_cache: Optional[Dict[str, int]] = None
+
+
+def _estimate_tool_tokens() -> Dict[str, int]:
+    """Return estimated token counts per individual tool name.
+
+    Uses tiktoken (cl100k_base) to count tokens in the JSON-serialised
+    OpenAI-format tool schema.  Triggers tool discovery on first call,
+    then caches the result for the rest of the process.
+
+    Returns an empty dict when tiktoken or the registry is unavailable.
+    """
+    global _tool_token_cache
+    if _tool_token_cache is not None:
+        return _tool_token_cache
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        logger.debug("tiktoken unavailable; skipping tool token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    try:
+        # Trigger full tool discovery (imports all tool modules).
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+    except Exception:
+        logger.debug("Tool registry unavailable; skipping token estimation")
+        _tool_token_cache = {}
+        return _tool_token_cache
+
+    counts: Dict[str, int] = {}
+    for name in registry.get_all_tool_names():
+        schema = registry.get_schema(name)
+        if schema:
+            # Mirror what gets sent to the API:
+            # {"type": "function", "function": <schema>}
+            text = _json.dumps({"type": "function", "function": schema})
+            counts[name] = len(enc.encode(text))
+    _tool_token_cache = counts
+    return _tool_token_cache
+
+
 def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
+    from toolsets import resolve_toolset
+
+    # Pre-compute per-tool token counts (cached after first call).
+    tool_tokens = _estimate_tool_tokens()
 
     effective = _get_effective_configurable_toolsets()
 
@@ -605,11 +763,27 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         if ts_key in enabled
     }
 
+    # Build a live status function that shows deduplicated total token cost.
+    status_fn = None
+    if tool_tokens:
+        ts_keys = [ts_key for ts_key, _, _ in effective]
+
+        def status_fn(chosen: set) -> str:
+            # Collect unique tool names across all selected toolsets
+            all_tools: set = set()
+            for idx in chosen:
+                all_tools.update(resolve_toolset(ts_keys[idx]))
+            total = sum(tool_tokens.get(name, 0) for name in all_tools)
+            if total >= 1000:
+                return f"Est. tool context: ~{total / 1000:.1f}k tokens"
+            return f"Est. tool context: ~{total} tokens"
+
     chosen = curses_checklist(
         f"Tools for {platform_label}",
         labels,
         pre_selected,
         cancel_returns=pre_selected,
+        status_fn=status_fn,
     )
     return {effective[i][0] for i in chosen}
 
@@ -661,7 +835,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # Multiple providers - let user choose
         print()
         # Use custom title if provided (e.g. "Select Search Provider")
-        title = cat.get("setup_title", f"Choose a provider")
+        title = cat.get("setup_title", "Choose a provider")
         print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
@@ -770,9 +944,9 @@ def _configure_provider(provider: dict, config: dict):
 
             if value:
                 save_env_value(var["key"], value)
-                _print_success(f"    Saved")
+                _print_success("    Saved")
             else:
-                _print_warning(f"    Skipped")
+                _print_warning("    Skipped")
                 all_configured = False
 
     # Run post-setup hooks if needed
@@ -809,8 +983,13 @@ def _configure_simple_requirements(ts_key: str):
             key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
-                save_env_value("OPENAI_BASE_URL", base_url)
                 save_env_value("OPENAI_API_KEY", api_key.strip())
+                # Save vision base URL to config (not .env — only secrets go there)
+                from hermes_cli.config import load_config, save_config
+                _cfg = load_config()
+                _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
+                _aux["base_url"] = base_url
+                save_config(_cfg)
                 if "api.openai.com" in base_url.lower():
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")
@@ -836,9 +1015,9 @@ def _configure_simple_requirements(ts_key: str):
         value = _prompt(f"    {var}", password=True)
         if value and value.strip():
             save_env_value(var, value.strip())
-            _print_success(f"    Saved")
+            _print_success("    Saved")
         else:
-            _print_warning(f"    Skipped")
+            _print_warning("    Skipped")
 
 
 def _reconfigure_tool(config: dict):
@@ -926,7 +1105,7 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success(f"  Browser cloud provider set to: {bp}")
         else:
             config.get("browser", {}).pop("cloud_provider", None)
-            _print_success(f"  Browser set to local mode")
+            _print_success("  Browser set to local mode")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -948,9 +1127,9 @@ def _reconfigure_provider(provider: dict, config: dict):
         value = _prompt(f"    {var.get('prompt', var['key'])} (Enter to keep current)", password=not default_val)
         if value and value.strip():
             save_env_value(var["key"], value.strip())
-            _print_success(f"    Updated")
+            _print_success("    Updated")
         else:
-            _print_info(f"    Kept current")
+            _print_info("    Kept current")
 
 
 def _reconfigure_simple_requirements(ts_key: str):
@@ -972,9 +1151,9 @@ def _reconfigure_simple_requirements(ts_key: str):
         value = _prompt(f"    {var} (Enter to keep current)", password=True)
         if value and value.strip():
             save_env_value(var, value.strip())
-            _print_success(f"    Updated")
+            _print_success("    Updated")
         else:
-            _print_info(f"    Kept current")
+            _print_info("    Kept current")
 
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
@@ -1024,7 +1203,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if first_install:
         for pkey in enabled_platforms:
             pinfo = PLATFORMS[pkey]
-            current_enabled = _get_platform_tools(config, pkey)
+            current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
             # Uncheck toolsets that should be off by default
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
@@ -1076,7 +1255,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     platform_keys = []
     for pkey in enabled_platforms:
         pinfo = PLATFORMS[pkey]
-        current = _get_platform_tools(config, pkey)
+        current = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
         count = len(current)
         total = len(_get_effective_configurable_toolsets())
         platform_choices.append(f"Configure {pinfo['label']}  ({count}/{total} enabled)")
@@ -1123,11 +1302,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             # Use the union of all platforms' current tools as the starting state
             all_current = set()
             for pk in platform_keys:
-                all_current |= _get_platform_tools(config, pk)
+                all_current |= _get_platform_tools(config, pk, include_default_mcp_servers=False)
             new_enabled = _prompt_toolset_checklist("All platforms", all_current)
             if new_enabled != all_current:
                 for pk in platform_keys:
-                    prev = _get_platform_tools(config, pk)
+                    prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
                     added = new_enabled - prev
                     removed = prev - new_enabled
                     pinfo_inner = PLATFORMS[pk]
@@ -1149,7 +1328,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
                 # Update choice labels
                 for ci, pk in enumerate(platform_keys):
-                    new_count = len(_get_platform_tools(config, pk))
+                    new_count = len(_get_platform_tools(config, pk, include_default_mcp_servers=False))
                     total = len(_get_effective_configurable_toolsets())
                     platform_choices[ci] = f"Configure {PLATFORMS[pk]['label']}  ({new_count}/{total} enabled)"
             else:
@@ -1161,7 +1340,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         pinfo = PLATFORMS[pkey]
 
         # Get current enabled toolsets for this platform
-        current_enabled = _get_platform_tools(config, pkey)
+        current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
         # Show checklist
         new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
@@ -1194,12 +1373,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         print()
 
         # Update the choice label with new count
-        new_count = len(_get_platform_tools(config, pkey))
+        new_count = len(_get_platform_tools(config, pkey, include_default_mcp_servers=False))
         total = len(_get_effective_configurable_toolsets())
         platform_choices[idx] = f"Configure {pinfo['label']}  ({new_count}/{total} enabled)"
 
     print()
-    print(color("  Tool configuration saved to ~/.hermes/config.yaml", Colors.DIM))
+    from hermes_constants import display_hermes_home
+    print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()
 
@@ -1340,7 +1520,7 @@ def _configure_mcp_tools_interactive(config: dict):
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
     """Add or remove built-in toolsets for a platform."""
-    enabled = _get_platform_tools(config, platform)
+    enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
     if action == "disable":
         updated = enabled - set(toolset_names)
     else:
@@ -1426,7 +1606,7 @@ def tools_disable_enable_command(args):
         return
 
     if action == "list":
-        _print_tools_list(_get_platform_tools(config, platform),
+        _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
                           config.get("mcp_servers") or {}, platform)
         return
 

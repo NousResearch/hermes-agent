@@ -70,9 +70,22 @@ try:
     from tools.website_policy import check_website_access
 except Exception:
     check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
+
+try:
+    from tools.url_safety import is_safe_url as _is_safe_url
+except Exception:
+    _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
+
+# Camofox local anti-detection browser backend (optional).
+# When CAMOFOX_URL is set, all browser operations route through the
+# camofox REST API instead of the agent-browser CLI.
+try:
+    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+except ImportError:
+    _is_camofox_mode = lambda: False  # noqa: E731
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +237,8 @@ _PROVIDER_REGISTRY: Dict[str, type] = {
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
+_allow_private_urls_resolved = False
+_cached_allow_private_urls: Optional[bool] = None
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
@@ -250,6 +265,44 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
     return _cached_cloud_provider
+
+
+def _is_local_backend() -> bool:
+    """Return True when the browser runs locally (no cloud provider).
+
+    SSRF protection is only meaningful for cloud backends (Browserbase,
+    BrowserUse) where the agent could reach internal resources on a remote
+    machine.  For local backends — Camofox, or the built-in headless
+    Chromium without a cloud provider — the user already has full terminal
+    and network access on the same machine, so the check adds no security
+    value.
+    """
+    return _is_camofox_mode() or _get_cloud_provider() is None
+
+
+def _allow_private_urls() -> bool:
+    """Return whether the browser is allowed to navigate to private/internal addresses.
+
+    Reads ``config["browser"]["allow_private_urls"]`` once and caches the result
+    for the process lifetime.  Defaults to ``False`` (SSRF protection active).
+    """
+    global _cached_allow_private_urls, _allow_private_urls_resolved
+    if _allow_private_urls_resolved:
+        return _cached_allow_private_urls
+
+    _allow_private_urls_resolved = True
+    _cached_allow_private_urls = False  # safe default
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+    except Exception as e:
+        logger.debug("Could not read allow_private_urls from config: %s", e)
+    return _cached_allow_private_urls
 
 
 def _socket_safe_tmpdir() -> str:
@@ -988,7 +1041,7 @@ def _extract_relevant_content(
         if model:
             call_kwargs["model"] = model
         response = call_llm(**call_kwargs)
-        return response.choices[0].message.content
+        return (response.choices[0].message.content or "").strip() or _truncate_snapshot(snapshot_text)
     except Exception:
         return _truncate_snapshot(snapshot_text)
 
@@ -1025,6 +1078,17 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    # SSRF protection — block private/internal addresses before navigating.
+    # Skipped for local backends (Camofox, headless Chromium without a cloud
+    # provider) because the agent already has full local network access via
+    # the terminal tool.  Can also be opted out for cloud mode via
+    # ``browser.allow_private_urls`` in config.
+    if not _is_local_backend() and not _allow_private_urls() and not _is_safe_url(url):
+        return json.dumps({
+            "success": False,
+            "error": "Blocked: URL targets a private or internal address",
+        })
+
     # Website policy check — block before navigating
     blocked = check_website_access(url)
     if blocked:
@@ -1033,6 +1097,11 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             "error": blocked["message"],
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
+
+    # Camofox backend — delegate after safety checks pass
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_navigate
+        return camofox_navigate(url, task_id)
 
     effective_task_id = task_id or "default"
     
@@ -1052,7 +1121,19 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
-        
+
+        # Post-redirect SSRF check — if the browser followed a redirect to a
+        # private/internal address, block the result so the model can't read
+        # internal content via subsequent browser_snapshot calls.
+        # Skipped for local backends (same rationale as the pre-nav check).
+        if not _is_local_backend() and not _allow_private_urls() and final_url and final_url != url and not _is_safe_url(final_url):
+            # Navigate away to a blank page to prevent snapshot leaks
+            _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
+            return json.dumps({
+                "success": False,
+                "error": "Blocked: redirect landed on a private/internal address",
+            })
+
         response = {
             "success": True,
             "url": final_url,
@@ -1112,6 +1193,10 @@ def browser_snapshot(
     Returns:
         JSON string with page snapshot
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_snapshot
+        return camofox_snapshot(full, task_id, user_task)
+
     effective_task_id = task_id or "default"
     
     # Build command args based on full flag
@@ -1157,6 +1242,10 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with click result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_click
+        return camofox_click(ref, task_id)
+
     effective_task_id = task_id or "default"
     
     # Ensure ref starts with @
@@ -1189,6 +1278,10 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with type result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_type
+        return camofox_type(ref, text, task_id)
+
     effective_task_id = task_id or "default"
     
     # Ensure ref starts with @
@@ -1222,6 +1315,10 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with scroll result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_scroll
+        return camofox_scroll(direction, task_id)
+
     effective_task_id = task_id or "default"
     
     # Validate direction
@@ -1255,6 +1352,10 @@ def browser_back(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with navigation result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_back
+        return camofox_back(task_id)
+
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "back", [])
     
@@ -1282,6 +1383,10 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with key press result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_press
+        return camofox_press(key, task_id)
+
     effective_task_id = task_id or "default"
     result = _run_browser_command(effective_task_id, "press", [key])
     
@@ -1307,6 +1412,10 @@ def browser_close(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with close result
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_close
+        return camofox_close(task_id)
+
     effective_task_id = task_id or "default"
     with _cleanup_lock:
         had_session = effective_task_id in _active_sessions
@@ -1335,6 +1444,10 @@ def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with console messages and JS errors
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_console
+        return camofox_console(clear, task_id)
+
     effective_task_id = task_id or "default"
     
     console_args = ["--clear"] if clear else []
@@ -1429,6 +1542,10 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with list of images (src and alt)
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_get_images
+        return camofox_get_images(task_id)
+
     effective_task_id = task_id or "default"
     
     # Use eval to run JavaScript that extracts images
@@ -1493,6 +1610,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Returns:
         JSON string with vision analysis results and screenshot_path
     """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_vision
+        return camofox_vision(question, annotate, task_id)
+
     import base64
     import uuid as uuid_mod
     from pathlib import Path
@@ -1500,8 +1621,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     effective_task_id = task_id or "default"
     
     # Save screenshot to persistent location so it can be shared with users
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    screenshots_dir = hermes_home / "browser_screenshots"
+    from hermes_constants import get_hermes_dir
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     
     try:
@@ -1567,6 +1688,20 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         vision_model = _get_vision_model()
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
                      len(image_data))
+
+        # Read vision timeout from config (auxiliary.vision.timeout), default 120s.
+        # Local vision models (llama.cpp, ollama) can take well over 30s for
+        # screenshot analysis, so the default must be generous.
+        vision_timeout = 120.0
+        try:
+            from hermes_cli.config import load_config
+            _cfg = load_config()
+            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            if _vt is not None:
+                vision_timeout = float(_vt)
+        except Exception:
+            pass
+
         call_kwargs = {
             "task": "vision",
             "messages": [
@@ -1580,15 +1715,16 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             ],
             "max_tokens": 2000,
             "temperature": 0.1,
+            "timeout": vision_timeout,
         }
         if vision_model:
             call_kwargs["model"] = vision_model
         response = call_llm(**call_kwargs)
         
-        analysis = response.choices[0].message.content
+        analysis = (response.choices[0].message.content or "").strip()
         response_data = {
             "success": True,
-            "analysis": analysis,
+            "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
         }
         # Include annotation data if annotated screenshot was taken
@@ -1766,6 +1902,10 @@ def check_browser_requirements() -> bool:
     Returns:
         True if all requirements are met, False otherwise
     """
+    # Camofox backend — only needs the server URL, no agent-browser CLI
+    if _is_camofox_mode():
+        return True
+
     # The agent-browser CLI is always required
     try:
         _find_agent_browser()

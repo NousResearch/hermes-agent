@@ -948,9 +948,9 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
 
     # Call the LLM via the centralized provider router
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
-        response = call_llm(
+        call_kwargs = dict(
             provider="openrouter",
             model=model,
             messages=[{
@@ -960,7 +960,13 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
             temperature=0,
             max_tokens=1000,
         )
-        llm_text = response.choices[0].message.content.strip()
+        response = call_llm(**call_kwargs)
+        llm_text = extract_content_or_reasoning(response)
+
+        # Retry once on empty content (reasoning-only response)
+        if not llm_text:
+            response = call_llm(**call_kwargs)
+            llm_text = extract_content_or_reasoning(response)
     except Exception:
         # LLM audit is best-effort — don't block install if the call fails
         return static_result
@@ -1050,12 +1056,27 @@ def _get_configured_model() -> str:
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
+    prefix_aliases = (
+        "skills-sh/",
+        "skills.sh/",
+        "skils-sh/",
+        "skils.sh/",
+    )
+    normalized_source = source
+    for prefix in prefix_aliases:
+        if normalized_source.startswith(prefix):
+            normalized_source = normalized_source[len(prefix):]
+            break
+
+    # Agent-created skills get their own permissive trust level
+    if normalized_source == "agent-created":
+        return "agent-created"
     # Official optional skills shipped with the repo
-    if source.startswith("official/") or source == "official":
+    if normalized_source.startswith("official/") or normalized_source == "official":
         return "builtin"
     # Check if source matches any trusted repo
     for trusted in TRUSTED_REPOS:
-        if source.startswith(trusted) or source == trusted:
+        if normalized_source.startswith(trusted) or normalized_source == trusted:
             return "trusted"
     return "community"
 

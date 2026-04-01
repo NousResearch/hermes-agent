@@ -12,7 +12,7 @@ Provides speech-to-text transcription with three providers:
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
 
-Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg
+Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
 
 Usage::
 
@@ -31,6 +31,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -83,7 +85,7 @@ def get_stt_model_from_config() -> Optional[str]:
     """
     try:
         import yaml
-        cfg_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
+        cfg_path = get_hermes_home() / "config.yaml"
         if cfg_path.exists():
             with open(cfg_path) as f:
                 data = yaml.safe_load(f) or {}

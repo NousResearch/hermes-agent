@@ -17,12 +17,11 @@ Gateway-specific env vars:
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -107,7 +106,9 @@ class SmsAdapter(BasePlatformAdapter):
         await self._runner.setup()
         site = web.TCPSite(self._runner, "0.0.0.0", self._webhook_port)
         await site.start()
-        self._http_session = aiohttp.ClientSession()
+        self._http_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+        )
         self._running = True
 
         logger.info(
@@ -145,7 +146,9 @@ class SmsAdapter(BasePlatformAdapter):
             "Authorization": self._basic_auth_header(),
         }
 
-        session = self._http_session or aiohttp.ClientSession()
+        session = self._http_session or aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+        )
         try:
             for chunk in chunks:
                 form_data = aiohttp.FormData()
@@ -262,7 +265,9 @@ class SmsAdapter(BasePlatformAdapter):
         )
 
         # Non-blocking: Twilio expects a fast response
-        asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(self.handle_message(event))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         # Return empty TwiML — we send replies via the REST API, not inline TwiML
         return web.Response(

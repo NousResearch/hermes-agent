@@ -113,6 +113,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "glm": 202752,
     # Kimi
     "kimi": 262144,
+    # Hugging Face Inference Providers — model IDs use org/name format
+    "Qwen/Qwen3.5-397B-A17B": 131072,
+    "Qwen/Qwen3.5-35B-A3B": 131072,
+    "deepseek-ai/DeepSeek-V3.2": 65536,
+    "moonshotai/Kimi-K2.5": 262144,
+    "moonshotai/Kimi-K2-Thinking": 262144,
+    "MiniMaxAI/MiniMax-M2.5": 204800,
+    "XiaomiMiMo/MiMo-V2-Flash": 32768,
+    "zai-org/GLM-5": 202752,
 }
 
 _CONTEXT_LENGTH_KEYS = (
@@ -162,10 +171,12 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
     "openrouter.ai": "openrouter",
+    "generativelanguage.googleapis.com": "google",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
+    "api.fireworks.ai": "fireworks",
 }
 
 
@@ -894,4 +905,27 @@ def estimate_tokens_rough(text: str) -> int:
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
+    return total_chars // 4
+
+
+def estimate_request_tokens_rough(
+    messages: List[Dict[str, Any]],
+    *,
+    system_prompt: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Rough token estimate for a full chat-completions request.
+
+    Includes the major payload buckets Hermes sends to providers:
+    system prompt, conversation messages, and tool schemas.  With 50+
+    tools enabled, schemas alone can add 20-30K tokens — a significant
+    blind spot when only counting messages.
+    """
+    total_chars = 0
+    if system_prompt:
+        total_chars += len(system_prompt)
+    if messages:
+        total_chars += sum(len(str(msg)) for msg in messages)
+    if tools:
+        total_chars += len(str(tools))
     return total_chars // 4

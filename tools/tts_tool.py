@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
+from hermes_constants import get_hermes_home
 from typing import Callable, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,11 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
-DEFAULT_OUTPUT_DIR = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "audio_cache")
+def _get_default_output_dir() -> str:
+    from hermes_constants import get_hermes_dir
+    return str(get_hermes_dir("cache/audio", "audio_cache"))
+
+DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 MAX_TEXT_LENGTH = 4000
 
 
@@ -101,7 +106,7 @@ def _load_tts_config() -> Dict[str, Any]:
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
-    return tts_config.get("provider", DEFAULT_PROVIDER).lower().strip()
+    return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
 # ===========================================================================
@@ -629,7 +634,6 @@ def stream_tts_to_speaker(
             if client is not None:
                 try:
                     sd = _import_sounddevice()
-                    import numpy as _np
                     output_stream = sd.OutputStream(
                         samplerate=24000, channels=1, dtype="int16",
                     )
@@ -797,7 +801,7 @@ if __name__ == "__main__":
         except ImportError:
             return False
 
-    print(f"\nProvider availability:")
+    print("\nProvider availability:")
     print(f"  Edge TTS:   {'installed' if _check(_import_edge_tts, 'edge') else 'not installed (pip install edge-tts)'}")
     print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
     print(f"    API Key:  {'set' if os.getenv('ELEVENLABS_API_KEY') else 'not set'}")

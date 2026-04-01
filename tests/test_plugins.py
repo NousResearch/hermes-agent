@@ -226,6 +226,42 @@ class TestPluginHooks:
         # Should not raise despite 1/0
         mgr.invoke_hook("post_tool_call", tool_name="x", args={}, result="r", task_id="")
 
+    def test_hook_return_values_collected(self, tmp_path, monkeypatch):
+        """invoke_hook() collects non-None return values from callbacks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "ctx_plugin",
+            register_body=(
+                'ctx.register_hook("pre_llm_call", '
+                'lambda **kw: {"context": "memory from plugin"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook("pre_llm_call", session_id="s1", user_message="hi",
+                                  conversation_history=[], is_first_turn=True, model="test")
+        assert len(results) == 1
+        assert results[0] == {"context": "memory from plugin"}
+
+    def test_hook_none_returns_excluded(self, tmp_path, monkeypatch):
+        """invoke_hook() excludes None returns from the result list."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "none_hook",
+            register_body='ctx.register_hook("post_llm_call", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook("post_llm_call", session_id="s1",
+                                  user_message="hi", assistant_response="bye", model="test")
+        assert results == []
+
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

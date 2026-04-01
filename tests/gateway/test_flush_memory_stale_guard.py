@@ -7,9 +7,19 @@ Verifies that:
 3. The flush still works normally when memory files don't exist
 """
 
+import sys
+import types
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
+
+
+@pytest.fixture(autouse=True)
+def _mock_dotenv(monkeypatch):
+    """gateway.run imports dotenv at module level; stub it so tests run without the package."""
+    fake = types.ModuleType("dotenv")
+    fake.load_dotenv = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake)
 
 
 def _make_runner():
@@ -57,105 +67,151 @@ class TestCronSessionBypass:
         runner.session_store.load_transcript.assert_called_once_with("session_abc123")
 
 
+def _make_flush_context(monkeypatch, memory_dir=None):
+    """Return (runner, tmp_agent, fake_run_agent) with run_agent mocked in sys.modules."""
+    tmp_agent = MagicMock()
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = MagicMock(return_value=tmp_agent)
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    runner = _make_runner()
+    runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
+    return runner, tmp_agent, memory_dir
+
+
 class TestMemoryInjection:
     """The flush prompt should include current memory state from disk."""
 
-    def test_memory_content_injected_into_flush_prompt(self, tmp_path):
+    def test_memory_content_injected_into_flush_prompt(self, tmp_path, monkeypatch):
         """When memory files exist, their content appears in the flush prompt."""
-        runner = _make_runner()
-        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
-
-        tmp_agent = MagicMock()
         memory_dir = tmp_path / "memories"
         memory_dir.mkdir()
         (memory_dir / "MEMORY.md").write_text("Agent knows Python\n§\nUser prefers dark mode")
         (memory_dir / "USER.md").write_text("Name: Alice\n§\nTimezone: PST")
 
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch, memory_dir)
+
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch("run_agent.AIAgent", return_value=tmp_agent),
-            # Intercept `from tools.memory_tool import MEMORY_DIR` inside the function
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=memory_dir)}),
         ):
             runner._flush_memories_for_session("session_123")
 
         tmp_agent.run_conversation.assert_called_once()
-        call_kwargs = tmp_agent.run_conversation.call_args.kwargs
-        flush_prompt = call_kwargs.get("user_message", "")
-        
-        # Verify both memory sections appear in the prompt
+        flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
+
         assert "Agent knows Python" in flush_prompt
         assert "User prefers dark mode" in flush_prompt
         assert "Name: Alice" in flush_prompt
         assert "Timezone: PST" in flush_prompt
-        # Verify the stale-overwrite warning is present
         assert "Do NOT overwrite or remove entries" in flush_prompt
         assert "current live state of memory" in flush_prompt
 
-    def test_flush_works_without_memory_files(self, tmp_path):
+    def test_flush_works_without_memory_files(self, tmp_path, monkeypatch):
         """When no memory files exist, flush still runs without the guard."""
-        runner = _make_runner()
-        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
-
-        tmp_agent = MagicMock()
         empty_dir = tmp_path / "no_memories"
         empty_dir.mkdir()
+
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
 
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch("run_agent.AIAgent", return_value=tmp_agent),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=empty_dir)}),
         ):
             runner._flush_memories_for_session("session_456")
 
-        # Should still run, just without the memory guard section
         tmp_agent.run_conversation.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
         assert "Do NOT overwrite or remove entries" not in flush_prompt
         assert "Review the conversation above" in flush_prompt
 
-    def test_empty_memory_files_no_injection(self, tmp_path):
+    def test_empty_memory_files_no_injection(self, tmp_path, monkeypatch):
         """Empty memory files should not trigger the guard section."""
-        runner = _make_runner()
-        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
-
-        tmp_agent = MagicMock()
         memory_dir = tmp_path / "memories"
         memory_dir.mkdir()
         (memory_dir / "MEMORY.md").write_text("")
         (memory_dir / "USER.md").write_text("  \n  ")  # whitespace only
 
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch("run_agent.AIAgent", return_value=tmp_agent),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=memory_dir)}),
         ):
             runner._flush_memories_for_session("session_789")
 
         tmp_agent.run_conversation.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
-        # No memory content → no guard section
         assert "current live state of memory" not in flush_prompt
+
+
+class TestFlushAgentSilenced:
+    """The flush agent must not produce any terminal output."""
+
+    def test_print_fn_set_to_noop(self, tmp_path, monkeypatch):
+        """_print_fn on the flush agent must be a no-op so tool output never leaks."""
+        runner = _make_runner()
+        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
+
+        captured_agent = {}
+
+        def _fake_ai_agent(*args, **kwargs):
+            agent = MagicMock()
+            captured_agent["instance"] = agent
+            return agent
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _fake_ai_agent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=tmp_path)}),
+        ):
+            runner._flush_memories_for_session("session_silent")
+
+        agent = captured_agent["instance"]
+        assert agent._print_fn is not None, "_print_fn should be overridden to suppress output"
+        # Confirm it is callable and produces no output (no exception)
+        agent._print_fn("should be silenced")
+
+    def test_kawaii_spinner_respects_print_fn(self):
+        """KawaiiSpinner must route all output through print_fn when supplied."""
+        from agent.display import KawaiiSpinner
+
+        written = []
+        spinner = KawaiiSpinner("test", print_fn=lambda *a, **kw: written.append(a))
+        spinner._write("hello")
+        assert written == [("hello",)], "spinner should route through print_fn"
+
+        # A no-op print_fn must produce no output to stdout
+        import io, sys
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        try:
+            silent_spinner = KawaiiSpinner("silent", print_fn=lambda *a, **kw: None)
+            silent_spinner._write("should not appear")
+            silent_spinner.stop("done")
+        finally:
+            sys.stdout = old_stdout
+        assert buf.getvalue() == "", "no-op print_fn spinner must not write to stdout"
 
 
 class TestFlushPromptStructure:
     """Verify the flush prompt retains its core instructions."""
 
-    def test_core_instructions_present(self):
+    def test_core_instructions_present(self, monkeypatch):
         """The flush prompt should still contain the original guidance."""
-        runner = _make_runner()
-        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
-
-        tmp_agent = MagicMock()
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
 
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch("run_agent.AIAgent", return_value=tmp_agent),
-            # Make the import fail gracefully so we test without memory files
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=Path("/nonexistent"))}),
         ):
             runner._flush_memories_for_session("session_struct")

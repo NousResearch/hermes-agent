@@ -193,6 +193,40 @@ When scheduling jobs, you specify where the output goes:
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
 
+### Response wrapping
+
+By default, delivered cron output is wrapped with a header and footer so the recipient knows it came from a scheduled task:
+
+```
+Cronjob Response: Morning feeds
+-------------
+
+<agent output here>
+
+Note: The agent cannot see this message, and therefore cannot respond to it.
+```
+
+To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  wrap_response: false
+```
+
+### Silent suppression
+
+If the agent's final response starts with `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
+
+This is useful for monitoring jobs that should only report when something is wrong:
+
+```text
+Check if nginx is running. If everything is healthy, respond with only [SILENT].
+Otherwise, report the issue.
+```
+
+Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced.
+
 ## Schedule formats
 
 The agent's final response is automatically delivered — you do **not** need to include `send_message` in the cron prompt for that same destination. If a cron run calls `send_message` to the exact target the scheduler will already deliver to, Hermes skips that duplicate send and tells the model to put the user-facing content in the final response instead. Use `send_message` only for additional or different targets.

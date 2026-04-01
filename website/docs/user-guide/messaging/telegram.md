@@ -112,6 +112,66 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Webhook Mode
+
+By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
+
+For **cloud deployments** (Fly.io, Railway, Render, etc.), **webhook mode** is more cost-effective. These platforms can auto-wake suspended machines on inbound HTTP traffic, but not on outbound connections. Since polling is outbound, a polling bot can never sleep. Webhook mode flips the direction — Telegram pushes updates to your bot's HTTPS URL, enabling sleep-when-idle deployments.
+
+| | Polling (default) | Webhook |
+|---|---|---|
+| Direction | Gateway → Telegram (outbound) | Telegram → Gateway (inbound) |
+| Best for | Local, always-on servers | Cloud platforms with auto-wake |
+| Setup | No extra config | Set `TELEGRAM_WEBHOOK_URL` |
+| Idle cost | Machine must stay running | Machine can sleep between messages |
+
+### Configuration
+
+Add the following to `~/.hermes/.env`:
+
+```bash
+TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
+# TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
+# TELEGRAM_WEBHOOK_SECRET=mysecret  # optional, recommended
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_WEBHOOK_URL` | Yes | Public HTTPS URL where Telegram will send updates. The URL path is auto-extracted (e.g., `/telegram` from the example above). |
+| `TELEGRAM_WEBHOOK_PORT` | No | Local port the webhook server listens on (default: `8443`). |
+| `TELEGRAM_WEBHOOK_SECRET` | No | Secret token for verifying that updates actually come from Telegram. **Strongly recommended** for production deployments. |
+
+When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP webhook server instead of polling. When unset, polling mode is used — no behavior change from previous versions.
+
+### Cloud deployment example (Fly.io)
+
+1. Add the env vars to your Fly.io app secrets:
+
+```bash
+fly secrets set TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
+fly secrets set TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 32)
+```
+
+2. Expose the webhook port in your `fly.toml`:
+
+```toml
+[[services]]
+  internal_port = 8443
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+```
+
+3. Deploy:
+
+```bash
+fly deploy
+```
+
+The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
+
 ## Home Channel
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
@@ -161,14 +221,169 @@ Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
 Hermes Agent works in Telegram group chats with a few considerations:
 
 - **Privacy mode** determines what messages the bot can see (see [Step 3](#step-3-privacy-mode-critical-for-groups))
-- When privacy mode is on, **@mention the bot** (e.g., `@my_hermes_bot what's the weather?`) or **reply to its messages** to interact
-- When privacy mode is off (or bot is admin), the bot sees all messages and can participate naturally
 - `TELEGRAM_ALLOWED_USERS` still applies — only authorized users can trigger the bot, even in groups
+- You can keep the bot from responding to ordinary group chatter with `telegram.require_mention: true`
+- With `telegram.require_mention: true`, group messages are accepted when they are:
+  - slash commands
+  - replies to one of the bot's messages
+  - `@botusername` mentions
+  - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
-## Recent Bot API Features (2024–2025)
+### Example group trigger configuration
 
+Add this to `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  require_mention: true
+  mention_patterns:
+    - "^\\s*chompy\\b"
+```
+
+This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+
+### Notes on `mention_patterns`
+
+- Patterns use Python regular expressions
+- Matching is case-insensitive
+- Patterns are checked against both text messages and media captions
+- Invalid regex patterns are ignored with a warning in the gateway logs rather than crashing the bot
+- If you want a pattern to match only at the start of a message, anchor it with `^`
+
+## Private Chat Topics (Bot API 9.4)
+
+Telegram Bot API 9.4 (February 2026) introduced **Private Chat Topics** — bots can create forum-style topic threads directly in 1-on-1 DM chats, no supergroup needed. This lets you run multiple isolated workspaces within your existing DM with Hermes.
+
+### Use case
+
+If you work on several long-running projects, topics keep their context separate:
+
+- **Topic "Website"** — work on your production web service
+- **Topic "Research"** — literature review and paper exploration
+- **Topic "General"** — miscellaneous tasks and quick questions
+
+Each topic gets its own conversation session, history, and context — completely isolated from the others.
+
+### Configuration
+
+Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      dm_topics:
+      - chat_id: 123456789        # Your Telegram user ID
+        topics:
+        - name: General
+          icon_color: 7322096
+        - name: Website
+          icon_color: 9367192
+        - name: Research
+          icon_color: 16766590
+          skill: arxiv              # Auto-load a skill in this topic
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Topic display name |
+| `icon_color` | No | Telegram icon color code (integer) |
+| `icon_custom_emoji_id` | No | Custom emoji ID for the topic icon |
+| `skill` | No | Skill to auto-load on new sessions in this topic |
+| `thread_id` | No | Auto-populated after topic creation — don't set manually |
+
+### How it works
+
+1. On gateway startup, Hermes calls `createForumTopic` for each topic that doesn't have a `thread_id` yet
+2. The `thread_id` is saved back to `config.yaml` automatically — subsequent restarts skip the API call
+3. Each topic maps to an isolated session key: `agent:main:telegram:dm:{chat_id}:{thread_id}`
+4. Messages in each topic have their own conversation history, memory flush, and context window
+
+### Skill binding
+
+Topics with a `skill` field automatically load that skill when a new session starts in the topic. This works exactly like typing `/skill-name` at the start of a conversation — the skill content is injected into the first message, and subsequent messages see it in the conversation history.
+
+For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (due to idle timeout, daily reset, or manual `/reset`).
+
+:::tip
+Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
+:::
+
+## Recent Bot API Features
+
+- **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
+
+## Webhook Mode
+
+By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
+
+**Webhook mode** is an alternative where Telegram pushes updates to your server over HTTPS. This is ideal for **serverless and cloud deployments** (Fly.io, Railway, etc.) where inbound HTTP can wake a suspended machine.
+
+### Configuration
+
+Set the `TELEGRAM_WEBHOOK_URL` environment variable to enable webhook mode:
+
+```bash
+# Required — your public HTTPS endpoint
+TELEGRAM_WEBHOOK_URL=https://app.fly.dev/telegram
+
+# Optional — local listen port (default: 8443)
+TELEGRAM_WEBHOOK_PORT=8443
+
+# Optional — secret token for update verification (auto-generated if not set)
+TELEGRAM_WEBHOOK_SECRET=my-secret-token
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  webhook_mode: true
+```
+
+When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP server listening on `0.0.0.0:<port>` and registers the webhook URL with Telegram. The URL path is extracted from the webhook URL (defaults to `/telegram`).
+
+:::warning
+Telegram requires a **valid TLS certificate** on the webhook endpoint. Self-signed certificates will be rejected. Use a reverse proxy (nginx, Caddy) or a platform that provides TLS termination (Fly.io, Railway, Cloudflare Tunnel).
+:::
+
+## DNS-over-HTTPS Fallback IPs
+
+In some restricted networks, `api.telegram.org` may resolve to an IP that is unreachable. The Telegram adapter includes a **fallback IP** mechanism that transparently retries connections against alternative IPs while preserving the correct TLS hostname and SNI.
+
+### How it works
+
+1. If `TELEGRAM_FALLBACK_IPS` is set, those IPs are used directly.
+2. Otherwise, the adapter automatically queries **Google DNS** and **Cloudflare DNS** via DNS-over-HTTPS (DoH) to discover alternative IPs for `api.telegram.org`.
+3. IPs returned by DoH that differ from the system DNS result are used as fallbacks.
+4. If DoH is also blocked, a hardcoded seed IP (`149.154.167.220`) is used as a last resort.
+5. Once a fallback IP succeeds, it becomes "sticky" — subsequent requests use it directly without retrying the primary path first.
+
+### Configuration
+
+```bash
+# Explicit fallback IPs (comma-separated)
+TELEGRAM_FALLBACK_IPS=149.154.167.220,149.154.167.221
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      fallback_ips:
+        - "149.154.167.220"
+```
+
+:::tip
+You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
+:::
 
 ## Troubleshooting
 
@@ -180,6 +395,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
 | Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`. |
 | Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
+| Webhook not receiving updates | Verify `TELEGRAM_WEBHOOK_URL` is publicly reachable (test with `curl`). Ensure your platform/reverse proxy routes inbound HTTPS traffic from the URL's port to the local listen port configured by `TELEGRAM_WEBHOOK_PORT` (they do not need to be the same number). Ensure SSL/TLS is active — Telegram only sends to HTTPS URLs. Check firewall rules. |
 
 ## Exec Approval
 

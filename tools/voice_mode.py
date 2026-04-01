@@ -19,7 +19,6 @@ import tempfile
 import threading
 import time
 import wave
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -52,9 +51,12 @@ def _audio_available() -> bool:
 def detect_audio_environment() -> dict:
     """Detect if the current environment supports audio I/O.
 
-    Returns dict with 'available' (bool) and 'warnings' (list of strings).
+    Returns dict with 'available' (bool), 'warnings' (list of hard-fail
+    reasons that block voice mode), and 'notices' (list of informational
+    messages that do NOT block voice mode).
     """
-    warnings = []
+    warnings = []   # hard-fail: these block voice mode
+    notices = []     # informational: logged but don't block
 
     # SSH detection
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
@@ -64,11 +66,20 @@ def detect_audio_environment() -> dict:
     if os.path.exists('/.dockerenv'):
         warnings.append("Running inside Docker container -- no audio devices")
 
-    # WSL detection
+    # WSL detection — PulseAudio bridge makes audio work in WSL.
+    # Only block if PULSE_SERVER is not configured.
     try:
         with open('/proc/version', 'r') as f:
             if 'microsoft' in f.read().lower():
-                warnings.append("Running in WSL -- audio requires PulseAudio bridge to Windows")
+                if os.environ.get('PULSE_SERVER'):
+                    notices.append("Running in WSL with PulseAudio bridge")
+                else:
+                    warnings.append(
+                        "Running in WSL -- audio requires PulseAudio bridge.\n"
+                        "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
+                        "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
+                        "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav"
+                    )
     except (FileNotFoundError, PermissionError, OSError):
         pass
 
@@ -80,7 +91,12 @@ def detect_audio_environment() -> dict:
             if not devices:
                 warnings.append("No audio input/output devices detected")
         except Exception:
-            warnings.append("Audio subsystem error (PortAudio cannot query devices)")
+            # In WSL with PulseAudio, device queries can fail even though
+            # recording/playback works fine. Don't block if PULSE_SERVER is set.
+            if os.environ.get('PULSE_SERVER'):
+                notices.append("Audio device query failed but PULSE_SERVER is set -- continuing")
+            else:
+                warnings.append("Audio subsystem error (PortAudio cannot query devices)")
     except ImportError:
         warnings.append("Audio libraries not installed (pip install sounddevice numpy)")
     except OSError:
@@ -94,6 +110,7 @@ def detect_audio_environment() -> dict:
     return {
         "available": len(warnings) == 0,
         "warnings": warnings,
+        "notices": notices,
     }
 
 # ---------------------------------------------------------------------------
@@ -710,7 +727,7 @@ def check_voice_requirements() -> Dict[str, Any]:
         ``missing_packages``, and ``details``.
     """
     # Determine STT provider availability
-    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled, _HAS_FASTER_WHISPER
+    from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
@@ -749,6 +766,8 @@ def check_voice_requirements() -> Dict[str, Any]:
 
     for warning in env_check["warnings"]:
         details_parts.append(f"Environment: {warning}")
+    for notice in env_check.get("notices", []):
+        details_parts.append(f"Environment: {notice}")
 
     return {
         "available": available,

@@ -114,7 +114,22 @@ Without these events, Slack simply never delivers channel messages to the bot.
 
 ---
 
-## Step 5: Install App to Workspace
+## Step 5: Enable the Messages Tab
+
+This step enables direct messages to the bot. Without it, users see **"Sending messages to this app has been turned off"** when trying to DM the bot.
+
+1. In the sidebar, go to **Features → App Home**
+2. Scroll to **Show Tabs**
+3. Toggle **Messages Tab** to ON
+4. Check **"Allow users to send Slash commands and messages from the messages tab"**
+
+:::danger Without this step, DMs are completely blocked
+Even with all the correct scopes and event subscriptions, Slack will not allow users to send direct messages to the bot unless the Messages Tab is enabled. This is a Slack platform requirement, not a Hermes configuration issue.
+:::
+
+---
+
+## Step 6: Install App to Workspace
 
 1. In the sidebar, go to **Settings → Install App**
 2. Click **Install to Workspace**
@@ -129,7 +144,7 @@ to take effect. The Install App page will show a banner prompting you to do so.
 
 ---
 
-## Step 6: Find User IDs for the Allowlist
+## Step 7: Find User IDs for the Allowlist
 
 Hermes uses Slack **Member IDs** (not usernames or display names) for the allowlist.
 
@@ -144,7 +159,7 @@ Member IDs look like `U01ABC2DEF3`. You need your own Member ID at minimum.
 
 ---
 
-## Step 7: Configure Hermes
+## Step 8: Configure Hermes
 
 Add the following to your `~/.hermes/.env` file:
 
@@ -175,7 +190,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 ---
 
-## Step 8: Invite the Bot to Channels
+## Step 9: Invite the Bot to Channels
 
 After starting the gateway, you need to **invite the bot** to any channel where you want it to respond:
 
@@ -222,6 +237,60 @@ Make sure the bot has been **invited to the channel** (`/invite @Hermes Agent`).
 
 ---
 
+## Multi-Workspace Support
+
+Hermes can connect to **multiple Slack workspaces** simultaneously using a single gateway instance. Each workspace is authenticated independently with its own bot user ID.
+
+### Configuration
+
+Provide multiple bot tokens as a **comma-separated list** in `SLACK_BOT_TOKEN`:
+
+```bash
+# Multiple bot tokens — one per workspace
+SLACK_BOT_TOKEN=xoxb-workspace1-token,xoxb-workspace2-token,xoxb-workspace3-token
+
+# A single app-level token is still used for Socket Mode
+SLACK_APP_TOKEN=xapp-your-app-token
+```
+
+Or in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  slack:
+    token: "xoxb-workspace1-token,xoxb-workspace2-token"
+```
+
+### OAuth Token File
+
+In addition to tokens in the environment or config, Hermes also loads tokens from an **OAuth token file** at:
+
+```
+~/.hermes/platforms/slack/slack_tokens.json
+```
+
+This file is a JSON object mapping team IDs to token entries:
+
+```json
+{
+  "T01ABC2DEF3": {
+    "token": "xoxb-workspace-token-here",
+    "team_name": "My Workspace"
+  }
+}
+```
+
+Tokens from this file are merged with any tokens specified via `SLACK_BOT_TOKEN`. Duplicate tokens are automatically deduplicated.
+
+### How it works
+
+- The **first token** in the list is the primary token, used for the Socket Mode connection (AsyncApp).
+- Each token is authenticated via `auth.test` on startup. The gateway maps each `team_id` to its own `WebClient` and `bot_user_id`.
+- When a message arrives, Hermes uses the correct workspace-specific client to respond.
+- The primary `bot_user_id` (from the first token) is used for backward compatibility with features that expect a single bot identity.
+
+---
+
 ## Voice Messages
 
 Hermes supports voice on Slack:
@@ -239,6 +308,7 @@ Hermes supports voice on Slack:
 | Bot works in DMs but not in channels | **Most common issue.** Add `message.channels` and `message.groups` to event subscriptions, reinstall the app, and invite the bot to the channel with `/invite @Hermes Agent` |
 | Bot doesn't respond to @mentions in channels | 1) Check `message.channels` event is subscribed. 2) Bot must be invited to the channel. 3) Ensure `channels:history` scope is added. 4) Reinstall the app after scope/event changes |
 | Bot ignores messages in private channels | Add both the `message.groups` event subscription and `groups:history` scope, then reinstall the app and `/invite` the bot |
+| "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
 | "missing_scope" error | Add the required scope in OAuth & Permissions, then **reinstall** the app |

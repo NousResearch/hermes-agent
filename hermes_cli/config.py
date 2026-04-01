@@ -34,6 +34,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
+    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
+    "WECOM_BOT_ID", "WECOM_SECRET",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
@@ -47,12 +49,97 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
+# Managed mode (NixOS declarative config)
+# =============================================================================
+
+_MANAGED_TRUE_VALUES = ("true", "1", "yes")
+_MANAGED_SYSTEM_NAMES = {
+    "brew": "Homebrew",
+    "homebrew": "Homebrew",
+    "nix": "NixOS",
+    "nixos": "NixOS",
+}
+
+
+def get_managed_system() -> Optional[str]:
+    """Return the package manager owning this install, if any."""
+    raw = os.getenv("HERMES_MANAGED", "").strip()
+    if raw:
+        normalized = raw.lower()
+        if normalized in _MANAGED_TRUE_VALUES:
+            return "NixOS"
+        return _MANAGED_SYSTEM_NAMES.get(normalized, raw)
+
+    managed_marker = get_hermes_home() / ".managed"
+    if managed_marker.exists():
+        return "NixOS"
+    return None
+
+
+def is_managed() -> bool:
+    """Check if Hermes is running in package-manager-managed mode.
+
+    Two signals: the HERMES_MANAGED env var (set by the systemd service),
+    or a .managed marker file in HERMES_HOME (set by the NixOS activation
+    script, so interactive shells also see it).
+    """
+    return get_managed_system() is not None
+
+
+def get_managed_update_command() -> Optional[str]:
+    """Return the preferred upgrade command for a managed install."""
+    managed_system = get_managed_system()
+    if managed_system == "Homebrew":
+        return "brew upgrade hermes-agent"
+    if managed_system == "NixOS":
+        return "sudo nixos-rebuild switch"
+    return None
+
+
+def recommended_update_command() -> str:
+    """Return the best update command for the current installation."""
+    return get_managed_update_command() or "hermes update"
+
+
+def format_managed_message(action: str = "modify this Hermes installation") -> str:
+    """Build a user-facing error for managed installs."""
+    managed_system = get_managed_system() or "a package manager"
+    raw = os.getenv("HERMES_MANAGED", "").strip().lower()
+
+    if managed_system == "NixOS":
+        env_hint = "true" if raw in _MANAGED_TRUE_VALUES else raw or "true"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by NixOS "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
+            "  sudo nixos-rebuild switch"
+        )
+
+    if managed_system == "Homebrew":
+        env_hint = raw or "homebrew"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by Homebrew "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Use:\n"
+            "  brew upgrade hermes-agent"
+        )
+
+    return (
+        f"Cannot {action}: this Hermes installation is managed by {managed_system}.\n"
+        "Use your package manager to upgrade or reinstall Hermes."
+    )
+
+def managed_error(action: str = "modify configuration"):
+    """Print user-friendly error for managed mode."""
+    print(format_managed_message(action), file=sys.stderr)
+
+
+# =============================================================================
 # Config paths
 # =============================================================================
 
-def get_hermes_home() -> Path:
-    """Get the Hermes home directory (~/.hermes)."""
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+# Re-export from hermes_constants — canonical definition lives there.
+from hermes_constants import get_hermes_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -110,9 +197,17 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
+    "fallback_providers": [],
+    "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Tool-use enforcement: injects system prompt guidance that tells the
+        # model to actually call tools instead of describing intended actions.
+        # Values: "auto" (default — applies to gpt/codex models), true/false
+        # (force on/off for all models), or a list of model-name substrings
+        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        "tool_use_enforcement": "auto",
     },
     
     "terminal": {
@@ -151,6 +246,14 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
+        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "camofox": {
+            # When true, Hermes sends a stable profile-scoped userId to Camofox
+            # so the server can map it to a persistent browser profile directory.
+            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # When false (default), each session gets a random userId (ephemeral).
+            "managed_persistence": False,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -160,11 +263,18 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
+
+    # Maximum characters returned by a single read_file call.  Reads that
+    # exceed this are rejected with guidance to use offset+limit.
+    # 100K chars ≈ 25–35K tokens across typical tokenisers.
+    "file_read_max_chars": 100_000,
     
     "compression": {
         "enabled": True,
-        "threshold": 0.50,
-        "summary_model": "",  # empty = use main configured model
+        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "summary_model": "",          # empty = use main configured model
         "summary_provider": "auto",
         "summary_base_url": None,
     },
@@ -187,49 +297,57 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 30,         # seconds — increase for slow local vision models
+            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
+            "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,         # seconds — increase for slow local models
         },
         "compression": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "skills_hub": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "mcp": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "flush_memories": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
     },
     
@@ -237,11 +355,15 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
+        "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
+        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
     },
 
     # Privacy settings
@@ -315,6 +437,8 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
+                               # independent of the parent's max_iterations)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -322,6 +446,13 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Skills — external skill directories for sharing skills across tools/agents.
+    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
+    # always goes to ~/.hermes/skills/.
+    "skills": {
+        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
@@ -336,6 +467,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -352,6 +484,7 @@ DEFAULT_CONFIG = {
     #   off    — skip all approval prompts (equivalent to --yolo)
     "approvals": {
         "mode": "manual",
+        "timeout": 60,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -377,8 +510,14 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "cron": {
+        # Wrap delivered cron responses with a header (task name) and footer
+        # ("The agent cannot see this message").  Set to false for clean output.
+        "wrap_response": True,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
@@ -516,14 +655,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
     },
     "DASHSCOPE_API_KEY": {
-        "description": "Alibaba Cloud DashScope API key for Qwen models",
+        "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
         "prompt": "DashScope API Key",
         "url": "https://modelstudio.console.alibabacloud.com/",
         "password": True,
         "category": "provider",
     },
     "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: international endpoint)",
+        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
         "prompt": "DashScope Base URL",
         "url": "",
         "password": False,
@@ -562,8 +701,31 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "HF_TOKEN": {
+        "description": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
+        "prompt": "Hugging Face Token",
+        "url": "https://huggingface.co/settings/tokens",
+        "password": True,
+        "category": "provider",
+    },
+    "HF_BASE_URL": {
+        "description": "Hugging Face Inference Providers base URL override",
+        "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
+    "EXA_API_KEY": {
+        "description": "Exa API key for AI-native web search and contents",
+        "prompt": "Exa API key",
+        "url": "https://exa.ai/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "PARALLEL_API_KEY": {
         "description": "Parallel API key for AI-native web search and extract",
         "prompt": "Parallel API key",
@@ -618,6 +780,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://browser-use.com/",
         "tools": ["browser_navigate", "browser_click"],
         "password": True,
+        "category": "tool",
+    },
+    "CAMOFOX_URL": {
+        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
+        "prompt": "Camofox server URL",
+        "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
         "category": "tool",
     },
     "FAL_KEY": {
@@ -746,6 +916,20 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_ALLOWED_USERS": {
         "description": "Comma-separated Mattermost user IDs allowed to use the bot",
         "prompt": "Allowed Mattermost user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_REQUIRE_MENTION": {
+        "description": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in channels",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_FREE_RESPONSE_CHANNELS": {
+        "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
+        "prompt": "Free-response channel IDs (comma-separated)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -1197,6 +1381,36 @@ def _expand_env_vars(obj):
     return obj
 
 
+def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Move stale root-level provider/base_url into model section.
+
+    Some users (or older code) placed ``provider:`` and ``base_url:`` at the
+    config root instead of inside ``model:``.  These root-level keys are only
+    used as a fallback when the corresponding ``model.*`` key is empty — they
+    never override an existing ``model.provider`` or ``model.base_url``.
+    After migration the root-level keys are removed so they can't cause
+    confusion on subsequent loads.
+    """
+    # Only act if there are root-level keys to migrate
+    has_root = any(config.get(k) for k in ("provider", "base_url"))
+    if not has_root:
+        return config
+
+    config = dict(config)
+    model = config.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        config["model"] = model
+
+    for key in ("provider", "base_url"):
+        root_val = config.get(key)
+        if root_val and not model.get(key):
+            model[key] = root_val
+        config.pop(key, None)
+
+    return config
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -1238,7 +1452,7 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _expand_env_vars(_normalize_max_turns_config(config))
+    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
 
 
 _SECURITY_COMMENT = """
@@ -1338,11 +1552,14 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    if is_managed():
+        managed_error("save configuration")
+        return
     from utils import atomic_yaml_write
 
     ensure_hermes_home()
     config_path = get_config_path()
-    normalized = _normalize_max_turns_config(config)
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
@@ -1479,6 +1696,9 @@ def sanitize_env_file() -> int:
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
+    if is_managed():
+        managed_error(f"set {key}")
+        return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
@@ -1614,6 +1834,7 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
@@ -1685,6 +1906,8 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+        print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         _sm = compression.get('summary_model', '') or '(main model)'
         print(f"  Model:        {_sm}")
         comp_provider = compression.get('summary_provider', 'auto')
@@ -1733,6 +1956,9 @@ def show_config():
 
 def edit_config():
     """Open config file in user's editor."""
+    if is_managed():
+        managed_error("edit configuration")
+        return
     config_path = get_config_path()
     
     # Ensure config exists
@@ -1762,10 +1988,13 @@ def edit_config():
 
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
+    if is_managed():
+        managed_error("set configuration values")
+        return
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -1854,7 +2083,7 @@ def config_command(args):
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
-        if not key or not value:
+        if not key or value is None:
             print("Usage: hermes config set <key> <value>")
             print()
             print("Examples:")

@@ -36,22 +36,6 @@ brew install signal-cli
 # Extract and add to PATH
 ```
 
-### Alternative: Docker (signal-cli-rest-api)
-
-If you prefer Docker, use the [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) container:
-
-```bash
-docker run -d --name signal-cli \
-  -p 8080:8080 \
-  -v $HOME/.local/share/signal-cli:/home/.local/share/signal-cli \
-  -e MODE=json-rpc \
-  bbernhard/signal-cli-rest-api
-```
-
-:::tip
-Use `MODE=json-rpc` for best performance. The `normal` mode spawns a JVM per request and is much slower.
-:::
-
 ---
 
 ## Step 1: Link Your Signal Account

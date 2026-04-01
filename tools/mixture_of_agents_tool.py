@@ -52,6 +52,7 @@ import asyncio
 import datetime
 from typing import Dict, Any, List, Optional
 from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
+from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,13 @@ async def _run_reference_model_safe(
             
             response = await _get_openrouter_client().chat.completions.create(**api_params)
             
-            content = response.choices[0].message.content.strip()
+            content = extract_content_or_reasoning(response)
+            if not content:
+                # Reasoning-only response — let the retry loop handle it
+                logger.warning("%s returned empty content (attempt %s/%s), retrying", model, attempt + 1, max_retries)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(min(2 ** (attempt + 1), 60))
+                    continue
             logger.info("%s responded (%s characters)", model, len(content))
             return model, content, True
             
@@ -211,7 +218,14 @@ async def _run_aggregator_model(
 
     response = await _get_openrouter_client().chat.completions.create(**api_params)
 
-    content = response.choices[0].message.content.strip()
+    content = extract_content_or_reasoning(response)
+
+    # Retry once on empty content (reasoning-only response)
+    if not content:
+        logger.warning("Aggregator returned empty content, retrying once")
+        response = await _get_openrouter_client().chat.completions.create(**api_params)
+        content = extract_content_or_reasoning(response)
+
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
 
@@ -466,7 +480,7 @@ if __name__ == "__main__":
     
     # Show current configuration
     config = get_moa_configuration()
-    print(f"\n⚙️  Current Configuration:")
+    print("\n⚙️  Current Configuration:")
     print(f"  🤖 Reference models ({len(config['reference_models'])}): {', '.join(config['reference_models'])}")
     print(f"  🧠 Aggregator model: {config['aggregator_model']}")
     print(f"  🌡️  Reference temperature: {config['reference_temperature']}")
@@ -506,7 +520,7 @@ if __name__ == "__main__":
     print(f"  - Optimized temperatures: {REFERENCE_TEMPERATURE} for reference models, {AGGREGATOR_TEMPERATURE} for aggregation")
     print("  - Token-efficient: only returns final aggregated response")
     print("  - Resilient: continues with partial model failures")
-    print(f"  - Configurable: easy to modify models and settings at top of file")
+    print("  - Configurable: easy to modify models and settings at top of file")
     print("  - State-of-the-art results on challenging benchmarks")
     
     print("\nDebug mode:")

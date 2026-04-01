@@ -68,6 +68,17 @@ def _env_enabled(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_disabled_plugins() -> set:
+    """Read the disabled plugins list from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        disabled = config.get("plugins", {}).get("disabled", [])
+        return set(disabled) if isinstance(disabled, list) else set()
+    except Exception:
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -141,6 +152,34 @@ class PluginContext:
         self._manager._plugin_tool_names.add(name)
         logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
 
+    # -- message injection --------------------------------------------------
+
+    def inject_message(self, content: str, role: str = "user") -> bool:
+        """Inject a message into the active conversation.
+
+        If the agent is idle (waiting for user input), this starts a new turn.
+        If the agent is running, this interrupts and injects the message.
+
+        This enables plugins (e.g. remote control viewers, messaging bridges)
+        to send messages into the conversation from external sources.
+
+        Returns True if the message was queued successfully.
+        """
+        cli = self._manager._cli_ref
+        if cli is None:
+            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if getattr(cli, "_agent_running", False):
+            # Agent is mid-turn — interrupt with the message
+            cli._interrupt_queue.put(msg)
+        else:
+            # Agent is idle — queue as next input
+            cli._pending_input.put(msg)
+        return True
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -173,6 +212,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._discovered: bool = False
+        self._cli_ref = None  # Set by CLI after plugin discovery
 
     # -----------------------------------------------------------------------
     # Public
@@ -199,8 +239,15 @@ class PluginManager:
         # 3. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest
+        # Load each manifest (skip user-disabled plugins)
+        disabled = _get_disabled_plugins()
         for manifest in manifests:
+            if manifest.name in disabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "disabled via config"
+                self._plugins[manifest.name] = loaded
+                logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                continue
             self._load_plugin(manifest)
 
         if manifests:
@@ -385,16 +432,23 @@ class PluginManager:
     # Hook invocation
     # -----------------------------------------------------------------------
 
-    def invoke_hook(self, hook_name: str, **kwargs: Any) -> None:
+    def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
         Each callback is wrapped in its own try/except so a misbehaving
         plugin cannot break the core agent loop.
+
+        Returns a list of non-``None`` return values from callbacks.
+        This allows hooks like ``pre_llm_call`` to contribute context
+        that the agent core can collect and inject.
         """
         callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
         for cb in callbacks:
             try:
-                cb(**kwargs)
+                ret = cb(**kwargs)
+                if ret is not None:
+                    results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
@@ -402,6 +456,7 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+        return results
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -446,9 +501,12 @@ def discover_plugins() -> None:
     get_plugin_manager().discover_and_load()
 
 
-def invoke_hook(hook_name: str, **kwargs: Any) -> None:
-    """Invoke a lifecycle hook on all loaded plugins."""
-    get_plugin_manager().invoke_hook(hook_name, **kwargs)
+def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a lifecycle hook on all loaded plugins.
+
+    Returns a list of non-``None`` return values from plugin callbacks.
+    """
+    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
 def get_plugin_tool_names() -> Set[str]:

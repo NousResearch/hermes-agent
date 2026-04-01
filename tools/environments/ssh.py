@@ -55,6 +55,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         self.control_socket = self.control_dir / f"{user}@{host}:{port}.sock"
         _ensure_ssh_available()
         self._establish_connection()
+        self._remote_home = self._detect_remote_home()
+        self._sync_skills_and_credentials()
 
         if self.persistent:
             self._init_persistent_shell()
@@ -87,7 +89,80 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"SSH connection to {self.user}@{self.host} timed out")
 
-    _poll_interval: float = 0.15
+    def _detect_remote_home(self) -> str:
+        """Detect the remote user's home directory."""
+        try:
+            cmd = self._build_ssh_command()
+            cmd.append("echo $HOME")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            home = result.stdout.strip()
+            if home and result.returncode == 0:
+                logger.debug("SSH: remote home = %s", home)
+                return home
+        except Exception:
+            pass
+        # Fallback: guess from username
+        if self.user == "root":
+            return "/root"
+        return f"/home/{self.user}"
+
+    def _sync_skills_and_credentials(self) -> None:
+        """Rsync skills directory and credential files to the remote host."""
+        try:
+            container_base = f"{self._remote_home}/.hermes"
+            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
+
+            rsync_base = ["rsync", "-az", "--timeout=30", "--safe-links"]
+            ssh_opts = f"ssh -o ControlPath={self.control_socket} -o ControlMaster=auto"
+            if self.port != 22:
+                ssh_opts += f" -p {self.port}"
+            if self.key_path:
+                ssh_opts += f" -i {self.key_path}"
+            rsync_base.extend(["-e", ssh_opts])
+            dest_prefix = f"{self.user}@{self.host}"
+
+            # Sync individual credential files (remap /root/.hermes to detected home)
+            for mount_entry in get_credential_file_mounts():
+                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
+                parent_dir = str(Path(remote_path).parent)
+                mkdir_cmd = self._build_ssh_command()
+                mkdir_cmd.append(f"mkdir -p {parent_dir}")
+                subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
+                cmd = rsync_base + [mount_entry["host_path"], f"{dest_prefix}:{remote_path}"]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    logger.info("SSH: synced credential %s -> %s", mount_entry["host_path"], remote_path)
+                else:
+                    logger.debug("SSH: rsync credential failed: %s", result.stderr.strip())
+
+            # Sync skills directory (remap to detected home)
+            skills_mount = get_skills_directory_mount(container_base=container_base)
+            if skills_mount:
+                remote_path = skills_mount["container_path"]
+                mkdir_cmd = self._build_ssh_command()
+                mkdir_cmd.append(f"mkdir -p {remote_path}")
+                subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
+                cmd = rsync_base + [
+                    skills_mount["host_path"].rstrip("/") + "/",
+                    f"{dest_prefix}:{remote_path}/",
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if result.returncode == 0:
+                    logger.info("SSH: synced skills dir %s -> %s", skills_mount["host_path"], remote_path)
+                else:
+                    logger.debug("SSH: rsync skills dir failed: %s", result.stderr.strip())
+        except Exception as e:
+            logger.debug("SSH: could not sync skills/credentials: %s", e)
+
+    def execute(self, command: str, cwd: str = "", *,
+                timeout: int | None = None,
+                stdin_data: str | None = None) -> dict:
+        # Incremental sync before each command so mid-session credential
+        # refreshes and skill updates are picked up.
+        self._sync_skills_and_credentials()
+        return super().execute(command, cwd, timeout=timeout, stdin_data=stdin_data)
+
+    _poll_interval_start: float = 0.15  # SSH: higher initial interval (150ms) for network latency
 
     @property
     def _temp_prefix(self) -> str:

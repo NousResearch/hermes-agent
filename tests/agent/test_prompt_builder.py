@@ -5,6 +5,8 @@ import importlib
 import logging
 import sys
 
+import pytest
+
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
@@ -18,6 +20,8 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -192,7 +196,7 @@ class TestParseSkillFile:
         )
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             is_compat, _, _ = _parse_skill_file(skill_file)
         assert is_compat is False
@@ -233,6 +237,14 @@ class TestPromptBuilderImports:
 
 
 class TestBuildSkillsSystemPrompt:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        """Ensure the in-process skills prompt cache doesn't leak between tests."""
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_empty_when_no_skills_dir(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         result = build_skills_system_prompt()
@@ -283,7 +295,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
@@ -302,7 +314,7 @@ class TestBuildSkillsSystemPrompt:
 
         from unittest.mock import patch
 
-        with patch("tools.skills_tool.sys") as mock_sys:
+        with patch("agent.skill_utils.sys") as mock_sys:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
@@ -330,7 +342,7 @@ class TestBuildSkillsSystemPrompt:
         from unittest.mock import patch
 
         with patch(
-            "tools.skills_tool._get_disabled_skill_names",
+            "agent.prompt_builder.get_disabled_skill_names",
             return_value={"old-tool"},
         ):
             result = build_skills_system_prompt()
@@ -409,7 +421,7 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "# Hermes ☤" in result
+        assert "Hermes Agent" in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
@@ -464,14 +476,15 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
 
-    def test_recursive_agents_md(self, tmp_path):
+    def test_agents_md_top_level_only(self, tmp_path):
+        """AGENTS.md is loaded from cwd only — subdirectory copies are ignored."""
         (tmp_path / "AGENTS.md").write_text("Top level instructions.")
         sub = tmp_path / "src"
         sub.mkdir()
         (sub / "AGENTS.md").write_text("Src-specific instructions.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Top level" in result
-        assert "Src-specific" in result
+        assert "Src-specific" not in result
 
     # --- .hermes.md / HERMES.md discovery ---
 
@@ -560,6 +573,10 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Lowercase claude rules" in result
 
+    @pytest.mark.skipif(
+        sys.platform == "darwin",
+        reason="APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path",
+    )
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
         (tmp_path / "CLAUDE.md").write_text("From uppercase.")
         (tmp_path / "claude.md").write_text("From lowercase.")
@@ -803,6 +820,13 @@ class TestSkillShouldShow:
 
 
 class TestBuildSkillsSystemPromptConditional:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
     def test_fallback_skill_hidden_when_primary_available(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
@@ -878,3 +902,127 @@ class TestBuildSkillsSystemPromptConditional:
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result
+
+    def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata key present but null should not AttributeError."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "safe-skill"
+        skill_dir.mkdir(parents=True)
+        # YAML `metadata:` with no value parses as {"metadata": None}
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: safe-skill\ndescription: Survives null metadata\nmetadata:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "safe-skill" in result
+
+    def test_null_hermes_under_metadata_does_not_crash(self, monkeypatch, tmp_path):
+        """Regression: metadata.hermes present but null should not crash."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "general" / "nested-null"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: nested-null\ndescription: Null hermes key\nmetadata:\n  hermes:\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "nested-null" in result
+
+
+# =========================================================================
+# Tool-use enforcement guidance
+# =========================================================================
+
+
+class TestToolUseEnforcementGuidance:
+    def test_guidance_mentions_tool_calls(self):
+        assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_forbids_description_only(self):
+        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+
+    def test_guidance_requires_action(self):
+        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_enforcement_models_includes_gpt(self):
+        assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_codex(self):
+        assert "codex" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_is_tuple(self):
+        assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+# =========================================================================
+# Budget warning history stripping
+# =========================================================================
+
+
+class TestStripBudgetWarningsFromHistory:
+    def test_strips_json_budget_warning_key(self):
+        import json
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
+                "output": "hello",
+                "exit_code": 0,
+                "_budget_warning": "[BUDGET: Iteration 55/60. 5 iterations left. Start consolidating your work.]",
+            })},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        parsed = json.loads(messages[0]["content"])
+        assert "_budget_warning" not in parsed
+        assert parsed["output"] == "hello"
+        assert parsed["exit_code"] == 0
+
+    def test_strips_text_budget_warning(self):
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1",
+             "content": "some result\n\n[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        assert messages[0]["content"] == "some result"
+
+    def test_leaves_non_tool_messages_unchanged(self):
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "assistant", "content": "[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
+            {"role": "user", "content": "hello"},
+        ]
+        original_contents = [m["content"] for m in messages]
+        _strip_budget_warnings_from_history(messages)
+        assert [m["content"] for m in messages] == original_contents
+
+    def test_handles_empty_and_missing_content(self):
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1", "content": ""},
+            {"role": "tool", "tool_call_id": "c2"},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        assert messages[0]["content"] == ""
+
+    def test_strips_caution_variant(self):
+        import json
+        from run_agent import _strip_budget_warnings_from_history
+
+        messages = [
+            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
+                "output": "ok",
+                "_budget_warning": "[BUDGET: Iteration 42/60. 18 iterations left. Start consolidating your work.]",
+            })},
+        ]
+        _strip_budget_warnings_from_history(messages)
+        parsed = json.loads(messages[0]["content"])
+        assert "_budget_warning" not in parsed

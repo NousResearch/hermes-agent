@@ -96,6 +96,59 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
 
 
+class TestBusyInputMode:
+    def test_default_busy_input_mode_is_interrupt(self):
+        cli = _make_cli()
+        assert cli.busy_input_mode == "interrupt"
+
+    def test_busy_input_mode_queue_is_honored(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        assert cli.busy_input_mode == "queue"
+
+    def test_unknown_busy_input_mode_falls_back_to_interrupt(self):
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "bogus"}})
+        assert cli.busy_input_mode == "interrupt"
+
+    def test_queue_command_works_while_busy(self):
+        """When agent is running, /queue should still put the prompt in _pending_input."""
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.process_command("/queue follow up")
+        assert cli._pending_input.get_nowait() == "follow up"
+
+    def test_queue_command_works_while_idle(self):
+        """When agent is idle, /queue should still queue (not reject)."""
+        cli = _make_cli()
+        cli._agent_running = False
+        cli.process_command("/queue follow up")
+        assert cli._pending_input.get_nowait() == "follow up"
+
+    def test_queue_mode_routes_busy_enter_to_pending(self):
+        """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
+        cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
+        cli._agent_running = True
+        # Simulate what handle_enter does for non-command input while busy
+        text = "follow up"
+        if cli.busy_input_mode == "queue":
+            cli._pending_input.put(text)
+        else:
+            cli._interrupt_queue.put(text)
+        assert cli._pending_input.get_nowait() == "follow up"
+        assert cli._interrupt_queue.empty()
+
+    def test_interrupt_mode_routes_busy_enter_to_interrupt(self):
+        """In interrupt mode (default), Enter while busy goes to _interrupt_queue."""
+        cli = _make_cli()
+        cli._agent_running = True
+        text = "redirect"
+        if cli.busy_input_mode == "queue":
+            cli._pending_input.put(text)
+        else:
+            cli._interrupt_queue.put(text)
+        assert cli._interrupt_queue.get_nowait() == "redirect"
+        assert cli._pending_input.empty()
+
+
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
         """Single-query mode calls chat() without going through run()."""
@@ -137,6 +190,91 @@ class TestHistoryDisplay:
         assert "[You #5]" not in output
         assert "A" * 250 in output
         assert "A" * 250 + "..." not in output
+
+
+class TestRootLevelProviderOverride:
+    """Root-level provider/base_url in config.yaml must NOT override model.provider."""
+
+    def test_model_provider_wins_over_root_provider(self, tmp_path, monkeypatch):
+        """model.provider takes priority — root-level provider is only a fallback."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root-level key
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+                "provider": "openrouter",  # correct canonical key
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["provider"] == "openrouter"
+
+    def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
+        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root key
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+                # no explicit model.provider — defaults provide "auto"
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        # Root-level "opencode-go" must NOT leak through
+        assert cfg["model"]["provider"] != "opencode-go"
+
+    def test_normalize_root_model_keys_moves_to_model(self):
+        """_normalize_root_model_keys migrates root keys into model section."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "opencode-go",
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "some-model",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        # Root keys removed
+        assert "provider" not in result
+        assert "base_url" not in result
+        # Migrated into model section
+        assert result["model"]["provider"] == "opencode-go"
+        assert result["model"]["base_url"] == "https://example.com/v1"
+
+    def test_normalize_root_model_keys_does_not_override_existing(self):
+        """Existing model.provider is never overridden by root-level key."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "stale-provider",
+            "model": {
+                "default": "some-model",
+                "provider": "correct-provider",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["provider"] == "correct-provider"
+        assert "provider" not in result  # root key still cleaned up
 
 
 class TestProviderResolution:

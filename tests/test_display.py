@@ -1,7 +1,17 @@
-"""Tests for agent/display.py — build_tool_preview()."""
+"""Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
+import os
 import pytest
-from agent.display import build_tool_preview
+from unittest.mock import MagicMock, patch
+
+from agent.display import (
+    build_tool_preview,
+    capture_local_edit_snapshot,
+    extract_edit_diff,
+    _render_inline_unified_diff,
+    _summarize_rendered_diff_sections,
+    render_edit_diff_with_delta,
+)
 
 
 class TestBuildToolPreview:
@@ -83,3 +93,110 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestEditDiffPreview:
+    def test_extract_edit_diff_for_patch(self):
+        diff = extract_edit_diff("patch", '{"success": true, "diff": "--- a/x\\n+++ b/x\\n"}')
+        assert diff is not None
+        assert "+++ b/x" in diff
+
+    def test_render_inline_unified_diff_colors_added_and_removed_lines(self):
+        rendered = _render_inline_unified_diff(
+            "--- a/cli.py\n"
+            "+++ b/cli.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old line\n"
+            "+new line\n"
+            " context\n"
+        )
+
+        assert "a/cli.py" in rendered[0]
+        assert "b/cli.py" in rendered[0]
+        assert any("old line" in line for line in rendered)
+        assert any("new line" in line for line in rendered)
+        assert any("48;2;" in line for line in rendered)
+
+    def test_extract_edit_diff_ignores_non_edit_tools(self):
+        assert extract_edit_diff("web_search", '{"diff": "--- a\\n+++ b\\n"}') is None
+
+    def test_extract_edit_diff_uses_local_snapshot_for_write_file(self, tmp_path):
+        target = tmp_path / "note.txt"
+        target.write_text("old\n", encoding="utf-8")
+
+        snapshot = capture_local_edit_snapshot("write_file", {"path": str(target)})
+
+        target.write_text("new\n", encoding="utf-8")
+
+        diff = extract_edit_diff(
+            "write_file",
+            '{"bytes_written": 4}',
+            function_args={"path": str(target)},
+            snapshot=snapshot,
+        )
+
+        assert diff is not None
+        assert "--- a/" in diff
+        assert "+++ b/" in diff
+        assert "-old" in diff
+        assert "+new" in diff
+
+    def test_render_edit_diff_with_delta_invokes_printer(self):
+        printer = MagicMock()
+
+        rendered = render_edit_diff_with_delta(
+            "patch",
+            '{"diff": "--- a/x\\n+++ b/x\\n@@ -1 +1 @@\\n-old\\n+new\\n"}',
+            print_fn=printer,
+        )
+
+        assert rendered is True
+        assert printer.call_count >= 2
+        calls = [call.args[0] for call in printer.call_args_list]
+        assert any("a/x" in line and "b/x" in line for line in calls)
+        assert any("old" in line for line in calls)
+        assert any("new" in line for line in calls)
+
+    def test_render_edit_diff_with_delta_skips_without_diff(self):
+        rendered = render_edit_diff_with_delta(
+            "patch",
+            '{"success": true}',
+        )
+
+        assert rendered is False
+
+    def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):
+        printer = MagicMock()
+
+        monkeypatch.setattr("agent.display._summarize_rendered_diff_sections", MagicMock(side_effect=RuntimeError("boom")))
+
+        rendered = render_edit_diff_with_delta(
+            "patch",
+            '{"diff": "--- a/x\\n+++ b/x\\n"}',
+            print_fn=printer,
+        )
+
+        assert rendered is False
+        assert printer.call_count == 0
+
+    def test_summarize_rendered_diff_sections_truncates_large_diff(self):
+        diff = "--- a/x.py\n+++ b/x.py\n" + "".join(f"+line{i}\n" for i in range(120))
+
+        rendered = _summarize_rendered_diff_sections(diff, max_lines=20)
+
+        assert len(rendered) == 21
+        assert "omitted" in rendered[-1]
+
+    def test_summarize_rendered_diff_sections_limits_file_count(self):
+        diff = "".join(
+            f"--- a/file{i}.py\n+++ b/file{i}.py\n+line{i}\n"
+            for i in range(8)
+        )
+
+        rendered = _summarize_rendered_diff_sections(diff, max_files=3, max_lines=50)
+
+        assert any("a/file0.py" in line for line in rendered)
+        assert any("a/file1.py" in line for line in rendered)
+        assert any("a/file2.py" in line for line in rendered)
+        assert not any("a/file7.py" in line for line in rendered)
+        assert "additional file" in rendered[-1]

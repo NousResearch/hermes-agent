@@ -4,10 +4,9 @@ Covers the bugs discovered while setting up TBLite evaluation:
 1. Tool resolution — terminal + file tools load correctly
 2. CWD fix — host paths get replaced with /root for container backends
 3. ephemeral_disk version check
-4. Tilde ~ replaced with /root for container backends
-5. ensurepip fix in Modal image builder
-6. install_pipx stays True for swerex-remote
-7. /home/ added to host prefix check
+4. ensurepip fix in Modal image builder
+5. No swe-rex dependency — uses native Modal SDK
+6. /home/ added to host prefix check
 """
 
 import os
@@ -251,7 +250,7 @@ class TestModalEnvironmentDefaults:
 
 
 # =========================================================================
-# Test 7: ensurepip fix in patches.py
+# Test 7: ensurepip fix in ModalEnvironment
 # =========================================================================
 
 class TestEnsurepipFix:
@@ -275,17 +274,24 @@ class TestEnsurepipFix:
             "to fix pip before Modal's bootstrap"
         )
 
-    def test_modal_environment_uses_install_pipx(self):
-        """ModalEnvironment should pass install_pipx to ModalDeployment."""
+    def test_modal_environment_uses_native_sdk(self):
+        """ModalEnvironment should use Modal SDK directly, not swe-rex."""
         try:
             from tools.environments.modal import ModalEnvironment
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
         import inspect
-        source = inspect.getsource(ModalEnvironment.__init__)
-        assert "install_pipx" in source, (
-            "ModalEnvironment should pass install_pipx to ModalDeployment"
+        source = inspect.getsource(ModalEnvironment)
+        assert "swerex" not in source.lower(), (
+            "ModalEnvironment should not depend on swe-rex; "
+            "use Modal SDK directly via Sandbox.create() + exec()"
+        )
+        assert "Sandbox.create.aio" in source, (
+            "ModalEnvironment should use async Modal Sandbox.create.aio()"
+        )
+        assert "exec.aio" in source, (
+            "ModalEnvironment should use Sandbox.exec.aio() for command execution"
         )
 
 

@@ -171,12 +171,13 @@ def _build_child_agent(
     model on OpenRouter while the parent runs on Nous Portal).
     """
     from run_agent import AIAgent
-    import model_tools
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
+    parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", None) or DEFAULT_TOOLSETS)
     if toolsets:
-        child_toolsets = _strip_blocked_tools(toolsets)
+        # Intersect with parent — subagent must not gain tools the parent lacks
+        child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
     elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
         child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
     else:
@@ -191,9 +192,10 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display
     child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
 
-    # Share the parent's iteration budget so subagent tool calls
-    # count toward the session-wide limit.
-    shared_budget = getattr(parent_agent, "iteration_budget", None)
+    # Each subagent gets its own iteration budget capped at max_iterations
+    # (configurable via delegation.max_iterations, default 50).  This means
+    # total iterations across parent + subagents can exceed the parent's
+    # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
@@ -230,7 +232,7 @@ def _build_child_agent(
         providers_order=parent_agent.providers_order,
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
-        iteration_budget=shared_budget,
+        iteration_budget=None,  # fresh budget per subagent
     )
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
@@ -287,7 +289,10 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
-        elif completed and summary:
+        elif summary:
+            # A summary means the subagent produced usable output.
+            # exit_reason ("completed" vs "max_iterations") already
+            # tells the parent *how* the task ended.
             status = "completed"
         else:
             status = "failed"

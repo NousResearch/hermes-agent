@@ -84,6 +84,48 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_human_friendly_label_resolved_via_channel_directory(self):
+        """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
+        job = {"deliver": "whatsapp:Alice (dm)"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="12345678901234@lid",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "whatsapp",
+            "chat_id": "12345678901234@lid",
+            "thread_id": None,
+        }
+
+    def test_human_friendly_label_without_suffix_resolved(self):
+        """deliver: 'telegram:My Group' resolves without display suffix."""
+        job = {"deliver": "telegram:My Group"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="-1009999",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "-1009999",
+            "thread_id": None,
+        }
+
+    def test_raw_id_not_mangled_when_directory_returns_none(self):
+        """deliver: 'whatsapp:12345@lid' passes through when directory has no match."""
+        job = {"deliver": "whatsapp:12345@lid"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value=None,
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "whatsapp",
+            "chat_id": "12345@lid",
+            "thread_id": None,
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",
@@ -166,6 +208,32 @@ class TestDeliverResultWrapping:
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
+
+    def test_delivery_skips_wrapping_when_config_disabled(self):
+        """When cron.wrap_response is false, deliver raw content without header/footer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Clean output only.")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "Clean output only."
+        assert "Cronjob Response" not in sent_content
+        assert "The agent cannot see" not in sent_content
 
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
@@ -254,6 +322,10 @@ class TestRunJobSessionPersistence:
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
         assert kwargs["session_id"].startswith("cron_test-job_")
+        fake_db.end_session.assert_called_once()
+        call_args = fake_db.end_session.call_args
+        assert call_args[0][0].startswith("cron_test-job_")
+        assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
 
     def test_run_job_empty_response_returns_empty_not_placeholder(self, tmp_path):
@@ -683,3 +755,41 @@ class TestBuildJobPromptMissingSkill:
             result = _build_job_prompt({"skills": ["ghost-skill", "real-skill"], "prompt": "go"})
         assert "Real skill content." in result
         assert "go" in result
+
+
+class TestTickAdvanceBeforeRun:
+    """Verify that tick() calls advance_next_run before run_job for crash safety."""
+
+    def test_advance_called_before_run_job(self, tmp_path):
+        """advance_next_run must be called before run_job to prevent crash-loop re-fires."""
+        call_order = []
+
+        def fake_advance(job_id):
+            call_order.append(("advance", job_id))
+            return True
+
+        def fake_run_job(job):
+            call_order.append(("run", job["id"]))
+            return True, "output", "response", None
+
+        fake_job = {
+            "id": "test-advance",
+            "name": "test",
+            "prompt": "hello",
+            "enabled": True,
+            "schedule": {"kind": "cron", "expr": "15 6 * * *"},
+        }
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[fake_job]), \
+             patch("cron.scheduler.advance_next_run", side_effect=fake_advance) as adv_mock, \
+             patch("cron.scheduler.run_job", side_effect=fake_run_job), \
+             patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler._deliver_result"):
+            from cron.scheduler import tick
+            executed = tick(verbose=False)
+
+        assert executed == 1
+        adv_mock.assert_called_once_with("test-advance")
+        # advance must happen before run
+        assert call_order == [("advance", "test-advance"), ("run", "test-advance")]

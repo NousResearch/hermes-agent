@@ -25,6 +25,8 @@ def _make_run_side_effect(
     verify_ok=True,
     commit_count="3",
     systemd_active=False,
+    system_service_active=False,
+    system_restart_rc=0,
     launchctl_loaded=False,
 ):
     """Build a subprocess.run side_effect that simulates git + service commands."""
@@ -45,14 +47,23 @@ def _make_run_side_effect(
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
 
-        # systemctl --user is-active
+        # systemctl is-active — distinguish --user from system scope
         if "systemctl" in joined and "is-active" in joined:
-            if systemd_active:
-                return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
-            return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
+            if "--user" in joined:
+                if systemd_active:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
+            else:
+                # System-level check (no --user)
+                if system_service_active:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+                return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
 
-        # systemctl --user restart
+        # systemctl restart — distinguish --user from system scope
         if "systemctl" in joined and "restart" in joined:
+            if "--user" not in joined and system_service_active:
+                stderr = "" if system_restart_rc == 0 else "Failed to restart: Permission denied"
+                return subprocess.CompletedProcess(cmd, system_restart_rc, stdout="", stderr=stderr)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         # launchctl list ai.hermes.gateway
@@ -99,6 +110,69 @@ class TestLaunchdPlistReplace:
         run_idx = string_values.index("run")
         replace_idx = string_values.index("--replace")
         assert replace_idx == run_idx + 1
+
+
+class TestLaunchdPlistPath:
+    def test_plist_contains_environment_variables(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>EnvironmentVariables</key>" in plist
+        assert "<key>PATH</key>" in plist
+        assert "<key>VIRTUAL_ENV</key>" in plist
+        assert "<key>HERMES_HOME</key>" in plist
+
+    def test_plist_path_includes_venv_bin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        detected = gateway_cli._detect_venv_dir()
+        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        assert venv_bin in plist
+
+    def test_plist_path_starts_with_venv_bin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                detected = gateway_cli._detect_venv_dir()
+                venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+                assert path_value.startswith(venv_bin + ":")
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
+
+    def test_plist_path_includes_node_modules_bin(self):
+        plist = gateway_cli.generate_launchd_plist()
+        node_bin = str(gateway_cli.PROJECT_ROOT / "node_modules" / ".bin")
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                assert node_bin in path_value.split(":")
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
+
+    def test_plist_path_includes_current_env_path(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        plist = gateway_cli.generate_launchd_plist()
+        assert "/custom/bin" in plist
+
+    def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
+        detected = gateway_cli._detect_venv_dir()
+        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
+        plist = gateway_cli.generate_launchd_plist()
+        lines = plist.splitlines()
+        for i, line in enumerate(lines):
+            if "<key>PATH</key>" in line.strip():
+                path_value = lines[i + 1].strip()
+                path_value = path_value.replace("<string>", "").replace("</string>", "")
+                parts = path_value.split(":")
+                assert parts.count(venv_bin) == 1
+                break
+        else:
+            raise AssertionError("PATH key not found in plist")
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +250,33 @@ class TestLaunchdPlistRefresh:
         cmd_strs = [" ".join(c) for c in calls]
         assert any("unload" in s for s in cmd_strs)
         assert any("start" in s for s in cmd_strs)
+
+    def test_launchd_start_recreates_missing_plist_and_loads_service(self, tmp_path, monkeypatch):
+        """launchd_start self-heals when the plist file is missing entirely."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        assert not plist_path.exists()
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        calls = []
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        # Should have created the plist
+        assert plist_path.exists()
+        assert "--replace" in plist_path.read_text()
+
+        cmd_strs = [" ".join(c) for c in calls]
+        # Should load the new plist, then start
+        assert any("load" in s for s in cmd_strs)
+        assert any("start" in s for s in cmd_strs)
+        # Should NOT call unload (nothing to unload)
+        assert not any("unload" in s for s in cmd_strs)
 
 
 class TestCmdUpdateLaunchdRestart:
@@ -303,3 +404,91 @@ class TestCmdUpdateLaunchdRestart:
         assert "Stopped gateway" not in captured
         assert "Gateway restarted" not in captured
         assert "Gateway restarted via launchd" not in captured
+
+
+# ---------------------------------------------------------------------------
+# cmd_update — system-level systemd service detection
+# ---------------------------------------------------------------------------
+
+
+class TestCmdUpdateSystemService:
+    """cmd_update detects system-level gateway services where --user fails."""
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_detects_system_service_and_restarts(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When user systemd is inactive but a system service exists, restart via system scope."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=False,
+            system_service_active=True,
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=12345), \
+             patch("gateway.status.remove_pid_file"):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "system gateway service" in captured.lower()
+        assert "Gateway restarted (system service)" in captured
+        # Verify systemctl restart (no --user) was called
+        restart_calls = [
+            c for c in mock_run.call_args_list
+            if "restart" in " ".join(str(a) for a in c.args[0])
+            and "systemctl" in " ".join(str(a) for a in c.args[0])
+            and "--user" not in " ".join(str(a) for a in c.args[0])
+        ]
+        assert len(restart_calls) == 1
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_system_service_restart_failure_shows_sudo_hint(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When system service restart fails (e.g. no root), show sudo hint."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=False,
+            system_service_active=True,
+            system_restart_rc=1,
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=12345), \
+             patch("gateway.status.remove_pid_file"):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "sudo systemctl restart" in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_user_service_takes_priority_over_system(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When both user and system services are active, user wins."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=True,
+            system_service_active=True,
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=12345), \
+             patch("gateway.status.remove_pid_file"), \
+             patch("os.kill"):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        # Should restart via user service, not system
+        assert "Gateway restarted." in captured
+        assert "(system service)" not in captured

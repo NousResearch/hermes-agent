@@ -168,10 +168,14 @@ journalctl -u hermes-gateway -f
 
 ```bash
 # macOS — manage the service
-launchctl start ai.hermes.gateway
-launchctl stop ai.hermes.gateway
+hermes gateway start
+hermes gateway stop
 tail -f ~/.hermes/logs/gateway.log
 ```
+
+:::tip macOS PATH
+The launchd plist captures your shell PATH at install time so gateway subprocesses can find tools like Node.js and ffmpeg. If you install new tools later, re-run `hermes gateway install` to update the plist.
+:::
 
 ### Verify It's Running
 

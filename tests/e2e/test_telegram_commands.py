@@ -59,8 +59,6 @@ class TestTelegramSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert "/new" in response_text
         assert "/status" in response_text
-        # Intentional breakage: this should fail in CI
-        assert "THIS_STRING_DOES_NOT_EXIST_IN_HELP" in response_text
 
     @pytest.mark.asyncio
     async def test_status_shows_session_info(self, adapter):

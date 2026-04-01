@@ -3238,9 +3238,10 @@ class AIAgent:
             "model": model,
             "instructions": instructions,
             "input": normalized_input,
-            "tools": normalized_tools,
             "store": False,
         }
+        if normalized_tools is not None:
+            normalized["tools"] = normalized_tools
 
         # Pass through reasoning config
         reasoning = api_kwargs.get("reasoning")
@@ -3583,6 +3584,8 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
+        import httpx as _httpx
+
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -3616,6 +3619,22 @@ class AIAgent:
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
                     return stream.get_final_response()
+            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+                if attempt < max_stream_retries:
+                    logger.debug(
+                        "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                        self._client_log_context(),
+                        exc,
+                    )
+                    continue
+                logger.debug(
+                    "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
+                    self._client_log_context(),
+                    exc,
+                )
+                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -3862,6 +3881,13 @@ class AIAgent:
                 logger.info(f"Credential 401 — refreshed pool entry {getattr(refreshed, 'id', '?')}")
                 self._swap_credential(refreshed)
                 return True, has_retried_429
+            # Refresh failed — rotate to next credential instead of giving up.
+            # The failed entry is already marked exhausted by try_refresh_current().
+            next_entry = pool.mark_exhausted_and_rotate(status_code=401)
+            if next_entry is not None:
+                logger.info(f"Credential 401 (refresh failed) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
 
         return False, has_retried_429
 
@@ -5334,6 +5360,15 @@ class AIAgent:
             _post_progress = _compressed_est / self.context_compressor.threshold_tokens
             if _post_progress < 0.85:
                 self._context_pressure_warned = False
+
+        # Clear the file-read dedup cache.  After compression the original
+        # read content is summarised away — if the model re-reads the same
+        # file it needs the full content, not a "file unchanged" stub.
+        try:
+            from tools.file_tools import reset_file_dedup
+            reset_file_dedup(task_id)
+        except Exception:
+            pass
 
         return compressed, new_system_prompt
 

@@ -133,10 +133,26 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
 def _have_unshare() -> bool:
-    """Check if unshare(1) is available (Linux only)."""
+    """Check if unshare(1) is usable for unprivileged PID namespaces."""
     if not _IS_LINUX:
         return False
-    return shutil.which("unshare") is not None
+
+    unshare_bin = shutil.which("unshare")
+    if unshare_bin is None:
+        return False
+
+    try:
+        probe = subprocess.run(
+            [unshare_bin, "--user", "--pid", "--fork", "--mount-proc", "/bin/sh", "-c", "exit 0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    return probe.returncode == 0
 
 
 _UNSHARE_AVAILABLE = _have_unshare()
@@ -149,6 +165,10 @@ def _pidns_wrap(cmd: list[str]) -> list[str]:
     parent and recover env vars that were stripped by the blocklist.
     Running the child in its own PID namespace (with a remounted /proc)
     hides the parent's PID entirely.
+
+    Intended for short-lived subprocesses only. Persistent local shells
+    currently stay in the host PID namespace because timeout/interrupt
+    cleanup tracks host PIDs for child reaping.
 
     Falls back to the unwrapped command on non-Linux or when unshare is
     unavailable (e.g. restricted containers).
@@ -368,7 +388,9 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         user_shell = _find_bash()
         run_env = _make_run_env(self.env)
         return subprocess.Popen(
-            _pidns_wrap([user_shell, "-l"]),
+            # Persistent local shells keep host-visible PIDs so interrupt/
+            # timeout cleanup can still target the right child process tree.
+            [user_shell, "-l"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,

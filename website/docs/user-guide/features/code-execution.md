@@ -170,6 +170,8 @@ The response always includes `status` (success/error/timeout/interrupted), `outp
 
 :::danger Security Model
 The child process runs with a **minimal environment**. API keys, tokens, and credentials are stripped by default. On Linux, the child is additionally isolated in a PID namespace so it cannot recover stripped secrets via `/proc/environ`. The script accesses tools exclusively via the RPC channel — it cannot read secrets from environment variables unless explicitly allowed.
+
+Note: secrets stored on the filesystem (e.g. `~/.hermes/.env`) remain readable by child processes. Also, PID namespace isolation is not yet applied to persistent/background/PTY local terminal modes. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details on limitations.
 :::
 
 Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, or `AUTH` in their names are excluded. Only safe system variables (`PATH`, `HOME`, `LANG`, `SHELL`, `PYTHONPATH`, `VIRTUAL_ENV`, etc.) are passed through.

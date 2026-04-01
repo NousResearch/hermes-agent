@@ -326,7 +326,13 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
-Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. On Linux, child processes are additionally isolated in a PID namespace to prevent recovery of stripped secrets via `/proc/environ`. However, skills that declare `required_environment_variables` legitimately need access to those vars.
+Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. On Linux, `execute_code` children and short-lived foreground local `terminal` commands are additionally isolated in a PID namespace to prevent recovery of stripped secrets via `/proc/environ`.
+
+:::warning Limitation
+Environment variable stripping and PID namespace isolation do not protect secrets stored on the filesystem. Child processes share the parent's filesystem and can read `~/.hermes/.env` and `~/.hermes/auth.json` directly. Also, persistent local shells (`TERMINAL_LOCAL_PERSISTENT=true`) and local `terminal(background=true)` / `terminal(pty=true)` sessions do not yet use PID namespace isolation. Running Hermes in a container with secrets provided exclusively through environment variables provides the strongest isolation.
+:::
+
+However, skills that declare `required_environment_variables` legitimately need access to those vars.
 
 ### How It Works
 

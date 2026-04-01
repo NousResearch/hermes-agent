@@ -150,7 +150,7 @@ Hermes has terminal access. Security matters.
 | **Cron prompt injection** | Scanner blocks instruction-override patterns |
 | **Write deny list** | Protected paths resolved via `os.path.realpath()` to prevent symlink bypass |
 | **Skills guard** | Security scanner for hub-installed skills |
-| **Code execution sandbox** | Child process runs with API keys stripped and PID namespace isolation (Linux) to prevent `/proc/environ` recovery |
+| **Code execution sandbox** | `execute_code` and short-lived foreground local `terminal` commands run with API keys stripped and PID namespace isolation (Linux) to prevent `/proc/environ` recovery |
 | **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits |
 
 ### Contributing Security-Sensitive Code

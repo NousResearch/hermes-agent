@@ -566,7 +566,7 @@ Hermes has terminal access. Security matters.
 | **Cron prompt injection** | Scanner in `tools/cronjob_tools.py` blocks instruction-override patterns |
 | **Write deny list** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`) resolved via `os.path.realpath()` to prevent symlink bypass |
 | **Skills guard** | Security scanner for hub-installed skills (`tools/skills_guard.py`) |
-| **Code execution sandbox** | `execute_code` and `terminal` child processes run with API keys stripped from environment and isolated in a PID namespace (Linux) to prevent `/proc/environ` recovery |
+| **Code execution sandbox** | `execute_code` and short-lived foreground local `terminal` commands run with API keys stripped from environment and isolated in a PID namespace (Linux) to prevent `/proc/environ` recovery |
 | **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits, size-limited tmpfs |
 
 ### When contributing security-sensitive code

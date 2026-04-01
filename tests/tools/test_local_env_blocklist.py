@@ -17,7 +17,12 @@ from tools.environments.local import (
     LocalEnvironment,
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+    _have_unshare,
 )
+
+
+_is_linux = os.uname().sysname == "Linux" if hasattr(os, "uname") else False
+_has_unshare = _have_unshare()
 
 
 def _make_fake_popen(captured: dict):
@@ -307,53 +312,88 @@ class TestPidNamespaceWrap:
         cmd = ["bash", "-c", "echo hi"]
         assert local._pidns_wrap(cmd) is cmd
 
+    def test_have_unshare_requires_working_probe(self, monkeypatch):
+        from tools.environments import local
 
-import platform
-import shutil
+        monkeypatch.setattr(local, "_IS_LINUX", True)
+        monkeypatch.setattr(local.shutil, "which", lambda _: "/usr/bin/unshare")
 
-_is_linux = platform.system() == "Linux"
-_has_unshare = _is_linux and shutil.which("unshare") is not None
+        def fake_run(*args, **kwargs):
+            proc = MagicMock()
+            proc.returncode = 1
+            return proc
+
+        monkeypatch.setattr(local.subprocess, "run", fake_run)
+        assert local._have_unshare() is False
+
+    def test_have_unshare_accepts_successful_probe(self, monkeypatch):
+        from tools.environments import local
+
+        monkeypatch.setattr(local, "_IS_LINUX", True)
+        monkeypatch.setattr(local.shutil, "which", lambda _: "/usr/bin/unshare")
+
+        def fake_run(*args, **kwargs):
+            proc = MagicMock()
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(local.subprocess, "run", fake_run)
+        assert local._have_unshare() is True
+
+    def test_persistent_shell_spawn_is_not_wrapped(self, monkeypatch):
+        """Persistent shells keep host-visible PIDs for child cleanup."""
+        from tools.environments import local
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return MagicMock()
+
+        monkeypatch.setattr(local, "_UNSHARE_AVAILABLE", True)
+        monkeypatch.setattr(local, "_find_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(local.subprocess, "Popen", fake_popen)
+
+        env = local.LocalEnvironment(cwd="/tmp", timeout=10)
+        env._spawn_shell_process()
+
+        assert captured["cmd"] == ["/bin/bash", "-l"]
 
 
 @pytest.mark.skipif(not _is_linux, reason="Linux-only: /proc does not exist on other platforms")
 @pytest.mark.skipif(not _has_unshare, reason="unshare not available")
 class TestProcEnvironIsolation:
-    """Regression test: PID namespace prevents /proc/environ secret recovery."""
+    """Regression test: PID namespace prevents /proc/environ secret recovery.
+
+    /proc/<pid>/environ is a kernel snapshot from exec time — os.environ
+    changes after startup do NOT appear there. The test uses a two-level
+    spawn: a parent process started WITH the secret in its env, which then
+    spawns a namespaced child that tries to read it back via /proc.
+
+    See: tests/tools/_proc_environ_parent.py
+    See: tests/tools/_proc_environ_child.py
+    """
 
     def test_pidns_child_cannot_read_parent_environ(self):
         """A child in a PID namespace cannot recover stripped env vars via /proc."""
-        import subprocess, sys, tempfile
-        from tools.environments.local import _pidns_wrap
+        import subprocess, sys
 
-        child_script = (
-            "import os\n"
-            "ppid = os.getppid()\n"
-            "try:\n"
-            "    with open(f'/proc/{ppid}/environ', 'rb') as f:\n"
-            "        raw = f.read()\n"
-            "    env = dict(\n"
-            "        e.decode('utf-8', 'replace').split('=', 1)\n"
-            "        for e in raw.split(b'\\x00') if b'=' in e\n"
-            "    )\n"
-            "    print(env.get('HERMES_TEST_SECRET', 'NOT_FOUND'))\n"
-            "except Exception as e:\n"
-            "    print(f'ERROR:{e}')\n"
-        )
+        tests_dir = os.path.dirname(os.path.abspath(__file__))
+        hermes_root = os.path.dirname(os.path.dirname(tests_dir))
+        parent_script = os.path.join(tests_dir, "_proc_environ_parent.py")
+        child_script = os.path.join(tests_dir, "_proc_environ_child.py")
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(child_script)
-            script = f.name
-
-        parent_env = os.environ.copy()
-        parent_env["HERMES_TEST_SECRET"] = "leaked-value-12345"
-
-        child_env = {"PATH": parent_env.get("PATH", "/usr/bin"), "HOME": "/tmp"}
+        parent_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin"),
+            "HOME": "/tmp",
+            "HERMES_TEST_SECRET": "leaked-value-12345",
+            "HERMES_AGENT_ROOT": hermes_root,
+        }
         result = subprocess.run(
-            _pidns_wrap([sys.executable, script]),
-            env=child_env,
+            [sys.executable, parent_script, child_script],
+            env=parent_env,
             capture_output=True, text=True,
         )
-        os.unlink(script)
         output = result.stdout.strip()
         assert output != "leaked-value-12345", (
             "Child in PID namespace should NOT be able to recover the secret"

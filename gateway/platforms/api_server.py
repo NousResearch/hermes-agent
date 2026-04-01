@@ -2,7 +2,7 @@
 OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
-- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless)
+- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header)
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
@@ -300,6 +300,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -502,9 +503,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if provided_session_id:
             session_id = provided_session_id
             try:
-                from hermes_state import SessionDB
-                _db = SessionDB()
-                history = _db.get_messages_as_conversation(session_id)
+                if self._session_db is None:
+                    from hermes_state import SessionDB
+                    self._session_db = SessionDB()
+                history = self._session_db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []

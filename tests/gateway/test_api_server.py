@@ -1603,16 +1603,15 @@ class TestSessionIdHeader:
     async def test_provided_session_id_is_used_and_echoed(self, adapter):
         """When X-Hermes-Session-Id is provided, it's passed to the agent and echoed in the response."""
         mock_result = {"final_response": "Continuing!", "messages": [], "api_calls": 1}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "previous message"},
+            {"role": "assistant", "content": "previous reply"},
+        ]
+        adapter._session_db = mock_db
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
-                 patch("hermes_state.SessionDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db.get_messages_as_conversation.return_value = [
-                    {"role": "user", "content": "previous message"},
-                    {"role": "assistant", "content": "previous reply"},
-                ]
-                mock_db_cls.return_value = mock_db
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(
@@ -1634,13 +1633,12 @@ class TestSessionIdHeader:
             {"role": "user", "content": "stored message 1"},
             {"role": "assistant", "content": "stored reply 1"},
         ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        adapter._session_db = mock_db
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
-                 patch("hermes_state.SessionDB") as mock_db_cls:
-                mock_db = MagicMock()
-                mock_db.get_messages_as_conversation.return_value = db_history
-                mock_db_cls.return_value = mock_db
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(
@@ -1667,6 +1665,8 @@ class TestSessionIdHeader:
     async def test_db_failure_falls_back_to_empty_history(self, adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        # Simulate DB failure: _session_db is None and SessionDB() constructor raises
+        adapter._session_db = None
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \

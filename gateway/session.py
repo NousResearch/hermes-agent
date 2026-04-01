@@ -90,6 +90,7 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    is_bot: bool = False  # True when the message author is a bot/webhook account
     
     @property
     def description(self) -> str:

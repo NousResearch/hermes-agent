@@ -548,14 +548,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 if message.type not in (discord.MessageType.default, discord.MessageType.reply):
                     return
 
-                # Check if the message author is in the allowed user list
-                if not self._is_allowed_user(str(message.author.id)):
-                    return
-
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
                 #   "mentions" — accept bot messages only when they @mention us
                 #   "all"      — accept all bot messages
+                # Must run BEFORE the user allowlist check so that bots permitted
+                # by DISCORD_ALLOW_BOTS are not rejected for not being in
+                # DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
@@ -563,7 +562,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
-                    # "all" falls through to handle_message
+                    # "all" falls through; bot is permitted — skip user allowlist below
+                else:
+                    # Non-bot: check if the user is in the allowed user list
+                    if not self._is_allowed_user(str(message.author.id)):
+                        return
 
                 # If the message @mentions other users but NOT the bot, the
                 # sender is talking to someone else — stay silent.  Only
@@ -2084,6 +2087,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=message.author.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            is_bot=getattr(message.author, "bot", False),
         )
 
         # Build media URLs -- download image attachments to local cache so the

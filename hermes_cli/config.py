@@ -247,6 +247,13 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "camofox": {
+            # When true, Hermes sends a stable profile-scoped userId to Camofox
+            # so the server can map it to a persistent browser profile directory.
+            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # When false (default), each session gets a random userId (ephemeral).
+            "managed_persistence": False,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -510,7 +517,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 11,
+    "_config_version": 10,
 }
 
 # =============================================================================

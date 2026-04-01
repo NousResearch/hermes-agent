@@ -74,6 +74,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "hermes_state.db",
     "response_store.db", "response_store.db-shm", "response_store.db-wal",
     "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
     "auth.lock", "active_profile", ".update_check",
     "errors.log",
     ".hermes_history",
@@ -765,8 +766,17 @@ def export_profile(name: str, output_path: str) -> Path:
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
             return Path(result)
 
-    result = shutil.make_archive(base, "gztar", str(profile_dir.parent), name)
-    return Path(result)
+    # Named profiles — stage a filtered copy to exclude credentials
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staged = Path(tmpdir) / name
+        _CREDENTIAL_FILES = {"auth.json", ".env"}
+        shutil.copytree(
+            profile_dir,
+            staged,
+            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+        )
+        result = shutil.make_archive(base, "gztar", tmpdir, name)
+        return Path(result)
 
 
 def _normalize_profile_archive_parts(member_name: str) -> List[str]:

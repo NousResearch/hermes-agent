@@ -2024,6 +2024,7 @@ class HermesCLI:
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
+                "credential_pool": getattr(self, "_credential_pool", None),
             },
         )
 

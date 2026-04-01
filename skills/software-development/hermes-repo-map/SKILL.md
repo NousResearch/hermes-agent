@@ -122,7 +122,7 @@ Do not jump straight from user request to patching files when the change is arch
 
 ## Competitor research guidance
 
-When the task is specifically about repo maps, codebase synopses, or architecture summaries, compare Hermes against at least 1-2 current implementations.
+When the task is specifically about repo maps, codebase synopses, or architecture summaries, compare Hermes against at least 2 current implementations.
 
 ### Recommended comparisons
 - `Aider-AI/aider`
@@ -135,17 +135,48 @@ Do not rely on reputation. Inspect the current tree and identify the actual mech
 
 Check:
 - where the map/index implementation lives
-- whether it is syntax/symbol based, embeddings based, or just memoized docs
+- whether it is syntax/symbol based, graph ranked, embeddings based, or just memoized docs
 - whether it is always-on or on-demand
-- how it handles caching and refresh
+- how it handles caching, invalidation, and refresh
+- whether it tracks filesystem changes/watchers
+- how it enforces token/context budgets
 - what gets injected into prompts versus queried as a tool/service
+- whether the output is file-level, symbol-level, scope-aware, or search-result oriented
+
+### Competitor scorecard
+
+For each competitor, explicitly score these dimensions in your notes:
+- extraction: AST/tree-sitter tags, regex/grep, embeddings, or hybrid
+- ranking: PageRank/graph, search score, heuristics, or none
+- caching: in-memory, on-disk, invalidation by mtime/content hash, or none
+- update model: rebuild per turn, background watcher, on-demand manual refresh, or startup precompute
+- output shape: directory map, symbol list, scope-aware code elision, semantic search hits, or architecture prose
+- prompt strategy: automatic injection, tool-returned context, or external service query
+- Hermes fit: copy now, copy later, or avoid
+
+### Specific patterns to harvest
+
+From Aider, look for:
+- compact structural summaries rather than full file dumps
+- symbol-aware extraction
+- explicit token-budgeting
+- relevance ranking tied to active files / current task
+- scope-aware elision instead of dumping large code blocks
+
+From Roo Code, look for:
+- separation of config/state/orchestration
+- disciplined indexing lifecycle and invalidation
+- clear separation between indexing concerns and prompt/context concerns
+- optional heavier infrastructure that can remain outside the default prompt path
 
 ### Hermes-specific interpretation
 
 Prefer conclusions like:
 - Aider-style compact structural summaries fit Hermes well
-- Roo-style heavy indexing/vector infrastructure may be useful inspiration but is too heavy for a first Hermes repo-map implementation
+- Aider-style always-rebuilt per-turn prompt injection conflicts with Hermes cache goals unless carefully constrained
+- Roo-style indexing architecture is useful for future deeper systems, but too heavy for a first Hermes repo-map implementation
 - Hermes should favor on-demand skills or tools over default mutable prompt context
+- Hermes should explicitly preserve stable per-session prompt identity while still improving repo understanding
 
 ## Suggested output template
 
@@ -158,7 +189,9 @@ Hermes repo map
 - Tooling/config invariants: ...
 - Task hotspots: ...
 - Relevant tests: ...
-- Competitor comparison: ...
+- Competitor scorecard:
+  - Aider: extraction / ranking / caching / update model / output / prompt strategy / Hermes fit
+  - Roo Code: extraction / ranking / caching / update model / output / prompt strategy / Hermes fit
 - Recommended Hermes-specific approach: ...
 ```
 

@@ -25,11 +25,12 @@ def test_check_for_updates_uses_cache(tmp_path):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "remote": "origin"}))
 
     with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
-        with patch("hermes_cli.banner.subprocess.run") as mock_run:
-            result = check_for_updates()
+        with patch("hermes_cli.banner.resolve_update_remote", return_value="origin"):
+            with patch("hermes_cli.banner.subprocess.run") as mock_run:
+                result = check_for_updates()
 
     assert result == 3
     mock_run.assert_not_called()
@@ -45,13 +46,14 @@ def test_check_for_updates_expired_cache(tmp_path):
 
     # Write an expired cache (timestamp far in the past)
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
+    cache_file.write_text(json.dumps({"ts": 0, "behind": 1, "remote": "origin"}))
 
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
     with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
-        with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
-            result = check_for_updates()
+        with patch("hermes_cli.banner.resolve_update_remote", return_value="origin"):
+            with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+                result = check_for_updates()
 
     assert result == 5
     assert mock_run.call_count == 2  # git fetch + git rev-list
@@ -90,11 +92,34 @@ def test_check_for_updates_fallback_to_project_root():
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         with patch("hermes_cli.banner.os.getenv", return_value=td):
-            with patch("hermes_cli.banner.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
-                result = banner.check_for_updates()
+            with patch("hermes_cli.banner.resolve_update_remote", return_value="origin"):
+                with patch("hermes_cli.banner.subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
+                    result = banner.check_for_updates()
         # Should have fallen back to project root and run git commands
         assert mock_run.call_count >= 1
+
+
+def test_check_for_updates_invalidates_cache_when_remote_changes(tmp_path):
+    """A cache entry for a different remote should not short-circuit the git check."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "remote": "origin"}))
+
+    mock_result = MagicMock(returncode=0, stdout="7\n")
+
+    with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
+        with patch("hermes_cli.banner.resolve_update_remote", return_value="upstream"):
+            with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+                result = check_for_updates()
+
+    assert result == 7
+    assert mock_run.call_count == 2
 
 
 def test_prefetch_non_blocking():

@@ -2885,6 +2885,7 @@ def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
     from hermes_cli.config import is_managed, managed_error
+    from hermes_cli.update_git import resolve_update_remote
 
     if is_managed():
         managed_error("update Hermes Agent")
@@ -2925,9 +2926,11 @@ def cmd_update(args):
         if sys.platform == "win32":
             git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-        print("→ Fetching updates...")
+        update_remote = resolve_update_remote(PROJECT_ROOT)
+
+        print(f"→ Fetching updates from {update_remote}...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", update_remote],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -2940,7 +2943,7 @@ def cmd_update(args):
             elif "Authentication failed" in stderr or "could not read Username" in stderr:
                 print("✗ Authentication failed — check your git credentials or SSH key.")
             else:
-                print(f"✗ Failed to fetch updates from origin.")
+                print(f"✗ Failed to fetch updates from {update_remote}.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
@@ -2978,7 +2981,7 @@ def cmd_update(args):
 
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{update_remote}/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -3008,7 +3011,7 @@ def cmd_update(args):
         update_succeeded = False
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", update_remote, branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -3017,18 +3020,18 @@ def cmd_update(args):
                 # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already
                 # stashed, reset to match the remote exactly.
-                print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+                print(f"  ⚠ Fast-forward not possible (history diverged), resetting to match {update_remote}/{branch}...")
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", f"{update_remote}/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {update_remote}/{branch}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
-                    print("  Try manually: git fetch origin && git reset --hard origin/main")
+                    print(f"  Try manually: git fetch {update_remote} && git reset --hard {update_remote}/main")
                     sys.exit(1)
             update_succeeded = True
         finally:

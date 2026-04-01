@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from hermes_cli.update_git import resolve_update_remote
 from typing import Dict, List, Optional
 
 from rich.console import Console
@@ -131,11 +132,12 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 
 
 def check_for_updates() -> Optional[int]:
-    """Check how many commits behind origin/main the local repo is.
+    """Check how many commits behind the update remote's ``main`` branch we are.
 
-    Does a ``git fetch`` at most once every 6 hours (cached to
-    ``~/.hermes/.update_check``).  Returns the number of commits behind,
-    or ``None`` if the check fails or isn't applicable.
+    The update remote is normally the tracking remote for ``main`` when present,
+    otherwise ``origin``. Does a ``git fetch`` at most once every 6 hours
+    (cached to ``~/.hermes/.update_check``). Returns the number of commits
+    behind, or ``None`` if the check fails or isn't applicable.
     """
     hermes_home = get_hermes_home()
     repo_dir = hermes_home / "hermes-agent"
@@ -147,12 +149,17 @@ def check_for_updates() -> Optional[int]:
     if not (repo_dir / ".git").exists():
         return None
 
+    update_remote = resolve_update_remote(repo_dir)
+
     # Read cache
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
-            if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
+            if (
+                now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
+                and cached.get("remote") == update_remote
+            ):
                 return cached.get("behind")
     except Exception:
         pass
@@ -160,7 +167,7 @@ def check_for_updates() -> Optional[int]:
     # Fetch latest refs (fast — only downloads ref metadata, no files)
     try:
         subprocess.run(
-            ["git", "fetch", "origin", "--quiet"],
+            ["git", "fetch", update_remote, "--quiet"],
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
@@ -170,7 +177,7 @@ def check_for_updates() -> Optional[int]:
     # Count commits behind
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            ["git", "rev-list", "--count", f"HEAD..{update_remote}/main"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -183,7 +190,7 @@ def check_for_updates() -> Optional[int]:
 
     # Write cache
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "remote": update_remote}))
     except Exception:
         pass
 

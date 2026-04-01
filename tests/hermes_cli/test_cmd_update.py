@@ -4,6 +4,8 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import hermes_cli.main as hermes_main
+
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
@@ -105,6 +107,33 @@ class TestCmdUpdateBranchFallback:
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_uses_main_tracking_remote_when_origin_is_a_fork(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="2"
+        )
+        monkeypatch.setattr(hermes_main, "PROJECT_ROOT", PROJECT_ROOT)
+        monkeypatch.setattr(
+            "hermes_cli.update_git.resolve_update_remote",
+            lambda _repo_dir: "upstream",
+        )
+
+        cmd_update(mock_args)
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        fetch_cmds = [c for c in commands if "fetch upstream" in c]
+        rev_list_cmds = [c for c in commands if "rev-list" in c]
+        pull_cmds = [c for c in commands if "pull" in c]
+
+        assert len(fetch_cmds) == 1
+        assert len(rev_list_cmds) == 1
+        assert "upstream/main" in rev_list_cmds[0]
+        assert len(pull_cmds) == 1
+        assert "pull --ff-only upstream main" in pull_cmds[0]
 
     def test_update_non_interactive_skips_migration_prompt(self, mock_args, capsys):
         """When stdin/stdout aren't TTYs, config migration prompt is skipped."""

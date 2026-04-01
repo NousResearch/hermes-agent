@@ -169,7 +169,7 @@ The response always includes `status` (success/error/timeout/interrupted), `outp
 ## Security
 
 :::danger Security Model
-The child process runs with a **minimal environment**. API keys, tokens, and credentials are stripped by default. The script accesses tools exclusively via the RPC channel — it cannot read secrets from environment variables unless explicitly allowed.
+The child process runs with a **minimal environment**. API keys, tokens, and credentials are stripped by default. On Linux, the child is additionally isolated in a PID namespace so it cannot recover stripped secrets via `/proc/environ`. The script accesses tools exclusively via the RPC channel — it cannot read secrets from environment variables unless explicitly allowed.
 :::
 
 Environment variables containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, or `AUTH` in their names are excluded. Only safe system variables (`PATH`, `HOME`, `LANG`, `SHELL`, `PYTHONPATH`, `VIRTUAL_ENV`, etc.) are passed through.

@@ -326,7 +326,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
-Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. However, skills that declare `required_environment_variables` legitimately need access to those vars.
+Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. On Linux, child processes are additionally isolated in a PID namespace to prevent recovery of stripped secrets via `/proc/environ`. However, skills that declare `required_environment_variables` legitimately need access to those vars.
 
 ### How It Works
 

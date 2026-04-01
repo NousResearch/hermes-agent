@@ -1,9 +1,9 @@
-FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim
+FROM astral-sh/uv:python3.14-trixie-slim
 
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential nodejs npm ripgrep ffmpeg && \
+        build-essential nodejs npm ripgrep ffmpeg gcc python3-dev libffi-dev &&\
     rm -rf /var/lib/apt/lists/*
 
 COPY . /opt/hermes

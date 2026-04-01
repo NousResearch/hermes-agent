@@ -2217,7 +2217,25 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+
+        # -----------------------------------------------------------------
+        # Auto-continue: if history ends on a tool response, execution was
+        # interrupted mid-turn (e.g. gateway restart).  Inject a system note
+        # so the agent resumes from the existing tool results instead of
+        # treating the incoming message as a fresh turn.  (#4493)
+        # -----------------------------------------------------------------
+        if history and history[-1].get("role") in ("tool", "function"):
+            logger.info(
+                "[Gateway] Session %s history ends on tool response — "
+                "injecting continuation note (gateway may have restarted mid-execution)",
+                session_entry.session_id,
+            )
+            context_prompt += (
+                "\n\n[System note: The previous execution was interrupted (e.g. gateway restart). "
+                "Tool results above are already complete. Continue the task from where it left off "
+                "without re-running completed steps.]"
+            )
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #

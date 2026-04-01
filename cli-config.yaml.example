@@ -336,22 +336,31 @@ compression:
 # =============================================================================
 # Persistent Memory
 # =============================================================================
-# Bounded curated memory injected into the system prompt every session.
-# Two stores: MEMORY.md (agent's notes) and USER.md (user profile).
-# Character limits keep the memory small and focused. The agent manages
-# pruning -- when at the limit, it must consolidate or replace entries.
+# Persistent memory injected into the system prompt every session.
+# Two targets: "memory" (agent's notes) and "user" (user profile).
+# Supports two backends: "sqlite" (V2 — FTS5 search, lifecycle, budget
+# enforcement) or "flat" (legacy — MEMORY.md / USER.md text files).
 # Disabled by default in batch_runner and RL environments.
 #
 memory:
+  # Backend engine: "sqlite" (recommended) or "flat" (legacy)
+  engine: sqlite
+
   # Agent's personal notes: environment facts, conventions, things learned
   memory_enabled: true
   
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
   
-  # Character limits (~2.75 chars per token, model-independent)
+  # Character limits for prompt injection (~2.75 chars per token)
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+
+  # Budget caps: max active entries per target (sqlite engine only).
+  # When exceeded, lowest-strength entries are archived automatically.
+  # Corrections and preferences are protected from archival.
+  max_active_memory: 50
+  max_active_user: 25
 
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
@@ -361,6 +370,24 @@ memory:
   # lost (compression, /new, /reset, exit). Set to 0 to disable.
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
+
+  # --- Optional subsystems (off by default, zero cost if unused) ---
+  
+  # Auto-extraction: background extraction of durable memories from
+  # conversations via auxiliary LLM after each agent turn.
+  auto_extract: false
+  importance_threshold: 5   # Min importance score (1-10) to persist
+
+  # Consolidation: periodic LLM-driven merge/update/archive of entries.
+  # Runs at session end when gate conditions are met.
+  consolidation: false
+
+  # Session memory: structured 9-section notes for long session context.
+  session_memory: false
+
+  # Embeddings: vector similarity search blended with BM25.
+  # Falls back to BM25-only if no embedding provider is available.
+  embeddings: false
 
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)

@@ -50,11 +50,13 @@ _PREFIX_PATTERNS = [
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
 ]
 
-# ENV assignment patterns: KEY=value where KEY contains a secret-like name
+# ENV assignment patterns: KEY=value where KEY contains a secret-like name.
+# No re.IGNORECASE — only match ALL-UPPERCASE env var names (e.g. API_KEY=...)
+# to avoid redacting lowercase Python variable assignments (e.g. before_tokens = ...).
+# Fixes: https://github.com/NousResearch/hermes-agent/issues/4367
 _SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(
-    rf"([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
-    re.IGNORECASE,
+    rf"(?:^|(?<=\s))([A-Z_]*{_SECRET_ENV_NAMES}[A-Z_]*)\s*=\s*(['\"]?)(\S+)\2",
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.

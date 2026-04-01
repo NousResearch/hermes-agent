@@ -192,6 +192,8 @@ def write_runtime_status(
     platform_state: Optional[str] = None,
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
+    reset_platforms: bool = False,
+    known_platforms: Optional[list[str]] = None,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -201,6 +203,11 @@ def write_runtime_status(
     payload["pid"] = os.getpid()
     payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
+
+    if reset_platforms:
+        payload["platforms"] = {}
+    if known_platforms is not None:
+        payload["known_platforms"] = list(dict.fromkeys(str(p) for p in known_platforms if p))
 
     if gateway_state is not None:
         payload["gateway_state"] = gateway_state
@@ -224,6 +231,99 @@ def write_runtime_status(
 def read_runtime_status() -> Optional[dict[str, Any]]:
     """Read the persisted gateway runtime health/status information."""
     return _read_json_file(_get_runtime_status_path())
+
+
+_NON_DEGRADING_PLATFORM_STATES = {"disconnected"}
+_DEFAULT_IGNORED_RUNTIME_PLATFORMS = {"api_server", "webhook", "local"}
+
+
+def _effective_runtime_platforms(
+    state: Optional[dict[str, Any]],
+    relevant_platforms: Optional[set[str]] = None,
+) -> dict[str, Any]:
+    if not state:
+        return {}
+
+    platforms = state.get("platforms", {}) or {}
+    if relevant_platforms is None:
+        known = state.get("known_platforms")
+        if isinstance(known, list) and known:
+            relevant_platforms = {str(item) for item in known if item}
+
+    if relevant_platforms is None:
+        return {
+            platform: pdata
+            for platform, pdata in platforms.items()
+            if platform not in _DEFAULT_IGNORED_RUNTIME_PLATFORMS
+        }
+
+    return {
+        platform: pdata
+        for platform, pdata in platforms.items()
+        if platform in relevant_platforms and platform not in _DEFAULT_IGNORED_RUNTIME_PLATFORMS
+    }
+
+
+def iter_runtime_issue_lines(
+    state: Optional[dict[str, Any]],
+    *,
+    relevant_platforms: Optional[set[str]] = None,
+    include_disconnected: bool = False,
+) -> list[str]:
+    """Return human-readable issue lines for degraded runtime platform states."""
+    if not state:
+        return []
+
+    lines: list[str] = []
+    platforms = _effective_runtime_platforms(state, relevant_platforms)
+    for platform, pdata in platforms.items():
+        platform_state = str(pdata.get("state") or "").strip().lower()
+        message = str(pdata.get("error_message") or "").strip()
+        if platform_state == "fatal":
+            lines.append(f"{platform}: {message or 'fatal error'}")
+        elif platform_state == "reconnecting":
+            lines.append(f"{platform}: reconnecting — {message or 'recovery in progress'}")
+        elif platform_state == "disconnected" and include_disconnected:
+            lines.append(f"{platform}: disconnected")
+
+    gateway_state = str(state.get("gateway_state") or "").strip().lower()
+    exit_reason = str(state.get("exit_reason") or "").strip()
+    if gateway_state == "startup_failed" and exit_reason:
+        lines.append(f"Last startup issue: {exit_reason}")
+    elif gateway_state == "stopped" and exit_reason:
+        lines.append(f"Last shutdown reason: {exit_reason}")
+
+    return lines
+
+
+def runtime_health_level(
+    state: Optional[dict[str, Any]],
+    *,
+    relevant_platforms: Optional[set[str]] = None,
+    include_disconnected: bool = False,
+) -> str:
+    """Classify runtime health as healthy, degraded, failed, or unknown."""
+    if not state:
+        return "unknown"
+
+    gateway_state = str(state.get("gateway_state") or "").strip().lower()
+    if gateway_state == "startup_failed":
+        return "failed"
+    if gateway_state == "stopped":
+        return "failed"
+
+    for pdata in _effective_runtime_platforms(state, relevant_platforms).values():
+        platform_state = str((pdata or {}).get("state") or "").strip().lower()
+        if platform_state == "fatal":
+            return "failed"
+        if platform_state == "reconnecting":
+            return "degraded"
+        if include_disconnected and platform_state == "disconnected":
+            return "degraded"
+
+    if gateway_state == "running":
+        return "healthy"
+    return "unknown"
 
 
 def remove_pid_file() -> None:

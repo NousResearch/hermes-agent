@@ -77,16 +77,52 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _load_gateway_runtime_snapshot() -> dict | None:
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return None
+    return read_runtime_status()
+
+
+def _gateway_runtime_health(
+    snapshot: dict | None,
+    *,
+    relevant_platforms: set[str] | None = None,
+) -> str:
+    try:
+        from gateway.status import runtime_health_level
+    except Exception:
+        return "unknown"
+    return runtime_health_level(snapshot, relevant_platforms=relevant_platforms, include_disconnected=False)
+
+
+def _gateway_runtime_issue_lines(
+    snapshot: dict | None,
+    *,
+    relevant_platforms: set[str] | None = None,
+) -> list[str]:
+    try:
+        from gateway.status import iter_runtime_issue_lines
+    except Exception:
+        return []
+    return iter_runtime_issue_lines(snapshot, relevant_platforms=relevant_platforms, include_disconnected=False)
+
+
+def _warning_line(text: str) -> str:
+    return f"{color('⚠', Colors.YELLOW)} {text}"
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
     deep = getattr(args, 'deep', False)
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
     # =========================================================================
     # Environment
     # =========================================================================
@@ -94,7 +130,7 @@ def show_status(args):
     print(color("◆ Environment", Colors.CYAN, Colors.BOLD))
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
-    
+
     env_path = get_env_path()
     print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
 
@@ -105,13 +141,13 @@ def show_status(args):
 
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
-    
+
     # =========================================================================
     # API Keys
     # =========================================================================
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-    
+
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
@@ -128,7 +164,7 @@ def show_status(args):
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
-    
+
     for name, env_var in keys.items():
         value = get_env_value(env_var) or ""
         has_key = bool(value)
@@ -213,7 +249,7 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
-    
+
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
         # Fall back to config file value when env var isn't set
@@ -224,7 +260,7 @@ def show_status(args):
         except Exception:
             terminal_env = "local"
     print(f"  Backend:      {terminal_env}")
-    
+
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST", "")
         ssh_user = os.getenv("TERMINAL_SSH_USER", "")
@@ -236,10 +272,13 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
-    
+
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
-    
+
+    gateway_runtime = _load_gateway_runtime_snapshot()
+    runtime_platforms = (gateway_runtime or {}).get("platforms", {}) or {}
+
     # =========================================================================
     # Messaging Platforms
     # =========================================================================
@@ -247,39 +286,58 @@ def show_status(args):
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
     platforms = {
-        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
-        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
-        "WhatsApp": ("WHATSAPP_ENABLED", None),
-        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-        "Slack": ("SLACK_BOT_TOKEN", None),
-        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
-        "DingTalk": ("DINGTALK_CLIENT_ID", None),
-        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
-        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL", "telegram"),
+        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL", "discord"),
+        "WhatsApp": ("WHATSAPP_ENABLED", None, "whatsapp"),
+        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL", "signal"),
+        "Slack": ("SLACK_BOT_TOKEN", None, "slack"),
+        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS", "email"),
+        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL", "sms"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None, "dingtalk"),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL", "feishu"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL", "wecom"),
     }
+
+    configured_runtime_platforms: set[str] = set()
     
-    for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
-        
+    for name, (token_var, home_var, runtime_key) in platforms.items():
+        token = get_env_value(token_var) or ""
+        has_token = bool(token) and token.lower() not in {"false", "0", "no"}
+        if has_token:
+            configured_runtime_platforms.add(runtime_key)
+
         home_channel = ""
         if home_var:
-            home_channel = os.getenv(home_var, "")
-        
+            home_channel = get_env_value(home_var) or ""
+
         status = "configured" if has_token else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-        
+
+        runtime = runtime_platforms.get(runtime_key) or {}
+        runtime_state = str(runtime.get("state") or "").strip().lower()
+        runtime_error = str(runtime.get("error_message") or "").strip()
+        if has_token and runtime_state == "connected":
+            status += " — runtime: connected"
+        elif has_token and runtime_state == "reconnecting":
+            status += f" — runtime: reconnecting ({runtime_error or 'recovery in progress'})"
+        elif has_token and runtime_state == "fatal":
+            status += f" — runtime: failed ({runtime_error or 'fatal error'})"
+
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
-    
+
+    gateway_runtime_health = _gateway_runtime_health(
+        gateway_runtime,
+        relevant_platforms=configured_runtime_platforms,
+    )
+
     # =========================================================================
     # Gateway Status
     # =========================================================================
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
-    
-    if sys.platform.startswith('linux'):
+
+    if sys.platform.startswith("linux"):
         try:
             from hermes_cli.gateway import get_service_name
             _gw_svc = get_service_name()
@@ -295,10 +353,20 @@ def show_status(args):
             is_active = result.stdout.strip() == "active"
         except subprocess.TimeoutExpired:
             is_active = False
-        print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+
+        gateway_label = "running"
+        gateway_ok = is_active
+        if is_active and gateway_runtime_health == "degraded":
+            gateway_label = "running (degraded)"
+            gateway_ok = False
+        elif is_active and gateway_runtime_health == "failed":
+            gateway_label = "running (runtime unhealthy)"
+            gateway_ok = False
+
+        print(f"  Status:       {check_mark(gateway_ok)} {gateway_label if is_active else 'stopped'}")
         print("  Manager:      systemd (user)")
-        
-    elif sys.platform == 'darwin':
+
+    elif sys.platform == "darwin":
         from hermes_cli.gateway import get_launchd_label
         try:
             result = subprocess.run(
@@ -310,18 +378,36 @@ def show_status(args):
             is_loaded = result.returncode == 0
         except subprocess.TimeoutExpired:
             is_loaded = False
-        print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
+
+        gateway_label = "loaded"
+        gateway_ok = is_loaded
+        if is_loaded and gateway_runtime_health == "degraded":
+            gateway_label = "loaded (degraded)"
+            gateway_ok = False
+        elif is_loaded and gateway_runtime_health == "failed":
+            gateway_label = "loaded (runtime unhealthy)"
+            gateway_ok = False
+
+        print(f"  Status:       {check_mark(gateway_ok)} {gateway_label if is_loaded else 'not loaded'}")
         print("  Manager:      launchd")
     else:
         print(f"  Status:       {color('N/A', Colors.DIM)}")
         print("  Manager:      (not supported on this platform)")
-    
+
+    runtime_issue_lines = _gateway_runtime_issue_lines(
+        gateway_runtime,
+        relevant_platforms=configured_runtime_platforms,
+    )
+    if runtime_issue_lines:
+        for line in runtime_issue_lines[:3]:
+            print(f"  Runtime:      {_warning_line(line)}")
+
     # =========================================================================
     # Cron Jobs
     # =========================================================================
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
-    
+
     jobs_file = get_hermes_home() / "cron" / "jobs.json"
     if jobs_file.exists():
         import json
@@ -335,13 +421,13 @@ def show_status(args):
             print("  Jobs:         (error reading jobs file)")
     else:
         print("  Jobs:         0")
-    
+
     # =========================================================================
     # Sessions
     # =========================================================================
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
-    
+
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
     if sessions_file.exists():
         import json
@@ -353,14 +439,14 @@ def show_status(args):
             print("  Active:       (error reading sessions file)")
     else:
         print("  Active:       0")
-    
+
     # =========================================================================
     # Deep checks
     # =========================================================================
     if deep:
         print()
         print(color("◆ Deep Checks", Colors.CYAN, Colors.BOLD))
-        
+
         # Check OpenRouter connectivity
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
         if openrouter_key:
@@ -375,7 +461,7 @@ def show_status(args):
                 print(f"  OpenRouter:   {check_mark(ok)} {'reachable' if ok else f'error ({response.status_code})'}")
             except Exception as e:
                 print(f"  OpenRouter:   {check_mark(False)} error: {e}")
-        
+
         # Check gateway port
         try:
             import socket
@@ -389,7 +475,7 @@ def show_status(args):
             print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
         except OSError:
             pass
-    
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  Run 'hermes doctor' for detailed diagnostics", Colors.DIM))

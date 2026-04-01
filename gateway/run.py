@@ -1059,7 +1059,16 @@ class GatewayRunner:
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            write_runtime_status(
+                gateway_state="starting",
+                exit_reason=None,
+                reset_platforms=True,
+                known_platforms=[
+                    platform.value
+                    for platform, platform_config in self.config.platforms.items()
+                    if getattr(platform_config, "enabled", False)
+                ],
+            )
         except Exception:
             pass
         

@@ -103,6 +103,70 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_can_reset_stale_platform_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="stopped",
+            platform="whatsapp",
+            platform_state="fatal",
+            error_code="whatsapp_bridge_exited",
+            error_message="bridge exited",
+        )
+        status.write_runtime_status(
+            gateway_state="starting",
+            reset_platforms=True,
+            known_platforms=["telegram", "slack"],
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["platforms"] == {}
+        assert payload["known_platforms"] == ["telegram", "slack"]
+
+    def test_runtime_health_level_reports_degraded_for_reconnecting_platform(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            known_platforms=["telegram"],
+            platform="telegram",
+            platform_state="reconnecting",
+            error_code="telegram_polling_reconnect",
+            error_message="Timed out",
+        )
+
+        payload = status.read_runtime_status()
+        assert status.runtime_health_level(payload) == "degraded"
+        assert status.iter_runtime_issue_lines(payload) == [
+            "telegram: reconnecting — Timed out"
+        ]
+
+    def test_runtime_health_ignores_disconnected_and_irrelevant_platforms(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            known_platforms=["telegram"],
+            reset_platforms=True,
+        )
+        status.write_runtime_status(
+            platform="telegram",
+            platform_state="disconnected",
+            error_code=None,
+            error_message=None,
+        )
+        status.write_runtime_status(
+            platform="webhook",
+            platform_state="fatal",
+            error_code="webhook_broken",
+            error_message="stale webhook failure",
+        )
+
+        payload = status.read_runtime_status()
+        assert status.runtime_health_level(payload) == "healthy"
+        assert status.iter_runtime_issue_lines(payload) == []
+
 
 class TestScopedLocks:
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):

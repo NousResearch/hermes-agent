@@ -14,7 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
+from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error, load_config
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
@@ -777,7 +777,7 @@ def systemd_status(deep: bool = False, system: bool = False):
         print()
         print("Recent gateway health:")
         for line in runtime_lines:
-            print(f"  {line}")
+            print(f"  {color('⚠', Colors.YELLOW)} {line}")
 
     if system:
         print("✓ System service starts at boot without requiring systemd linger")
@@ -1427,30 +1427,27 @@ def _platform_status(platform: dict) -> str:
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
-        from gateway.status import read_runtime_status
+        from gateway.status import iter_runtime_issue_lines, read_runtime_status
     except Exception:
         return []
 
-    state = read_runtime_status()
-    if not state:
-        return []
+    relevant_platforms = None
+    try:
+        cfg = load_config() or {}
+        platform_cfg = cfg.get("platforms", {}) if isinstance(cfg, dict) else {}
+        relevant_platforms = {
+            str(name)
+            for name, pdata in platform_cfg.items()
+            if isinstance(pdata, dict) and pdata.get("enabled", True)
+        }
+    except Exception:
+        relevant_platforms = None
 
-    lines: list[str] = []
-    gateway_state = state.get("gateway_state")
-    exit_reason = state.get("exit_reason")
-    platforms = state.get("platforms", {}) or {}
-
-    for platform, pdata in platforms.items():
-        if pdata.get("state") == "fatal":
-            message = pdata.get("error_message") or "unknown error"
-            lines.append(f"⚠ {platform}: {message}")
-
-    if gateway_state == "startup_failed" and exit_reason:
-        lines.append(f"⚠ Last startup issue: {exit_reason}")
-    elif gateway_state == "stopped" and exit_reason:
-        lines.append(f"⚠ Last shutdown reason: {exit_reason}")
-
-    return lines
+    return iter_runtime_issue_lines(
+        read_runtime_status(),
+        relevant_platforms=relevant_platforms,
+        include_disconnected=False,
+    )
 
 
 def _setup_standard_platform(platform: dict):
@@ -2015,7 +2012,7 @@ def gateway_command(args):
                     print()
                     print("Recent gateway health:")
                     for line in runtime_lines:
-                        print(f"  {line}")
+                        print(f"  {color('⚠', Colors.YELLOW)} {line}")
                 print()
                 print("To install as a service:")
                 print("  hermes gateway install")
@@ -2027,7 +2024,7 @@ def gateway_command(args):
                     print()
                     print("Recent gateway health:")
                     for line in runtime_lines:
-                        print(f"  {line}")
+                        print(f"  {color('⚠', Colors.YELLOW)} {line}")
                 print()
                 print("To start:")
                 print("  hermes gateway          # Run in foreground")

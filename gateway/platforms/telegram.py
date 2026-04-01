@@ -178,6 +178,19 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
         return isinstance(error, OSError)
 
+    def _mark_polling_reconnecting(self, code: str, message: str) -> None:
+        """Persist that Telegram is degraded and currently trying to recover polling."""
+        try:
+            from gateway.status import write_runtime_status
+            write_runtime_status(
+                platform=self.platform.value,
+                platform_state="reconnecting",
+                error_code=code,
+                error_message=message,
+            )
+        except Exception:
+            pass
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -199,6 +212,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_network_error_count += 1
         attempt = self._polling_network_error_count
+        self._mark_polling_reconnecting(
+            "telegram_polling_reconnect",
+            f"Telegram polling reconnect attempt {attempt}/{MAX_NETWORK_RETRIES}: {error}",
+        )
 
         if attempt > MAX_NETWORK_RETRIES:
             message = (
@@ -234,7 +251,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            self._mark_connected()
         except Exception as retry_err:
+            self._mark_polling_reconnecting(
+                "telegram_polling_reconnect",
+                f"Telegram polling reconnect failed on attempt {attempt}/{MAX_NETWORK_RETRIES}: {retry_err}",
+            )
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
             # start_polling failed — polling is dead and no further error
             # callbacks will fire, so schedule the next retry ourselves.
@@ -259,6 +281,13 @@ class TelegramAdapter(BasePlatformAdapter):
         RETRY_DELAY = 10  # seconds
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
+            self._mark_polling_reconnecting(
+                "telegram_polling_conflict_retry",
+                (
+                    "Telegram polling conflict retry "
+                    f"{self._polling_conflict_count}/{MAX_CONFLICT_RETRIES}: {error}"
+                ),
+            )
             logger.warning(
                 "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
@@ -278,8 +307,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
                 self._polling_conflict_count = 0  # reset on success
+                self._mark_connected()
                 return
             except Exception as retry_err:
+                self._mark_polling_reconnecting(
+                    "telegram_polling_conflict_retry",
+                    (
+                        "Telegram polling conflict retry failed "
+                        f"{self._polling_conflict_count}/{MAX_CONFLICT_RETRIES}: {retry_err}"
+                    ),
+                )
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
                 # Don't fall through to fatal yet — wait for the next conflict
                 # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).

@@ -1239,6 +1239,42 @@ class TestConcurrentToolExecution:
             )
             assert result == "result"
 
+    def test_sequential_tool_callbacks_fire_in_order(self, agent):
+        tool_call = _mock_tool_call(name="web_search", arguments='{"query":"hello"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        starts = []
+        completes = []
+        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert starts == [("c1", "web_search", {"query": "hello"})]
+        assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
+
+    def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        starts = []
+        completes = []
+        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+
+        with patch("run_agent.handle_function_call", side_effect=['{"id":1}', '{"id":2}']):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert starts == [
+            ("c1", "web_search", {"query": "one"}),
+            ("c2", "web_search", {"query": "two"}),
+        ]
+        assert len(completes) == 2
+        assert {entry[0] for entry in completes} == {"c1", "c2"}
+        assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
@@ -1278,6 +1314,38 @@ class TestPathsOverlap:
         from run_agent import _paths_overlap
         assert not _paths_overlap(Path(""), Path("src/a.py"))
         assert not _paths_overlap(Path("src/a.py"), Path(""))
+
+
+class TestParallelScopePathNormalization:
+    def test_extract_parallel_scope_path_normalizes_relative_to_cwd(self, tmp_path, monkeypatch):
+        from run_agent import _extract_parallel_scope_path
+
+        monkeypatch.chdir(tmp_path)
+
+        scoped = _extract_parallel_scope_path("write_file", {"path": "./notes.txt"})
+
+        assert scoped == tmp_path / "notes.txt"
+
+    def test_extract_parallel_scope_path_treats_relative_and_absolute_same_file_as_same_scope(self, tmp_path, monkeypatch):
+        from run_agent import _extract_parallel_scope_path, _paths_overlap
+
+        monkeypatch.chdir(tmp_path)
+        abs_path = tmp_path / "notes.txt"
+
+        rel_scoped = _extract_parallel_scope_path("write_file", {"path": "notes.txt"})
+        abs_scoped = _extract_parallel_scope_path("write_file", {"path": str(abs_path)})
+
+        assert rel_scoped == abs_scoped
+        assert _paths_overlap(rel_scoped, abs_scoped)
+
+    def test_should_parallelize_tool_batch_rejects_same_file_with_mixed_path_spellings(self, tmp_path, monkeypatch):
+        from run_agent import _should_parallelize_tool_batch
+
+        monkeypatch.chdir(tmp_path)
+        tc1 = _mock_tool_call(name="write_file", arguments='{"path":"notes.txt","content":"one"}', call_id="c1")
+        tc2 = _mock_tool_call(name="write_file", arguments=f'{{"path":"{tmp_path / "notes.txt"}","content":"two"}}', call_id="c2")
+
+        assert not _should_parallelize_tool_batch([tc1, tc2])
 
 
 class TestHandleMaxIterations:

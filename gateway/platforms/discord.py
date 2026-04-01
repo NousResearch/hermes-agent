@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -403,6 +404,111 @@ class VoiceReceiver:
                 os.unlink(pcm_path)
             except OSError:
                 pass
+
+
+
+# ---------------------------------------------------------------------------
+# Markdown table -> Discord code-block converter
+# ---------------------------------------------------------------------------
+
+# Matches fenced code blocks (``` ... ```) — these must be skipped.
+_FENCED_CODE_BLOCK_RE = re.compile(
+    r"(```[^\n]*\n)(.*?)(```)",
+    re.DOTALL,
+)
+
+# Matches a single markdown table row (pipe-delimited).
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+
+# Matches the separator row: |---|:---:|---:|
+_SEPARATOR_ROW_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+
+
+def _convert_markdown_tables_to_code_blocks(text: str) -> str:
+    """Convert markdown pipe-tables to Discord-friendly code-block tables.
+
+    Algorithm:
+    1. Extract fenced code blocks and replace them with placeholders
+       (so table-like content inside code blocks is left alone).
+    2. Identify contiguous table blocks (header + separator + rows).
+    3. Strip alignment markers from the separator row.
+    4. Wrap each table block in a fenced code block with no language hint.
+    5. Restore original code blocks from placeholders.
+    """
+    # Step 1: protect existing code blocks
+    code_blocks: list[str] = []
+    placeholder = "\x00CODEBLOCK{}\x00"
+
+    def _store_code_block(m: re.Match) -> str:
+        code_blocks.append(m.group(0))
+        return placeholder.format(len(code_blocks) - 1)
+
+    text = _FENCED_CODE_BLOCK_RE.sub(_store_code_block, text)
+
+    # Step 2: find contiguous table blocks
+    lines = text.split("\n")
+    result: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Check if this line starts a table (pipe-delimited)
+        if _TABLE_ROW_RE.match(line) and i + 1 < len(lines) and _SEPARATOR_ROW_RE.match(lines[i + 1]):
+            # We've found a table header + separator.
+            table_lines: list[str] = [line]
+            table_lines.append(_SEPARATOR_ROW_RE.sub(_clean_separator, lines[i + 1]))
+            i += 2
+
+            # Consume subsequent table rows
+            while i < len(lines) and _TABLE_ROW_RE.match(lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+
+            # Skip trailing empty lines that belong to the table block
+            while i < len(lines) and lines[i].strip() == "":
+                i += 1
+                # but put one blank line back for spacing
+                table_lines.append("")
+                break
+
+            # Wrap in code block
+            table_text = "\n".join(table_lines)
+            result.append(f"```\n{table_text}\n```")
+
+        else:
+            result.append(line)
+            i += 1
+
+    output = "\n".join(result)
+
+    # Step 5: restore original code blocks
+    for idx, original in enumerate(code_blocks):
+        output = output.replace(placeholder.format(idx), original)
+
+    return output
+
+
+def _clean_separator(m: re.Match) -> str:
+    """Strip alignment markers (:---: etc.) from a separator row.
+
+    Keeps the pipe structure and dashes so the row still looks like
+    a visual separator in the monospace code block.
+    """
+    row = m.group(0)
+    # Replace each cell separator with a simple dashed version
+    cells = row.split("|")
+    cleaned = []
+    for cell in cells:
+        stripped = cell.strip().strip(":").strip()
+        if not stripped:
+            cleaned.append("")
+        else:
+            # Use the same dash length but remove colons
+            dashes = "-" * max(len(stripped), 3)
+            cleaned.append(f" {dashes} ")
+    # Rejoin with pipes
+    return "|" + "|".join(cleaned) + "|"
 
 
 class DiscordAdapter(BasePlatformAdapter):
@@ -1486,10 +1592,13 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Discord uses its own markdown variant and does NOT support
+        markdown tables.  Pipe-delimited tables are converted into
+        monospace code-block ASCII tables so they render correctly.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        if not content:
+            return content
+        return _convert_markdown_tables_to_code_blocks(content)
 
     async def _run_simple_slash(
         self,

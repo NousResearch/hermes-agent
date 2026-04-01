@@ -6656,10 +6656,21 @@ class AIAgent:
             if self.step_callback is not None:
                 try:
                     prev_tools = []
-                    for _m in reversed(messages):
+                    for _idx, _m in enumerate(reversed(messages)):
                         if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                            _fwd_start = len(messages) - _idx
+                            _results_by_id = {}
+                            for _tm in messages[_fwd_start:]:
+                                if _tm.get("role") != "tool":
+                                    break
+                                _tcid = _tm.get("tool_call_id")
+                                if _tcid:
+                                    _results_by_id[_tcid] = _tm.get("content", "")
                             prev_tools = [
-                                tc["function"]["name"]
+                                {
+                                    "name": tc["function"]["name"],
+                                    "result": _results_by_id.get(tc.get("id")),
+                                }
                                 for tc in _m["tool_calls"]
                                 if isinstance(tc, dict)
                             ]

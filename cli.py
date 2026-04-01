@@ -2162,12 +2162,13 @@ class HermesCLI:
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
-        
+
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.
         term_width = shutil.get_terminal_size().columns
         use_compact = self.compact or term_width < 80
-        
+
+        ctx_len = None
         if use_compact:
             self.console.print(_build_compact_banner())
             self._show_status()
@@ -2179,7 +2180,6 @@ class HermesCLI:
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
             
             # Get context length for display
-            ctx_len = None
             if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
                 ctx_len = self.agent.context_compressor.context_length
             

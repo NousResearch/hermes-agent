@@ -221,7 +221,7 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
             _read_tracker["t1"] = {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "file_mtimes": {"/tmp/other.py": 12345.0},
+                "read_timestamps": {"/tmp/other.py": 12345.0},
             }
         self.assertIsNone(_check_file_staleness("/tmp/x.py", "t1"))
 
@@ -231,7 +231,7 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
             _read_tracker["t1"] = {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "file_mtimes": {"/nonexistent/path": 99999.0},
+                "read_timestamps": {"/nonexistent/path": 99999.0},
             }
         # File doesn't exist → stat fails → returns None (let write handle it)
         self.assertIsNone(_check_file_staleness("/nonexistent/path", "t1"))

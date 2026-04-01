@@ -40,19 +40,37 @@ def _check_matrix_available() -> bool:
 # Async bridge (sync handler → async adapter methods)
 # ---------------------------------------------------------------------------
 
+_MAX_EMOJI_LEN = 32
+_MAX_REASON_LEN = 500
+_MAX_NAME_LEN = 255
+_MAX_TOPIC_LEN = 1000
+_MAX_STATUS_LEN = 255
+_ALLOWED_PRESETS = frozenset(("private_chat", "public_chat"))
+
+
 def _run_async(coro):
-    """Run an async coroutine from a sync handler."""
+    """Run an async coroutine from a sync handler.
+
+    Schedules the coroutine on the adapter's own event loop via
+    ``run_coroutine_threadsafe`` when possible, to avoid creating a
+    second event loop that can't share matrix-nio client state.
+    Falls back to ``asyncio.run()`` only when no loop is available.
+    """
+    # Prefer the adapter's event loop for nio client safety.
+    adapter_loop = getattr(_adapter, "_loop", None) if _adapter else None
+    if adapter_loop is not None and adapter_loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(coro, adapter_loop)
+        return future.result(timeout=30)
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
     if loop and loop.is_running():
-        # Already inside an event loop -- create a new thread
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=30)
+        # Schedule on the current running loop.
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result(timeout=30)
     else:
         return asyncio.run(coro)
 
@@ -60,6 +78,13 @@ def _run_async(coro):
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
+
+def _ensure_adapter():
+    """Return the adapter or raise if unavailable."""
+    if _adapter is None:
+        raise RuntimeError("Matrix adapter is not connected")
+    return _adapter
+
 
 def _handle_send_reaction(args: dict, **kw) -> str:
     """Handler for matrix_send_reaction tool."""
@@ -73,9 +98,12 @@ def _handle_send_reaction(args: dict, **kw) -> str:
         return json.dumps({"error": "event_id is required and must start with '$'"})
     if not emoji:
         return json.dumps({"error": "emoji is required and must be non-empty"})
+    if len(emoji) > _MAX_EMOJI_LEN:
+        return json.dumps({"error": f"emoji must be at most {_MAX_EMOJI_LEN} characters"})
 
     try:
-        result = _run_async(_adapter._send_reaction(room_id, event_id, emoji))
+        adapter = _ensure_adapter()
+        result = _run_async(adapter._send_reaction(room_id, event_id, emoji))
         return json.dumps({"success": bool(result)})
     except Exception as e:
         logger.error("matrix_send_reaction error: %s", e)
@@ -92,9 +120,12 @@ def _handle_redact_message(args: dict, **kw) -> str:
         return json.dumps({"error": "room_id is required and must start with '!'"})
     if not event_id or not event_id.startswith("$"):
         return json.dumps({"error": "event_id is required and must start with '$'"})
+    if len(reason) > _MAX_REASON_LEN:
+        reason = reason[:_MAX_REASON_LEN]
 
     try:
-        result = _run_async(_adapter.redact_message(room_id, event_id, reason=reason))
+        adapter = _ensure_adapter()
+        result = _run_async(adapter.redact_message(room_id, event_id, reason=reason))
         return json.dumps({"success": bool(result)})
     except Exception as e:
         logger.error("matrix_redact_message error: %s", e)
@@ -109,16 +140,21 @@ def _handle_create_room(args: dict, **kw) -> str:
     is_direct = args.get("is_direct", False)
     preset = args.get("preset", "private_chat")
 
+    if name and len(name) > _MAX_NAME_LEN:
+        name = name[:_MAX_NAME_LEN]
+    if topic and len(topic) > _MAX_TOPIC_LEN:
+        topic = topic[:_MAX_TOPIC_LEN]
     if invite and not isinstance(invite, list):
         return json.dumps({"error": "invite must be a list of user IDs"})
     for uid in (invite or []):
         if not isinstance(uid, str) or not uid.startswith("@"):
             return json.dumps({"error": f"Invalid user ID in invite list: {uid!r} (must start with '@')"})
-    if preset not in ("private_chat", "public_chat", "trusted_private_chat"):
-        return json.dumps({"error": f"Invalid preset: {preset!r}. Must be private_chat, public_chat, or trusted_private_chat"})
+    if preset not in _ALLOWED_PRESETS:
+        return json.dumps({"error": f"Invalid preset: {preset!r}. Must be one of: {', '.join(sorted(_ALLOWED_PRESETS))}"})
 
     try:
-        room_id = _run_async(_adapter.create_room(
+        adapter = _ensure_adapter()
+        room_id = _run_async(adapter.create_room(
             name=name, topic=topic, invite=invite,
             is_direct=is_direct, preset=preset,
         ))
@@ -141,7 +177,8 @@ def _handle_invite_user(args: dict, **kw) -> str:
         return json.dumps({"error": "user_id is required and must start with '@'"})
 
     try:
-        result = _run_async(_adapter.invite_user(room_id, user_id))
+        adapter = _ensure_adapter()
+        result = _run_async(adapter.invite_user(room_id, user_id))
         return json.dumps({"success": bool(result)})
     except Exception as e:
         logger.error("matrix_invite_user error: %s", e)
@@ -161,7 +198,8 @@ def _handle_fetch_history(args: dict, **kw) -> str:
         limit = 200
 
     try:
-        messages = _run_async(_adapter.fetch_room_history(room_id, limit=limit))
+        adapter = _ensure_adapter()
+        messages = _run_async(adapter.fetch_room_history(room_id, limit=limit))
         return json.dumps({"count": len(messages), "messages": messages})
     except Exception as e:
         logger.error("matrix_fetch_history error: %s", e)
@@ -175,9 +213,12 @@ def _handle_set_presence(args: dict, **kw) -> str:
 
     if state not in ("online", "offline", "unavailable"):
         return json.dumps({"error": f"Invalid state: {state!r}. Must be 'online', 'offline', or 'unavailable'"})
+    if len(status_msg) > _MAX_STATUS_LEN:
+        status_msg = status_msg[:_MAX_STATUS_LEN]
 
     try:
-        result = _run_async(_adapter.set_presence(state=state, status_msg=status_msg))
+        adapter = _ensure_adapter()
+        result = _run_async(adapter.set_presence(state=state, status_msg=status_msg))
         return json.dumps({"success": bool(result)})
     except Exception as e:
         logger.error("matrix_set_presence error: %s", e)

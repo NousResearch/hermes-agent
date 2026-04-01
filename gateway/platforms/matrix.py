@@ -322,6 +322,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
+        self._loop = asyncio.get_running_loop()  # For matrix_tools async bridge.
         self._mark_connected()
 
         # Register this adapter instance for matrix tools.

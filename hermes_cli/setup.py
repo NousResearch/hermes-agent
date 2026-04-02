@@ -1808,13 +1808,22 @@ def setup_gateway(config: dict):
             print_info("   1. Message @userinfobot on Telegram")
             print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
             print()
+            existing_allowlist = get_env_value("TELEGRAM_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success(
                     "Telegram allowlist configured - only listed users can use the bot"
+                )
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Telegram allowlist: {existing_allowlist}"
                 )
             else:
                 print_info(
@@ -1887,8 +1896,13 @@ def setup_gateway(config: dict):
                 "   You can also use Discord usernames (resolved on gateway start)."
             )
             print()
+            existing_allowlist = get_env_value("DISCORD_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+                "Allowed user IDs or usernames (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 # Clean up common prefixes (user:123, <@123>, <@!123>)
@@ -1903,6 +1917,10 @@ def setup_gateway(config: dict):
                         cleaned_ids.append(uid)
                 save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                 print_success("Discord allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Discord allowlist: {existing_allowlist}"
+                )
             else:
                 print_info(
                     "⚠️  No allowlist set - anyone in servers with your bot can use it!"
@@ -1999,12 +2017,21 @@ def setup_gateway(config: dict):
                 "   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID"
             )
             print()
+            existing_allowlist = get_env_value("SLACK_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "deny everyone except paired users")
+                + ")"
             )
             if allowed_users:
                 save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Slack allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Slack allowlist: {existing_allowlist}"
+                )
             else:
                 print_warning(
                     "⚠️  No Slack allowlist set - unpaired users will be denied by default."
@@ -2088,12 +2115,21 @@ def setup_gateway(config: dict):
             print_info("🔒 Security: Restrict who can use your bot")
             print_info("   Matrix user IDs look like @username:server")
             print()
+            existing_allowlist = get_env_value("MATRIX_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Matrix allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Matrix allowlist: {existing_allowlist}"
+                )
             else:
                 print_info(
                     "⚠️  No allowlist set - anyone who can message the bot can use it!"
@@ -2134,12 +2170,21 @@ def setup_gateway(config: dict):
             print_info("   To find your user ID: click your avatar → Profile")
             print_info("   or use the API: GET /api/v4/users/me")
             print()
+            existing_allowlist = get_env_value("MATTERMOST_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Mattermost allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Mattermost allowlist: {existing_allowlist}"
+                )
             else:
                 print_info(
                     "⚠️  No allowlist set - anyone who can message the bot can use it!"

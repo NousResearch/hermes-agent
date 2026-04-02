@@ -152,7 +152,11 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    # Write atomically via a temp file so a crash mid-write never leaves
+    # a partially-written (corrupt) lock file that blocks gateway restart.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(path)
 
 
 def _read_pid_record() -> Optional[dict]:

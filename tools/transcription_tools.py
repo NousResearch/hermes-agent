@@ -127,8 +127,11 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 
 
 def _has_openai_audio_backend() -> bool:
-    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
-    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
+    """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
+    stt_config = _load_stt_config()
+    openai_cfg = stt_config.get("openai", {})
+    cfg_api_key = openai_cfg.get("api_key", "")
+    return bool(cfg_api_key or resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -577,13 +580,20 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:
     """Return direct OpenAI audio config or a managed gateway fallback."""
+    stt_config = _load_stt_config()
+    openai_cfg = stt_config.get("openai", {})
+    cfg_api_key = openai_cfg.get("api_key", "")
+    cfg_base_url = openai_cfg.get("base_url", "")
+    if cfg_api_key:
+        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
+
     direct_api_key = resolve_openai_audio_api_key()
     if direct_api_key:
         return direct_api_key, OPENAI_BASE_URL
 
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
-        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        message = "Neither stt.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
         if managed_nous_tools_enabled():
             message += ", and the managed OpenAI audio gateway is unavailable"
         raise ValueError(message)

@@ -7555,8 +7555,49 @@ class HermesCLI:
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
                     
-                    # Check for commands
+                    # Check for commands — but detect dragged/pasted file paths first.
+                    # When a user drags a file into the terminal, macOS pastes the
+                    # absolute path (e.g. /Users/roland/Desktop/file.png) which
+                    # starts with "/" and would otherwise be mistaken for a slash
+                    # command.  We detect this by checking if the first token is a
+                    # real filesystem path.
+                    _is_file_drop = False
                     if isinstance(user_input, str) and user_input.startswith("/"):
+                        # Extract the first whitespace-delimited token as a path candidate.
+                        # Dragged paths may have backslash-escaped spaces, so also try
+                        # unescaping.  Walk forward absorbing "\ " sequences.
+                        _raw = user_input
+                        _pos = 0
+                        while _pos < len(_raw):
+                            ch = _raw[_pos]
+                            if ch == '\\' and _pos + 1 < len(_raw) and _raw[_pos + 1] == ' ':
+                                _pos += 2  # skip escaped space
+                            elif ch == ' ':
+                                break
+                            else:
+                                _pos += 1
+                        _first_token_raw = _raw[:_pos]
+                        _first_token = _first_token_raw.replace('\\ ', ' ')
+                        _drop_path = Path(_first_token)
+                        if _drop_path.exists() and _drop_path.is_file():
+                            _is_file_drop = True
+                            _IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp',
+                                           '.bmp', '.tiff', '.tif', '.svg', '.ico'}
+                            _remainder = _raw[_pos:].strip()
+                            if _drop_path.suffix.lower() in _IMAGE_EXTS:
+                                submit_images.append(_drop_path)
+                                user_input = _remainder or f"[User attached image: {_drop_path.name}]"
+                                _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                            else:
+                                # Non-image file — mention it in the chat message so
+                                # the agent can read_file / analyze it.
+                                _cprint(f"  📄 Detected file: {_drop_path.name}")
+                                user_input = (
+                                    f"[User attached file: {_drop_path}]"
+                                    + (f"\n{_remainder}" if _remainder else "")
+                                )
+
+                    if not _is_file_drop and isinstance(user_input, str) and user_input.startswith("/"):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True

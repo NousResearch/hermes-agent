@@ -167,11 +167,15 @@ def _get_snapshot_threshold() -> int:
     ``DEFAULT_SNAPSHOT_THRESHOLD`` (20000) if unset or unreadable.
     """
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config() or {}
-        val = cfg.get("browser", {}).get("snapshot_threshold")
-        if val is not None:
-            return max(int(val), 1000)  # Floor at 1000 to avoid too-small thresholds
+        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            val = cfg.get("browser", {}).get("snapshot_threshold")
+            if val is not None:
+                return max(int(val), 1000)  # Floor at 1000 to avoid too-small thresholds
     except Exception as e:
         logger.debug("Could not read snapshot_threshold from config: %s", e)
     return DEFAULT_SNAPSHOT_THRESHOLD

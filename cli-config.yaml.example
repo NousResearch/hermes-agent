@@ -238,6 +238,11 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Maximum characters of snapshot content before summarization/truncation.
+  # Increase for long pages (e.g., detailed docs, financial reports), decrease to save tokens.
+  # Default: 20000
+  # snapshot_threshold: 20000
+
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================

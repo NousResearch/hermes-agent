@@ -800,6 +800,26 @@ def resolve_runtime_provider(
     """
     requested_provider = resolve_requested_provider(requested)
 
+    # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
+    # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
+    # return provider="custom" with chat_completions api_mode and no valid key).
+    # Instead, use the Azure key directly with anthropic_messages api_mode.
+    _eff_base = (explicit_base_url or "").strip()
+    if requested_provider == "anthropic" and "azure.com" in _eff_base:
+        _azure_key = (
+            (explicit_api_key or "").strip()
+            or os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
+            or os.getenv("ANTHROPIC_API_KEY", "").strip()
+        )
+        return {
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "base_url": _eff_base.rstrip("/"),
+            "api_key": _azure_key,
+            "source": "azure-explicit",
+            "requested_provider": requested_provider,
+        }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,

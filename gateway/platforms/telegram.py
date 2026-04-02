@@ -589,6 +589,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=True,
                 )
                 self._webhook_mode = True
+                if not webhook_secret:
+                    logger.warning(
+                        "[%s] Webhook mode is active without a secret token — "
+                        "any request to %s can inject fake Telegram updates. "
+                        "Set TELEGRAM_WEBHOOK_SECRET to enable request verification.",
+                        self.name, webhook_path,
+                    )
                 logger.info(
                     "[%s] Webhook server listening on 0.0.0.0:%d%s",
                     self.name, webhook_port, webhook_path,

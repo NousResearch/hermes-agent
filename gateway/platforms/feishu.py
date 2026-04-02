@@ -1963,6 +1963,13 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> tuple[str, str]:
         import httpx
 
+        try:
+            from tools.url_safety import is_safe_url
+            if not is_safe_url(file_url):
+                raise ValueError(f"Blocked unsafe Feishu document URL: {file_url}")
+        except ImportError:
+            pass
+
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             response = await client.get(
                 file_url,

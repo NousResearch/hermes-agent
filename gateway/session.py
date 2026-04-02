@@ -778,66 +778,18 @@ class SessionStore:
     def update_session(
         self,
         session_key: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
         last_prompt_tokens: int = None,
-        model: str = None,
-        estimated_cost_usd: Optional[float] = None,
-        cost_status: Optional[str] = None,
-        cost_source: Optional[str] = None,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
     ) -> None:
-        """Update a session's metadata after an interaction."""
-        db_session_id = None
-
+        """Update lightweight session metadata after an interaction."""
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
-                # Direct assignment — the gateway receives cumulative totals
-                # from the cached agent, not per-call deltas.
-                entry.input_tokens = input_tokens
-                entry.output_tokens = output_tokens
-                entry.cache_read_tokens = cache_read_tokens
-                entry.cache_write_tokens = cache_write_tokens
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
-                if estimated_cost_usd is not None:
-                    entry.estimated_cost_usd = estimated_cost_usd
-                if cost_status:
-                    entry.cost_status = cost_status
-                entry.total_tokens = (
-                    entry.input_tokens
-                    + entry.output_tokens
-                    + entry.cache_read_tokens
-                    + entry.cache_write_tokens
-                )
                 self._save()
-                db_session_id = entry.session_id
-
-        if self._db and db_session_id:
-            try:
-                self._db.set_token_counts(
-                    db_session_id,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                    estimated_cost_usd=estimated_cost_usd,
-                    cost_status=cost_status,
-                    cost_source=cost_source,
-                    billing_provider=provider,
-                    billing_base_url=base_url,
-                    model=model,
-                    absolute=True,
-                )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

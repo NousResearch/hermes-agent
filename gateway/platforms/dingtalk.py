@@ -278,6 +278,10 @@ class DingTalkAdapter(BasePlatformAdapter):
             return SendResult(success=False,
                               error="No session_webhook available. Reply must follow an incoming message.")
 
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(session_webhook):
+            return SendResult(success=False, error="Unsafe session_webhook URL.")
+
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
 

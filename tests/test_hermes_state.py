@@ -474,6 +474,10 @@ class TestFTS5Search:
         assert '"P2.2"' in result
         assert '"simulate.p2"' in result
 
+        # Mixed dots and hyphens — single pass avoids double-quoting
+        assert s('my-app.config') == '"my-app.config"'
+        assert s('my-app.config.ts') == '"my-app.config.ts"'
+
 
 # =========================================================================
 # Session search and listing

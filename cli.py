@@ -830,6 +830,63 @@ def _cprint(text: str):
     _pt_print(_PT_ANSI(text))
 
 
+# ---------------------------------------------------------------------------
+# File-drop detection — extracted as a pure function for testability.
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTENSIONS = frozenset({
+    '.png', '.jpg', '.jpeg', '.gif', '.webp',
+    '.bmp', '.tiff', '.tif', '.svg', '.ico',
+})
+
+
+def _detect_file_drop(user_input: str) -> "dict | None":
+    """Detect if *user_input* is a dragged/pasted file path, not a slash command.
+
+    When a user drags a file into the terminal, macOS pastes the absolute path
+    (e.g. ``/Users/roland/Desktop/file.png``) which starts with ``/`` and would
+    otherwise be mistaken for a slash command.
+
+    Returns a dict on match::
+
+        {
+            "path": Path,          # resolved file path
+            "is_image": bool,      # True when suffix is a known image type
+            "remainder": str,      # any text after the path
+        }
+
+    Returns ``None`` when the input is not a real file path.
+    """
+    if not isinstance(user_input, str) or not user_input.startswith("/"):
+        return None
+
+    # Walk the string absorbing backslash-escaped spaces ("\ ").
+    raw = user_input
+    pos = 0
+    while pos < len(raw):
+        ch = raw[pos]
+        if ch == '\\' and pos + 1 < len(raw) and raw[pos + 1] == ' ':
+            pos += 2  # skip escaped space
+        elif ch == ' ':
+            break
+        else:
+            pos += 1
+
+    first_token_raw = raw[:pos]
+    first_token = first_token_raw.replace('\\ ', ' ')
+    drop_path = Path(first_token)
+
+    if not drop_path.exists() or not drop_path.is_file():
+        return None
+
+    remainder = raw[pos:].strip()
+    return {
+        "path": drop_path,
+        "is_image": drop_path.suffix.lower() in _IMAGE_EXTENSIONS,
+        "remainder": remainder,
+    }
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -7556,48 +7613,23 @@ class HermesCLI:
                         user_input, submit_images = user_input
                     
                     # Check for commands — but detect dragged/pasted file paths first.
-                    # When a user drags a file into the terminal, macOS pastes the
-                    # absolute path (e.g. /Users/roland/Desktop/file.png) which
-                    # starts with "/" and would otherwise be mistaken for a slash
-                    # command.  We detect this by checking if the first token is a
-                    # real filesystem path.
-                    _is_file_drop = False
-                    if isinstance(user_input, str) and user_input.startswith("/"):
-                        # Extract the first whitespace-delimited token as a path candidate.
-                        # Dragged paths may have backslash-escaped spaces, so also try
-                        # unescaping.  Walk forward absorbing "\ " sequences.
-                        _raw = user_input
-                        _pos = 0
-                        while _pos < len(_raw):
-                            ch = _raw[_pos]
-                            if ch == '\\' and _pos + 1 < len(_raw) and _raw[_pos + 1] == ' ':
-                                _pos += 2  # skip escaped space
-                            elif ch == ' ':
-                                break
-                            else:
-                                _pos += 1
-                        _first_token_raw = _raw[:_pos]
-                        _first_token = _first_token_raw.replace('\\ ', ' ')
-                        _drop_path = Path(_first_token)
-                        if _drop_path.exists() and _drop_path.is_file():
-                            _is_file_drop = True
-                            _IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp',
-                                           '.bmp', '.tiff', '.tif', '.svg', '.ico'}
-                            _remainder = _raw[_pos:].strip()
-                            if _drop_path.suffix.lower() in _IMAGE_EXTS:
-                                submit_images.append(_drop_path)
-                                user_input = _remainder or f"[User attached image: {_drop_path.name}]"
-                                _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
-                            else:
-                                # Non-image file — mention it in the chat message so
-                                # the agent can read_file / analyze it.
-                                _cprint(f"  📄 Detected file: {_drop_path.name}")
-                                user_input = (
-                                    f"[User attached file: {_drop_path}]"
-                                    + (f"\n{_remainder}" if _remainder else "")
-                                )
+                    # See _detect_file_drop() for details.
+                    _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
+                    if _file_drop:
+                        _drop_path = _file_drop["path"]
+                        _remainder = _file_drop["remainder"]
+                        if _file_drop["is_image"]:
+                            submit_images.append(_drop_path)
+                            user_input = _remainder or f"[User attached image: {_drop_path.name}]"
+                            _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                        else:
+                            _cprint(f"  📄 Detected file: {_drop_path.name}")
+                            user_input = (
+                                f"[User attached file: {_drop_path}]"
+                                + (f"\n{_remainder}" if _remainder else "")
+                            )
 
-                    if not _is_file_drop and isinstance(user_input, str) and user_input.startswith("/"):
+                    if not _file_drop and isinstance(user_input, str) and user_input.startswith("/"):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True

@@ -31,6 +31,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import urljoin
+
+from utils import is_truthy_value
+from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
 from hermes_constants import get_hermes_home
 
@@ -41,8 +46,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 import importlib.util as _ilu
-_HAS_FASTER_WHISPER = _ilu.find_spec("faster_whisper") is not None
-_HAS_OPENAI = _ilu.find_spec("openai") is not None
+
+
+def _safe_find_spec(module_name: str) -> bool:
+    try:
+        return _ilu.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return module_name in globals() or module_name in os.sys.modules
+
+
+_HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+_HAS_OPENAI = _safe_find_spec("openai")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -109,16 +123,12 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     if stt_config is None:
         stt_config = _load_stt_config()
     enabled = stt_config.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.strip().lower() in ("true", "1", "yes", "on")
-    if enabled is None:
-        return True
-    return bool(enabled)
+    return is_truthy_value(enabled, default=True)
 
 
-def _resolve_openai_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
-    return os.getenv("VOICE_TOOLS_OPENAI_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+def _has_openai_audio_backend() -> bool:
+    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
+    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -210,7 +220,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "openai":
-            if _HAS_OPENAI and _resolve_openai_api_key():
+            if _HAS_OPENAI and _has_openai_audio_backend():
                 return "openai"
             logger.warning(
                 "STT provider 'openai' configured but no API key available"
@@ -228,7 +238,7 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
-    if _HAS_OPENAI and _resolve_openai_api_key():
+    if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
     return "none"
@@ -404,19 +414,23 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="text",
+                )
 
-        with open(file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model=model_name,
-                file=audio_file,
-                response_format="text",
-            )
+            transcript_text = str(transcription).strip()
+            logger.info("Transcribed %s via Groq API (%s, %d chars)",
+                         Path(file_path).name, model_name, len(transcript_text))
 
-        transcript_text = str(transcription).strip()
-        logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                     Path(file_path).name, model_name, len(transcript_text))
-
-        return {"success": True, "transcript": transcript_text, "provider": "groq"}
+            return {"success": True, "transcript": transcript_text, "provider": "groq"}
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
@@ -437,12 +451,13 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
 
 def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using OpenAI Whisper API (paid)."""
-    api_key = _resolve_openai_api_key()
-    if not api_key:
+    try:
+        api_key, base_url = _resolve_openai_audio_client_config()
+    except ValueError as exc:
         return {
             "success": False,
             "transcript": "",
-            "error": "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set",
+            "error": str(exc),
         }
 
     if not _HAS_OPENAI:
@@ -455,20 +470,24 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=OPENAI_BASE_URL, timeout=30, max_retries=0)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="text" if model_name == "whisper-1" else "json",
+                )
 
-        with open(file_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model=model_name,
-                file=audio_file,
-                response_format="text",
-            )
+            transcript_text = _extract_transcript_text(transcription)
+            logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
+                         Path(file_path).name, model_name, len(transcript_text))
 
-        transcript_text = str(transcription).strip()
-        logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
-                     Path(file_path).name, model_name, len(transcript_text))
-
-        return {"success": True, "transcript": transcript_text, "provider": "openai"}
+            return {"success": True, "transcript": transcript_text, "provider": "openai"}
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
     except PermissionError:
         return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
@@ -554,3 +573,39 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+
+
+def _resolve_openai_audio_client_config() -> tuple[str, str]:
+    """Return direct OpenAI audio config or a managed gateway fallback."""
+    direct_api_key = resolve_openai_audio_api_key()
+    if direct_api_key:
+        return direct_api_key, OPENAI_BASE_URL
+
+    managed_gateway = resolve_managed_tool_gateway("openai-audio")
+    if managed_gateway is None:
+        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        if managed_nous_tools_enabled():
+            message += ", and the managed OpenAI audio gateway is unavailable"
+        raise ValueError(message)
+
+    return managed_gateway.nous_user_token, urljoin(
+        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+    )
+
+
+def _extract_transcript_text(transcription: Any) -> str:
+    """Normalize text and JSON transcription responses to a plain string."""
+    if isinstance(transcription, str):
+        return transcription.strip()
+
+    if hasattr(transcription, "text"):
+        value = getattr(transcription, "text")
+        if isinstance(value, str):
+            return value.strip()
+
+    if isinstance(transcription, dict):
+        value = transcription.get("text")
+        if isinstance(value, str):
+            return value.strip()
+
+    return str(transcription).strip()

@@ -445,8 +445,11 @@ DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
 def _is_nous_auxiliary_client(client: Any) -> bool:
     """Return True when the resolved auxiliary backend is Nous Portal."""
-    base_url = str(getattr(client, "base_url", "") or "").lower()
-    return "nousresearch.com" in base_url
+    from urllib.parse import urlparse
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == "nousresearch.com" or host.endswith(".nousresearch.com")
 
 
 def _resolve_web_extract_auxiliary(model: Optional[str] = None) -> tuple[Optional[Any], Optional[str], Dict[str, Any]]:

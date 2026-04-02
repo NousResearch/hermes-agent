@@ -24,9 +24,9 @@ Architecture:
 2. Aggregator model synthesizes responses into a high-quality output
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
-Models Used (via OpenRouter):
-- Reference Models: claude-opus-4.6, gemini-3-pro-preview, gpt-5.4-pro, deepseek-v3.2
-- Aggregator Model: claude-opus-4.6 (highest capability for synthesis)
+Models Used (via Abacus RouteLLM):
+- Reference Models: claude-opus-4-6, gpt-5.4, gpt-5.3-codex, o3
+- Aggregator Model: claude-opus-4-6 (highest capability for synthesis)
 
 Configuration:
     To customize the MoA setup, modify the configuration constants at the top of this file:
@@ -50,26 +50,56 @@ import logging
 import os
 import asyncio
 import datetime
+import requests
 from typing import Dict, Any, List, Optional
-from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
-from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
+# ── Abacus RouteLLM Client ────────────────────────────────────────────────────
+
+_ABACUS_KEY: Optional[str] = None
+
+
+def _get_abacus_key() -> str:
+    """Lazy-load ABACUS_API_KEY from environment or credentials file."""
+    global _ABACUS_KEY
+    if _ABACUS_KEY is None:
+        _ABACUS_KEY = os.environ.get("ABACUS_API_KEY", "")
+        if not _ABACUS_KEY:
+            cred_path = os.path.expanduser("~/.hermes/.env")
+            try:
+                with open(cred_path) as f:
+                    for line in f:
+                        if "ABACUS_API_KEY" in line and "=" in line:
+                            _ABACUS_KEY = line.split("=", 1)[1].strip()
+                            break
+            except Exception:
+                pass
+        if not _ABACUS_KEY:
+            raise ValueError("ABACUS_API_KEY environment variable not set")
+    return _ABACUS_KEY
+
+
+def _abacus_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {_get_abacus_key()}",
+        "Content-Type": "application/json",
+    }
+
+
 # Configuration for MoA processing
 # Reference models - these generate diverse initial responses in parallel.
-# Keep this list aligned with current top-tier OpenRouter frontier options.
+# Verified working on Abacus RouteLLM (2026-04-02)
 REFERENCE_MODELS = [
-    "anthropic/claude-opus-4.6",
-    "google/gemini-3-pro-preview",
-    "openai/gpt-5.4-pro",
-    "deepseek/deepseek-v3.2",
+    "claude-opus-4-6",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "o3",
 ]
 
 # Aggregator model - synthesizes reference responses into final output.
-# Prefer the strongest synthesis model in the current OpenRouter lineup.
-AGGREGATOR_MODEL = "anthropic/claude-opus-4.6"
+AGGREGATOR_MODEL = "claude-opus-4-6"
 
 # Temperature settings optimized for MoA performance
 REFERENCE_TEMPERATURE = 0.6  # Balanced creativity for diverse perspectives
@@ -121,59 +151,69 @@ async def _run_reference_model_safe(
     Returns:
         tuple[str, str, bool]: (model_name, response_content_or_error, success_flag)
     """
+    url = "https://routellm.abacus.ai/v1/chat/completions"
+    
     for attempt in range(max_retries):
         try:
             logger.info("Querying %s (attempt %s/%s)", model, attempt + 1, max_retries)
             
-            # Build parameters for the API call
-            api_params = {
+            payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
-                "extra_body": {
-                    "reasoning": {
-                        "enabled": True,
-                        "effort": "xhigh"
-                    }
-                }
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False,
             }
             
-            # GPT models (especially gpt-4o-mini) don't support custom temperature values
-            # Only include temperature for non-GPT models
-            if not model.lower().startswith('gpt-'):
-                api_params["temperature"] = temperature
+            resp = requests.post(
+                url,
+                headers=_abacus_headers(),
+                json=payload,
+                timeout=60
+            )
             
-            response = await _get_openrouter_client().chat.completions.create(**api_params)
+            if resp.status_code != 200:
+                error_body = resp.text
+                if "invalid" in error_body.lower():
+                    logger.warning("%s invalid request error (attempt %s): %s", model, attempt + 1, error_body)
+                elif "rate" in error_body.lower() or "limit" in error_body.lower():
+                    logger.warning("%s rate limit error (attempt %s): %s", model, attempt + 1, error_body)
+                else:
+                    logger.warning("%s HTTP %s error (attempt %s): %s", model, resp.status_code, attempt + 1, error_body[:200])
+                
+                if attempt < max_retries - 1:
+                    sleep_time = min(2 ** (attempt + 1), 60)
+                    await asyncio.sleep(sleep_time)
+                    continue
+                else:
+                    return model, f"HTTP {resp.status_code}: {error_body[:200]}", False
             
-            content = extract_content_or_reasoning(response)
+            data = resp.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
             if not content:
-                # Reasoning-only response — let the retry loop handle it
                 logger.warning("%s returned empty content (attempt %s/%s), retrying", model, attempt + 1, max_retries)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(min(2 ** (attempt + 1), 60))
                     continue
+                    
             logger.info("%s responded (%s characters)", model, len(content))
             return model, content, True
             
+        except requests.exceptions.Timeout:
+            logger.warning("%s timeout (attempt %s/%s)", model, attempt + 1, max_retries)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(min(2 ** (attempt + 1), 60))
+            else:
+                return model, f"{model} timed out after {max_retries} attempts", False
         except Exception as e:
             error_str = str(e)
-            # Keep retry-path logging concise; full tracebacks are reserved for
-            # terminal failure paths so long-running MoA retries don't flood logs.
-            if "invalid" in error_str.lower():
-                logger.warning("%s invalid request error (attempt %s): %s", model, attempt + 1, error_str)
-            elif "rate" in error_str.lower() or "limit" in error_str.lower():
-                logger.warning("%s rate limit error (attempt %s): %s", model, attempt + 1, error_str)
-            else:
-                logger.warning("%s unknown error (attempt %s): %s", model, attempt + 1, error_str)
-
+            logger.warning("%s unknown error (attempt %s): %s", model, attempt + 1, error_str)
             if attempt < max_retries - 1:
-                # Exponential backoff for rate limiting: 2s, 4s, 8s, 16s, 32s, 60s
                 sleep_time = min(2 ** (attempt + 1), 60)
-                logger.info("Retrying in %ss...", sleep_time)
                 await asyncio.sleep(sleep_time)
             else:
-                error_msg = f"{model} failed after {max_retries} attempts: {error_str}"
-                logger.error("%s", error_msg, exc_info=True)
-                return model, error_msg, False
+                return model, f"{model} failed after {max_retries} attempts: {error_str}", False
 
 
 async def _run_aggregator_model(
@@ -195,36 +235,34 @@ async def _run_aggregator_model(
         str: Synthesized final response
     """
     logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
+    url = "https://routellm.abacus.ai/v1/chat/completions"
 
-    # Build parameters for the API call
-    api_params = {
+    payload = {
         "model": AGGREGATOR_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "extra_body": {
-            "reasoning": {
-                "enabled": True,
-                "effort": "xhigh"
-            }
-        }
+        "temperature": temperature,
+        "max_tokens": max_tokens or 32000,
+        "stream": False,
     }
 
-    # GPT models (especially gpt-4o-mini) don't support custom temperature values
-    # Only include temperature for non-GPT models
-    if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
-        api_params["temperature"] = temperature
+    resp = requests.post(url, headers=_abacus_headers(), json=payload, timeout=120)
+    
+    if resp.status_code != 200:
+        raise RuntimeError(f"Aggregator failed: HTTP {resp.status_code}: {resp.text[:200]}")
+    
+    data = resp.json()
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-    response = await _get_openrouter_client().chat.completions.create(**api_params)
-
-    content = extract_content_or_reasoning(response)
-
-    # Retry once on empty content (reasoning-only response)
+    # Retry once on empty content
     if not content:
         logger.warning("Aggregator returned empty content, retrying once")
-        response = await _get_openrouter_client().chat.completions.create(**api_params)
-        content = extract_content_or_reasoning(response)
+        resp = requests.post(url, headers=_abacus_headers(), json=payload, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
@@ -296,9 +334,8 @@ async def mixture_of_agents_tool(
         logger.info("Starting Mixture-of-Agents processing...")
         logger.info("Query: %s", user_prompt[:100])
         
-        # Validate API key availability
-        if not os.getenv("OPENROUTER_API_KEY"):
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+        # Validate API key availability (raises ValueError if missing)
+        _get_abacus_key()
         
         # Use provided models or defaults
         ref_models = reference_models or REFERENCE_MODELS
@@ -413,7 +450,11 @@ def check_moa_requirements() -> bool:
     Returns:
         bool: True if requirements are met, False otherwise
     """
-    return check_openrouter_api_key()
+    try:
+        _get_abacus_key()
+        return True
+    except ValueError:
+        return False
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -462,19 +503,17 @@ if __name__ == "__main__":
     """
     Simple test/demo when run directly
     """
-    print("🤖 Mixture-of-Agents Tool Module")
+    print("🤖 Mixture-of-Agents Tool Module (Abacus RouteLLM)")
     print("=" * 50)
     
     # Check if API key is available
-    api_available = check_openrouter_api_key()
-    
-    if not api_available:
-        print("❌ OPENROUTER_API_KEY environment variable not set")
-        print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
-        print("Get API key at: https://openrouter.ai/")
+    try:
+        key = _get_abacus_key()
+        print(f"✅ Abacus API key found: {key[:15]}...")
+    except ValueError:
+        print("❌ ABACUS_API_KEY environment variable not set")
+        print("Please set your API key in ~/.hermes/.env")
         exit(1)
-    else:
-        print("✅ OpenRouter API key found")
     
     print("🛠️  MoA tools ready for use!")
     

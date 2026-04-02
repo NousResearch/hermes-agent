@@ -55,6 +55,11 @@ def is_safe_url(url: str) -> bool:
     """
     try:
         parsed = urlparse(url)
+        # Only allow network fetches over HTTP(S). Fail closed for other schemes
+        # (file://, ftp://, gopher://, etc.) to avoid unexpected behavior in callers.
+        scheme = (parsed.scheme or "").strip().lower()
+        if scheme and scheme not in {"http", "https"}:
+            return False
         hostname = (parsed.hostname or "").strip().lower()
         if not hostname:
             return False

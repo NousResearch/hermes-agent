@@ -16,6 +16,10 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("https://example.com/image.png") is True
 
+    def test_non_http_scheme_blocked(self):
+        assert is_safe_url("file:///etc/passwd") is False
+        assert is_safe_url("ftp://example.com/resource") is False
+
     def test_localhost_blocked(self):
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("127.0.0.1", 0)),

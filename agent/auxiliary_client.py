@@ -47,6 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
+from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 

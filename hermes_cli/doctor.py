@@ -406,8 +406,11 @@ def run_doctor(args):
     if terminal_env == "docker":
         if shutil.which("docker"):
             # Check if docker daemon is running
-            result = subprocess.run(["docker", "info"], capture_output=True)
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
                 check_ok("docker", "(daemon running)")
             else:
                 check_fail("docker daemon not running")
@@ -426,12 +429,16 @@ def run_doctor(args):
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
         if ssh_host:
             # Try to connect
-            result = subprocess.run(
-                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(
+                    ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
                 check_ok(f"SSH connection to {ssh_host}")
             else:
                 check_fail(f"SSH connection to {ssh_host}")
@@ -729,6 +736,53 @@ def run_doctor(args):
         check_warn("honcho-ai not installed", "pip install honcho-ai")
     except Exception as _e:
         check_warn("Honcho check failed", str(_e))
+
+    # =========================================================================
+    # Profiles
+    # =========================================================================
+    try:
+        from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
+        import re as _re
+
+        named_profiles = [p for p in list_profiles() if not p.is_default]
+        if named_profiles:
+            print()
+            print(color("◆ Profiles", Colors.CYAN, Colors.BOLD))
+            check_ok(f"{len(named_profiles)} profile(s) found")
+            wrapper_dir = _get_wrapper_dir()
+            for p in named_profiles:
+                parts = []
+                if p.gateway_running:
+                    parts.append("gateway running")
+                if p.model:
+                    parts.append(p.model[:30])
+                if not (p.path / "config.yaml").exists():
+                    parts.append("⚠ missing config")
+                if not (p.path / ".env").exists():
+                    parts.append("no .env")
+                wrapper = wrapper_dir / p.name
+                if not wrapper.exists():
+                    parts.append("no alias")
+                status = ", ".join(parts) if parts else "configured"
+                check_ok(f"  {p.name}: {status}")
+
+            # Check for orphan wrappers
+            if wrapper_dir.is_dir():
+                for wrapper in wrapper_dir.iterdir():
+                    if not wrapper.is_file():
+                        continue
+                    try:
+                        content = wrapper.read_text()
+                        if "hermes -p" in content:
+                            _m = _re.search(r"hermes -p (\S+)", content)
+                            if _m and not profile_exists(_m.group(1)):
+                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                    except Exception:
+                        pass
+    except ImportError:
+        pass
+    except Exception as _e:
+        logger.debug("Profile health check failed: %s", _e)
 
     # =========================================================================
     # Summary

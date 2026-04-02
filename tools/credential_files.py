@@ -55,16 +55,47 @@ def register_credential_file(
 
     *relative_path* is relative to ``HERMES_HOME`` (e.g. ``google_token.json``).
     Returns True if the file exists on the host and was registered.
+
+    Security: rejects absolute paths and path traversal sequences (``..``).
+    The resolved host path must remain inside HERMES_HOME so that a malicious
+    skill cannot declare ``required_credential_files: ['../../.ssh/id_rsa']``
+    and exfiltrate sensitive host files into a container sandbox.
     """
     hermes_home = _resolve_hermes_home()
+
+    # Reject absolute paths — they bypass the HERMES_HOME sandbox entirely.
+    if os.path.isabs(relative_path):
+        logger.warning(
+            "credential_files: rejected absolute path %r (must be relative to HERMES_HOME)",
+            relative_path,
+        )
+        return False
+
     host_path = hermes_home / relative_path
-    if not host_path.is_file():
-        logger.debug("credential_files: skipping %s (not found)", host_path)
+
+    # Resolve symlinks and normalise ``..`` before the containment check so
+    # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
+    try:
+        resolved = host_path.resolve()
+        hermes_home_resolved = hermes_home.resolve()
+        resolved.relative_to(hermes_home_resolved)  # raises ValueError if outside
+    except ValueError:
+        logger.warning(
+            "credential_files: rejected path traversal %r "
+            "(resolves to %s, outside HERMES_HOME %s)",
+            relative_path,
+            resolved,
+            hermes_home_resolved,
+        )
+        return False
+
+    if not resolved.is_file():
+        logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
-    _registered_files[container_path] = str(host_path)
-    logger.debug("credential_files: registered %s -> %s", host_path, container_path)
+    _registered_files[container_path] = str(resolved)
+    logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
 
 
@@ -83,7 +114,7 @@ def register_credential_files(
         if isinstance(entry, str):
             rel_path = entry.strip()
         elif isinstance(entry, dict):
-            rel_path = (entry.get("path") or "").strip()
+            rel_path = (entry.get("path") or entry.get("name") or "").strip()
         else:
             continue
         if not rel_path:
@@ -110,11 +141,27 @@ def _load_config_files() -> List[Dict[str, str]]:
                 cfg = yaml.safe_load(f) or {}
             cred_files = cfg.get("terminal", {}).get("credential_files")
             if isinstance(cred_files, list):
+                hermes_home_resolved = hermes_home.resolve()
                 for item in cred_files:
                     if isinstance(item, str) and item.strip():
-                        host_path = hermes_home / item.strip()
+                        rel = item.strip()
+                        if os.path.isabs(rel):
+                            logger.warning(
+                                "credential_files: rejected absolute config path %r", rel,
+                            )
+                            continue
+                        host_path = (hermes_home / rel).resolve()
+                        try:
+                            host_path.relative_to(hermes_home_resolved)
+                        except ValueError:
+                            logger.warning(
+                                "credential_files: rejected config path traversal %r "
+                                "(resolves to %s, outside HERMES_HOME %s)",
+                                rel, host_path, hermes_home_resolved,
+                            )
+                            continue
                         if host_path.is_file():
-                            container_path = f"/root/.hermes/{item.strip()}"
+                            container_path = f"/root/.hermes/{rel}"
                             result.append({
                                 "host_path": str(host_path),
                                 "container_path": container_path,
@@ -150,6 +197,107 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
         {"host_path": hp, "container_path": cp}
         for cp, hp in mounts.items()
     ]
+
+
+def get_skills_directory_mount(
+    container_base: str = "/root/.hermes",
+) -> Dict[str, str] | None:
+    """Return mount info for a symlink-safe copy of the skills directory.
+
+    Skills may include ``scripts/``, ``templates/``, and ``references/``
+    subdirectories that the agent needs to execute inside remote sandboxes.
+
+    **Security:** Bind mounts follow symlinks, so a malicious symlink inside
+    the skills tree could expose arbitrary host files to the container.  When
+    symlinks are detected, this function creates a sanitized copy (regular
+    files only) in a temp directory and returns that path instead.  When no
+    symlinks are present (the common case), the original directory is returned
+    directly with zero overhead.
+
+    Returns a dict with ``host_path`` and ``container_path`` keys, or None.
+    """
+    hermes_home = _resolve_hermes_home()
+    skills_dir = hermes_home / "skills"
+    if not skills_dir.is_dir():
+        return None
+
+    host_path = _safe_skills_path(skills_dir)
+    return {
+        "host_path": host_path,
+        "container_path": f"{container_base.rstrip('/')}/skills",
+    }
+
+
+_safe_skills_tempdir: Path | None = None
+
+
+def _safe_skills_path(skills_dir: Path) -> str:
+    """Return *skills_dir* if symlink-free, else a sanitized temp copy."""
+    global _safe_skills_tempdir
+
+    symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
+    if not symlinks:
+        return str(skills_dir)
+
+    for link in symlinks:
+        logger.warning("credential_files: skipping symlink in skills dir: %s -> %s",
+                       link, os.readlink(link))
+
+    import atexit
+    import shutil
+    import tempfile
+
+    # Reuse the same temp dir across calls to avoid accumulation.
+    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
+        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
+
+    safe_dir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
+    _safe_skills_tempdir = safe_dir
+
+    for item in skills_dir.rglob("*"):
+        if item.is_symlink():
+            continue
+        rel = item.relative_to(skills_dir)
+        target = safe_dir / rel
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif item.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(item), str(target))
+
+    def _cleanup():
+        if safe_dir.is_dir():
+            shutil.rmtree(safe_dir, ignore_errors=True)
+
+    atexit.register(_cleanup)
+    logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
+    return str(safe_dir)
+
+
+def iter_skills_files(
+    container_base: str = "/root/.hermes",
+) -> List[Dict[str, str]]:
+    """Yield individual (host_path, container_path) entries for skills files.
+
+    Skips symlinks entirely.  Preferred for backends that upload files
+    individually (Daytona, Modal) rather than mounting a directory.
+    """
+    hermes_home = _resolve_hermes_home()
+    skills_dir = hermes_home / "skills"
+    if not skills_dir.is_dir():
+        return []
+
+    container_root = f"{container_base.rstrip('/')}/skills"
+    result: List[Dict[str, str]] = []
+    for item in skills_dir.rglob("*"):
+        if item.is_symlink() or not item.is_file():
+            continue
+        rel = item.relative_to(skills_dir)
+        result.append({
+            "host_path": str(item),
+            "container_path": f"{container_root}/{rel}",
+        })
+    return result
 
 
 def clear_credential_files() -> None:

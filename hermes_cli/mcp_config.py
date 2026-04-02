@@ -511,6 +511,10 @@ def _interpolate_value(value: str) -> str:
 
 def cmd_mcp_configure(args):
     """Reconfigure which tools are enabled for an existing MCP server."""
+    import sys as _sys
+    if not _sys.stdin.isatty():
+        print("Error: 'hermes mcp configure' requires an interactive terminal.", file=_sys.stderr)
+        _sys.exit(1)
     name = args.name
     servers = _get_mcp_servers()
 
@@ -608,6 +612,11 @@ def mcp_command(args):
     """Main dispatcher for ``hermes mcp`` subcommands."""
     action = getattr(args, "mcp_action", None)
 
+    if action == "serve":
+        from mcp_serve import run_mcp_server
+        run_mcp_server(verbose=getattr(args, "verbose", False))
+        return
+
     handlers = {
         "add": cmd_mcp_add,
         "remove": cmd_mcp_remove,
@@ -626,6 +635,7 @@ def mcp_command(args):
         # No subcommand — show list
         cmd_mcp_list()
         print(color("  Commands:", Colors.CYAN))
+        _info("hermes mcp serve                              Run as MCP server")
         _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
         _info("hermes mcp remove <name>                      Remove a server")

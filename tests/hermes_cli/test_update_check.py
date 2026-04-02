@@ -133,3 +133,41 @@ def test_get_update_result_timeout():
     # Should have waited ~0.1s and returned None
     assert result is None
     assert elapsed < 0.5
+
+
+def test_invalidate_update_cache_clears_all_profiles(tmp_path):
+    """_invalidate_update_cache() should delete .update_check from ALL profiles."""
+    from hermes_cli.main import _invalidate_update_cache
+
+    # Build a fake ~/.hermes with default + two named profiles
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir()
+    (default_home / ".update_check").write_text('{"ts":1,"behind":50}')
+
+    profiles_root = default_home / "profiles"
+    for name in ("ops", "dev"):
+        p = profiles_root / name
+        p.mkdir(parents=True)
+        (p / ".update_check").write_text('{"ts":1,"behind":50}')
+
+    with patch.object(Path, "home", return_value=tmp_path):
+        _invalidate_update_cache()
+
+    # All three caches should be gone
+    assert not (default_home / ".update_check").exists(), "default profile cache not cleared"
+    assert not (profiles_root / "ops" / ".update_check").exists(), "ops profile cache not cleared"
+    assert not (profiles_root / "dev" / ".update_check").exists(), "dev profile cache not cleared"
+
+
+def test_invalidate_update_cache_no_profiles_dir(tmp_path):
+    """Works fine when no profiles directory exists (single-profile setup)."""
+    from hermes_cli.main import _invalidate_update_cache
+
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir()
+    (default_home / ".update_check").write_text('{"ts":1,"behind":5}')
+
+    with patch.object(Path, "home", return_value=tmp_path):
+        _invalidate_update_cache()
+
+    assert not (default_home / ".update_check").exists()

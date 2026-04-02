@@ -25,6 +25,8 @@ def _make_agent_with_compressor() -> AIAgent:
         "provider": "openai",
         "model": "gpt-4o",
     }
+    agent._fallback_chain = [agent._fallback_model]
+    agent._fallback_index = 0
 
     # Context compressor with primary model values
     compressor = ContextCompressor(

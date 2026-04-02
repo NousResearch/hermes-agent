@@ -45,7 +45,7 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -79,6 +79,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
     fetch_model_metadata,
@@ -88,7 +89,7 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -100,7 +101,7 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write
+from utils import atomic_json_write, env_var_enabled
 
 HONCHO_TOOL_NAMES = {
     "honcho_context",
@@ -320,8 +321,12 @@ def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | 
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
 
+    expanded = Path(raw_path).expanduser()
+    if expanded.is_absolute():
+        return Path(os.path.abspath(str(expanded)))
+
     # Avoid resolve(); the file may not exist yet.
-    return Path(raw_path).expanduser()
+    return Path(os.path.abspath(str(Path.cwd() / expanded)))
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
@@ -467,7 +472,7 @@ class AIAgent:
         acp_args: list[str] | None = None,
         command: str = None,
         args: list[str] | None = None,
-        model: str = "anthropic/claude-opus-4.6",  # OpenRouter format
+        model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
@@ -486,6 +491,8 @@ class AIAgent:
         provider_data_collection: str = None,
         session_id: str = None,
         tool_progress_callback: callable = None,
+        tool_start_callback: callable = None,
+        tool_complete_callback: callable = None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
@@ -505,9 +512,11 @@ class AIAgent:
         honcho_config=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
+        credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        persist_session: bool = True,
     ):
         """
         Initialize the AI Agent.
@@ -573,13 +582,14 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
+        self.persist_session = persist_session
+        self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
-        # When no base_url is provided, the client defaults to OpenRouter, so reflect that here.
-        self.base_url = base_url or OPENROUTER_BASE_URL
+        self.base_url = base_url or ""
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
-        self.provider = provider_name or "openrouter"
+        self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
@@ -616,6 +626,8 @@ class AIAgent:
             ).start()
 
         self.tool_progress_callback = tool_progress_callback
+        self.tool_start_callback = tool_start_callback
+        self.tool_complete_callback = tool_complete_callback
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self._reasoning_deltas_fired = False  # Set by _fire_reasoning_delta, reset per API call
@@ -896,16 +908,30 @@ class AIAgent:
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
-        # Provider fallback — a single backup model/provider tried when the
-        # primary is exhausted (rate-limit, overload, connection failure).
-        # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
-        self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
+        # Provider fallback chain — ordered list of backup providers tried
+        # when the primary is exhausted (rate-limit, overload, connection
+        # failure).  Supports both legacy single-dict ``fallback_model`` and
+        # new list ``fallback_providers`` format.
+        if isinstance(fallback_model, list):
+            self._fallback_chain = [
+                f for f in fallback_model
+                if isinstance(f, dict) and f.get("provider") and f.get("model")
+            ]
+        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+            self._fallback_chain = [fallback_model]
+        else:
+            self._fallback_chain = []
+        self._fallback_index = 0
         self._fallback_activated = False
-        if self._fallback_model:
-            fb_p = self._fallback_model.get("provider", "")
-            fb_m = self._fallback_model.get("model", "")
-            if fb_p and fb_m and not self.quiet_mode:
-                print(f"🔄 Fallback model: {fb_m} ({fb_p})")
+        # Legacy attribute kept for backward compat (tests, external callers)
+        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+        if self._fallback_chain and not self.quiet_mode:
+            if len(self._fallback_chain) == 1:
+                fb = self._fallback_chain[0]
+                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            else:
+                print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
+                      " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -1271,7 +1297,7 @@ class AIAgent:
         try:
             fn = self._print_fn or print
             fn(*args, **kwargs)
-        except OSError:
+        except (OSError, ValueError):
             pass
 
     def _vprint(self, *args, force: bool = False, **kwargs):
@@ -1371,6 +1397,7 @@ class AIAgent:
         content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
+        content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
     def _looks_like_codex_intermediate_ack(
@@ -1686,7 +1713,10 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
+        Skipped when ``persist_session=False`` (ephemeral helper flows).
         """
+        if not self.persist_session:
+            return
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
@@ -2122,7 +2152,7 @@ class AIAgent:
 
             self._vprint(f"{self.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
-            if os.getenv("HERMES_DUMP_REQUEST_STDOUT", "").strip().lower() in {"1", "true", "yes", "on"}:
+            if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
                 print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
 
             return dump_file
@@ -2565,6 +2595,9 @@ class AIAgent:
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
+        nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
+        if nous_subscription_prompt:
+            prompt_parts.append(nous_subscription_prompt)
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -2894,6 +2927,19 @@ class AIAgent:
         return converted or None
 
     @staticmethod
+    def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
+        """Generate a deterministic call_id from tool call content.
+
+        Used as a fallback when the API doesn't provide a call_id.
+        Deterministic IDs prevent cache invalidation — random UUIDs would
+        make every API call's prefix unique, breaking OpenAI's prompt cache.
+        """
+        import hashlib
+        seed = f"{fn_name}:{arguments}:{index}"
+        digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+        return f"call_{digest}"
+
+    @staticmethod
     def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
         """Split a stored tool id into (call_id, response_item_id)."""
         if not isinstance(raw_id, str):
@@ -2999,7 +3045,8 @@ class AIAgent:
                                 ):
                                     call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
                                 else:
-                                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                                    _raw_args = str(fn.get("arguments", "{}"))
+                                    call_id = self._deterministic_call_id(fn_name, _raw_args, len(items))
                             call_id = call_id.strip()
 
                             arguments = fn.get("arguments", "{}")
@@ -3202,9 +3249,10 @@ class AIAgent:
             "model": model,
             "instructions": instructions,
             "input": normalized_input,
-            "tools": normalized_tools,
             "store": False,
         }
+        if normalized_tools is not None:
+            normalized["tools"] = normalized_tools
 
         # Pass through reasoning config
         reasoning = api_kwargs.get("reasoning")
@@ -3363,7 +3411,7 @@ class AIAgent:
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
-                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                    call_id = self._deterministic_call_id(fn_name, arguments, len(tool_calls))
                 call_id = call_id.strip()
                 response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
                 response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
@@ -3384,7 +3432,7 @@ class AIAgent:
                 embedded_call_id, _ = self._split_responses_tool_id(raw_item_id)
                 call_id = raw_call_id if isinstance(raw_call_id, str) and raw_call_id.strip() else embedded_call_id
                 if not isinstance(call_id, str) or not call_id.strip():
-                    call_id = f"call_{uuid.uuid4().hex[:12]}"
+                    call_id = self._deterministic_call_id(fn_name, arguments, len(tool_calls))
                 call_id = call_id.strip()
                 response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
                 response_item_id = self._derive_responses_function_call_id(call_id, response_item_id)
@@ -3449,14 +3497,33 @@ class AIAgent:
 
     @staticmethod
     def _is_openai_client_closed(client: Any) -> bool:
+        """Check if an OpenAI client is closed.
+
+        Handles both property and method forms of is_closed:
+        - httpx.Client.is_closed is a bool property
+        - openai.OpenAI.is_closed is a method returning bool
+
+        Prior bug: getattr(client, "is_closed", False) returned the bound method,
+        which is always truthy, causing unnecessary client recreation on every call.
+        """
         from unittest.mock import Mock
 
         if isinstance(client, Mock):
             return False
-        if bool(getattr(client, "is_closed", False)):
-            return True
+
+        is_closed_attr = getattr(client, "is_closed", None)
+        if is_closed_attr is not None:
+            # Handle method (openai SDK) vs property (httpx)
+            if callable(is_closed_attr):
+                if is_closed_attr():
+                    return True
+            elif bool(is_closed_attr):
+                return True
+
         http_client = getattr(client, "_client", None)
-        return bool(getattr(http_client, "is_closed", False))
+        if http_client is not None:
+            return bool(getattr(http_client, "is_closed", False))
+        return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -3479,15 +3546,78 @@ class AIAgent:
         )
         return client
 
+    @staticmethod
+    def _force_close_tcp_sockets(client: Any) -> int:
+        """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
+
+        When a provider drops a connection mid-stream, httpx's ``client.close()``
+        performs a graceful shutdown which leaves sockets in CLOSE-WAIT until the
+        OS times them out (often minutes).  This method walks the httpx transport
+        pool and issues ``socket.shutdown(SHUT_RDWR)`` + ``socket.close()`` to
+        force an immediate TCP RST, freeing the file descriptors.
+
+        Returns the number of sockets force-closed.
+        """
+        import socket as _socket
+
+        closed = 0
+        try:
+            http_client = getattr(client, "_client", None)
+            if http_client is None:
+                return 0
+            transport = getattr(http_client, "_transport", None)
+            if transport is None:
+                return 0
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                return 0
+            # httpx uses httpcore connection pools; connections live in
+            # _connections (list) or _pool (list) depending on version.
+            connections = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            for conn in list(connections):
+                stream = (
+                    getattr(conn, "_network_stream", None)
+                    or getattr(conn, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    sock = getattr(stream, "stream", None)
+                    if sock is not None:
+                        sock = getattr(sock, "_sock", None)
+                if sock is None:
+                    continue
+                try:
+                    sock.shutdown(_socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                closed += 1
+        except Exception as exc:
+            logger.debug("Force-close TCP sockets sweep error: %s", exc)
+        return closed
+
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
             return
+        # Force-close TCP sockets first to prevent CLOSE-WAIT accumulation,
+        # then do the graceful SDK-level close.
+        force_closed = self._force_close_tcp_sockets(client)
         try:
             client.close()
             logger.info(
-                "OpenAI client closed (%s, shared=%s) %s",
+                "OpenAI client closed (%s, shared=%s, tcp_force_closed=%d) %s",
                 reason,
                 shared,
+                force_closed,
                 self._client_log_context(),
             )
         except Exception as exc:
@@ -3532,6 +3662,76 @@ class AIAgent:
         with self._openai_client_lock():
             return self.client
 
+    def _cleanup_dead_connections(self) -> bool:
+        """Detect and clean up dead TCP connections on the primary client.
+
+        Inspects the httpx connection pool for sockets in unhealthy states
+        (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
+        and rebuilds the primary client from scratch.
+
+        Returns True if dead connections were found and cleaned up.
+        """
+        client = getattr(self, "client", None)
+        if client is None:
+            return False
+        try:
+            http_client = getattr(client, "_client", None)
+            if http_client is None:
+                return False
+            transport = getattr(http_client, "_transport", None)
+            if transport is None:
+                return False
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                return False
+            connections = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            dead_count = 0
+            for conn in list(connections):
+                # Check for connections that are idle but have closed sockets
+                stream = (
+                    getattr(conn, "_network_stream", None)
+                    or getattr(conn, "_stream", None)
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    sock = getattr(stream, "stream", None)
+                    if sock is not None:
+                        sock = getattr(sock, "_sock", None)
+                if sock is None:
+                    continue
+                # Probe socket health with a non-blocking recv peek
+                import socket as _socket
+                try:
+                    sock.setblocking(False)
+                    data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
+                    if data == b"":
+                        dead_count += 1
+                except BlockingIOError:
+                    pass  # No data available — socket is healthy
+                except OSError:
+                    dead_count += 1
+                finally:
+                    try:
+                        sock.setblocking(True)
+                    except OSError:
+                        pass
+            if dead_count > 0:
+                logger.warning(
+                    "Found %d dead connection(s) in client pool — rebuilding client",
+                    dead_count,
+                )
+                self._replace_primary_openai_client(reason="dead_connection_cleanup")
+                return True
+        except Exception as exc:
+            logger.debug("Dead connection check error: %s", exc)
+        return False
+
     def _create_request_openai_client(self, *, reason: str) -> Any:
         from unittest.mock import Mock
 
@@ -3547,6 +3747,8 @@ class AIAgent:
 
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
+        import httpx as _httpx
+
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -3580,6 +3782,22 @@ class AIAgent:
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
                     return stream.get_final_response()
+            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+                if attempt < max_stream_retries:
+                    logger.debug(
+                        "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1,
+                        max_stream_retries + 1,
+                        self._client_log_context(),
+                        exc,
+                    )
+                    continue
+                logger.debug(
+                    "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
+                    self._client_log_context(),
+                    exc,
+                )
+                return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -3741,6 +3959,100 @@ class AIAgent:
         from agent.anthropic_adapter import _is_oauth_token
         self._is_anthropic_oauth = _is_oauth_token(new_token)
         return True
+
+    def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+        from agent.auxiliary_client import _OR_HEADERS
+
+        normalized = (base_url or "").lower()
+        if "openrouter" in normalized:
+            self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "api.githubcopilot.com" in normalized:
+            from hermes_cli.models import copilot_default_headers
+
+            self._client_kwargs["default_headers"] = copilot_default_headers()
+        elif "api.kimi.com" in normalized:
+            self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+        else:
+            self._client_kwargs.pop("default_headers", None)
+
+    def _swap_credential(self, entry) -> None:
+        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+        runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+
+        if self.api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+
+            try:
+                self._anthropic_client.close()
+            except Exception:
+                pass
+
+            self._anthropic_api_key = runtime_key
+            self._anthropic_base_url = runtime_base
+            self._anthropic_client = build_anthropic_client(runtime_key, runtime_base)
+            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+            self.api_key = runtime_key
+            self.base_url = runtime_base
+            return
+
+        self.api_key = runtime_key
+        self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._apply_client_headers_for_base_url(self.base_url)
+        self._replace_primary_openai_client(reason="credential_rotation")
+
+    def _recover_with_credential_pool(
+        self,
+        *,
+        status_code: Optional[int],
+        has_retried_429: bool,
+    ) -> tuple[bool, bool]:
+        """Attempt credential recovery via pool rotation.
+
+        Returns (recovered, has_retried_429).
+        On 429: first occurrence retries same credential (sets flag True).
+                second consecutive 429 rotates to next credential (resets flag).
+        On 402: immediately rotates (billing exhaustion won't resolve with retry).
+        On 401: attempts token refresh before rotating.
+        """
+        pool = self._credential_pool
+        if pool is None or status_code is None:
+            return False, has_retried_429
+
+        if status_code == 402:
+            next_entry = pool.mark_exhausted_and_rotate(status_code=402)
+            if next_entry is not None:
+                logger.info(f"Credential 402 (billing) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
+            return False, has_retried_429
+
+        if status_code == 429:
+            if not has_retried_429:
+                return False, True
+            next_entry = pool.mark_exhausted_and_rotate(status_code=429)
+            if next_entry is not None:
+                logger.info(f"Credential 429 (rate limit) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
+            return False, True
+
+        if status_code == 401:
+            refreshed = pool.try_refresh_current()
+            if refreshed is not None:
+                logger.info(f"Credential 401 — refreshed pool entry {getattr(refreshed, 'id', '?')}")
+                self._swap_credential(refreshed)
+                return True, has_retried_429
+            # Refresh failed — rotate to next credential instead of giving up.
+            # The failed entry is already marked exhausted by try_refresh_current().
+            next_entry = pool.mark_exhausted_and_rotate(status_code=401)
+            if next_entry is not None:
+                logger.info(f"Credential 401 (refresh failed) — rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                self._swap_credential(next_entry)
+                return True, False
+
+        return False, has_retried_429
 
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
@@ -4211,6 +4523,11 @@ class AIAgent:
                                     type(e).__name__,
                                     e,
                                 )
+                                self._emit_status(
+                                    f"⚠️ Connection to provider dropped "
+                                    f"({type(e).__name__}). Reconnecting… "
+                                    f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
+                                )
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
                                 if stale is not None:
@@ -4218,7 +4535,21 @@ class AIAgent:
                                         stale, reason="stream_retry_cleanup"
                                     )
                                     request_client_holder["client"] = None
+                                # Also rebuild the primary client to purge
+                                # any dead connections from the pool.
+                                try:
+                                    self._replace_primary_openai_client(
+                                        reason="stream_retry_pool_cleanup"
+                                    )
+                                except Exception:
+                                    pass
                                 continue
+                            self._emit_status(
+                                "❌ Connection to provider failed after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
                             logger.warning(
                                 "Streaming exhausted %s retries on transient error, "
                                 "falling back to non-streaming: %s",
@@ -4290,6 +4621,12 @@ class AIAgent:
                         self._close_request_openai_client(rc, reason="stale_stream_kill")
                 except Exception:
                     pass
+                # Rebuild the primary client too — its connection pool
+                # may hold dead sockets from the same provider outage.
+                try:
+                    self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                except Exception:
+                    pass
                 # Reset the timer so we don't kill repeatedly while
                 # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()
@@ -4318,25 +4655,26 @@ class AIAgent:
     # ── Provider fallback ──────────────────────────────────────────────────
 
     def _try_activate_fallback(self) -> bool:
-        """Switch to the configured fallback model/provider.
+        """Switch to the next fallback model/provider in the chain.
 
-        Called when the primary model is failing after retries.  Swaps the
+        Called when the current model is failing after retries.  Swaps the
         OpenAI client, model slug, and provider in-place so the retry loop
-        can continue with the new backend.  One-shot: returns False if
-        already activated or not configured.
+        can continue with the new backend.  Advances through the chain on
+        each call; returns False when exhausted.
 
         Uses the centralized provider router (resolve_provider_client) for
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
-        if self._fallback_activated or not self._fallback_model:
+        if self._fallback_index >= len(self._fallback_chain):
             return False
 
-        fb = self._fallback_model
+        fb = self._fallback_chain[self._fallback_index]
+        self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
         if not fb_provider or not fb_model:
-            return False
+            return self._try_activate_fallback()  # skip invalid, try next
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -4349,7 +4687,7 @@ class AIAgent:
                 logging.warning(
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
-                return False
+                return self._try_activate_fallback()  # try next in chain
 
             # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"
@@ -4424,8 +4762,8 @@ class AIAgent:
             )
             return True
         except Exception as e:
-            logging.error("Failed to activate fallback model: %s", e)
-            return False
+            logging.error("Failed to activate fallback %s: %s", fb_model, e)
+            return self._try_activate_fallback()  # try next in chain
 
     # ── End provider fallback ──────────────────────────────────────────────
 
@@ -4689,6 +5027,19 @@ class AIAgent:
                             tool_call.pop("call_id", None)
                             tool_call.pop("response_item_id", None)
 
+        # GPT-5 and Codex models respond better to 'developer' than 'system'
+        # for instruction-following.  Swap the role at the API boundary so
+        # internal message representation stays uniform ("system").
+        _model_lower = (self.model or "").lower()
+        if (
+            sanitized_messages
+            and sanitized_messages[0].get("role") == "system"
+            and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
+        ):
+            # Shallow-copy the list + first message only — rest stays shared.
+            sanitized_messages = list(sanitized_messages)
+            sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
+
         provider_preferences = {}
         if self.providers_allowed:
             provider_preferences["only"] = self.providers_allowed
@@ -4706,9 +5057,10 @@ class AIAgent:
         api_kwargs = {
             "model": self.model,
             "messages": sanitized_messages,
-            "tools": self.tools if self.tools else None,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
+        if self.tools:
+            api_kwargs["tools"] = self.tools
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -4917,7 +5269,10 @@ class AIAgent:
                     if isinstance(raw_id, str) and raw_id.strip():
                         call_id = raw_id.strip()
                     else:
-                        call_id = f"call_{uuid.uuid4().hex[:12]}"
+                        _fn = getattr(tool_call, "function", None)
+                        _fn_name = getattr(_fn, "name", "") if _fn else ""
+                        _fn_args = getattr(_fn, "arguments", "{}") if _fn else "{}"
+                        call_id = self._deterministic_call_id(_fn_name, _fn_args, len(tool_calls))
                 call_id = call_id.strip()
 
                 response_item_id = getattr(tool_call, "response_item_id", None)
@@ -5167,6 +5522,8 @@ class AIAgent:
                 self._session_db.end_session(self.session_id, "compression")
                 old_session_id = self.session_id
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                # Update session_log_file to point to the new session's JSON file
+                self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
                 self._session_db.create_session(
                     session_id=self.session_id,
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
@@ -5186,17 +5543,33 @@ class AIAgent:
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
-        # Reset context pressure warning and token estimate — usage drops
-        # after compaction.  Without this, the stale last_prompt_tokens from
-        # the previous API call causes the pressure calculation to stay at
-        # >1000% and spam warnings / re-trigger compression in a loop.
-        self._context_pressure_warned = False
+        # Update token estimate after compaction so pressure calculations
+        # use the post-compression count, not the stale pre-compression one.
         _compressed_est = (
             estimate_tokens_rough(new_system_prompt)
             + estimate_messages_tokens_rough(compressed)
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
+
+        # Only reset the pressure warning if compression actually brought
+        # us below the warning level (85% of threshold).  When compression
+        # can't reduce enough (e.g. threshold is very low, or system prompt
+        # alone exceeds the warning level), keep the flag set to prevent
+        # spamming the user with repeated warnings every loop iteration.
+        if self.context_compressor.threshold_tokens > 0:
+            _post_progress = _compressed_est / self.context_compressor.threshold_tokens
+            if _post_progress < 0.85:
+                self._context_pressure_warned = False
+
+        # Clear the file-read dedup cache.  After compression the original
+        # read content is summarised away — if the model re-reads the same
+        # file it needs the full content, not a "file unchanged" stub.
+        try:
+            from tools.file_tools import reset_file_dedup
+            reset_file_dedup(task_id)
+        except Exception:
+            pass
 
         return compressed, new_system_prompt
 
@@ -5362,13 +5735,20 @@ class AIAgent:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
-        for _, name, args in parsed_calls:
+        for tc, name, args in parsed_calls:
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
                     self.tool_progress_callback(name, preview, args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+
+        for tc, name, args in parsed_calls:
+            if self.tool_start_callback:
+                try:
+                    self.tool_start_callback(tc.id, name, args)
+                except Exception as cb_err:
+                    logging.debug(f"Tool start callback error: {cb_err}")
 
         # ── Concurrent execution ─────────────────────────────────────────
         # Each slot holds (function_name, function_args, function_result, duration, error_flag)
@@ -5439,6 +5819,12 @@ class AIAgent:
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
+
+            if self.tool_complete_callback:
+                try:
+                    self.tool_complete_callback(tc.id, name, args, function_result)
+                except Exception as cb_err:
+                    logging.debug(f"Tool complete callback error: {cb_err}")
 
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
@@ -5527,6 +5913,12 @@ class AIAgent:
                     self.tool_progress_callback(function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+
+            if self.tool_start_callback:
+                try:
+                    self.tool_start_callback(tool_call.id, function_name, function_args)
+                except Exception as cb_err:
+                    logging.debug(f"Tool start callback error: {cb_err}")
 
             # Checkpoint: snapshot working dir before file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
@@ -5644,8 +6036,6 @@ class AIAgent:
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
-                    if len(preview) > 30:
-                        preview = preview[:27] + "..."
                     spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
                 _spinner_result = None
@@ -5693,6 +6083,12 @@ class AIAgent:
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
+
+            if self.tool_complete_callback:
+                try:
+                    self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                except Exception as cb_err:
+                    logging.debug(f"Tool complete callback error: {cb_err}")
 
             # Guard against tools returning absurdly large content that would
             # blow up the context window. 100K chars ≈ 25K tokens — generous
@@ -6032,6 +6428,20 @@ class AIAgent:
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
+
+        # Pre-turn connection health check: detect and clean up dead TCP
+        # connections left over from provider outages or dropped streams.
+        # This prevents the next API call from hanging on a zombie socket.
+        if self.api_mode != "anthropic_messages":
+            try:
+                if self._cleanup_dead_connections():
+                    self._emit_status(
+                        "🔌 Detected stale connections from a previous provider "
+                        "issue — cleaned up automatically. Proceeding with fresh "
+                        "connection."
+                    )
+            except Exception:
+                pass
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
@@ -6210,6 +6620,12 @@ class AIAgent:
                     )
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
+                    # Compression created a new session — clear the history
+                    # reference so _flush_messages_to_session_db writes ALL
+                    # compressed messages to the new session's SQLite, not
+                    # skipping them because conversation_history is still the
+                    # pre-compression length.
+                    conversation_history = None
                     # Re-estimate after compression
                     _preflight_tokens = estimate_request_tokens_rough(
                         messages,
@@ -6409,6 +6825,7 @@ class AIAgent:
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False
             nous_auth_retry_attempted = False
+            has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
 
@@ -6421,7 +6838,7 @@ class AIAgent:
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
-                    if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
                     # Always prefer the streaming path — even without stream
@@ -6528,9 +6945,9 @@ class AIAgent:
                         # Eager fallback: empty/malformed responses are a common
                         # rate-limit symptom.  Switch to fallback immediately
                         # rather than retrying with extended backoff.
-                        if not self._fallback_activated:
+                        if self._fallback_index < len(self._fallback_chain):
                             self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                        if not self._fallback_activated and self._try_activate_fallback():
+                        if self._try_activate_fallback():
                             retry_count = 0
                             continue
 
@@ -6844,6 +7261,7 @@ class AIAgent:
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
+                    has_retried_429 = False  # Reset on success
                     break  # Success, exit retry loop
 
                 except InterruptedError:
@@ -6886,6 +7304,12 @@ class AIAgent:
                         # prompt or prefill.  Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
+                    recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
+                        status_code=status_code,
+                        has_retried_429=has_retried_429,
+                    )
+                    if recovered_with_pool:
+                        continue
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"
@@ -6924,7 +7348,8 @@ class AIAgent:
                         print(f"{self.log_prefix}   Auth method: {auth_method}")
                         print(f"{self.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{self.log_prefix}   Token: (empty or short)")
                         print(f"{self.log_prefix}   Troubleshooting:")
-                        _dhh = display_hermes_home()
+                        from hermes_constants import display_hermes_home as _dhh_fn
+                        _dhh = _dhh_fn()
                         print(f"{self.log_prefix}     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens")
                         print(f"{self.log_prefix}     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values")
                         print(f"{self.log_prefix}     • For API keys: verify at https://console.anthropic.com/settings/keys")
@@ -6992,11 +7417,18 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
-                    if is_rate_limited and not self._fallback_activated:
-                        self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                        if self._try_activate_fallback():
-                            retry_count = 0
-                            continue
+                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
+                        # Don't eagerly fallback if credential pool rotation may
+                        # still recover.  The pool's retry-then-rotate cycle needs
+                        # at least one more attempt to fire — jumping to a fallback
+                        # provider here short-circuits it.
+                        pool = self._credential_pool
+                        pool_may_recover = pool is not None and pool.has_available()
+                        if not pool_may_recover:
+                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                continue
 
                     is_payload_too_large = (
                         status_code == 413
@@ -7009,6 +7441,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
                             self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7033,6 +7466,7 @@ class AIAgent:
                             break
                         else:
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 payload too large. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7109,6 +7543,7 @@ class AIAgent:
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
                             self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7135,7 +7570,7 @@ class AIAgent:
                         else:
                             # Can't compress further and already at minimum tier
                             self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content.", force=True)
+                            self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                             logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                             self._persist_session(messages, conversation_history)
                             return {
@@ -7228,7 +7663,10 @@ class AIAgent:
                             retry_count = 0
                             continue
                         _final_summary = self._summarize_api_error(api_error)
-                        self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
+                        if is_rate_limited:
+                            self._vprint(f"{self.log_prefix}❌ Rate limit persisted after {max_retries} retries. Please try again later.", force=True)
+                        else:
+                            self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
                         self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                         # Detect SSE stream-drop pattern (e.g. "Network
@@ -7288,8 +7726,22 @@ class AIAgent:
                             "error": _final_summary,
                         }
 
-                    wait_time = min(2 ** retry_count, 60)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s
-                    self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
+                    # For rate limits, respect the Retry-After header if present
+                    _retry_after = None
+                    if is_rate_limited:
+                        _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                        if _resp_headers and hasattr(_resp_headers, "get"):
+                            _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                            if _ra_raw:
+                                try:
+                                    _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
+                                except (TypeError, ValueError):
+                                    pass
+                    wait_time = _retry_after if _retry_after else min(2 ** retry_count, 60)
+                    if is_rate_limited:
+                        self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
+                    else:
+                        self._emit_status(f"⏳ Retrying in {wait_time}s (attempt {retry_count}/{max_retries})...")
                     logger.warning(
                         "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                         wait_time,
@@ -7707,6 +8159,10 @@ class AIAgent:
                             approx_tokens=self.context_compressor.last_prompt_tokens,
                             task_id=effective_task_id,
                         )
+                        # Compression created a new session — clear history so
+                        # _flush_messages_to_session_db writes compressed messages
+                        # to the new session (see preflight compression comment).
+                        conversation_history = None
                     
                     # Save session log incrementally (so progress is visible even if interrupted)
                     self._session_messages = messages
@@ -7875,7 +8331,7 @@ class AIAgent:
                 error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
                 try:
                     print(f"❌ {error_msg}")
-                except OSError:
+                except (OSError, ValueError):
                     logger.error(error_msg)
                 
                 if self.verbose_logging:
@@ -8067,9 +8523,9 @@ class AIAgent:
 
 def main(
     query: str = None,
-    model: str = "anthropic/claude-opus-4.6",
+    model: str = "",
     api_key: str = None,
-    base_url: str = "https://openrouter.ai/api/v1",
+    base_url: str = "",
     max_turns: int = 10,
     enabled_toolsets: str = None,
     disabled_toolsets: str = None,

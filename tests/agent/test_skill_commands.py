@@ -246,20 +246,10 @@ Generate some audio.
     def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
-
-        def fake_secret_callback(var_name, prompt, metadata=None):
-            os.environ[var_name] = "stored-in-test"
-            return {
-                "success": True,
-                "stored_as": var_name,
-                "validated": False,
-                "skipped": False,
-            }
-
         monkeypatch.setattr(
             skills_tool_module,
             "_secret_capture_callback",
-            fake_secret_callback,
+            None,
             raising=False,
         )
 

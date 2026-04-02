@@ -1,9 +1,16 @@
 """Tests for /approve and /deny gateway commands.
 
-Verifies that dangerous command approvals require explicit /approve or /deny
-slash commands, not bare "yes"/"no" text matching.
+Verifies that dangerous command approvals use the blocking gateway approval
+mechanism — the agent thread blocks until the user responds with /approve
+or /deny, mirroring the CLI's synchronous input() flow.
+
+Supports multiple concurrent approvals (parallel subagents, execute_code)
+via a per-session queue.
 """
 
+import asyncio
+import os
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,6 +56,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._background_tasks = set()
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -59,14 +67,140 @@ def _make_runner():
     return runner
 
 
-def _make_pending_approval(command="sudo rm -rf /tmp/test", pattern_key="sudo"):
-    return {
-        "command": command,
-        "pattern_key": pattern_key,
-        "pattern_keys": [pattern_key],
-        "description": "sudo command",
-        "timestamp": time.time(),
-    }
+def _clear_approval_state():
+    """Reset all module-level approval state between tests."""
+    from tools import approval as mod
+    mod._gateway_queues.clear()
+    mod._gateway_notify_cbs.clear()
+    mod._session_approved.clear()
+    mod._permanent_approved.clear()
+    mod._pending.clear()
+
+
+# ------------------------------------------------------------------
+# Blocking gateway approval infrastructure (tools/approval.py)
+# ------------------------------------------------------------------
+
+
+class TestBlockingGatewayApproval:
+    """Tests for the blocking approval mechanism in tools/approval.py."""
+
+    def setup_method(self):
+        _clear_approval_state()
+
+    def test_register_and_resolve_unblocks_entry(self):
+        """resolve_gateway_approval signals the entry's event."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            resolve_gateway_approval, has_blocking_approval,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-session"
+        register_gateway_notify(session_key, lambda d: None)
+
+        # Simulate what check_all_command_guards does
+        entry = _ApprovalEntry({"command": "rm -rf /"})
+        _gateway_queues.setdefault(session_key, []).append(entry)
+
+        assert has_blocking_approval(session_key) is True
+
+        # Resolve from another thread
+        def resolve():
+            time.sleep(0.1)
+            resolve_gateway_approval(session_key, "once")
+
+        t = threading.Thread(target=resolve)
+        t.start()
+        resolved = entry.event.wait(timeout=5)
+        t.join()
+
+        assert resolved is True
+        assert entry.result == "once"
+        unregister_gateway_notify(session_key)
+
+    def test_resolve_returns_zero_when_no_pending(self):
+        from tools.approval import resolve_gateway_approval
+        assert resolve_gateway_approval("nonexistent", "once") == 0
+
+    def test_resolve_all_unblocks_multiple_entries(self):
+        """resolve_gateway_approval with resolve_all=True signals all entries."""
+        from tools.approval import (
+            resolve_gateway_approval, _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-all"
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        e3 = _ApprovalEntry({"command": "cmd3"})
+        _gateway_queues[session_key] = [e1, e2, e3]
+
+        count = resolve_gateway_approval(session_key, "session", resolve_all=True)
+        assert count == 3
+        assert all(e.event.is_set() for e in [e1, e2, e3])
+        assert all(e.result == "session" for e in [e1, e2, e3])
+
+    def test_resolve_single_pops_oldest_fifo(self):
+        """resolve_gateway_approval without resolve_all resolves oldest first."""
+        from tools.approval import (
+            resolve_gateway_approval, pending_approval_count,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-fifo"
+        e1 = _ApprovalEntry({"command": "first"})
+        e2 = _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(session_key, "once")
+        assert count == 1
+        assert e1.event.is_set()
+        assert e1.result == "once"
+        assert not e2.event.is_set()
+        assert pending_approval_count(session_key) == 1
+
+    def test_unregister_signals_all_entries(self):
+        """unregister_gateway_notify signals all waiting entries to prevent hangs."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-cleanup"
+        register_gateway_notify(session_key, lambda d: None)
+
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        unregister_gateway_notify(session_key)
+        assert e1.event.is_set()
+        assert e2.event.is_set()
+
+    def test_clear_session_signals_all_entries(self):
+        """clear_session should unblock all waiting approval threads."""
+        from tools.approval import (
+            register_gateway_notify, clear_session,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-clear"
+        register_gateway_notify(session_key, lambda d: None)
+
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        clear_session(session_key)
+        assert e1.event.is_set()
+        assert e2.event.is_set()
+
+    def test_pending_approval_count(self):
+        from tools.approval import (
+            pending_approval_count, _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-count"
+        assert pending_approval_count(session_key) == 0
+        _gateway_queues[session_key] = [
+            _ApprovalEntry({"command": "a"}),
+            _ApprovalEntry({"command": "b"}),
+        ]
+        assert pending_approval_count(session_key) == 2
 
 
 # ------------------------------------------------------------------
@@ -76,80 +210,79 @@ def _make_pending_approval(command="sudo rm -rf /tmp/test", pattern_key="sudo"):
 
 class TestApproveCommand:
 
+    def setup_method(self):
+        _clear_approval_state()
+
     @pytest.mark.asyncio
-    async def test_approve_executes_pending_command(self):
-        """Basic /approve executes the pending command."""
+    async def test_approve_resolves_blocking_approval(self):
+        """Basic /approve signals the oldest blocked agent thread."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = _make_pending_approval()
 
-        event = _make_event("/approve")
-        with patch("tools.terminal_tool.terminal_tool", return_value="done") as mock_term:
-            result = await runner._handle_approve_command(event)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
 
-        assert "✅ Command approved and executed" in result
-        mock_term.assert_called_once_with(command="sudo rm -rf /tmp/test", force=True)
-        assert session_key not in runner._pending_approvals
+        result = await runner._handle_approve_command(_make_event("/approve"))
+        assert "approved" in result.lower()
+        assert "resuming" in result.lower()
+        assert entry.event.is_set()
 
     @pytest.mark.asyncio
-    async def test_approve_session_remembers_pattern(self):
-        """/approve session approves the pattern for the session."""
+    async def test_approve_all_resolves_multiple(self):
+        """/approve all resolves all pending approvals."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = _make_pending_approval()
 
-        event = _make_event("/approve session")
-        with (
-            patch("tools.terminal_tool.terminal_tool", return_value="done"),
-            patch("tools.approval.approve_session") as mock_session,
-        ):
-            result = await runner._handle_approve_command(event)
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
 
-        assert "pattern approved for this session" in result
-        mock_session.assert_called_once_with(session_key, "sudo")
+        result = await runner._handle_approve_command(_make_event("/approve all"))
+        assert "2 commands" in result
+        assert e1.event.is_set()
+        assert e2.event.is_set()
 
     @pytest.mark.asyncio
-    async def test_approve_always_approves_permanently(self):
-        """/approve always approves the pattern permanently."""
+    async def test_approve_all_session(self):
+        """/approve all session resolves all with session scope."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = _make_pending_approval()
 
-        event = _make_event("/approve always")
-        with (
-            patch("tools.terminal_tool.terminal_tool", return_value="done"),
-            patch("tools.approval.approve_permanent") as mock_perm,
-        ):
-            result = await runner._handle_approve_command(event)
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
 
-        assert "pattern approved permanently" in result
-        mock_perm.assert_called_once_with("sudo")
+        result = await runner._handle_approve_command(_make_event("/approve all session"))
+        assert "session" in result.lower()
+        assert e1.result == "session"
+        assert e2.result == "session"
 
     @pytest.mark.asyncio
     async def test_approve_no_pending(self):
         """/approve with no pending approval returns helpful message."""
         runner = _make_runner()
-        event = _make_event("/approve")
-        result = await runner._handle_approve_command(event)
+        result = await runner._handle_approve_command(_make_event("/approve"))
         assert "No pending command" in result
 
     @pytest.mark.asyncio
-    async def test_approve_expired(self):
-        """/approve on a timed-out approval rejects it."""
+    async def test_approve_stale_old_style_pending(self):
+        """Old-style _pending_approvals without blocking event reports expired."""
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        approval = _make_pending_approval()
-        approval["timestamp"] = time.time() - 600  # 10 minutes ago
-        runner._pending_approvals[session_key] = approval
+        runner._pending_approvals[session_key] = {"command": "test"}
 
-        event = _make_event("/approve")
-        result = await runner._handle_approve_command(event)
-
-        assert "expired" in result
+        result = await runner._handle_approve_command(_make_event("/approve"))
+        assert "expired" in result.lower() or "no longer waiting" in result.lower()
         assert session_key not in runner._pending_approvals
 
 
@@ -160,26 +293,48 @@ class TestApproveCommand:
 
 class TestDenyCommand:
 
+    def setup_method(self):
+        _clear_approval_state()
+
     @pytest.mark.asyncio
-    async def test_deny_clears_pending(self):
-        """/deny clears the pending approval."""
+    async def test_deny_resolves_blocking_approval(self):
+        """/deny signals the oldest blocked agent thread with 'deny'."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = _make_pending_approval()
 
-        event = _make_event("/deny")
-        result = await runner._handle_deny_command(event)
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
 
-        assert "❌ Command denied" in result
-        assert session_key not in runner._pending_approvals
+        result = await runner._handle_deny_command(_make_event("/deny"))
+        assert "denied" in result.lower()
+        assert entry.event.is_set()
+        assert entry.result == "deny"
+
+    @pytest.mark.asyncio
+    async def test_deny_all_resolves_all(self):
+        """/deny all denies all pending approvals."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        result = await runner._handle_deny_command(_make_event("/deny all"))
+        assert "2 commands" in result
+        assert all(e.result == "deny" for e in [e1, e2])
 
     @pytest.mark.asyncio
     async def test_deny_no_pending(self):
         """/deny with no pending approval returns helpful message."""
         runner = _make_runner()
-        event = _make_event("/deny")
-        result = await runner._handle_deny_command(event)
+        result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
 
 
@@ -190,51 +345,267 @@ class TestDenyCommand:
 
 class TestBareTextNoLongerApproves:
 
+    def setup_method(self):
+        _clear_approval_state()
+
     @pytest.mark.asyncio
     async def test_yes_does_not_execute_pending_command(self):
-        """Saying 'yes' in normal conversation must not execute a pending command.
+        """Saying 'yes' must not trigger approval. Only /approve works."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
 
-        This is the core bug from issue #1888: bare text matching against
-        'yes'/'no' could intercept unrelated user messages.
-        """
         runner = _make_runner()
         source = _make_source()
         session_key = runner._session_key_for_source(source)
-        runner._pending_approvals[session_key] = _make_pending_approval()
 
-        # Simulate the user saying "yes" as a normal message.
-        # The old code would have executed the pending command.
-        # Now it should fall through to normal processing (agent handles it).
-        event = _make_event("yes")
+        entry = _ApprovalEntry({"command": "test"})
+        _gateway_queues[session_key] = [entry]
 
-        # The approval should still be pending — "yes" is not /approve
-        # We can't easily run _handle_message end-to-end, but we CAN verify
-        # the old text-matching block no longer exists by confirming the
-        # approval is untouched after the command dispatch section.
-        # The key assertion is that _pending_approvals is NOT consumed.
-        assert session_key in runner._pending_approvals
+        # "yes" is not /approve — entry should still be pending
+        assert not entry.event.is_set()
 
 
 # ------------------------------------------------------------------
-# Approval hint appended to response
+# End-to-end blocking flow
 # ------------------------------------------------------------------
 
 
-class TestApprovalHint:
+class TestBlockingApprovalE2E:
+    """Test the full blocking flow: agent thread blocks → user approves → agent resumes."""
 
-    def test_approval_hint_appended_to_response(self):
-        """When a pending approval is collected, structured instructions
-        should be appended to the agent response."""
-        # This tests the approval collection logic at the end of _handle_message.
-        # We verify the hint format directly.
-        cmd = "sudo rm -rf /tmp/dangerous"
-        cmd_preview = cmd
-        hint = (
-            f"\n\n⚠️ **Dangerous command requires approval:**\n"
-            f"```\n{cmd_preview}\n```\n"
-            f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-            f"for the session, or `/deny` to cancel."
+    def setup_method(self):
+        _clear_approval_state()
+
+    def test_blocking_approval_approve_once(self):
+        """check_all_command_guards blocks until resolve_gateway_approval is called."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            resolve_gateway_approval, check_all_command_guards,
         )
-        assert "/approve" in hint
-        assert "/deny" in hint
-        assert cmd in hint
+
+        session_key = "e2e-test"
+        notified = []
+
+        register_gateway_notify(session_key, lambda d: notified.append(d))
+
+        result_holder = [None]
+
+        def agent_thread():
+            os.environ["HERMES_EXEC_ASK"] = "1"
+            os.environ["HERMES_SESSION_KEY"] = session_key
+            try:
+                result_holder[0] = check_all_command_guards(
+                    "rm -rf /important", "local"
+                )
+            finally:
+                os.environ.pop("HERMES_EXEC_ASK", None)
+                os.environ.pop("HERMES_SESSION_KEY", None)
+
+        t = threading.Thread(target=agent_thread)
+        t.start()
+
+        for _ in range(50):
+            if notified:
+                break
+            time.sleep(0.05)
+
+        assert len(notified) == 1
+        assert "rm -rf /important" in notified[0]["command"]
+
+        resolve_gateway_approval(session_key, "once")
+        t.join(timeout=5)
+
+        assert result_holder[0] is not None
+        assert result_holder[0]["approved"] is True
+        unregister_gateway_notify(session_key)
+
+    def test_blocking_approval_deny(self):
+        """check_all_command_guards returns BLOCKED when denied."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            resolve_gateway_approval, check_all_command_guards,
+        )
+
+        session_key = "e2e-deny"
+        notified = []
+        register_gateway_notify(session_key, lambda d: notified.append(d))
+
+        result_holder = [None]
+
+        def agent_thread():
+            os.environ["HERMES_EXEC_ASK"] = "1"
+            os.environ["HERMES_SESSION_KEY"] = session_key
+            try:
+                result_holder[0] = check_all_command_guards(
+                    "rm -rf /important", "local"
+                )
+            finally:
+                os.environ.pop("HERMES_EXEC_ASK", None)
+                os.environ.pop("HERMES_SESSION_KEY", None)
+
+        t = threading.Thread(target=agent_thread)
+        t.start()
+        for _ in range(50):
+            if notified:
+                break
+            time.sleep(0.05)
+
+        resolve_gateway_approval(session_key, "deny")
+        t.join(timeout=5)
+
+        assert result_holder[0]["approved"] is False
+        assert "BLOCKED" in result_holder[0]["message"]
+        unregister_gateway_notify(session_key)
+
+    def test_blocking_approval_timeout(self):
+        """check_all_command_guards returns BLOCKED on timeout."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            check_all_command_guards,
+        )
+
+        session_key = "e2e-timeout"
+        register_gateway_notify(session_key, lambda d: None)
+
+        result_holder = [None]
+
+        def agent_thread():
+            os.environ["HERMES_EXEC_ASK"] = "1"
+            os.environ["HERMES_SESSION_KEY"] = session_key
+            try:
+                with patch("tools.approval._get_approval_config",
+                           return_value={"gateway_timeout": 1}):
+                    result_holder[0] = check_all_command_guards(
+                        "rm -rf /important", "local"
+                    )
+            finally:
+                os.environ.pop("HERMES_EXEC_ASK", None)
+                os.environ.pop("HERMES_SESSION_KEY", None)
+
+        t = threading.Thread(target=agent_thread)
+        t.start()
+        t.join(timeout=10)
+
+        assert result_holder[0]["approved"] is False
+        assert "timed out" in result_holder[0]["message"]
+        unregister_gateway_notify(session_key)
+
+    def test_parallel_subagent_approvals(self):
+        """Multiple threads can block concurrently and be resolved independently."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            resolve_gateway_approval, check_all_command_guards,
+            pending_approval_count,
+        )
+
+        session_key = "e2e-parallel"
+        notified = []
+        register_gateway_notify(session_key, lambda d: notified.append(d))
+
+        results = [None, None, None]
+
+        def make_agent(idx, cmd):
+            def run():
+                os.environ["HERMES_EXEC_ASK"] = "1"
+                os.environ["HERMES_SESSION_KEY"] = session_key
+                try:
+                    results[idx] = check_all_command_guards(cmd, "local")
+                finally:
+                    os.environ.pop("HERMES_EXEC_ASK", None)
+                    os.environ.pop("HERMES_SESSION_KEY", None)
+            return run
+
+        threads = [
+            threading.Thread(target=make_agent(0, "rm -rf /a")),
+            threading.Thread(target=make_agent(1, "rm -rf /b")),
+            threading.Thread(target=make_agent(2, "rm -rf /c")),
+        ]
+        for t in threads:
+            t.start()
+
+        # Wait for all 3 to block
+        for _ in range(100):
+            if len(notified) >= 3:
+                break
+            time.sleep(0.05)
+
+        assert len(notified) == 3
+        assert pending_approval_count(session_key) == 3
+
+        # Approve all at once
+        count = resolve_gateway_approval(session_key, "session", resolve_all=True)
+        assert count == 3
+
+        for t in threads:
+            t.join(timeout=5)
+
+        assert all(r is not None for r in results)
+        assert all(r["approved"] is True for r in results)
+        unregister_gateway_notify(session_key)
+
+    def test_parallel_mixed_approve_deny(self):
+        """Approve some, deny others in a parallel batch."""
+        from tools.approval import (
+            register_gateway_notify, unregister_gateway_notify,
+            resolve_gateway_approval, check_all_command_guards,
+        )
+
+        session_key = "e2e-mixed"
+        register_gateway_notify(session_key, lambda d: None)
+
+        results = [None, None]
+
+        def make_agent(idx, cmd):
+            def run():
+                os.environ["HERMES_EXEC_ASK"] = "1"
+                os.environ["HERMES_SESSION_KEY"] = session_key
+                try:
+                    results[idx] = check_all_command_guards(cmd, "local")
+                finally:
+                    os.environ.pop("HERMES_EXEC_ASK", None)
+                    os.environ.pop("HERMES_SESSION_KEY", None)
+            return run
+
+        threads = [
+            threading.Thread(target=make_agent(0, "rm -rf /x")),
+            threading.Thread(target=make_agent(1, "rm -rf /y")),
+        ]
+        for t in threads:
+            t.start()
+        time.sleep(0.3)
+
+        # Approve first, deny second
+        resolve_gateway_approval(session_key, "once")   # oldest
+        resolve_gateway_approval(session_key, "deny")   # next
+
+        for t in threads:
+            t.join(timeout=5)
+
+        assert results[0]["approved"] is True
+        assert results[1]["approved"] is False
+        unregister_gateway_notify(session_key)
+
+
+# ------------------------------------------------------------------
+# Fallback: no gateway callback (cron/batch mode)
+# ------------------------------------------------------------------
+
+
+class TestFallbackNoCallback:
+
+    def setup_method(self):
+        _clear_approval_state()
+
+    def test_no_callback_returns_approval_required(self):
+        """Without a registered callback, the old approval_required path is used."""
+        from tools.approval import check_all_command_guards, _pending
+
+        os.environ["HERMES_EXEC_ASK"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = "no-callback-test"
+        try:
+            result = check_all_command_guards("rm -rf /important", "local")
+        finally:
+            os.environ.pop("HERMES_EXEC_ASK", None)
+            os.environ.pop("HERMES_SESSION_KEY", None)
+
+        assert result["approved"] is False
+        assert result.get("status") == "approval_required"

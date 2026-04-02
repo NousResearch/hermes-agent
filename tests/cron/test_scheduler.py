@@ -84,6 +84,48 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_human_friendly_label_resolved_via_channel_directory(self):
+        """deliver: 'whatsapp:Alice (dm)' resolves to the real JID."""
+        job = {"deliver": "whatsapp:Alice (dm)"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="12345678901234@lid",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "whatsapp",
+            "chat_id": "12345678901234@lid",
+            "thread_id": None,
+        }
+
+    def test_human_friendly_label_without_suffix_resolved(self):
+        """deliver: 'telegram:My Group' resolves without display suffix."""
+        job = {"deliver": "telegram:My Group"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="-1009999",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "-1009999",
+            "thread_id": None,
+        }
+
+    def test_raw_id_not_mangled_when_directory_returns_none(self):
+        """deliver: 'whatsapp:12345@lid' passes through when directory has no match."""
+        job = {"deliver": "whatsapp:12345@lid"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value=None,
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "whatsapp",
+            "chat_id": "12345@lid",
+            "thread_id": None,
+        }
+
     def test_bare_platform_uses_matching_origin_chat(self):
         job = {
             "deliver": "telegram",
@@ -166,6 +208,32 @@ class TestDeliverResultWrapping:
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
+
+    def test_delivery_skips_wrapping_when_config_disabled(self):
+        """When cron.wrap_response is false, deliver raw content without header/footer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Clean output only.")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "Clean output only."
+        assert "Cronjob Response" not in sent_content
+        assert "The agent cannot see" not in sent_content
 
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""

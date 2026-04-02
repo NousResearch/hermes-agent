@@ -50,9 +50,91 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+def _require_tty(command_name: str) -> None:
+    """Exit with a clear error if stdin is not a terminal.
+
+    Interactive TUI commands (hermes tools, hermes setup, hermes model) use
+    curses or input() prompts that spin at 100% CPU when stdin is a pipe.
+    This guard prevents accidental non-interactive invocation.
+    """
+    if not sys.stdin.isatty():
+        print(
+            f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
+            f"It cannot be run through a pipe or non-interactive subprocess.\n"
+            f"Run it directly in your terminal instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# ---------------------------------------------------------------------------
+# Profile override — MUST happen before any hermes module import.
+#
+# Many modules cache HERMES_HOME at import time (module-level constants).
+# We intercept --profile/-p from sys.argv here and set the env var so that
+# every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
+# The flag is stripped from sys.argv so argparse never sees it.
+# Falls back to ~/.hermes/active_profile for sticky default.
+# ---------------------------------------------------------------------------
+def _apply_profile_override() -> None:
+    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    argv = sys.argv[1:]
+    profile_name = None
+    consume = 0
+
+    # 1. Check for explicit -p / --profile flag
+    for i, arg in enumerate(argv):
+        if arg in ("--profile", "-p") and i + 1 < len(argv):
+            profile_name = argv[i + 1]
+            consume = 2
+            break
+        elif arg.startswith("--profile="):
+            profile_name = arg.split("=", 1)[1]
+            consume = 1
+            break
+
+    # 2. If no flag, check ~/.hermes/active_profile
+    if profile_name is None:
+        try:
+            active_path = Path.home() / ".hermes" / "active_profile"
+            if active_path.exists():
+                name = active_path.read_text().strip()
+                if name and name != "default":
+                    profile_name = name
+                    consume = 0  # don't strip anything from argv
+        except (UnicodeDecodeError, OSError):
+            pass  # corrupted file, skip
+
+    # 3. If we found a profile, resolve and set HERMES_HOME
+    if profile_name is not None:
+        try:
+            from hermes_cli.profiles import resolve_profile_env
+            hermes_home = resolve_profile_env(profile_name)
+        except (ValueError, FileNotFoundError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as exc:
+            # A bug in profiles.py must NEVER prevent hermes from starting
+            print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
+            return
+        os.environ["HERMES_HOME"] = hermes_home
+        # Strip the flag from argv so argparse doesn't choke
+        if consume > 0:
+            for i, arg in enumerate(argv):
+                if arg in ("--profile", "-p"):
+                    start = i + 1  # +1 because argv is sys.argv[1:]
+                    sys.argv = sys.argv[:start] + sys.argv[start + consume:]
+                    break
+                elif arg.startswith("--profile="):
+                    start = i + 1
+                    sys.argv = sys.argv[:start] + sys.argv[start + 1:]
+                    break
+
+_apply_profile_override()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -91,8 +173,24 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home
+    from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
+
+    # Determine whether Hermes itself has been explicitly configured (model
+    # in config that isn't the hardcoded default). Used below to gate external
+    # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
+    # the setup wizard on a fresh install.
+    from hermes_cli.config import DEFAULT_CONFIG
+    _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
+    cfg = load_config()
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        _model_name = (model_cfg.get("default") or "").strip()
+    elif isinstance(model_cfg, str):
+        _model_name = model_cfg.strip()
+    else:
+        _model_name = ""
+    _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
 
     # Check env vars (may be set by .env or shell).
     # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
@@ -148,16 +246,28 @@ def _has_any_provider_configured() -> bool:
             pass
 
 
-    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # These are used by resolve_anthropic_token() at runtime but were missing
-    # from this startup gate check.
-    try:
-        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
-        creds = read_claude_code_credentials()
-        if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
+    # Check config.yaml — if model is a dict with an explicit provider set,
+    # the user has gone through setup (fresh installs have model as a plain
+    # string).  Also covers custom endpoints that store api_key/base_url in
+    # config rather than .env.
+    if isinstance(model_cfg, dict):
+        cfg_provider = (model_cfg.get("provider") or "").strip()
+        cfg_base_url = (model_cfg.get("base_url") or "").strip()
+        cfg_api_key = (model_cfg.get("api_key") or "").strip()
+        if cfg_provider or cfg_base_url or cfg_api_key:
             return True
-    except Exception:
-        pass
+
+    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
+    # Only count these if Hermes has been explicitly configured — Claude Code
+    # being installed doesn't mean the user wants Hermes to use their tokens.
+    if _has_hermes_config:
+        try:
+            from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+            creds = read_claude_code_credentials()
+            if creds and (is_claude_code_token_valid(creds) or creds.get("refreshToken")):
+                return True
+        except Exception:
+            pass
 
     return False
 
@@ -533,6 +643,7 @@ def cmd_chat(args):
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
+        "max_turns": getattr(args, "max_turns", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -552,6 +663,7 @@ def cmd_gateway(args):
 
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
+    _require_tty("whatsapp")
     import subprocess
     from pathlib import Path
     from hermes_cli.config import get_env_value, save_env_value
@@ -738,12 +850,25 @@ def cmd_whatsapp(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
+    _require_tty("setup")
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
 
 
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
+    _require_tty("model")
+    select_provider_and_model(args=args)
+
+
+def select_provider_and_model(args=None):
+    """Core provider selection + model picking logic.
+
+    Shared by ``cmd_model`` (``hermes model``) and the setup wizard
+    (``setup_model_provider`` in setup.py).  Handles the full flow:
+    provider picker, credential prompting, model selection, and config
+    persistence.
+    """
     from hermes_cli.auth import (
         resolve_provider, AuthError, format_auth_error,
     )
@@ -773,7 +898,10 @@ def cmd_model(args):
     except AuthError as exc:
         warning = format_auth_error(exc)
         print(f"Warning: {warning} Falling back to auto provider detection.")
-        active = resolve_provider("auto")
+        try:
+            active = resolve_provider("auto")
+        except AuthError:
+            active = "openrouter"  # no provider yet; show full picker
 
     # Detect custom endpoint
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
@@ -878,7 +1006,7 @@ def cmd_model(args):
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
-        _model_flow_nous(config, current_model)
+        _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "copilot-acp":
@@ -965,10 +1093,6 @@ def _model_flow_openrouter(config, current_model=""):
 
     selected = _prompt_model_selection(openrouter_models, current_model=current_model)
     if selected:
-        # Clear any custom endpoint and set provider to openrouter
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         _save_model_choice(selected)
 
         # Update config provider and deactivate any OAuth provider
@@ -980,6 +1104,7 @@ def _model_flow_openrouter(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
+        model["api_mode"] = "chat_completions"
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
@@ -987,7 +1112,7 @@ def _model_flow_openrouter(config, current_model=""):
         print("No change.")
 
 
-def _model_flow_nous(config, current_model=""):
+def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_provider_auth_state, _prompt_model_selection, _save_model_choice,
@@ -995,7 +1120,11 @@ def _model_flow_nous(config, current_model=""):
         fetch_nous_models, AuthError, format_auth_error,
         _login_nous, PROVIDER_REGISTRY,
     )
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, save_config, save_env_value
+    from hermes_cli.nous_subscription import (
+        apply_nous_provider_defaults,
+        get_nous_subscription_explainer_lines,
+    )
     import argparse
 
     state = get_provider_auth_state("nous")
@@ -1004,11 +1133,19 @@ def _model_flow_nous(config, current_model=""):
         print()
         try:
             mock_args = argparse.Namespace(
-                portal_url=None, inference_url=None, client_id=None,
-                scope=None, no_browser=False, timeout=15.0,
-                ca_bundle=None, insecure=False,
+                portal_url=getattr(args, "portal_url", None),
+                inference_url=getattr(args, "inference_url", None),
+                client_id=getattr(args, "client_id", None),
+                scope=getattr(args, "scope", None),
+                no_browser=bool(getattr(args, "no_browser", False)),
+                timeout=getattr(args, "timeout", None) or 15.0,
+                ca_bundle=getattr(args, "ca_bundle", None),
+                insecure=bool(getattr(args, "insecure", False)),
             )
             _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
+            print()
+            for line in get_nous_subscription_explainer_lines():
+                print(line)
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -1018,14 +1155,20 @@ def _model_flow_nous(config, current_model=""):
         # login_nous already handles model selection + config update
         return
 
-    # Already logged in — fetch models and select
-    print("Fetching models from Nous Portal...")
+    # Already logged in — use curated model list (same as OpenRouter defaults).
+    # The live /models endpoint returns hundreds of models; the curated list
+    # shows only agentic models users recognize from OpenRouter.
+    from hermes_cli.models import _PROVIDER_MODELS
+    model_ids = _PROVIDER_MODELS.get("nous", [])
+    if not model_ids:
+        print("No curated models available for Nous Portal.")
+        return
+
+    print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
+
+    # Verify credentials are still valid (catches expired sessions early)
     try:
         creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
-        model_ids = fetch_nous_models(
-            inference_base_url=creds.get("base_url", ""),
-            api_key=creds.get("api_key", ""),
-        )
     except Exception as exc:
         relogin = isinstance(exc, AuthError) and exc.relogin_required
         msg = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
@@ -1042,11 +1185,7 @@ def _model_flow_nous(config, current_model=""):
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
             return
-        print(f"Could not fetch models: {msg}")
-        return
-
-    if not model_ids:
-        print("No models returned by the inference API.")
+        print(f"Could not verify credentials: {msg}")
         return
 
     selected = _prompt_model_selection(model_ids, current_model=current_model)
@@ -1055,11 +1194,36 @@ def _model_flow_nous(config, current_model=""):
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
+        current_model_cfg = config.get("model")
+        if isinstance(current_model_cfg, dict):
+            model_cfg = dict(current_model_cfg)
+        elif isinstance(current_model_cfg, str) and current_model_cfg.strip():
+            model_cfg = {"default": current_model_cfg.strip()}
+        else:
+            model_cfg = {}
+        model_cfg["provider"] = "nous"
+        model_cfg["default"] = selected
+        if inference_url and inference_url.strip():
+            model_cfg["base_url"] = inference_url.rstrip("/")
+        else:
+            model_cfg.pop("base_url", None)
+        config["model"] = model_cfg
         # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
+        changed_defaults = apply_nous_provider_defaults(config)
+        save_config(config)
         print(f"Default model set to: {selected} (via Nous Portal)")
+        if "tts" in changed_defaults:
+            print("TTS provider set to: OpenAI TTS via your Nous subscription")
+        else:
+            current_tts = str(config.get("tts", {}).get("provider") or "edge")
+            if current_tts.lower() not in {"", "edge"}:
+                print(f"Keeping your existing TTS provider: {current_tts}")
+        print()
+        for line in get_nous_subscription_explainer_lines():
+            print(line)
     else:
         print("No change.")
 
@@ -1103,10 +1267,6 @@ def _model_flow_openai_codex(config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-        # Clear custom endpoint env vars that would otherwise override Codex.
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
         print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
@@ -1135,21 +1295,9 @@ def _model_flow_custom(config):
     try:
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
         api_key = input(f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: ").strip()
-        model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
-        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
-
-    context_length = None
-    if context_length_str:
-        try:
-            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
-            if context_length <= 0:
-                context_length = None
-        except ValueError:
-            print(f"Invalid context length: {context_length_str} — will auto-detect.")
-            context_length = None
 
     if not base_url and not current_url:
         print("No URL provided. Cancelled.")
@@ -1187,10 +1335,43 @@ def _model_flow_custom(config):
         if probe.get("suggested_base_url"):
             print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
 
-    if base_url:
-        save_env_value("OPENAI_BASE_URL", effective_url)
-    if api_key:
-        save_env_value("OPENAI_API_KEY", api_key)
+    # Select model — use probe results when available, fall back to manual input
+    model_name = ""
+    detected_models = probe.get("models") or []
+    try:
+        if len(detected_models) == 1:
+            print(f"  Detected model: {detected_models[0]}")
+            confirm = input("  Use this model? [Y/n]: ").strip().lower()
+            if confirm in ("", "y", "yes"):
+                model_name = detected_models[0]
+            else:
+                model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+        elif len(detected_models) > 1:
+            print("  Available models:")
+            for i, m in enumerate(detected_models, 1):
+                print(f"    {i}. {m}")
+            pick = input(f"  Select model [1-{len(detected_models)}] or type name: ").strip()
+            if pick.isdigit() and 1 <= int(pick) <= len(detected_models):
+                model_name = detected_models[int(pick) - 1]
+            elif pick:
+                model_name = pick
+        else:
+            model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
+
+        context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    context_length = None
+    if context_length_str:
+        try:
+            context_length = int(context_length_str.replace(",", "").replace("k", "000").replace("K", "000"))
+            if context_length <= 0:
+                context_length = None
+        except ValueError:
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
+            context_length = None
 
     if model_name:
         _save_model_choice(model_name)
@@ -1203,13 +1384,33 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
+        if effective_key:
+            model["api_key"] = effective_key
+        model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
+
+        # Sync the caller's config dict so the setup wizard's final
+        # save_config(config) preserves our model settings.  Without
+        # this, the wizard overwrites model.provider/base_url with
+        # the stale values from its own config dict (#4172).
+        config["model"] = dict(model)
 
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
         if base_url or api_key:
             deactivate_provider()
+        # Even without a model name, persist the custom endpoint on the
+        # caller's config dict so the setup wizard doesn't lose it.
+        _caller_model = config.get("model")
+        if not isinstance(_caller_model, dict):
+            _caller_model = {"default": _caller_model} if _caller_model else {}
+        _caller_model["provider"] = "custom"
+        _caller_model["base_url"] = effective_url
+        if effective_key:
+            _caller_model["api_key"] = effective_key
+        _caller_model.pop("api_mode", None)
+        config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
@@ -1350,9 +1551,6 @@ def _model_flow_named_custom(config, provider_info):
 
     # If a model is saved, just activate immediately — no probing needed
     if saved_model:
-        save_env_value("OPENAI_BASE_URL", base_url)
-        if api_key:
-            save_env_value("OPENAI_API_KEY", api_key)
         _save_model_choice(saved_model)
 
         cfg = load_config()
@@ -1362,6 +1560,8 @@ def _model_flow_named_custom(config, provider_info):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = base_url
+        if api_key:
+            model["api_key"] = api_key
         save_config(cfg)
         deactivate_provider()
 
@@ -1424,9 +1624,6 @@ def _model_flow_named_custom(config, provider_info):
             return
 
     # Activate and save the model to the custom_providers entry
-    save_env_value("OPENAI_BASE_URL", base_url)
-    if api_key:
-        save_env_value("OPENAI_API_KEY", api_key)
     _save_model_choice(model_name)
 
     cfg = load_config()
@@ -1436,6 +1633,8 @@ def _model_flow_named_custom(config, provider_info):
         cfg["model"] = model
     model["provider"] = "custom"
     model["base_url"] = base_url
+    if api_key:
+        model["api_key"] = api_key
     save_config(cfg)
     deactivate_provider()
 
@@ -1488,11 +1687,15 @@ _PROVIDER_MODELS = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
     ],
     "minimax-cn": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.1",
@@ -1740,11 +1943,6 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         ) or selected
-        # Clear stale custom-endpoint overrides so the Copilot provider wins cleanly.
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         initial_cfg = load_config()
         current_effort = _current_reasoning_effort(initial_cfg)
         reasoning_efforts = github_model_reasoning_efforts(
@@ -1969,11 +2167,6 @@ def _model_flow_kimi(config, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set (avoid confusion)
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -1984,6 +2177,7 @@ def _model_flow_kimi(config, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
 
@@ -2057,7 +2251,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
         live_models = fetch_api_models(api_key_for_probe, effective_base)
 
-    if live_models:
+    if live_models and len(live_models) >= len(curated):
         model_list = live_models
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
@@ -2075,11 +2269,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set (avoid confusion)
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -2090,6 +2279,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
+        model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
 
@@ -2290,11 +2480,6 @@ def _model_flow_anthropic(config, current_model=""):
             selected = None
 
     if selected:
-        # Clear custom endpoint if set
-        if get_env_value("OPENAI_BASE_URL"):
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
         _save_model_choice(selected)
 
         # Update config with provider — clear base_url since
@@ -2326,6 +2511,12 @@ def cmd_logout(args):
     """Clear provider authentication."""
     from hermes_cli.auth import logout_command
     logout_command(args)
+
+
+def cmd_auth(args):
+    """Manage pooled credentials."""
+    from hermes_cli.auth_commands import auth_command
+    auth_command(args)
 
 
 def cmd_status(args):
@@ -2376,10 +2567,14 @@ def cmd_version(args):
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from hermes_cli.banner import check_for_updates
+        from hermes_cli.config import recommended_update_command
         behind = check_for_updates()
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
-            print(f"Update available: {behind} {commits_word} behind — run 'hermes update'")
+            print(
+                f"Update available: {behind} {commits_word} behind — "
+                f"run '{recommended_update_command()}'"
+            )
         elif behind == 0:
             print("Up to date")
     except Exception:
@@ -2388,8 +2583,37 @@ def cmd_version(args):
 
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
+    _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
     run_uninstall(args)
+
+
+def _clear_bytecode_cache(root: Path) -> int:
+    """Remove all __pycache__ directories under *root*.
+
+    Stale .pyc files can cause ImportError after code updates when Python
+    loads a cached bytecode file that references names that no longer exist
+    (or don't yet exist) in the updated source.  Clearing them forces Python
+    to recompile from the .py source on next import.
+
+    Returns the number of directories removed.
+    """
+    removed = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        # Skip venv / node_modules / .git entirely
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in ("venv", ".venv", "node_modules", ".git", ".worktrees")
+        ]
+        if os.path.basename(dirpath) == "__pycache__":
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(dirpath)
+                removed += 1
+            except OSError:
+                pass
+            dirnames.clear()  # nothing left to recurse into
+    return removed
 
 
 def _update_via_zip(args):
@@ -2433,7 +2657,7 @@ def _update_via_zip(args):
                     break
         
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {'venv', 'node_modules', '.git', '__pycache__', '.env'}
+        preserve = {'venv', 'node_modules', '.git', '.env'}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -2456,25 +2680,21 @@ def _update_via_zip(args):
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
+
+    # Clear stale bytecode after ZIP extraction
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
     
-    # Reinstall Python dependencies (try .[all] first for optional extras,
-    # fall back to . if extras fail — mirrors the install script behavior)
+    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
+    # breaks on this machine, keep base deps and reinstall the remaining extras
+    # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
     import subprocess
     uv_bin = shutil.which("uv")
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        try:
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
-                cwd=PROJECT_ROOT, check=True, env=uv_env,
-            )
-        except subprocess.CalledProcessError:
-            print("  ⚠ Optional extras failed, installing base dependencies...")
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                cwd=PROJECT_ROOT, check=True, env=uv_env,
-            )
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -2489,11 +2709,7 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        try:
-            subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
-        except subprocess.CalledProcessError:
-            print("  ⚠ Optional extras failed, installing base dependencies...")
-            subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        _install_python_dependencies_with_optional_fallback(pip_cmd)
     
     # Sync skills
     try:
@@ -2682,20 +2898,116 @@ def _restore_stashed_changes(
     return True
 
 def _invalidate_update_cache():
-    """Delete the update-check cache so ``hermes --version`` doesn't
-    report a stale "commits behind" count after a successful update."""
+    """Delete the update-check cache for ALL profiles so no banner
+    reports a stale "commits behind" count after a successful update.
+
+    The git repo is shared across profiles — when one profile runs
+    ``hermes update``, every profile is now current.
+    """
+    homes = []
+    # Default profile home
+    default_home = Path.home() / ".hermes"
+    homes.append(default_home)
+    # Named profiles under ~/.hermes/profiles/
+    profiles_root = default_home / "profiles"
+    if profiles_root.is_dir():
+        for entry in profiles_root.iterdir():
+            if entry.is_dir():
+                homes.append(entry)
+    for home in homes:
+        try:
+            cache_file = home / ".update_check"
+            if cache_file.exists():
+                cache_file.unlink()
+        except Exception:
+            pass
+
+
+def _load_installable_optional_extras() -> list[str]:
+    """Return the optional extras referenced by the ``all`` group.
+
+    Only extras that ``[all]`` actually pulls in are retried individually.
+    Extras outside ``[all]`` (e.g. ``rl``, ``yc-bench``) are intentionally
+    excluded — they have heavy or platform-specific deps that most users
+    never installed.
+    """
     try:
-        cache_file = Path(os.getenv(
-            "HERMES_HOME", Path.home() / ".hermes"
-        )) / ".update_check"
-        if cache_file.exists():
-            cache_file.unlink()
+        import tomllib
+        with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
+            project = tomllib.load(handle).get("project", {})
     except Exception:
-        pass
+        return []
+
+    optional_deps = project.get("optional-dependencies", {})
+    if not isinstance(optional_deps, dict):
+        return []
+
+    # Parse the [all] group to find which extras it references.
+    # Entries look like "hermes-agent[matrix]" or "package-name[extra]".
+    all_refs = optional_deps.get("all", [])
+    referenced: list[str] = []
+    for ref in all_refs:
+        if "[" in ref and "]" in ref:
+            name = ref.split("[", 1)[1].split("]", 1)[0]
+            if name in optional_deps:
+                referenced.append(name)
+
+    return referenced
+
+
+
+def _install_python_dependencies_with_optional_fallback(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Install base deps plus as many optional extras as the environment supports."""
+    try:
+        subprocess.run(
+            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            env=env,
+        )
+        return
+    except subprocess.CalledProcessError:
+        print("  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually...")
+
+    subprocess.run(
+        install_cmd_prefix + ["install", "-e", ".", "--quiet"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        env=env,
+    )
+
+    failed_extras: list[str] = []
+    installed_extras: list[str] = []
+    for extra in _load_installable_optional_extras():
+        try:
+            subprocess.run(
+                install_cmd_prefix + ["install", "-e", f".[{extra}]", "--quiet"],
+                cwd=PROJECT_ROOT,
+                check=True,
+                env=env,
+            )
+            installed_extras.append(extra)
+        except subprocess.CalledProcessError:
+            failed_extras.append(extra)
+
+    if installed_extras:
+        print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
+    if failed_extras:
+        print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+
 
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
+    from hermes_cli.config import is_managed, managed_error
+
+    if is_managed():
+        managed_error("update Hermes Agent")
+        return
     
     print("⚕ Updating Hermes Agent...")
     print()
@@ -2854,24 +3166,22 @@ def cmd_update(args):
                     )
         
         _invalidate_update_cache()
+
+        # Clear stale .pyc bytecode cache — prevents ImportError on gateway
+        # restart when updated source references names that didn't exist in
+        # the old bytecode (e.g. get_hermes_home added to hermes_constants).
+        removed = _clear_bytecode_cache(PROJECT_ROOT)
+        if removed:
+            print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
         
-        # Reinstall Python dependencies (try .[all] first for optional extras,
-        # fall back to . if extras fail — mirrors the install script behavior)
+        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
+        # breaks on this machine, keep base deps and reinstall the remaining extras
+        # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
         uv_bin = shutil.which("uv")
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            try:
-                subprocess.run(
-                    [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
-                    cwd=PROJECT_ROOT, check=True, env=uv_env,
-                )
-            except subprocess.CalledProcessError:
-                print("  ⚠ Optional extras failed, installing base dependencies...")
-                subprocess.run(
-                    [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                    cwd=PROJECT_ROOT, check=True, env=uv_env,
-                )
+            _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -2886,11 +3196,7 @@ def cmd_update(args):
                     cwd=PROJECT_ROOT,
                     check=True,
                 )
-            try:
-                subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            except subprocess.CalledProcessError:
-                print("  ⚠ Optional extras failed, installing base dependencies...")
-                subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            _install_python_dependencies_with_optional_fallback(pip_cmd)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():
@@ -2901,6 +3207,17 @@ def cmd_update(args):
         
         print()
         print("✓ Code updated!")
+        
+        # After git pull, source files on disk are newer than cached Python
+        # modules in this process.  Reload hermes_constants so that any lazy
+        # import executed below (skills sync, gateway restart) sees new
+        # attributes like display_hermes_home() added since the last release.
+        try:
+            import importlib
+            import hermes_constants as _hc
+            importlib.reload(_hc)
+        except Exception:
+            pass  # non-fatal — worst case a lazy import fails gracefully
         
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
@@ -2920,7 +3237,35 @@ def cmd_update(args):
                 print("  ✓ Skills are up to date")
         except Exception as e:
             logger.debug("Skills sync during update failed: %s", e)
-        
+
+        # Sync bundled skills to all other profiles
+        try:
+            from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
+            active = get_active_profile_name()
+            other_profiles = [p for p in list_profiles() if not p.is_default and p.name != active]
+            if other_profiles:
+                print()
+                print("→ Syncing bundled skills to other profiles...")
+                for p in other_profiles:
+                    try:
+                        r = seed_profile_skills(p.path, quiet=True)
+                        if r:
+                            copied = len(r.get("copied", []))
+                            updated = len(r.get("updated", []))
+                            modified = len(r.get("user_modified", []))
+                            parts = []
+                            if copied: parts.append(f"+{copied} new")
+                            if updated: parts.append(f"↑{updated} updated")
+                            if modified: parts.append(f"~{modified} user-modified")
+                            status = ", ".join(parts) if parts else "up to date"
+                        else:
+                            status = "sync failed"
+                        print(f"  {p.name}: {status}")
+                    except Exception as pe:
+                        print(f"  {p.name}: error ({pe})")
+        except Exception:
+            pass  # profiles module not available or no profiles
+
         # Check for config migrations
         print()
         print("→ Checking configuration for new options...")
@@ -2985,6 +3330,7 @@ def cmd_update(args):
             _gw_service_name = get_service_name()
             existing_pid = get_running_pid()
             has_systemd_service = False
+            has_system_service = False
             has_launchd_service = False
 
             try:
@@ -2996,6 +3342,19 @@ def cmd_update(args):
                 has_systemd_service = check.stdout.strip() == "active"
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
+
+            # Also check for a system-level service (hermes gateway install --system).
+            # This covers gateways running under system systemd where --user
+            # fails due to missing D-Bus session.
+            if not has_systemd_service and is_linux():
+                try:
+                    check = subprocess.run(
+                        ["systemctl", "is-active", _gw_service_name],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    has_system_service = check.stdout.strip() == "active"
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
 
             # Check for macOS launchd service
             if is_macos():
@@ -3011,7 +3370,7 @@ def cmd_update(args):
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     pass
 
-            if existing_pid or has_systemd_service or has_launchd_service:
+            if existing_pid or has_systemd_service or has_system_service or has_launchd_service:
                 print()
 
                 # When a service manager is handling the gateway, let it
@@ -3052,6 +3411,21 @@ def cmd_update(args):
                                 print("    hermes gateway restart")
                             else:
                                 print("  Try manually: hermes gateway restart")
+                elif has_system_service:
+                    # System-level service (hermes gateway install --system).
+                    # No D-Bus session needed — systemctl without --user talks
+                    # directly to the system manager over /run/systemd/private.
+                    print("→ Restarting system gateway service...")
+                    restart = subprocess.run(
+                        ["systemctl", "restart", _gw_service_name],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if restart.returncode == 0:
+                        print("✓ Gateway restarted (system service).")
+                    else:
+                        print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
+                        print("  System services may require root.  Try:")
+                        print(f"    sudo systemctl restart {_gw_service_name}")
                 elif has_launchd_service:
                     # Refresh the plist first (picks up --replace and other
                     # changes from the update we just pulled).
@@ -3115,9 +3489,10 @@ def _coalesce_session_name_args(argv: list) -> list:
     or a known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
+        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
+        "profile",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -3141,6 +3516,253 @@ def _coalesce_session_name_args(argv: list) -> list:
     return result
 
 
+def cmd_profile(args):
+    """Profile management — create, delete, list, switch, alias."""
+    from hermes_cli.profiles import (
+        list_profiles, create_profile, delete_profile, seed_profile_skills,
+        get_active_profile, set_active_profile, get_active_profile_name,
+        check_alias_collision, create_wrapper_script, remove_wrapper_script,
+        _is_wrapper_dir_in_path, _get_wrapper_dir,
+    )
+    from hermes_constants import display_hermes_home
+
+    action = getattr(args, "profile_action", None)
+
+    if action is None:
+        # Bare `hermes profile` — show current profile status
+        profile_name = get_active_profile_name()
+        dhh = display_hermes_home()
+        print(f"\nActive profile: {profile_name}")
+        print(f"Path:           {dhh}")
+
+        profiles = list_profiles()
+        for p in profiles:
+            if p.name == profile_name or (profile_name == "default" and p.is_default):
+                if p.model:
+                    print(f"Model:          {p.model}" + (f" ({p.provider})" if p.provider else ""))
+                print(f"Gateway:        {'running' if p.gateway_running else 'stopped'}")
+                print(f"Skills:         {p.skill_count} installed")
+                if p.alias_path:
+                    print(f"Alias:          {p.name} → hermes -p {p.name}")
+                break
+        print()
+        return
+
+    if action == "list":
+        profiles = list_profiles()
+        active = get_active_profile_name()
+
+        if not profiles:
+            print("No profiles found.")
+            return
+
+        # Header
+        print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias'}")
+        print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 12}")
+
+        for p in profiles:
+            marker = " ◆" if (p.name == active or (active == "default" and p.is_default)) else "  "
+            name = p.name
+            model = (p.model or "—")[:26]
+            gw = "running" if p.gateway_running else "stopped"
+            alias = p.name if p.alias_path else "—"
+            if p.is_default:
+                alias = "—"
+            print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias}")
+        print()
+
+    elif action == "use":
+        name = args.profile_name
+        try:
+            set_active_profile(name)
+            if name == "default":
+                print(f"Switched to: default (~/.hermes)")
+            else:
+                print(f"Switched to: {name}")
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "create":
+        name = args.profile_name
+        clone = getattr(args, "clone", False)
+        clone_all = getattr(args, "clone_all", False)
+        no_alias = getattr(args, "no_alias", False)
+
+        try:
+            clone_from = getattr(args, "clone_from", None)
+
+            profile_dir = create_profile(
+                name=name,
+                clone_from=clone_from,
+                clone_all=clone_all,
+                clone_config=clone,
+                no_alias=no_alias,
+            )
+            print(f"\nProfile '{name}' created at {profile_dir}")
+
+            if clone or clone_all:
+                source_label = getattr(args, "clone_from", None) or get_active_profile_name()
+                if clone_all:
+                    print(f"Full copy from {source_label}.")
+                else:
+                    print(f"Cloned config, .env, SOUL.md from {source_label}.")
+
+            # Seed bundled skills (skip if --clone-all already copied them)
+            if not clone_all:
+                result = seed_profile_skills(profile_dir)
+                if result:
+                    copied = len(result.get("copied", []))
+                    print(f"{copied} bundled skills synced.")
+                else:
+                    print("⚠ Skills could not be seeded. Run `{} update` to retry.".format(name))
+
+            # Create wrapper alias
+            if not no_alias:
+                collision = check_alias_collision(name)
+                if collision:
+                    print(f"\n⚠ Cannot create alias '{name}' — {collision}")
+                    print(f"  Choose a custom alias:  hermes profile alias {name} --name <custom>")
+                    print(f"  Or access via flag:     hermes -p {name} chat")
+                else:
+                    wrapper_path = create_wrapper_script(name)
+                    if wrapper_path:
+                        print(f"Wrapper created: {wrapper_path}")
+                        if not _is_wrapper_dir_in_path():
+                            print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
+                            print(f'  Add to your shell config (~/.bashrc or ~/.zshrc):')
+                            print(f'    export PATH="$HOME/.local/bin:$PATH"')
+
+            # Next steps
+            print(f"\nNext steps:")
+            print(f"  {name} setup              Configure API keys and model")
+            print(f"  {name} chat               Start chatting")
+            print(f"  {name} gateway start      Start the messaging gateway")
+            if clone or clone_all:
+                from hermes_constants import get_hermes_home
+                profile_dir_display = f"~/.hermes/profiles/{name}"
+                print(f"\n  Edit {profile_dir_display}/.env for different API keys")
+                print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
+            print()
+
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "delete":
+        name = args.profile_name
+        yes = getattr(args, "yes", False)
+        try:
+            delete_profile(name, yes=yes)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "show":
+        name = args.profile_name
+        from hermes_cli.profiles import get_profile_dir, profile_exists, _read_config_model, _check_gateway_running, _count_skills
+        if not profile_exists(name):
+            print(f"Error: Profile '{name}' does not exist.")
+            sys.exit(1)
+        profile_dir = get_profile_dir(name)
+        model, provider = _read_config_model(profile_dir)
+        gw = _check_gateway_running(profile_dir)
+        skills = _count_skills(profile_dir)
+        wrapper = _get_wrapper_dir() / name
+
+        print(f"\nProfile: {name}")
+        print(f"Path:    {profile_dir}")
+        if model:
+            print(f"Model:   {model}" + (f" ({provider})" if provider else ""))
+        print(f"Gateway: {'running' if gw else 'stopped'}")
+        print(f"Skills:  {skills}")
+        print(f".env:    {'exists' if (profile_dir / '.env').exists() else 'not configured'}")
+        print(f"SOUL.md: {'exists' if (profile_dir / 'SOUL.md').exists() else 'not configured'}")
+        if wrapper.exists():
+            print(f"Alias:   {wrapper}")
+        print()
+
+    elif action == "alias":
+        name = args.profile_name
+        remove = getattr(args, "remove", False)
+        custom_name = getattr(args, "alias_name", None)
+
+        from hermes_cli.profiles import profile_exists
+        if not profile_exists(name):
+            print(f"Error: Profile '{name}' does not exist.")
+            sys.exit(1)
+
+        alias_name = custom_name or name
+
+        if remove:
+            if remove_wrapper_script(alias_name):
+                print(f"✓ Removed alias '{alias_name}'")
+            else:
+                print(f"No alias '{alias_name}' found to remove.")
+        else:
+            collision = check_alias_collision(alias_name)
+            if collision:
+                print(f"Error: {collision}")
+                sys.exit(1)
+            wrapper_path = create_wrapper_script(alias_name)
+            if wrapper_path:
+                # If custom name, write the profile name into the wrapper
+                if custom_name:
+                    wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
+                print(f"✓ Alias created: {wrapper_path}")
+                if not _is_wrapper_dir_in_path():
+                    print(f"⚠ {_get_wrapper_dir()} is not in your PATH.")
+
+    elif action == "rename":
+        from hermes_cli.profiles import rename_profile
+        try:
+            new_dir = rename_profile(args.old_name, args.new_name)
+            print(f"\nProfile renamed: {args.old_name} → {args.new_name}")
+            print(f"Path: {new_dir}\n")
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "export":
+        from hermes_cli.profiles import export_profile
+        name = args.profile_name
+        output = args.output or f"{name}.tar.gz"
+        try:
+            result_path = export_profile(name, output)
+            print(f"✓ Exported '{name}' to {result_path}")
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+    elif action == "import":
+        from hermes_cli.profiles import import_profile
+        try:
+            profile_dir = import_profile(args.archive, name=getattr(args, "import_name", None))
+            name = profile_dir.name
+            print(f"✓ Imported profile '{name}' at {profile_dir}")
+
+            # Offer to create alias
+            collision = check_alias_collision(name)
+            if not collision:
+                wrapper_path = create_wrapper_script(name)
+                if wrapper_path:
+                    print(f"  Wrapper created: {wrapper_path}")
+            print()
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+
+def cmd_completion(args):
+    """Print shell completion script."""
+    from hermes_cli.profiles import generate_bash_completion, generate_zsh_completion
+    shell = getattr(args, "shell", "bash")
+    if shell == "zsh":
+        print(generate_zsh_completion())
+    else:
+        print(generate_bash_completion())
+
+
 def main():
     """Main entry point for hermes CLI."""
     parser = argparse.ArgumentParser(
@@ -3156,6 +3778,10 @@ Examples:
     hermes --resume <session_id>  Resume a specific session by ID
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
+    hermes auth add <provider>    Add a pooled credential
+    hermes auth list              List pooled credentials
+    hermes auth remove <p> <n>    Remove pooled credential by index
+    hermes auth reset <provider>  Clear exhaustion status for a provider
     hermes model                  Select default model
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
@@ -3290,6 +3916,13 @@ For more help on a command:
         help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)"
     )
     chat_parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)"
+    )
+    chat_parser.add_argument(
         "--yolo",
         action="store_true",
         default=False,
@@ -3316,6 +3949,44 @@ For more help on a command:
         help="Select default model and provider",
         description="Interactively select your inference provider and default model"
     )
+    model_parser.add_argument(
+        "--portal-url",
+        help="Portal base URL for Nous login (default: production portal)"
+    )
+    model_parser.add_argument(
+        "--inference-url",
+        help="Inference API base URL for Nous login (default: production inference API)"
+    )
+    model_parser.add_argument(
+        "--client-id",
+        default=None,
+        help="OAuth client id to use for Nous login (default: hermes-cli)"
+    )
+    model_parser.add_argument(
+        "--scope",
+        default=None,
+        help="OAuth scope to request for Nous login"
+    )
+    model_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not attempt to open the browser automatically during Nous login"
+    )
+    model_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="HTTP request timeout in seconds for Nous login (default: 15)"
+    )
+    model_parser.add_argument(
+        "--ca-bundle",
+        help="Path to CA bundle PEM file for Nous TLS verification"
+    )
+    model_parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Disable TLS verification for Nous login (testing only)"
+    )
     model_parser.set_defaults(func=cmd_model)
 
     # =========================================================================
@@ -3330,7 +4001,10 @@ For more help on a command:
     
     # gateway run (default)
     gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
-    gateway_run.add_argument("-v", "--verbose", action="store_true")
+    gateway_run.add_argument("-v", "--verbose", action="count", default=0,
+                             help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
+    gateway_run.add_argument("-q", "--quiet", action="store_true",
+                             help="Suppress all stderr log output")
     gateway_run.add_argument("--replace", action="store_true",
                              help="Replace any existing gateway instance (useful for systemd)")
     
@@ -3473,6 +4147,33 @@ For more help on a command:
         help="Provider to log out from (default: active provider)"
     )
     logout_parser.set_defaults(func=cmd_logout)
+
+    auth_parser = subparsers.add_parser(
+        "auth",
+        help="Manage pooled provider credentials",
+    )
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
+    auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
+    auth_add.add_argument("provider", help="Provider id (for example: anthropic, openai-codex, openrouter)")
+    auth_add.add_argument("--type", dest="auth_type", choices=["oauth", "api-key", "api_key"], help="Credential type to add")
+    auth_add.add_argument("--label", help="Optional display label")
+    auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
+    auth_add.add_argument("--portal-url", help="Nous portal base URL")
+    auth_add.add_argument("--inference-url", help="Nous inference base URL")
+    auth_add.add_argument("--client-id", help="OAuth client id")
+    auth_add.add_argument("--scope", help="OAuth scope override")
+    auth_add.add_argument("--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
+    auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
+    auth_add.add_argument("--insecure", action="store_true", help="Disable TLS verification for OAuth login")
+    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+    auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
+    auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
+    auth_remove = auth_subparsers.add_parser("remove", help="Remove a pooled credential by index")
+    auth_remove.add_argument("provider", help="Provider id")
+    auth_remove.add_argument("index", type=int, help="1-based credential index")
+    auth_reset = auth_subparsers.add_parser("reset", help="Clear exhaustion status for all credentials for a provider")
+    auth_reset.add_argument("provider", help="Provider id")
+    auth_parser.set_defaults(func=cmd_auth)
 
     # =========================================================================
     # status command
@@ -3733,6 +4434,7 @@ For more help on a command:
     def cmd_skills(args):
         # Route 'config' action to skills_config module
         if getattr(args, 'skills_action', None) == 'config':
+            _require_tty("skills config")
             from hermes_cli.skills_config import skills_command as skills_config_command
             skills_config_command(args)
         else:
@@ -3774,6 +4476,16 @@ For more help on a command:
     plugins_remove.add_argument("name", help="Plugin directory name to remove")
 
     plugins_subparsers.add_parser("list", aliases=["ls"], help="List installed plugins")
+
+    plugins_enable = plugins_subparsers.add_parser(
+        "enable", help="Enable a disabled plugin"
+    )
+    plugins_enable.add_argument("name", help="Plugin name to enable")
+
+    plugins_disable = plugins_subparsers.add_parser(
+        "disable", help="Disable a plugin without removing it"
+    )
+    plugins_disable.add_argument("name", help="Plugin name to disable")
 
     def cmd_plugins(args):
         from hermes_cli.plugins_cmd import plugins_command
@@ -3933,6 +4645,7 @@ For more help on a command:
             from hermes_cli.tools_config import tools_disable_enable_command
             tools_disable_enable_command(args)
         else:
+            _require_tty("tools")
             from hermes_cli.tools_config import tools_command
             tools_command(args)
 
@@ -3942,15 +4655,24 @@ For more help on a command:
     # =========================================================================
     mcp_parser = subparsers.add_parser(
         "mcp",
-        help="Manage MCP server connections",
+        help="Manage MCP servers and run Hermes as an MCP server",
         description=(
-            "Add, remove, list, test, and configure MCP server connections.\n\n"
+            "Manage MCP server connections and run Hermes as an MCP server.\n\n"
             "MCP servers provide additional tools via the Model Context Protocol.\n"
-            "Use 'hermes mcp add' to connect to a new server with interactive\n"
-            "tool discovery. Run 'hermes mcp' with no subcommand to list servers."
+            "Use 'hermes mcp add' to connect to a new server, or\n"
+            "'hermes mcp serve' to expose Hermes conversations over MCP."
         ),
     )
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+
+    mcp_serve_p = mcp_sub.add_parser(
+        "serve",
+        help="Run Hermes as an MCP server (expose conversations to other agents)",
+    )
+    mcp_serve_p.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="Enable verbose logging on stderr",
+    )
 
     mcp_add_p = mcp_sub.add_parser("add", help="Add an MCP server (discovery-first install)")
     mcp_add_p.add_argument("name", help="Server name (used as config key)")
@@ -4263,6 +4985,28 @@ For more help on a command:
         help="Skip confirmation prompts"
     )
 
+    # claw cleanup
+    claw_cleanup = claw_subparsers.add_parser(
+        "cleanup",
+        aliases=["clean"],
+        help="Archive leftover OpenClaw directories after migration",
+        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation"
+    )
+    claw_cleanup.add_argument(
+        "--source",
+        help="Path to a specific OpenClaw directory to clean up"
+    )
+    claw_cleanup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be archived without making changes"
+    )
+    claw_cleanup.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompts"
+    )
+
     def cmd_claw(args):
         from hermes_cli.claw import claw_command
         claw_command(args)
@@ -4328,7 +5072,75 @@ For more help on a command:
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
-    
+
+    # =========================================================================
+    # profile command
+    # =========================================================================
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Manage profiles — multiple isolated Hermes instances",
+    )
+    profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
+
+    profile_list = profile_subparsers.add_parser("list", help="List all profiles")
+    profile_use = profile_subparsers.add_parser("use", help="Set sticky default profile")
+    profile_use.add_argument("profile_name", help="Profile name (or 'default')")
+
+    profile_create = profile_subparsers.add_parser("create", help="Create a new profile")
+    profile_create.add_argument("profile_name", help="Profile name (lowercase, alphanumeric)")
+    profile_create.add_argument("--clone", action="store_true",
+                                help="Copy config.yaml, .env, SOUL.md from active profile")
+    profile_create.add_argument("--clone-all", action="store_true",
+                                help="Full copy of active profile (all state)")
+    profile_create.add_argument("--clone-from", metavar="SOURCE",
+                                help="Source profile to clone from (default: active)")
+    profile_create.add_argument("--no-alias", action="store_true",
+                                help="Skip wrapper script creation")
+
+    profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
+    profile_delete.add_argument("profile_name", help="Profile to delete")
+    profile_delete.add_argument("-y", "--yes", action="store_true",
+                                help="Skip confirmation prompt")
+
+    profile_show = profile_subparsers.add_parser("show", help="Show profile details")
+    profile_show.add_argument("profile_name", help="Profile to show")
+
+    profile_alias = profile_subparsers.add_parser("alias", help="Manage wrapper scripts")
+    profile_alias.add_argument("profile_name", help="Profile name")
+    profile_alias.add_argument("--remove", action="store_true",
+                               help="Remove the wrapper script")
+    profile_alias.add_argument("--name", dest="alias_name", metavar="NAME",
+                               help="Custom alias name (default: profile name)")
+
+    profile_rename = profile_subparsers.add_parser("rename", help="Rename a profile")
+    profile_rename.add_argument("old_name", help="Current profile name")
+    profile_rename.add_argument("new_name", help="New profile name")
+
+    profile_export = profile_subparsers.add_parser("export", help="Export a profile to archive")
+    profile_export.add_argument("profile_name", help="Profile to export")
+    profile_export.add_argument("-o", "--output", default=None,
+                                help="Output file (default: <name>.tar.gz)")
+
+    profile_import = profile_subparsers.add_parser("import", help="Import a profile from archive")
+    profile_import.add_argument("archive", help="Path to .tar.gz archive")
+    profile_import.add_argument("--name", dest="import_name", metavar="NAME",
+                                help="Profile name (default: inferred from archive)")
+
+    profile_parser.set_defaults(func=cmd_profile)
+
+    # =========================================================================
+    # completion command
+    # =========================================================================
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Print shell completion script (bash or zsh)",
+    )
+    completion_parser.add_argument(
+        "shell", nargs="?", default="bash", choices=["bash", "zsh"],
+        help="Shell type (default: bash)",
+    )
+    completion_parser.set_defaults(func=cmd_completion)
+
     # =========================================================================
     # Parse and execute
     # =========================================================================

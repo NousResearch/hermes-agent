@@ -118,6 +118,17 @@ class WebhookAdapter(BasePlatformAdapter):
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 
+        # Port conflict detection — fail fast if port is already in use
+        import socket as _socket
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                _s.settimeout(1)
+                _s.connect(('127.0.0.1', self._port))
+            logger.error('[webhook] Port %d already in use. Set a different port in config.yaml: platforms.webhook.port', self._port)
+            return False
+        except (ConnectionRefusedError, OSError):
+            pass  # port is free
+
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)

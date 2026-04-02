@@ -2898,16 +2898,29 @@ def _restore_stashed_changes(
     return True
 
 def _invalidate_update_cache():
-    """Delete the update-check cache so ``hermes --version`` doesn't
-    report a stale "commits behind" count after a successful update."""
-    try:
-        cache_file = Path(os.getenv(
-            "HERMES_HOME", Path.home() / ".hermes"
-        )) / ".update_check"
-        if cache_file.exists():
-            cache_file.unlink()
-    except Exception:
-        pass
+    """Delete the update-check cache for ALL profiles so no banner
+    reports a stale "commits behind" count after a successful update.
+
+    The git repo is shared across profiles — when one profile runs
+    ``hermes update``, every profile is now current.
+    """
+    homes = []
+    # Default profile home
+    default_home = Path.home() / ".hermes"
+    homes.append(default_home)
+    # Named profiles under ~/.hermes/profiles/
+    profiles_root = default_home / "profiles"
+    if profiles_root.is_dir():
+        for entry in profiles_root.iterdir():
+            if entry.is_dir():
+                homes.append(entry)
+    for home in homes:
+        try:
+            cache_file = home / ".update_check"
+            if cache_file.exists():
+                cache_file.unlink()
+        except Exception:
+            pass
 
 
 def _load_installable_optional_extras() -> list[str]:

@@ -390,7 +390,16 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
     }
     if normalized_base_url:
-        kwargs["base_url"] = normalized_base_url
+        # Azure Anthropic endpoints require an ``api-version`` query parameter.
+        # Pass it via default_query so the SDK appends it to every request URL
+        # without corrupting the base_url (appending it directly produces
+        # malformed paths like /anthropic?api-version=.../v1/messages).
+        _is_azure_endpoint = "azure.com" in normalized_base_url.lower()
+        if _is_azure_endpoint and "api-version" not in normalized_base_url:
+            kwargs["base_url"] = normalized_base_url.rstrip("/")
+            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        else:
+            kwargs["base_url"] = normalized_base_url
     common_betas = _common_betas_for_base_url(normalized_base_url)
 
     if _is_kimi_coding_endpoint(base_url):

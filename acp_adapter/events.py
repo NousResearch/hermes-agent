@@ -10,6 +10,7 @@ thread while the event loop lives on the main thread).
 import asyncio
 import json
 import logging
+from concurrent.futures import Future as ConcurrentFuture
 from collections import deque
 from typing import Any, Callable, Deque, Dict
 
@@ -31,12 +32,21 @@ def _send_update(
     update: Any,
 ) -> None:
     """Fire-and-forget an ACP session update from a worker thread."""
+    update_coro = None
     try:
-        future = asyncio.run_coroutine_threadsafe(
-            conn.session_update(session_id, update), loop
-        )
+        update_coro = conn.session_update(session_id, update)
+        future = asyncio.run_coroutine_threadsafe(update_coro, loop)
         future.result(timeout=5)
+        # In tests, run_coroutine_threadsafe is often mocked and no real scheduling
+        # happens; close the coroutine to avoid "was never awaited" warnings.
+        if update_coro is not None and not isinstance(future, ConcurrentFuture):
+            update_coro.close()
     except Exception:
+        if update_coro is not None:
+            try:
+                update_coro.close()
+            except Exception:
+                pass
         logger.debug("Failed to send ACP update", exc_info=True)
 
 

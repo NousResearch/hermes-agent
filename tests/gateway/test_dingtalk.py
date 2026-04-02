@@ -151,7 +151,8 @@ class TestDeduplication:
 class TestSend:
 
     @pytest.mark.asyncio
-    async def test_send_posts_to_webhook(self):
+    @patch('tools.url_safety.is_safe_url', return_value=True)
+    async def test_send_posts_to_webhook(self, mock_is_safe_url):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
@@ -177,7 +178,8 @@ class TestSend:
         assert payload["markdown"]["text"] == "Hello!"
 
     @pytest.mark.asyncio
-    async def test_send_fails_without_webhook(self):
+    @patch('tools.url_safety.is_safe_url', return_value=True)
+    async def test_send_fails_without_webhook(self, mock_is_safe_url):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
         adapter._http_client = AsyncMock()
@@ -187,7 +189,8 @@ class TestSend:
         assert "session_webhook" in result.error
 
     @pytest.mark.asyncio
-    async def test_send_uses_cached_webhook(self):
+    @patch('tools.url_safety.is_safe_url', return_value=True)
+    async def test_send_uses_cached_webhook(self, mock_is_safe_url):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
@@ -196,14 +199,15 @@ class TestSend:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_response)
         adapter._http_client = mock_client
-        adapter._session_webhooks["chat-123"] = "https://cached.example/webhook"
+        adapter._session_webhooks["chat-123"] = "https://example/webhook"
 
         result = await adapter.send("chat-123", "Hello!")
         assert result.success is True
-        assert mock_client.post.call_args[0][0] == "https://cached.example/webhook"
+        assert mock_client.post.call_args[0][0] == "https://example/webhook"
 
     @pytest.mark.asyncio
-    async def test_send_handles_http_error(self):
+    @patch('tools.url_safety.is_safe_url', return_value=True)
+    async def test_send_handles_http_error(self, mock_is_safe_url):
         from gateway.platforms.dingtalk import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
@@ -216,7 +220,7 @@ class TestSend:
 
         result = await adapter.send(
             "chat-123", "Hello!",
-            metadata={"session_webhook": "https://example/webhook"}
+            metadata={"session_webhook": "https://google.com/webhook"}
         )
         assert result.success is False
         assert "400" in result.error

@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+from tools.url_safety import is_safe_url
 import yaml
 
 from tools.skills_guard import (
@@ -477,7 +478,7 @@ class GitHubSource(SkillSource):
             tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
             resp = httpx.get(
                 tree_url, params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
+                headers=headers, timeout=30, follow_redirects=False,
             )
             if resp.status_code != 200:
                 return None
@@ -554,7 +555,7 @@ class GitHubSource(SkillSource):
                 f"https://api.github.com/repos/{repo}",
                 headers=self.auth.get_headers(),
                 timeout=15,
-                follow_redirects=True,
+                follow_redirects=False,
             )
             if resp.status_code != 200:
                 return None
@@ -569,7 +570,7 @@ class GitHubSource(SkillSource):
                 params={"recursive": "1"},
                 headers=self.auth.get_headers(),
                 timeout=30,
-                follow_redirects=True,
+                follow_redirects=False,
             )
             if resp.status_code != 200:
                 return None
@@ -597,7 +598,7 @@ class GitHubSource(SkillSource):
             resp = httpx.get(
                 url,
                 headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-                timeout=15, follow_redirects=True,
+                timeout=15, follow_redirects=False,
             )
             if resp.status_code == 200:
                 return resp.text
@@ -873,8 +874,10 @@ class WellKnownSkillSource(SkillSource):
 
     @staticmethod
     def _fetch_text(url: str) -> Optional[str]:
+        if not is_safe_url(url):
+            return None
         try:
-            resp = httpx.get(url, timeout=20, follow_redirects=True)
+            resp = httpx.get(url, timeout=20, follow_redirects=False)
             if resp.status_code == 200:
                 return resp.text
         except httpx.HTTPError:
@@ -1711,6 +1714,8 @@ class ClawHubSource(SkillSource):
         return results
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
+        if not is_safe_url(url):
+            return None
         try:
             resp = httpx.get(url, timeout=timeout)
             if resp.status_code != 200:
@@ -1785,7 +1790,7 @@ class ClawHubSource(SkillSource):
                     f"{self.BASE_URL}/download",
                     params={"slug": slug, "version": version},
                     timeout=30,
-                    follow_redirects=True,
+                    follow_redirects=False,
                 )
                 if resp.status_code == 429:
                     retry_after = int(resp.headers.get("retry-after", "5"))
@@ -1833,6 +1838,8 @@ class ClawHubSource(SkillSource):
         return files
 
     def _fetch_text(self, url: str) -> Optional[str]:
+        if not is_safe_url(url):
+            return None
         try:
             resp = httpx.get(url, timeout=20)
             if resp.status_code == 200:

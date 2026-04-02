@@ -704,14 +704,14 @@ class TestHasAnyProviderConfigured:
         assert _has_any_provider_configured() is True
 
     def test_config_dict_no_provider_no_creds_still_false(self, monkeypatch, tmp_path):
-        """config.yaml model dict with only 'default' key and no creds stays false."""
+        """config.yaml model dict with empty default and no creds stays false."""
         import yaml
         from hermes_cli import config as config_module
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_file = hermes_home / "config.yaml"
         config_file.write_text(yaml.dump({
-            "model": {"default": "anthropic/claude-opus-4.6"},
+            "model": {"default": ""},
         }))
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)

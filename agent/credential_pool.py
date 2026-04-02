@@ -267,6 +267,10 @@ class CredentialPool:
     def has_credentials(self) -> bool:
         return bool(self._entries)
 
+    def has_available(self) -> bool:
+        """True if at least one entry is not currently in exhaustion cooldown."""
+        return bool(self._available_entries())
+
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
 

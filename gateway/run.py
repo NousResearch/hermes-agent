@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
@@ -788,6 +789,7 @@ class GatewayRunner:
             "api_mode": runtime_kwargs.get("api_mode"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
+            "credential_pool": runtime_kwargs.get("credential_pool"),
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
@@ -1278,8 +1280,8 @@ class GatewayRunner:
             try:
                 self.session_store._ensure_loaded()
                 for key, entry in list(self.session_store._entries.items()):
-                    if entry.session_id in self.session_store._pre_flushed_sessions:
-                        continue  # already flushed this session
+                    if entry.memory_flushed:
+                        continue  # already flushed this session (persisted to disk)
                     if not self.session_store._is_session_expired(entry):
                         continue  # session still active
                     # Session has expired — flush memories in the background
@@ -1290,7 +1292,15 @@ class GatewayRunner:
                     try:
                         await self._async_flush_memories(entry.session_id, key)
                         self._shutdown_gateway_honcho(key)
-                        self.session_store._pre_flushed_sessions.add(entry.session_id)
+                        # Mark as flushed and persist to disk so the flag
+                        # survives gateway restarts.
+                        with self.session_store._lock:
+                            entry.memory_flushed = True
+                            self.session_store._save()
+                        logger.info(
+                            "Pre-reset memory flush completed for session %s",
+                            entry.session_id,
+                        )
                     except Exception as e:
                         logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
             except Exception as e:
@@ -4719,8 +4729,12 @@ class GatewayRunner:
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
-    async def _handle_approve_command(self, event: MessageEvent) -> str:
+    async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — execute a pending dangerous command.
+
+        After execution, re-invokes the agent with the command result so it
+        can continue its multi-step task (fixes the "dead agent" bug where
+        the agent loop exited on approval_required and never resumed).
 
         Usage:
             /approve          — approve and execute the pending command
@@ -4770,8 +4784,57 @@ class GatewayRunner:
 
         logger.info("User approved dangerous command via /approve: %s...%s", cmd[:60], scope_msg)
         from tools.terminal_tool import terminal_tool
-        result = terminal_tool(command=cmd, force=True)
-        return f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
+        result = await asyncio.to_thread(terminal_tool, command=cmd, force=True)
+
+        # Send immediate feedback so the user sees the command output right away
+        immediate_msg = f"✅ Command approved and executed{scope_msg}.\n\n```\n{result[:3500]}\n```"
+        adapter = self.adapters.get(source.platform)
+        if adapter:
+            try:
+                await adapter.send(source.chat_id, immediate_msg)
+            except Exception as e:
+                logger.warning("Failed to send approval feedback: %s", e)
+
+        # Re-invoke the agent with the command result so it can continue its task.
+        # The agent's conversation history (persisted in SQLite) already contains
+        # the tool call that returned approval_required — the continuation message
+        # provides the actual execution output so the agent can pick up where it
+        # left off.
+        continuation_text = (
+            f"[System: The user approved the previously blocked command and it has been executed.\n"
+            f"Command: {cmd}\n"
+            f"<command_output>\n{result[:3500]}\n</command_output>\n\n"
+            f"Continue with the task you were working on.]"
+        )
+
+        synthetic_event = MessageEvent(
+            text=continuation_text,
+            source=source,
+            message_id=f"approve-continuation-{uuid.uuid4().hex}",
+        )
+
+        async def _continue_agent():
+            try:
+                response = await self._handle_message(synthetic_event)
+                if response and adapter:
+                    await adapter.send(source.chat_id, response)
+            except Exception as e:
+                logger.error("Failed to continue agent after /approve: %s", e)
+                if adapter:
+                    try:
+                        await adapter.send(
+                            source.chat_id,
+                            f"⚠️ Failed to resume agent after approval: {e}"
+                        )
+                    except Exception:
+                        pass
+
+        _task = asyncio.create_task(_continue_agent())
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+        # Return None — we already sent the immediate feedback and the agent
+        # continuation is running in the background.
+        return None
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
         """Handle /deny command — reject a pending dangerous command."""
@@ -6131,7 +6194,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     logger.info("Cron ticker stopped")
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False) -> bool:
+async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
     
@@ -6232,6 +6295,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     file_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(logging.INFO)
+
+    # Optional stderr handler — level driven by -v/-q flags on the CLI.
+    # verbosity=None (-q/--quiet): no stderr output
+    # verbosity=0    (default):    WARNING and above
+    # verbosity=1    (-v):         INFO and above
+    # verbosity=2+   (-vv/-vvv):   DEBUG
+    if verbosity is not None:
+        _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+        _stderr_handler = logging.StreamHandler()
+        _stderr_handler.setLevel(_stderr_level)
+        _stderr_handler.setFormatter(RedactingFormatter('%(levelname)s %(name)s: %(message)s'))
+        logging.getLogger().addHandler(_stderr_handler)
+        # Lower root logger level if needed so DEBUG records can reach the handler
+        if _stderr_level < logging.getLogger().level:
+            logging.getLogger().setLevel(_stderr_level)
 
     # Separate errors-only log for easy debugging
     error_handler = RotatingFileHandler(

@@ -11,3 +11,5 @@ node_modules
 
 # Environment files
 .env
+
+*.md

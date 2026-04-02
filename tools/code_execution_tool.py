@@ -596,6 +596,14 @@ def execute_code(
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
+        # Redact secrets (API keys, tokens, etc.) from sandbox output.
+        # The sandbox env-var filter (lines 434-454) blocks os.environ access,
+        # but scripts can still read secrets from disk (e.g. open('~/.hermes/.env')).
+        # This ensures leaked secrets never enter the model context.
+        from agent.redact import redact_sensitive_text
+        stdout_text = redact_sensitive_text(stdout_text)
+        stderr_text = redact_sensitive_text(stderr_text)
+
         # Build response
         result: Dict[str, Any] = {
             "status": status,
@@ -757,7 +765,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
+        "terminal() is foreground-only (no background or pty). "
+        "If the session uses a cloud sandbox backend, treat it as resumable task state rather than a durable always-on machine.\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"

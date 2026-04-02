@@ -71,7 +71,7 @@ def _get_model_config() -> Dict[str, Any]:
         default = (cfg.get("default") or "").strip()
         base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
-        is_fallback = not default or default == "anthropic/claude-opus-4.6"
+        is_fallback = not default
         if is_local and is_fallback and base_url:
             detected = _auto_detect_local_model(base_url)
             if detected:
@@ -133,6 +133,8 @@ def _resolve_runtime_from_pool_entry(
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
+    elif provider == "openrouter":
+        base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "nous":
         api_mode = "chat_completions"
     elif provider == "copilot":

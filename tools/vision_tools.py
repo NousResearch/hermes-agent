@@ -39,10 +39,33 @@ from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
+from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
+
+# Configurable HTTP download timeout for _download_image().
+# Separate from auxiliary.vision.timeout which governs the LLM API call.
+# Resolution: config.yaml auxiliary.vision.download_timeout → env var → 30s default.
+def _resolve_download_timeout() -> float:
+    env_val = os.getenv("HERMES_VISION_DOWNLOAD_TIMEOUT", "").strip()
+    if env_val:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg.get("auxiliary", {}).get("vision", {}).get("download_timeout")
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return 30.0
+
+_VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 
 
 def _validate_image_url(url: str) -> bool:
@@ -74,6 +97,28 @@ def _validate_image_url(url: str) -> bool:
         return False
 
     return True
+
+
+def _detect_image_mime_type(image_path: Path) -> Optional[str]:
+    """Return a MIME type when the file looks like a supported image."""
+    with image_path.open("rb") as f:
+        header = f.read(64)
+
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if header.startswith(b"BM"):
+        return "image/bmp"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    if image_path.suffix.lower() == ".svg":
+        head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
+        if "<svg" in head:
+            return "image/svg+xml"
+    return None
 
 
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
@@ -115,11 +160,15 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     last_error = None
     for attempt in range(max_retries):
         try:
+            blocked = check_website_access(image_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
+
             # Download the image with appropriate headers using async httpx
             # Enable follow_redirects to handle image CDNs that redirect (e.g., Imgur, Picsum)
             # SSRF: event_hooks validates each redirect target against private IP ranges
             async with httpx.AsyncClient(
-                timeout=30.0,
+                timeout=_VISION_DOWNLOAD_TIMEOUT,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
             ) as client:
@@ -131,6 +180,11 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                     },
                 )
                 response.raise_for_status()
+
+                final_url = str(response.url)
+                blocked = check_website_access(final_url)
+                if blocked:
+                    raise PermissionError(blocked["message"])
                 
                 # Save the image content
                 destination.write_bytes(response.content)
@@ -151,6 +205,10 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                     exc_info=True,
                 )
     
+    if last_error is None:
+        raise RuntimeError(
+            f"_download_image exited retry loop without attempting (max_retries={max_retries})"
+        )
     raise last_error
 
 
@@ -257,6 +315,7 @@ async def vision_analyze_tool(
     # Track whether we should clean up the file after processing.
     # Local files (e.g. from the image cache) should NOT be deleted.
     should_cleanup = True
+    detected_mime_type = None
     
     try:
         from tools.interrupt import is_interrupted
@@ -275,6 +334,9 @@ async def vision_analyze_tool(
             should_cleanup = False  # Don't delete cached/local files
         elif _validate_image_url(image_url):
             # Remote URL -- download to a temporary location
+            blocked = check_website_access(image_url)
+            if blocked:
+                raise PermissionError(blocked["message"])
             logger.info("Downloading image from URL...")
             temp_dir = Path("./temp_vision_images")
             temp_image_path = temp_dir / f"temp_image_{uuid.uuid4()}.jpg"
@@ -289,10 +351,14 @@ async def vision_analyze_tool(
         image_size_bytes = temp_image_path.stat().st_size
         image_size_kb = image_size_bytes / 1024
         logger.info("Image ready (%.1f KB)", image_size_kb)
+
+        detected_mime_type = _detect_image_mime_type(temp_image_path)
+        if not detected_mime_type:
+            raise ValueError("Only real image files are supported for vision analysis.")
         
         # Convert image to base64 data URL
         logger.info("Converting image to base64...")
-        image_data_url = _image_to_base64_data_url(temp_image_path)
+        image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
         # Calculate size in KB for better readability
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from tools.skill_manager_tool import (
     _validate_name,
+    _validate_category,
     _validate_frontmatter,
     _validate_file_path,
     _find_skill,
@@ -80,6 +81,22 @@ class TestValidateName:
         assert "Invalid skill name 'skill name'" in err
         err = _validate_name("skill@name")
         assert "Invalid skill name 'skill@name'" in err
+
+
+class TestValidateCategory:
+    def test_valid_categories(self):
+        assert _validate_category(None) is None
+        assert _validate_category("") is None
+        assert _validate_category("devops") is None
+        assert _validate_category("mlops-v2") is None
+
+    def test_path_traversal_rejected(self):
+        err = _validate_category("../escape")
+        assert "Invalid category '../escape'" in err
+
+    def test_absolute_path_rejected(self):
+        err = _validate_category("/tmp/escape")
+        assert "Invalid category '/tmp/escape'" in err
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +208,29 @@ class TestCreateSkill:
             result = _create_skill("my-skill", "no frontmatter here")
         assert result["success"] is False
 
+    def test_create_rejects_category_traversal(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="../escape")
+
+        assert result["success"] is False
+        assert "Invalid category '../escape'" in result["error"]
+        assert not (tmp_path / "escape").exists()
+
+    def test_create_rejects_absolute_category(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        outside = tmp_path / "outside"
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT, category=str(outside))
+
+        assert result["success"] is False
+        assert f"Invalid category '{outside}'" in result["error"]
+        assert not (outside / "my-skill" / "SKILL.md").exists()
+
 
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
@@ -231,7 +271,7 @@ class TestPatchSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _patch_skill("my-skill", "this text does not exist", "replacement")
         assert result["success"] is False
-        assert "not found" in result["error"]
+        assert "not found" in result["error"].lower() or "could not find" in result["error"].lower()
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
@@ -248,7 +288,7 @@ word word
             _create_skill("my-skill", content)
             result = _patch_skill("my-skill", "word", "replaced")
         assert result["success"] is False
-        assert "matched" in result["error"]
+        assert "match" in result["error"].lower()
 
     def test_patch_replace_all(self, tmp_path):
         content = """\

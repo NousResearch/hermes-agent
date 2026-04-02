@@ -265,10 +265,11 @@ def cmd_install(identifier: str, force: bool = False) -> None:
                 )
                 sys.exit(1)
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                from hermes_cli.config import recommended_update_command
                 console.print(
                     f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
                     f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                    f"Run [bold]hermes update[/bold] to get a newer installer."
+                    f"Run [bold]{recommended_update_command()}[/bold] to get a newer installer."
                 )
                 sys.exit(1)
 
@@ -374,6 +375,73 @@ def cmd_remove(name: str) -> None:
     _display_removed(name, plugins_dir)
 
 
+def _get_disabled_set() -> set:
+    """Read the disabled plugins set from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        disabled = config.get("plugins", {}).get("disabled", [])
+        return set(disabled) if isinstance(disabled, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_disabled_set(disabled: set) -> None:
+    """Write the disabled plugins list to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "plugins" not in config:
+        config["plugins"] = {}
+    config["plugins"]["disabled"] = sorted(disabled)
+    save_config(config)
+
+
+def cmd_enable(name: str) -> None:
+    """Enable a previously disabled plugin."""
+    from rich.console import Console
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    # Verify the plugin exists
+    target = plugins_dir / name
+    if not target.is_dir():
+        console.print(f"[red]Plugin '{name}' is not installed.[/red]")
+        sys.exit(1)
+
+    disabled = _get_disabled_set()
+    if name not in disabled:
+        console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
+        return
+
+    disabled.discard(name)
+    _save_disabled_set(disabled)
+    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. Takes effect on next session.")
+
+
+def cmd_disable(name: str) -> None:
+    """Disable a plugin without removing it."""
+    from rich.console import Console
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    # Verify the plugin exists
+    target = plugins_dir / name
+    if not target.is_dir():
+        console.print(f"[red]Plugin '{name}' is not installed.[/red]")
+        sys.exit(1)
+
+    disabled = _get_disabled_set()
+    if name in disabled:
+        console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
+        return
+
+    disabled.add(name)
+    _save_disabled_set(disabled)
+    console.print(f"[yellow]⊘[/yellow] Plugin [bold]{name}[/bold] disabled. Takes effect on next session.")
+
+
 def cmd_list() -> None:
     """List installed plugins."""
     from rich.console import Console
@@ -393,8 +461,11 @@ def cmd_list() -> None:
         console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
         return
 
+    disabled = _get_disabled_set()
+
     table = Table(title="Installed Plugins", show_lines=False)
     table.add_column("Name", style="bold")
+    table.add_column("Status")
     table.add_column("Version", style="dim")
     table.add_column("Description")
     table.add_column("Source", style="dim")
@@ -420,11 +491,86 @@ def cmd_list() -> None:
         if (d / ".git").exists():
             source = "git"
 
-        table.add_row(name, str(version), description, source)
+        is_disabled = name in disabled or d.name in disabled
+        status = "[red]disabled[/red]" if is_disabled else "[green]enabled[/green]"
+        table.add_row(name, status, str(version), description, source)
 
     console.print()
     console.print(table)
     console.print()
+    console.print("[dim]Interactive toggle:[/dim] hermes plugins")
+    console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
+
+
+def cmd_toggle() -> None:
+    """Interactive curses checklist to enable/disable installed plugins."""
+    from rich.console import Console
+
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
+    if not dirs:
+        console.print("[dim]No plugins installed.[/dim]")
+        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
+        return
+
+    disabled = _get_disabled_set()
+
+    # Build items list: "name — description" for display
+    names = []
+    labels = []
+    selected = set()
+
+    for i, d in enumerate(dirs):
+        manifest_file = d / "plugin.yaml"
+        name = d.name
+        description = ""
+
+        if manifest_file.exists() and yaml:
+            try:
+                with open(manifest_file) as f:
+                    manifest = yaml.safe_load(f) or {}
+                name = manifest.get("name", d.name)
+                description = manifest.get("description", "")
+            except Exception:
+                pass
+
+        names.append(name)
+        label = f"{name} — {description}" if description else name
+        labels.append(label)
+
+        if name not in disabled and d.name not in disabled:
+            selected.add(i)
+
+    from hermes_cli.curses_ui import curses_checklist
+
+    result = curses_checklist(
+        title="Plugins — toggle enabled/disabled",
+        items=labels,
+        selected=selected,
+    )
+
+    # Compute new disabled set from deselected items
+    new_disabled = set()
+    for i, name in enumerate(names):
+        if i not in result:
+            new_disabled.add(name)
+
+    if new_disabled != disabled:
+        _save_disabled_set(new_disabled)
+        enabled_count = len(names) - len(new_disabled)
+        console.print(
+            f"\n[green]✓[/green] {enabled_count} enabled, {len(new_disabled)} disabled. "
+            f"Takes effect on next session."
+        )
+    else:
+        console.print("\n[dim]No changes.[/dim]")
 
 
 def plugins_command(args) -> None:
@@ -437,8 +583,14 @@ def plugins_command(args) -> None:
         cmd_update(args.name)
     elif action in ("remove", "rm", "uninstall"):
         cmd_remove(args.name)
-    elif action in ("list", "ls") or action is None:
+    elif action == "enable":
+        cmd_enable(args.name)
+    elif action == "disable":
+        cmd_disable(args.name)
+    elif action in ("list", "ls"):
         cmd_list()
+    elif action is None:
+        cmd_toggle()
     else:
         from rich.console import Console
 

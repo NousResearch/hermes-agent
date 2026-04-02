@@ -258,7 +258,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
     """
-    from model_tools import check_tool_availability
+    from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     if get_toolset_for_tool is None:
         from model_tools import get_toolset_for_tool
 
@@ -267,8 +267,18 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     disabled_tools = set()
+    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
+    # homeassistant) — they show as unavailable at banner time because the
+    # check hasn't run yet, but they aren't misconfigured.
+    lazy_tools = set()
     for item in unavailable_toolsets:
-        disabled_tools.update(item.get("tools", []))
+        toolset_name = item.get("name", "")
+        ts_req = TOOLSET_REQUIREMENTS.get(toolset_name, {})
+        tools_in_ts = item.get("tools", [])
+        if ts_req.get("check_fn"):
+            lazy_tools.update(tools_in_ts)
+        else:
+            disabled_tools.update(tools_in_ts)
 
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("left", justify="center")
@@ -328,6 +338,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         for name in sorted(tool_names):
             if name in disabled_tools:
                 colored_names.append(f"[red]{name}[/]")
+            elif name in lazy_tools:
+                colored_names.append(f"[yellow]{name}[/]")
             else:
                 colored_names.append(f"[{text}]{name}[/]")
 
@@ -347,6 +359,8 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     colored_names.append("[dim]...[/]")
                 elif name in disabled_tools:
                     colored_names.append(f"[red]{name}[/]")
+                elif name in lazy_tools:
+                    colored_names.append(f"[yellow]{name}[/]")
                 else:
                     colored_names.append(f"[{text}]{name}[/]")
             tools_str = ", ".join(colored_names)
@@ -403,16 +417,26 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Show active profile name when not 'default'
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _profile_name = get_active_profile_name()
+        if _profile_name and _profile_name != "default":
+            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+    except Exception:
+        pass  # Never break the banner over a profiles.py bug
+
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
     # Update check — use prefetched result if available
     try:
         behind = get_update_result(timeout=0.5)
         if behind and behind > 0:
+            from hermes_cli.config import recommended_update_command
             commits_word = "commit" if behind == 1 else "commits"
             right_lines.append(
                 f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                f"[dim yellow] — run [bold]hermes update[/bold] to update[/]"
+                f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
             )
     except Exception:
         pass  # Never break the banner over an update check

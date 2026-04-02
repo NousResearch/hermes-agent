@@ -1,10 +1,13 @@
 ---
-sidebar_position: 20
+sidebar_position: 11
+sidebar_label: "Plugins"
+title: "Plugins"
+description: "Extend Hermes with custom tools, hooks, and integrations via the plugin system"
 ---
 
 # Plugins
 
-Hermes has a plugin system for adding custom tools, hooks, slash commands, and integrations without modifying core code.
+Hermes has a plugin system for adding custom tools, hooks, and integrations without modifying core code.
 
 **→ [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin)** — step-by-step guide with a complete working example.
 
@@ -22,6 +25,56 @@ Drop a directory into `~/.hermes/plugins/` with a `plugin.yaml` and Python code:
 
 Start Hermes — your tools appear alongside built-in tools. The model can call them immediately.
 
+### Minimal working example
+
+Here is a complete plugin that adds a `hello_world` tool and logs every tool call via a hook.
+
+**`~/.hermes/plugins/hello-world/plugin.yaml`**
+
+```yaml
+name: hello-world
+version: "1.0"
+description: A minimal example plugin
+```
+
+**`~/.hermes/plugins/hello-world/__init__.py`**
+
+```python
+"""Minimal Hermes plugin — registers a tool and a hook."""
+
+
+def register(ctx):
+    # --- Tool: hello_world ---
+    schema = {
+        "name": "hello_world",
+        "description": "Returns a friendly greeting for the given name.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name to greet",
+                }
+            },
+            "required": ["name"],
+        },
+    }
+
+    def handle_hello(params):
+        name = params.get("name", "World")
+        return f"Hello, {name}! 👋  (from the hello-world plugin)"
+
+    ctx.register_tool("hello_world", schema, handle_hello)
+
+    # --- Hook: log every tool call ---
+    def on_tool_call(tool_name, params, result):
+        print(f"[hello-world] tool called: {tool_name}")
+
+    ctx.register_hook("post_tool_call", on_tool_call)
+```
+
+Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the model can immediately call `hello_world`. The hook prints a log line after every tool invocation.
+
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
 ## What plugins can do
@@ -30,7 +83,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 |-----------|-----|
 | Add tools | `ctx.register_tool(name, schema, handler)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
-| Add slash commands | `ctx.register_command("mycommand", handler)` |
+| Inject messages | `ctx.inject_message(content, role="user")` — see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | Copy `skill.md` to `~/.hermes/skills/` at load time |
 | Gate on env vars | `requires_env: [API_KEY]` in plugin.yaml |
@@ -57,39 +110,51 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | `on_session_start` | New session created (first turn only) |
 | `on_session_end` | End of every `run_conversation` call |
 
-## Slash commands
-
-Plugins can register slash commands that work in both CLI and messaging platforms:
-
-```python
-def register(ctx):
-    ctx.register_command(
-        name="greet",
-        handler=lambda args: f"Hello, {args or 'world'}!",
-        description="Greet someone",
-        args_hint="[name]",
-        aliases=("hi",),
-    )
-```
-
-The handler receives the argument string (everything after `/greet`) and returns a string to display. Registered commands automatically appear in `/help`, tab autocomplete, Telegram bot menu, and Slack subcommand mapping.
-
-| Parameter | Description |
-|-----------|-------------|
-| `name` | Command name without slash |
-| `handler` | Callable that takes `args: str` and returns `str | None` |
-| `description` | Shown in `/help` |
-| `args_hint` | Usage hint, e.g. `"[name]"` |
-| `aliases` | Tuple of alternative names |
-| `cli_only` | Only available in CLI |
-| `gateway_only` | Only available in messaging platforms |
-| `gateway_config_gate` | Config dotpath (e.g. `"display.my_option"`). When set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. |
-
 ## Managing plugins
 
+```bash
+hermes plugins                  # interactive toggle UI — enable/disable with checkboxes
+hermes plugins list             # table view with enabled/disabled status
+hermes plugins install user/repo  # install from Git
+hermes plugins update my-plugin   # pull latest
+hermes plugins remove my-plugin   # uninstall
+hermes plugins enable my-plugin   # re-enable a disabled plugin
+hermes plugins disable my-plugin  # disable without removing
 ```
-/plugins              # list loaded plugins in a session
-hermes config set display.show_cost true  # show cost in status bar
+
+Running `hermes plugins` with no arguments launches an interactive curses checklist (same UI as `hermes tools`) where you can toggle plugins on/off with arrow keys and space.
+
+Disabled plugins remain installed but are skipped during loading. The disabled list is stored in `config.yaml` under `plugins.disabled`:
+
+```yaml
+plugins:
+  disabled:
+    - my-noisy-plugin
 ```
+
+In a running session, `/plugins` shows which plugins are currently loaded.
+
+## Injecting Messages
+
+Plugins can inject messages into the active conversation using `ctx.inject_message()`:
+
+```python
+ctx.inject_message("New data arrived from the webhook", role="user")
+```
+
+**Signature:** `ctx.inject_message(content: str, role: str = "user") -> bool`
+
+How it works:
+
+- If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
+- If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
+- For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
+- Returns `True` if the message was queued successfully, `False` if no CLI reference is available (e.g. in gateway mode).
+
+This enables plugins like remote control viewers, messaging bridges, or webhook receivers to feed messages into the conversation from external sources.
+
+:::note
+`inject_message` is only available in CLI mode. In gateway mode, there is no CLI reference and the method returns `False`.
+:::
 
 See the **[full guide](/docs/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

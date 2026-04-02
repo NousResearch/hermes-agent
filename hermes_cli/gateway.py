@@ -15,7 +15,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
-from hermes_constants import display_hermes_home
+# display_hermes_home is imported lazily at call sites to avoid ImportError
+# when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -462,6 +463,32 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _hermes_home_for_target_user(target_home_dir: str) -> str:
+    """Remap the current HERMES_HOME to the equivalent under a target user's home.
+
+    When installing a system service via sudo, get_hermes_home() resolves to
+    root's home.  This translates it to the target user's equivalent path:
+      /root/.hermes                    → /home/alice/.hermes
+      /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
+      /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
+    """
+    current_hermes = get_hermes_home().resolve()
+    current_default = (Path.home() / ".hermes").resolve()
+    target_default = Path(target_home_dir) / ".hermes"
+
+    # Default ~/.hermes → remap to target user's default
+    if current_hermes == current_default:
+        return str(target_default)
+
+    # Profile or subdir of ~/.hermes → preserve the relative structure
+    try:
+        relative = current_hermes.relative_to(current_default)
+        return str(target_default / relative)
+    except ValueError:
+        # Completely custom path (not under ~/.hermes) — keep as-is
+        return str(current_hermes)
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -477,12 +504,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
 
-    hermes_home = str(get_hermes_home().resolve())
-
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        hermes_home = _hermes_home_for_target_user(home_dir)
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
@@ -517,6 +543,7 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
+    hermes_home = str(get_hermes_home().resolve())
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
@@ -936,7 +963,8 @@ def launchd_install(force: bool = False):
     print()
     print("Next steps:")
     print("  hermes gateway status             # Check status")
-    print(f"  tail -f {display_hermes_home()}/logs/gateway.log  # View logs")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
@@ -1064,11 +1092,12 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
-def run_gateway(verbose: bool = False, replace: bool = False):
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
     Args:
-        verbose: Enable verbose logging output.
+        verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
+        quiet: Suppress all stderr log output.
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
@@ -1087,7 +1116,8 @@ def run_gateway(verbose: bool = False, replace: bool = False):
     
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
-    success = asyncio.run(start_gateway(replace=replace))
+    verbosity = None if quiet else verbose
+    success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
         sys.exit(1)
 
@@ -1318,6 +1348,59 @@ _PLATFORMS = [
              "help": "The AppKey from your DingTalk application credentials."},
             {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
              "help": "The AppSecret from your DingTalk application credentials."},
+        ],
+    },
+    {
+        "key": "feishu",
+        "label": "Feishu / Lark",
+        "emoji": "🪽",
+        "token_var": "FEISHU_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)",
+            "2. Create an app and copy the App ID and App Secret",
+            "3. Enable the Bot capability for the app",
+            "4. Choose WebSocket (recommended) or Webhook connection mode",
+            "5. Add the bot to a group chat or message it directly",
+            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Feishu/Lark application."},
+            {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret from your Feishu/Lark application."},
+            {"name": "FEISHU_DOMAIN", "prompt": "Domain — feishu or lark (default: feishu)", "password": False,
+             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
+            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
+             "help": "websocket is recommended unless you specifically need webhook mode."},
+            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which Feishu/Lark users can interact with the bot."},
+            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
+    {
+        "key": "wecom",
+        "label": "WeCom (Enterprise WeChat)",
+        "emoji": "💬",
+        "token_var": "WECOM_BOT_ID",
+        "setup_instructions": [
+            "1. Go to WeCom Admin Console → Applications → Create AI Bot",
+            "2. Copy the Bot ID and Secret from the bot's credentials page",
+            "3. The bot connects via WebSocket — no public endpoint needed",
+            "4. Add the bot to a group chat or message it directly in WeCom",
+            "5. Restrict access with WECOM_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
+             "help": "The Bot ID from your WeCom AI Bot."},
+            {"name": "WECOM_SECRET", "prompt": "Secret", "password": True,
+             "help": "The secret from your WeCom AI Bot."},
+            {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WeCom users can interact with the bot."},
+            {"name": "WECOM_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
         ],
     },
 ]
@@ -1808,9 +1891,10 @@ def gateway_command(args):
     
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
-        verbose = getattr(args, 'verbose', False)
+        verbose = getattr(args, 'verbose', 0)
+        quiet = getattr(args, 'quiet', False)
         replace = getattr(args, 'replace', False)
-        run_gateway(verbose, replace=replace)
+        run_gateway(verbose, quiet=quiet, replace=replace)
         return
 
     if subcmd == "setup":
@@ -1938,7 +2022,7 @@ def gateway_command(args):
 
             # Start fresh
             print("Starting gateway...")
-            run_gateway(verbose=False)
+            run_gateway(verbose=0)
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)

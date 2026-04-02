@@ -644,6 +644,9 @@ class InsightsEngine:
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
+        cache_total = o.get("total_cache_read_tokens", 0) + o.get("total_cache_write_tokens", 0)
+        if cache_total > 0:
+            lines.append(f"  Cache read:        {o['total_cache_read_tokens']:<12,}  Cache write:     {o['total_cache_write_tokens']:,}")
         cost_str = f"${o['estimated_cost']:.2f}"
         if o.get("models_without_pricing"):
             cost_str += " *"
@@ -746,7 +749,11 @@ class InsightsEngine:
 
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
-        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        cache_total = o.get("total_cache_read_tokens", 0) + o.get("total_cache_write_tokens", 0)
+        if cache_total > 0:
+            lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,} / cache: {cache_total:,})")
+        else:
+            lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
         cost_note = ""
         if o.get("models_without_pricing"):
             cost_note = " _(excludes custom/self-hosted models)_"

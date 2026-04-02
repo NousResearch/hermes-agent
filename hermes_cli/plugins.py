@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from utils import env_var_enabled
+
 try:
     import yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
@@ -65,7 +67,18 @@ _NS_PARENT = "hermes_plugins"
 
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_var_enabled(name)
+
+
+def _get_disabled_plugins() -> set:
+    """Read the disabled plugins list from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        disabled = config.get("plugins", {}).get("disabled", [])
+        return set(disabled) if isinstance(disabled, list) else set()
+    except Exception:
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +154,34 @@ class PluginContext:
         self._manager._plugin_tool_names.add(name)
         logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
 
+    # -- message injection --------------------------------------------------
+
+    def inject_message(self, content: str, role: str = "user") -> bool:
+        """Inject a message into the active conversation.
+
+        If the agent is idle (waiting for user input), this starts a new turn.
+        If the agent is running, this interrupts and injects the message.
+
+        This enables plugins (e.g. remote control viewers, messaging bridges)
+        to send messages into the conversation from external sources.
+
+        Returns True if the message was queued successfully.
+        """
+        cli = self._manager._cli_ref
+        if cli is None:
+            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if getattr(cli, "_agent_running", False):
+            # Agent is mid-turn — interrupt with the message
+            cli._interrupt_queue.put(msg)
+        else:
+            # Agent is idle — queue as next input
+            cli._pending_input.put(msg)
+        return True
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -173,6 +214,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._discovered: bool = False
+        self._cli_ref = None  # Set by CLI after plugin discovery
 
     # -----------------------------------------------------------------------
     # Public
@@ -199,8 +241,15 @@ class PluginManager:
         # 3. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest
+        # Load each manifest (skip user-disabled plugins)
+        disabled = _get_disabled_plugins()
         for manifest in manifests:
+            if manifest.name in disabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "disabled via config"
+                self._plugins[manifest.name] = loaded
+                logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                continue
             self._load_plugin(manifest)
 
         if manifests:

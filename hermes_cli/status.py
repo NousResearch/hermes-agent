@@ -15,8 +15,10 @@ from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
+from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -187,6 +189,31 @@ def show_status(args):
         print(f"    Error:      {codex_status.get('error')}")
 
     # =========================================================================
+    # Nous Subscription Features
+    # =========================================================================
+    if managed_nous_tools_enabled():
+        features = get_nous_subscription_features(config)
+        print()
+        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        if not features.nous_auth_present:
+            print("  Nous Portal   ✗ not logged in")
+        else:
+            print("  Nous Portal   ✓ managed tools available")
+        for feature in features.items():
+            if feature.managed_by_nous:
+                state = "active via Nous subscription"
+            elif feature.active:
+                current = feature.current_provider or "configured provider"
+                state = f"active via {current}"
+            elif feature.included_by_default and features.nous_auth_present:
+                state = "included by subscription, not currently selected"
+            elif feature.key == "modal" and features.nous_auth_present:
+                state = "available via subscription (optional)"
+            else:
+                state = "not configured"
+            print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
+
+    # =========================================================================
     # API-Key Providers
     # =========================================================================
     print()
@@ -254,6 +281,9 @@ def show_status(args):
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
+        "DingTalk": ("DINGTALK_CLIENT_ID", None),
+        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
+        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -282,23 +312,31 @@ def show_status(args):
             _gw_svc = get_service_name()
         except Exception:
             _gw_svc = "hermes-gateway"
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", _gw_svc],
-            capture_output=True,
-            text=True
-        )
-        is_active = result.stdout.strip() == "active"
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", _gw_svc],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            is_active = result.stdout.strip() == "active"
+        except subprocess.TimeoutExpired:
+            is_active = False
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
         print("  Manager:      systemd (user)")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True
-        )
-        is_loaded = result.returncode == 0
+        try:
+            result = subprocess.run(
+                ["launchctl", "list", get_launchd_label()],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            is_loaded = result.returncode == 0
+        except subprocess.TimeoutExpired:
+            is_loaded = False
         print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
         print("  Manager:      launchd")
     else:

@@ -3,18 +3,22 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH, Singularity, and Daytona environments.
-Supports local execution, Docker containers, and Modal cloud sandboxes.
+Supports local execution, containerized backends, and Modal cloud sandboxes, including managed gateway mode.
 
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
-- "modal": Execute in Modal cloud sandboxes (scalable, requires Modal account)
+- "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 
 Features:
 - Multiple execution backends (local, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
+
+Cloud sandbox note:
+- Persistent filesystems preserve working state across sandbox recreation
+- Persistent filesystems do NOT guarantee the same live sandbox or long-running processes survive cleanup, idle reaping, or Hermes exit
 
 Usage:
     from terminal_tool import terminal_tool
@@ -48,7 +52,12 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
-from hermes_constants import display_hermes_home
+# display_hermes_home imported lazily at call site (stale-module safety during hermes update)
+
+
+def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
+    """Backward-compatible no-op after minisweagent_path.py removal."""
+    return
 
 
 # =============================================================================
@@ -57,6 +66,12 @@ from hermes_constants import display_hermes_home
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
+from tools.tool_backend_helpers import (
+    coerce_modal_mode,
+    has_direct_modal_credentials,
+    managed_nous_tools_enabled,
+    resolve_modal_backend_state,
+)
 
 
 # Disk usage warning threshold (in GB)
@@ -158,7 +173,8 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     for failure in sudo_failures:
         if failure in output:
-            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {display_hermes_home()}/.env on the agent machine."
+            from hermes_constants import display_hermes_home as _dhh
+            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
     
     return output
 
@@ -362,10 +378,12 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem persists between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -381,6 +399,7 @@ Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
+Important: cloud sandboxes may be cleaned up, idled out, or recreated between turns. Persistent filesystem means files can resume later; it does NOT guarantee a continuously running machine or surviving background processes. Use terminal sandboxes for task work, not durable hosting.
 """
 
 # Global state for environment lifecycle management
@@ -444,7 +463,7 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
     except (ValueError, json.JSONDecodeError):
         raise ValueError(
             f"Invalid value for {name}: {raw!r} (expected {type_label}). "
-            f"Check {display_hermes_home()}/.env or environment variables."
+            f"Check ~/.hermes/.env or environment variables."
         )
 
 
@@ -494,6 +513,7 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
+        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
@@ -524,6 +544,15 @@ def _get_env_config() -> Dict[str, Any]:
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
     }
+
+
+def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
+    """Resolve direct vs managed Modal backend selection."""
+    return resolve_modal_backend_state(
+        modal_mode,
+        has_direct=has_direct_modal_credentials(),
+        managed_ready=is_managed_tool_gateway_ready("modal"),
+    )
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
@@ -591,7 +620,39 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
                 pass
-        
+
+        modal_state = _get_modal_backend_state(cc.get("modal_mode"))
+
+        if modal_state["selected_backend"] == "managed":
+            return _ManagedModalEnvironment(
+                image=image, cwd=cwd, timeout=timeout,
+                modal_sandbox_kwargs=sandbox_kwargs,
+                persistent_filesystem=persistent, task_id=task_id,
+            )
+
+        if modal_state["selected_backend"] != "direct":
+            if modal_state["managed_mode_blocked"]:
+                raise ValueError(
+                    "Modal backend is configured for managed mode, but "
+                    "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
+                    "Modal credentials/config were found. Enable the feature flag or "
+                    "choose TERMINAL_MODAL_MODE=direct/auto."
+                )
+            if modal_state["mode"] == "managed":
+                raise ValueError(
+                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
+                )
+            if modal_state["mode"] == "direct":
+                raise ValueError(
+                    "Modal backend is configured for direct mode, but no direct Modal credentials/config were found."
+                )
+            message = "Modal backend selected but no direct Modal credentials/config was found."
+            if managed_nous_tools_enabled():
+                message = (
+                    "Modal backend selected but no direct Modal credentials/config or managed tool gateway was found."
+                )
+            raise ValueError(message)
+
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
@@ -957,6 +1018,7 @@ def terminal_tool(
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
+                                "modal_mode": config.get("modal_mode", "auto"),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                             }
@@ -1174,10 +1236,14 @@ def terminal_tool(
             }, ensure_ascii=False)
 
     except Exception as e:
+        import traceback
+        tb_str = traceback.format_exc()
+        logger.error("terminal_tool exception:\n%s", tb_str)
         return json.dumps({
             "output": "",
             "exit_code": -1,
             "error": f"Failed to execute command: {str(e)}",
+            "traceback": tb_str,
             "status": "error"
         }, ensure_ascii=False)
 
@@ -1217,18 +1283,58 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "modal":
+            modal_state = _get_modal_backend_state(config.get("modal_mode"))
+            if modal_state["selected_backend"] == "managed":
+                return True
+
+            if modal_state["selected_backend"] != "direct":
+                if modal_state["managed_mode_blocked"]:
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
+                        "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
+                        "Modal credentials/config were found. Enable the feature flag "
+                        "or choose TERMINAL_MODAL_MODE=direct/auto."
+                    )
+                    return False
+                if modal_state["mode"] == "managed":
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
+                        "tool gateway is unavailable. Configure the managed gateway or choose "
+                        "TERMINAL_MODAL_MODE=direct/auto."
+                    )
+                    return False
+                elif modal_state["mode"] == "direct":
+                    if managed_nous_tools_enabled():
+                        logger.error(
+                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                            "Modal credentials/config were found. Configure Modal or choose "
+                            "TERMINAL_MODAL_MODE=managed/auto."
+                        )
+                    else:
+                        logger.error(
+                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                            "Modal credentials/config were found. Configure Modal or choose "
+                            "TERMINAL_MODAL_MODE=auto."
+                        )
+                    return False
+                else:
+                    if managed_nous_tools_enabled():
+                        logger.error(
+                            "Modal backend selected but no direct Modal credentials/config or managed "
+                            "tool gateway was found. Configure Modal, set up the managed gateway, "
+                            "or choose a different TERMINAL_ENV."
+                        )
+                    else:
+                        logger.error(
+                            "Modal backend selected but no direct Modal credentials/config was found. "
+                            "Configure Modal or choose a different TERMINAL_ENV."
+                        )
+                    return False
+
             if importlib.util.find_spec("modal") is None:
-                logger.error("modal is required for modal terminal backend: pip install modal")
+                logger.error("modal is required for direct modal terminal backend: pip install modal")
                 return False
-            has_token = os.getenv("MODAL_TOKEN_ID") is not None
-            has_config = Path.home().joinpath(".modal.toml").exists()
-            if not (has_token or has_config):
-                logger.error(
-                    "Modal backend selected but no MODAL_TOKEN_ID environment variable "
-                    "or ~/.modal.toml config file was found. Configure Modal or choose "
-                    "a different TERMINAL_ENV."
-                )
-                return False
+
             return True
 
         elif env_type == "daytona":
@@ -1284,7 +1390,8 @@ if __name__ == "__main__":
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{display_hermes_home()}/sandboxes')}")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 

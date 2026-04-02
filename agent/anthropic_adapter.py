@@ -162,6 +162,36 @@ def _is_oauth_token(key: str) -> bool:
     return True
 
 
+def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for non-Anthropic endpoints using the Anthropic Messages API.
+
+    Third-party proxies (Azure AI Foundry, AWS Bedrock, self-hosted) authenticate
+    with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
+    detection should be skipped for these endpoints.
+    """
+    if not base_url:
+        return False  # No base_url = direct Anthropic API
+    normalized = base_url.rstrip("/").lower()
+    if "anthropic.com" in normalized:
+        return False  # Direct Anthropic API — OAuth applies
+    return True  # Any other endpoint is a third-party proxy
+
+
+def _requires_bearer_auth(base_url: str | None) -> bool:
+    """Return True for Anthropic-compatible providers that require Bearer auth.
+
+    Some third-party /anthropic endpoints implement Anthropic's Messages API but
+    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
+    """
+    if not base_url:
+        return False
+    normalized = base_url.rstrip("/").lower()
+    return normalized.startswith("https://api.minimax.io/anthropic") or normalized.startswith(
+        "https://api.minimaxi.com/anthropic"
+    )
+
+
 def build_anthropic_client(api_key: str, base_url: str = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -180,7 +210,25 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     if base_url:
         kwargs["base_url"] = base_url
 
-    if _is_oauth_token(api_key):
+    if _requires_bearer_auth(base_url):
+        # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
+        # Authorization: Bearer even for regular API keys. Route those endpoints
+        # through auth_token so the SDK sends Bearer auth instead of x-api-key.
+        # Check this before OAuth token shape detection because MiniMax secrets do
+        # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
+        # Anthropic OAuth/setup tokens.
+        kwargs["auth_token"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    elif _is_third_party_anthropic_endpoint(base_url):
+        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
+        # own API keys with x-api-key auth. Skip OAuth detection — their keys
+        # don't follow Anthropic's sk-ant-* prefix convention and would be
+        # misclassified as OAuth tokens.
+        kwargs["api_key"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
@@ -259,71 +307,105 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     return now_ms < (expires_at - 60_000)
 
 
-def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
-    """Attempt to refresh an expired Claude Code OAuth token.
-
-    Uses the same token endpoint and client_id as Claude Code / OpenCode.
-    Only works for credentials that have a refresh token (from claude /login
-    or claude setup-token with OAuth flow).
-
-    Tries the new platform.claude.com endpoint first (Claude Code >=2.1.81),
-    then falls back to console.anthropic.com for older tokens.
-
-    Returns the new access token, or None if refresh fails.
-    """
+def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> Dict[str, Any]:
+    """Refresh an Anthropic OAuth token without mutating local credential files."""
     import time
+    import urllib.parse
     import urllib.request
 
+    if not refresh_token:
+        raise ValueError("refresh_token is required")
+
+    client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    if use_json:
+        data = json.dumps({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }).encode()
+        content_type = "application/json"
+    else:
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }).encode()
+        content_type = "application/x-www-form-urlencoded"
+
+    token_endpoints = [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
+    ]
+    last_error = None
+    for endpoint in token_endpoints:
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={
+                "Content-Type": content_type,
+                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+        except Exception as exc:
+            last_error = exc
+            logger.debug("Anthropic token refresh failed at %s: %s", endpoint, exc)
+            continue
+
+        access_token = result.get("access_token", "")
+        if not access_token:
+            raise ValueError("Anthropic refresh response was missing access_token")
+        next_refresh = result.get("refresh_token", refresh_token)
+        expires_in = result.get("expires_in", 3600)
+        return {
+            "access_token": access_token,
+            "refresh_token": next_refresh,
+            "expires_at_ms": int(time.time() * 1000) + (expires_in * 1000),
+        }
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Anthropic token refresh failed")
+
+
+def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+    """Attempt to refresh an expired Claude Code OAuth token."""
     refresh_token = creds.get("refreshToken", "")
     if not refresh_token:
         logger.debug("No refresh token available — cannot refresh")
         return None
 
-    # Client ID used by Claude Code's OAuth flow
-    CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-
-    # Anthropic migrated OAuth from console.anthropic.com to platform.claude.com
-    # (Claude Code v2.1.81+). Try new endpoint first, fall back to old.
-    token_endpoints = [
-        "https://platform.claude.com/v1/oauth/token",
-        "https://console.anthropic.com/v1/oauth/token",
-    ]
-
-    payload = json.dumps({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    }).encode()
-
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-    }
-
-    for endpoint in token_endpoints:
-        req = urllib.request.Request(
-            endpoint, data=payload, headers=headers, method="POST",
+    try:
+        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
+        _write_claude_code_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
         )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
-                new_access = result.get("access_token", "")
-                new_refresh = result.get("refresh_token", refresh_token)
-                expires_in = result.get("expires_in", 3600)
-
-                if new_access:
-                    new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
-                    _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
-                    logger.debug("Refreshed Claude Code OAuth token via %s", endpoint)
-                    return new_access
-        except Exception as e:
-            logger.debug("Token refresh failed at %s: %s", endpoint, e)
-
-    return None
+        logger.debug("Successfully refreshed Claude Code OAuth token")
+        return refreshed["access_token"]
+    except Exception as e:
+        logger.debug("Failed to refresh Claude Code token: %s", e)
+        return None
 
 
-def _write_claude_code_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
-    """Write refreshed credentials back to ~/.claude/.credentials.json."""
+def _write_claude_code_credentials(
+    access_token: str,
+    refresh_token: str,
+    expires_at_ms: int,
+    *,
+    scopes: Optional[list] = None,
+) -> None:
+    """Write refreshed credentials back to ~/.claude/.credentials.json.
+
+    The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
+    is persisted so that Claude Code's own auth check recognises the credential
+    as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
+    in the stored scopes before it will use the token.
+    """
     cred_path = Path.home() / ".claude" / ".credentials.json"
     try:
         # Read existing file to preserve other fields
@@ -331,11 +413,19 @@ def _write_claude_code_credentials(access_token: str, refresh_token: str, expire
         if cred_path.exists():
             existing = json.loads(cred_path.read_text(encoding="utf-8"))
 
-        existing["claudeAiOauth"] = {
+        oauth_data: Dict[str, Any] = {
             "accessToken": access_token,
             "refreshToken": refresh_token,
             "expiresAt": expires_at_ms,
         }
+        if scopes is not None:
+            oauth_data["scopes"] = scopes
+        elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
+            # Preserve previously-stored scopes when the refresh response
+            # does not include a scope field.
+            oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
+
+        existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
         cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -495,10 +585,208 @@ def run_oauth_setup_token() -> Optional[str]:
     return None
 
 
+# ── Hermes-native PKCE OAuth flow ────────────────────────────────────────
+# Mirrors the flow used by Claude Code, pi-ai, and OpenCode.
+# Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
+
+_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+_HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
 
 
+def _generate_pkce() -> tuple:
+    """Generate PKCE code_verifier and code_challenge (S256)."""
+    import base64
+    import hashlib
+    import secrets
+
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return verifier, challenge
 
 
+def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
+    """Run Hermes-native OAuth PKCE flow and return credential state."""
+    import time
+    import webbrowser
+
+    verifier, challenge = _generate_pkce()
+
+    params = {
+        "code": "true",
+        "client_id": _OAUTH_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": _OAUTH_REDIRECT_URI,
+        "scope": _OAUTH_SCOPES,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": verifier,
+    }
+    from urllib.parse import urlencode
+
+    auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
+
+    print()
+    print("Authorize Hermes with your Claude Pro/Max subscription.")
+    print()
+    print("╭─ Claude Pro/Max Authorization ────────────────────╮")
+    print("│                                                   │")
+    print("│  Open this link in your browser:                  │")
+    print("╰───────────────────────────────────────────────────╯")
+    print()
+    print(f"  {auth_url}")
+    print()
+
+    try:
+        webbrowser.open(auth_url)
+        print("  (Browser opened automatically)")
+    except Exception:
+        pass
+
+    print()
+    print("After authorizing, you'll see a code. Paste it below.")
+    print()
+    try:
+        auth_code = input("Authorization code: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+    if not auth_code:
+        print("No code entered.")
+        return None
+
+    splits = auth_code.split("#")
+    code = splits[0]
+    state = splits[1] if len(splits) > 1 else ""
+
+    try:
+        import urllib.request
+
+        exchange_data = json.dumps({
+            "grant_type": "authorization_code",
+            "client_id": _OAUTH_CLIENT_ID,
+            "code": code,
+            "state": state,
+            "redirect_uri": _OAUTH_REDIRECT_URI,
+            "code_verifier": verifier,
+        }).encode()
+
+        req = urllib.request.Request(
+            _OAUTH_TOKEN_URL,
+            data=exchange_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"Token exchange failed: {e}")
+        return None
+
+    access_token = result.get("access_token", "")
+    refresh_token = result.get("refresh_token", "")
+    expires_in = result.get("expires_in", 3600)
+
+    if not access_token:
+        print("No access token in response.")
+        return None
+
+    expires_at_ms = int(time.time() * 1000) + (expires_in * 1000)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at_ms": expires_at_ms,
+    }
+
+
+def run_hermes_oauth_login() -> Optional[str]:
+    """Run Hermes-native OAuth PKCE flow for Claude Pro/Max subscription.
+
+    Opens a browser to claude.ai for authorization, prompts for the code,
+    exchanges it for tokens, and stores them in ~/.hermes/.anthropic_oauth.json.
+
+    Returns the access token on success, None on failure.
+    """
+    result = run_hermes_oauth_login_pure()
+    if not result:
+        return None
+
+    access_token = result["access_token"]
+    refresh_token = result["refresh_token"]
+    expires_at_ms = result["expires_at_ms"]
+
+    _save_hermes_oauth_credentials(access_token, refresh_token, expires_at_ms)
+    _write_claude_code_credentials(access_token, refresh_token, expires_at_ms)
+
+    print("Authentication successful!")
+    return access_token
+
+
+def _save_hermes_oauth_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+    """Save OAuth credentials to ~/.hermes/.anthropic_oauth.json."""
+    data = {
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresAt": expires_at_ms,
+    }
+    try:
+        _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _HERMES_OAUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _HERMES_OAUTH_FILE.chmod(0o600)
+    except (OSError, IOError) as e:
+        logger.debug("Failed to save Hermes OAuth credentials: %s", e)
+
+
+def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
+    """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
+    if _HERMES_OAUTH_FILE.exists():
+        try:
+            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
+            if data.get("accessToken"):
+                return data
+        except (json.JSONDecodeError, OSError, IOError) as e:
+            logger.debug("Failed to read Hermes OAuth credentials: %s", e)
+    return None
+
+
+def refresh_hermes_oauth_token() -> Optional[str]:
+    """Refresh the Hermes-managed OAuth token using the stored refresh token.
+
+    Returns the new access token, or None if refresh fails.
+    """
+    creds = read_hermes_oauth_credentials()
+    if not creds or not creds.get("refreshToken"):
+        return None
+
+    try:
+        refreshed = refresh_anthropic_oauth_pure(
+            creds["refreshToken"],
+            use_json=True,
+        )
+        _save_hermes_oauth_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        _write_claude_code_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        logger.debug("Successfully refreshed Hermes OAuth token")
+        return refreshed["access_token"]
+    except Exception as e:
+        logger.debug("Failed to refresh Hermes OAuth token: %s", e)
+
+    return None
 
 
 # ---------------------------------------------------------------------------

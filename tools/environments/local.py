@@ -473,7 +473,12 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                 except (ProcessLookupError, PermissionError):
                     proc.kill()
                 reader.join(timeout=2)
-                return self._timeout_result(effective_timeout)
+                partial = "".join(_output_chunks)
+                timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
+                return {
+                    "output": partial + timeout_msg if partial else timeout_msg.lstrip(),
+                    "returncode": 124,
+                }
             time.sleep(0.2)
 
         reader.join(timeout=5)

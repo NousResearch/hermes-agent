@@ -11,7 +11,7 @@ Source files: `agent/context_compressor.py`, `agent/prompt_caching.py`,
 
 Hermes has two separate compression layers that operate independently:
 
-```text
+```
                      ┌──────────────────────────┐
   Incoming message   │   Gateway Session Hygiene │  Fires at 85% of context
   ─────────────────► │   (pre-agent, rough est.) │  Safety net for large sessions
@@ -95,13 +95,13 @@ outputs (file contents, terminal output, search results).
 
 ### Phase 2: Determine Boundaries
 
-```text
+```
 ┌─────────────────────────────────────────────────────────────┐
 │  Message list                                               │
 │                                                             │
-│  [0..2]  ← protect_first_n (system + first exchange)       │
-│  [3..N]  ← middle turns → SUMMARIZED                       │
-│  [N..end] ← tail (by token budget OR protect_last_n)       │
+│  [0..2]  ← protect_first_n (system + first exchange)        │
+│  [3..N]  ← middle turns → SUMMARIZED                        │
+│  [N..end] ← tail (by token budget OR protect_last_n)        │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -244,7 +244,7 @@ conversation prefix. Uses Anthropic's `cache_control` breakpoints.
 Anthropic allows a maximum of 4 `cache_control` breakpoints per request. Hermes
 uses the "system_and_3" strategy:
 
-```text
+```
 Breakpoint 1: System prompt           (stable across all turns)
 Breakpoint 2: 3rd-to-last non-system message  ─┐
 Breakpoint 3: 2nd-to-last non-system message   ├─ Rolling window

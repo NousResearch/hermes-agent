@@ -704,16 +704,22 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    runtime = None
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
-        return None, None
 
-    custom_base = runtime.get("base_url")
-    custom_key = runtime.get("api_key")
+    custom_base = runtime.get("base_url") if isinstance(runtime, dict) else None
+    custom_key = runtime.get("api_key") if isinstance(runtime, dict) else None
+    # Fallback for env-only setups used in tests and local deployments.
+    # If runtime_provider cannot resolve custom, honor direct env values.
+    if not (isinstance(custom_base, str) and custom_base.strip()):
+        custom_base = os.getenv("OPENAI_BASE_URL", "")
+    if not (isinstance(custom_key, str) and custom_key.strip()):
+        custom_key = os.getenv("OPENAI_API_KEY", "")
     if not isinstance(custom_base, str) or not custom_base.strip():
         return None, None
 
@@ -721,7 +727,11 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     if "openrouter.ai" in custom_base.lower():
         # requested='custom' falls back to OpenRouter when no custom endpoint is
         # configured. Treat that as "no custom endpoint" for auxiliary routing.
-        return None, None
+        env_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        if env_base and "openrouter.ai" not in env_base.lower():
+            custom_base = env_base
+        else:
+            return None, None
 
     # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but

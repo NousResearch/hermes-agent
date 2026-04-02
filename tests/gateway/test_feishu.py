@@ -2537,6 +2537,41 @@ class TestRequireMentionDisabled(unittest.TestCase):
         blocked_sender = SimpleNamespace(open_id="ou_blocked", user_id=None)
         self.assertFalse(adapter._should_accept_group_message(message, blocked_sender))
 
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_require_mention_false_from_platform_config_extra(self):
+        """require_mention=False via PlatformConfig.extra should be honored (no falsy fallback bug)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        # Explicit False via extra should work even without env var
+        adapter = FeishuAdapter(PlatformConfig(extra={"require_mention": False}))
+        message = SimpleNamespace(content='{"text":"hello"}', mentions=[])
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_require_mention_true_from_platform_config_extra(self):
+        """require_mention=True via PlatformConfig.extra should be honored."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"require_mention": True}))
+        message = SimpleNamespace(content='{"text":"hello"}', mentions=[])
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open", "FEISHU_REQUIRE_MENTION": "true"}, clear=True)
+    def test_require_mention_env_var_overridden_by_explicit_false_in_extra(self):
+        """extra.get("require_mention") takes precedence over env var (even when False)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        # Env var says true, but extra explicitly says False — should use False
+        adapter = FeishuAdapter(PlatformConfig(extra={"require_mention": False}))
+        message = SimpleNamespace(content='{"text":"hello"}', mentions=[])
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id))
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestSenderNameResolution(unittest.TestCase):

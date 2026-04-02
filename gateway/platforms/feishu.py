@@ -974,6 +974,21 @@ class FeishuAdapter(BasePlatformAdapter):
         self._load_seen_message_ids()
 
     @staticmethod
+    def _resolve_require_mention(extra: Dict[str, Any]) -> bool:
+        """Resolve require_mention setting from extra config or env var.
+
+        Uses explicit None check to handle falsy values correctly:
+        - If extra["require_mention"] exists, use it (even if False)
+        - Otherwise fallback to FEISHU_REQUIRE_MENTION env var (default: true)
+        """
+        configured = extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.strip().lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("FEISHU_REQUIRE_MENTION", "true").strip().lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1021,10 +1036,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
-            require_mention=(
-                str(extra.get("require_mention") or os.getenv("FEISHU_REQUIRE_MENTION", "true")).strip().lower()
-                not in ("false", "0", "no")
-            ),
+            require_mention=_resolve_require_mention(extra),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:

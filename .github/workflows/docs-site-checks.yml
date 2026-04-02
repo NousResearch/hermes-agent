@@ -27,8 +27,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install ascii-guard
-        run: python -m pip install ascii-guard
+      - name: Install Python dependencies
+        run: python -m pip install ascii-guard pyyaml
+
+      - name: Extract skill metadata for dashboard
+        run: python3 website/scripts/extract-skills.py
 
       - name: Lint docs diagrams
         run: npm run lint:diagrams

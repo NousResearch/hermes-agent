@@ -99,9 +99,9 @@ outputs (file contents, terminal output, search results).
 ┌─────────────────────────────────────────────────────────────┐
 │  Message list                                               │
 │                                                             │
-│  [0..2]  ← protect_first_n (system + first exchange)       │
-│  [3..N]  ← middle turns → SUMMARIZED                       │
-│  [N..end] ← tail (by token budget OR protect_last_n)       │
+│  [0..2]  ← protect_first_n (system + first exchange)        │
+│  [3..N]  ← middle turns → SUMMARIZED                        │
+│  [N..end] ← tail (by token budget OR protect_last_n)        │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```

@@ -85,6 +85,11 @@ const config: Config = {
           label: 'Docs',
         },
         {
+          to: '/skills',
+          label: 'Skills',
+          position: 'left',
+        },
+        {
           href: 'https://hermes-agent.nousresearch.com',
           label: 'Home',
           position: 'right',

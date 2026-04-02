@@ -1675,7 +1675,7 @@ honcho = [
     { name = "honcho-ai" },
 ]
 matrix = [
-    { name = "matrix-nio", extra = ["e2e"] },
+    { name = "matrix-nio" },
 ]
 mcp = [
     { name = "mcp" },
@@ -1757,7 +1757,7 @@ requires-dist = [
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = ">=2.0.1,<3" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "jinja2", specifier = ">=3.1.5,<4" },
-    { name = "matrix-nio", extras = ["e2e"], marker = "extra == 'matrix'", specifier = ">=0.24.0,<1" },
+    { name = "matrix-nio", marker = "extra == 'matrix'", specifier = ">=0.24.0,<1" },
     { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.2.0,<2" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0,<2" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.0.0,<2" },

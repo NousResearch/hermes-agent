@@ -217,22 +217,123 @@ In channels, always @mention the bot. Simply typing a message without mentioning
 This is intentional — it prevents the bot from responding to every message in busy channels.
 :::
 
-### Reply Threading
+---
 
-By default, Hermes replies in a **thread** attached to the original message in channels. If your team prefers replies to go **directly to the channel** instead, you can disable threading:
+## Configuration Options
+
+Beyond the required environment variables from Step 8, you can customize Slack bot behavior through `~/.hermes/config.yaml`.
+
+### Thread & Reply Behavior
 
 ```yaml
 platforms:
   slack:
+    # Controls how multi-part responses are threaded
+    # "off"   — never thread replies to the original message
+    # "first" — first chunk threads to user's message (default)
+    # "all"   — all chunks thread to user's message
+    reply_to_mode: "first"
+
     extra:
-      reply_in_thread: false
+      # Whether to reply in a thread (default: true).
+      # When false, channel messages get direct channel replies instead
+      # of threads. Messages inside existing threads still reply in-thread.
+      reply_in_thread: true
+
+      # Also post thread replies to the main channel
+      # (Slack's "Also send to channel" feature).
+      # Only the first chunk of the first reply is broadcast.
+      reply_broadcast: false
 ```
 
-When `reply_in_thread` is `false`:
-- **Channel messages** — Hermes replies directly in the channel (no thread created)
-- **Thread messages** — Hermes still replies inside the existing thread to preserve conversation context
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
+| `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
+| `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 
-The default is `true` (threaded replies), which matches the original behavior.
+### Session Isolation
+
+```yaml
+# Global setting — applies to Slack and all other platforms
+group_sessions_per_user: true
+```
+
+When `true` (the default), each user in a shared channel gets their own isolated conversation session. Two people talking to Hermes in `#general` will have separate histories and contexts.
+
+Set to `false` if you want a collaborative mode where the entire channel shares one conversation session. Be aware this means users share context growth and token costs, and one user's `/reset` clears the session for everyone.
+
+### Mention & Trigger Behavior
+
+```yaml
+slack:
+  # Require @mention in channels (this is the default behavior;
+  # the Slack adapter enforces @mention gating in channels regardless,
+  # but you can set this explicitly for consistency with other platforms)
+  require_mention: true
+
+  # Custom mention patterns that trigger the bot
+  # (in addition to the default @mention detection)
+  mention_patterns:
+    - "hey hermes"
+    - "hermes,"
+
+  # Text prepended to every outgoing message
+  reply_prefix: ""
+```
+
+:::info
+Unlike Discord and Telegram, Slack does not have a `free_response_channels` equivalent. The Slack adapter always requires `@mention` in channels — this is hardcoded behavior. In DMs, the bot always responds without needing a mention.
+:::
+
+### Unauthorized User Handling
+
+```yaml
+slack:
+  # What happens when an unauthorized user (not in SLACK_ALLOWED_USERS) DMs the bot
+  # "pair"   — prompt them for a pairing code (default)
+  # "ignore" — silently drop the message
+  unauthorized_dm_behavior: "pair"
+```
+
+You can also set this globally for all platforms:
+
+```yaml
+unauthorized_dm_behavior: "pair"
+```
+
+The platform-specific setting under `slack:` takes precedence over the global setting.
+
+### Voice Transcription
+
+```yaml
+# Global setting — enable/disable automatic transcription of incoming voice messages
+stt_enabled: true
+```
+
+When `true` (the default), incoming audio messages are automatically transcribed using the configured STT provider before being processed by the agent.
+
+### Full Example
+
+```yaml
+# Global gateway settings
+group_sessions_per_user: true
+unauthorized_dm_behavior: "pair"
+stt_enabled: true
+
+# Slack-specific settings
+slack:
+  require_mention: true
+  unauthorized_dm_behavior: "pair"
+
+# Platform config
+platforms:
+  slack:
+    reply_to_mode: "first"
+    extra:
+      reply_in_thread: true
+      reply_broadcast: false
+```
 
 ---
 

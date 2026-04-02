@@ -85,7 +85,7 @@ from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
-    save_context_length,
+    save_context_length, is_local_endpoint,
 )
 from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -1565,6 +1565,74 @@ class AIAgent:
             return "\n\n".join(reasoning_parts)
         
         return None
+
+    def _classify_empty_content_response(
+        self,
+        assistant_message,
+        *,
+        finish_reason: Optional[str],
+        approx_tokens: int,
+        api_messages: List[Dict[str, Any]],
+        conversation_history: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Classify think-only/empty responses so we can retry, compress, or salvage.
+
+        We intentionally do NOT short-circuit all structured-reasoning responses.
+        Prior discussion/PR history shows some models recover on retry. Instead we:
+        - compress immediately when the pattern looks like implicit context pressure
+        - salvage reasoning early when the same reasoning-only payload repeats
+        - otherwise preserve the normal retry path
+        """
+        reasoning_text = self._extract_reasoning(assistant_message)
+        has_structured_reasoning = bool(
+            getattr(assistant_message, "reasoning", None)
+            or getattr(assistant_message, "reasoning_content", None)
+            or getattr(assistant_message, "reasoning_details", None)
+        )
+        content = getattr(assistant_message, "content", None) or ""
+        stripped_content = self._strip_think_blocks(content).strip()
+        signature = (
+            content,
+            reasoning_text or "",
+            bool(has_structured_reasoning),
+            finish_reason or "",
+        )
+        repeated_signature = signature == getattr(self, "_last_empty_content_signature", None)
+
+        compressor = getattr(self, "context_compressor", None)
+        ctx_len = getattr(compressor, "context_length", 0) or 0
+        threshold_tokens = getattr(compressor, "threshold_tokens", 0) or 0
+        is_large_session = bool(
+            (ctx_len and approx_tokens >= max(int(ctx_len * 0.4), threshold_tokens))
+            or len(api_messages) > 80
+        )
+        is_local_custom = is_local_endpoint(getattr(self, "base_url", "") or "")
+        is_resumed = bool(conversation_history)
+        context_pressure_signals = any(
+            [
+                finish_reason == "length",
+                getattr(compressor, "_context_probed", False),
+                is_large_session,
+                is_resumed,
+            ]
+        )
+        should_compress = bool(
+            self.compression_enabled
+            and is_local_custom
+            and context_pressure_signals
+            and not stripped_content
+        )
+
+        self._last_empty_content_signature = signature
+        return {
+            "reasoning_text": reasoning_text,
+            "has_structured_reasoning": has_structured_reasoning,
+            "repeated_signature": repeated_signature,
+            "should_compress": should_compress,
+            "is_local_custom": is_local_custom,
+            "is_large_session": is_large_session,
+            "is_resumed": is_resumed,
+        }
     
     def _cleanup_task_resources(self, task_id: str) -> None:
         """Clean up VM and browser resources for a given task."""
@@ -8406,13 +8474,22 @@ class AIAgent:
                             self._response_was_previewed = True
                             break
 
-                        # No fallback available — this is a genuine empty response.
-                        # Retry in case the model just had a bad generation.
+                        # No fallback available — classify the empty response before
+                        # blindly spending retries. Some local/custom backends surface
+                        # implicit context pressure as reasoning-only output rather than
+                        # an explicit overflow error.
                         if not hasattr(self, '_empty_content_retries'):
                             self._empty_content_retries = 0
                         self._empty_content_retries += 1
-                        
-                        reasoning_text = self._extract_reasoning(assistant_message)
+
+                        empty_response_info = self._classify_empty_content_response(
+                            assistant_message,
+                            finish_reason=finish_reason,
+                            approx_tokens=approx_tokens,
+                            api_messages=api_messages,
+                            conversation_history=conversation_history,
+                        )
+                        reasoning_text = empty_response_info["reasoning_text"]
                         self._vprint(f"{self.log_prefix}⚠️  Response only contains think block with no content after it")
                         if reasoning_text:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
@@ -8420,6 +8497,45 @@ class AIAgent:
                         else:
                             content_preview = final_response[:80] + "..." if len(final_response) > 80 else final_response
                             self._vprint(f"{self.log_prefix}   Content: '{content_preview}'")
+
+                        if empty_response_info["should_compress"]:
+                            compression_attempts += 1
+                            if compression_attempts > max_compression_attempts:
+                                self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
+                                self._vprint(f"{self.log_prefix}   💡 Local/custom backend returned reasoning-only output with no visible content. This often means the resumed/large session exceeds the runtime context window. Try /new or lower model.context_length to the actual runtime limit.", force=True)
+                            else:
+                                self._vprint(f"{self.log_prefix}🗜️  Reasoning-only response looks like implicit context pressure — attempting compression ({compression_attempts}/{max_compression_attempts})...", force=True)
+                                original_len = len(messages)
+                                messages, active_system_prompt = self._compress_context(
+                                    messages, system_message, approx_tokens=approx_tokens,
+                                    task_id=effective_task_id,
+                                )
+                                if len(messages) < original_len:
+                                    conversation_history = None
+                                    self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages after reasoning-only response, retrying...")
+                                    time.sleep(2)
+                                    api_call_count -= 1
+                                    self.iteration_budget.refund()
+                                    retry_count += 1
+                                    continue
+                                self._vprint(f"{self.log_prefix}   Compression could not shrink the session; falling back to retry/salvage logic.")
+
+                        if (
+                            reasoning_text
+                            and empty_response_info["repeated_signature"]
+                            and empty_response_info["has_structured_reasoning"]
+                        ):
+                            self._vprint(f"{self.log_prefix}ℹ️  Structured reasoning-only response repeated unchanged — using reasoning text directly.", force=True)
+                            self._empty_content_retries = 0
+                            final_response = reasoning_text
+                            empty_msg = {
+                                "role": "assistant",
+                                "content": final_response,
+                                "reasoning": reasoning_text,
+                                "finish_reason": finish_reason,
+                            }
+                            messages.append(empty_msg)
+                            break
                         
                         if self._empty_content_retries < 3:
                             self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._empty_content_retries}/3)...")
@@ -8476,18 +8592,27 @@ class AIAgent:
                             self._cleanup_task_resources(effective_task_id)
                             self._persist_session(messages, conversation_history)
 
+                            error_message = "Model generated only think blocks with no actual response after 3 retries"
+                            if empty_response_info["is_local_custom"]:
+                                error_message = (
+                                    "Local/custom backend returned reasoning-only output with no visible response after 3 retries. "
+                                    "Likely causes: wrong /v1 endpoint, runtime context window smaller than Hermes expects, "
+                                    "or a resumed/large session exceeding the backend's actual context limit."
+                                )
+
                             return {
                                 "final_response": final_response or None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Model generated only think blocks with no actual response after 3 retries"
+                                "error": error_message
                             }
                     
-                    # Reset retry counter on successful content
+                    # Reset retry counter/signature on successful content
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
+                    self._last_empty_content_signature = None
 
                     if (
                         self.api_mode == "codex_responses"

@@ -76,7 +76,10 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
-  "hermes-agent[matrix]",
+  # matrix excluded: python-olm (required by matrix-nio[e2e]) is upstream-broken
+  # on modern macOS (archived libolm, C++ errors with Clang 21+). Including it
+  # here causes the entire [all] install to fail, dropping all other extras.
+  # Users who need Matrix can install manually: pip install 'hermes-agent[matrix]'
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",

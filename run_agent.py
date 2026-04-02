@@ -8140,6 +8140,13 @@ class AIAgent:
                         _compressor.last_prompt_tokens
                         + _compressor.last_completion_tokens
                     )
+                    # Some providers (z.ai/GLM, DeepSeek) do not include
+                    # reasoning tokens in usage, causing context tracking to
+                    # underestimate actual usage.  Estimate reasoning token
+                    # count from the reasoning text when present.
+                    _reasoning_text = getattr(assistant_message, "reasoning", "") or ""
+                    if _reasoning_text:
+                        _real_tokens += estimate_tokens_rough(_reasoning_text)
 
                     # ── Context pressure warnings (user-facing only) ──────────
                     # Notify the user (NOT the LLM) as context approaches the

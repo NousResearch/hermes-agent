@@ -10,6 +10,12 @@ Usage in mcp_tool.py::
     from tools.mcp_oauth import build_oauth_auth
     auth = build_oauth_auth(server_name, server_url)
     # pass ``auth`` as the httpx auth parameter
+
+Startup safety:
+    The callback handler never calls blocking ``input()`` on the event loop.
+    In non-interactive environments (no TTY, SSH, headless), the OAuth flow
+    raises ``OAuthNonInteractiveError`` instead of blocking, so that the
+    server degrades gracefully and other MCP servers are not affected.
 """
 
 from __future__ import annotations
@@ -26,9 +32,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import sys
+
 logger = logging.getLogger(__name__)
 
 _TOKEN_DIR_NAME = "mcp-tokens"
+
+
+class OAuthNonInteractiveError(RuntimeError):
+    """Raised when OAuth requires user interaction but the environment is non-interactive."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +177,13 @@ async def _redirect_to_browser(auth_url: str) -> None:
 
 
 async def _wait_for_callback() -> tuple[str, str | None]:
-    """Start a local HTTP server on the pre-registered port and wait for the OAuth redirect."""
+    """Start a local HTTP server on the pre-registered port and wait for the OAuth redirect.
+
+    If the callback times out, raises ``OAuthNonInteractiveError`` instead of
+    calling blocking ``input()`` — the old ``input()`` call would block the
+    entire MCP asyncio event loop, preventing all other MCP servers from
+    connecting and potentially hanging Hermes startup indefinitely.
+    """
     global _oauth_port
     port = _oauth_port or _find_free_port()
     HandlerClass, result = _make_callback_handler()
@@ -186,8 +205,10 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     code = result["auth_code"] or ""
     state = result["state"]
     if not code:
-        print("  Browser callback timed out. Paste the authorization code manually:")
-        code = input("  Code: ").strip()
+        raise OAuthNonInteractiveError(
+            "OAuth browser callback timed out after 120 seconds. "
+            "Run 'hermes mcp auth <server-name>' to authorize interactively."
+        )
     return code, state
 
 
@@ -195,6 +216,18 @@ def _can_open_browser() -> bool:
     if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
         return False
     if not os.environ.get("DISPLAY") and os.name != "nt" and "darwin" not in os.uname().sysname.lower():
+        return False
+    return True
+
+
+def _is_interactive() -> bool:
+    """Check if the current environment can support interactive OAuth flows.
+
+    Returns False in headless/daemon/container environments where no user
+    can interact with a browser or paste an auth code.
+    """
+    # stdin is not a TTY (piped, /dev/null, daemon, container)
+    if not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
         return False
     return True
 
@@ -209,6 +242,11 @@ def build_oauth_auth(server_name: str, server_url: str):
     Uses the MCP SDK's ``OAuthClientProvider`` which handles discovery,
     registration, PKCE, token exchange, and refresh automatically.
 
+    In non-interactive environments (no TTY), this still returns a provider
+    so that **cached tokens and refresh flows work**.  Only the interactive
+    authorization-code grant will fail fast with a clear error instead of
+    blocking the event loop.
+
     Returns an ``OAuthClientProvider`` instance (implements ``httpx.Auth``),
     or ``None`` if the MCP SDK auth module is not available.
     """
@@ -218,6 +256,25 @@ def build_oauth_auth(server_name: str, server_url: str):
     except ImportError:
         logger.warning("MCP SDK auth module not available — OAuth disabled")
         return None
+
+    storage = HermesTokenStorage(server_name)
+    interactive = _is_interactive()
+
+    if not interactive:
+        # Check whether cached tokens exist.  If they do, the SDK can still
+        # use them (and refresh them) without any user interaction.  If not,
+        # we still build the provider — the callback_handler will raise
+        # OAuthNonInteractiveError if a fresh authorization is actually
+        # needed, which surfaces as a clean connection failure for this
+        # server only (other MCP servers are unaffected).
+        has_cached = storage._read_json(storage._tokens_path()) is not None
+        if not has_cached:
+            logger.warning(
+                "MCP server '%s' requires OAuth but no cached tokens found "
+                "and environment is non-interactive. The server will fail to "
+                "connect. Run 'hermes mcp auth %s' to authorize interactively.",
+                server_name, server_name,
+            )
 
     global _oauth_port
     _oauth_port = _find_free_port()
@@ -232,14 +289,36 @@ def build_oauth_auth(server_name: str, server_url: str):
         token_endpoint_auth_method="none",
     )
 
-    storage = HermesTokenStorage(server_name)
+    # In non-interactive mode, the redirect handler logs the URL and the
+    # callback handler raises immediately — no blocking, no input().
+    redirect_handler = _redirect_to_browser
+    callback_handler = _wait_for_callback
+
+    if not interactive:
+        async def _noninteractive_redirect(auth_url: str) -> None:
+            logger.warning(
+                "MCP server '%s' needs OAuth authorization (non-interactive, "
+                "cannot open browser). URL: %s",
+                server_name, auth_url,
+            )
+
+        async def _noninteractive_callback() -> tuple[str, str | None]:
+            raise OAuthNonInteractiveError(
+                f"MCP server '{server_name}' requires interactive OAuth "
+                f"authorization but the environment is non-interactive "
+                f"(no TTY). Run 'hermes mcp auth {server_name}' to "
+                f"authorize, then restart."
+            )
+
+        redirect_handler = _noninteractive_redirect
+        callback_handler = _noninteractive_callback
 
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_to_browser,
-        callback_handler=_wait_for_callback,
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
         timeout=120.0,
     )
 

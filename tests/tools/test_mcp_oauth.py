@@ -9,10 +9,13 @@ import pytest
 
 from tools.mcp_oauth import (
     HermesTokenStorage,
+    OAuthNonInteractiveError,
     build_oauth_auth,
     remove_oauth_tokens,
     _find_free_port,
     _can_open_browser,
+    _is_interactive,
+    _wait_for_callback,
 )
 
 
@@ -236,3 +239,147 @@ class TestRemoveOAuthTokens:
     def test_no_error_when_files_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         remove_oauth_tokens("nonexistent")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive / startup-safety tests (issue #4462)
+# ---------------------------------------------------------------------------
+
+class TestIsInteractive:
+    """_is_interactive() detects headless/daemon/container environments."""
+
+    def test_false_when_stdin_not_tty(self, monkeypatch):
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        assert _is_interactive() is False
+
+    def test_true_when_stdin_is_tty(self, monkeypatch):
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        assert _is_interactive() is True
+
+    def test_false_when_stdin_has_no_isatty(self, monkeypatch):
+        """Some environments replace stdin with an object without isatty()."""
+        mock_stdin = object()  # no isatty attribute
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        assert _is_interactive() is False
+
+
+class TestWaitForCallbackNoBlocking:
+    """_wait_for_callback() must never call input() — it raises instead."""
+
+    def test_raises_on_timeout_instead_of_input(self):
+        """When no auth code arrives, raises OAuthNonInteractiveError.
+
+        We patch asyncio.sleep inside the module to make the 1200-iteration
+        polling loop complete near-instantly, then verify the function
+        raises instead of calling blocking input().
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        # Set a port so the HTTP server can start
+        mod._oauth_port = _find_free_port()
+
+        # Patch asyncio.sleep in the module namespace to skip the wait
+        async def instant_sleep(_seconds):
+            pass
+
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
+                with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
+                    asyncio.run(_wait_for_callback())
+
+
+class TestBuildOAuthAuthNonInteractive:
+    """build_oauth_auth() in non-interactive mode."""
+
+    def test_noninteractive_callback_raises_immediately(self, tmp_path, monkeypatch):
+        """In non-interactive mode, callback raises without waiting."""
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Force non-interactive
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+        auth = build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
+        assert auth is not None  # provider is still built (for cached token use)
+
+        # The callback handler should raise immediately
+        import asyncio
+        with pytest.raises(OAuthNonInteractiveError, match="non-interactive"):
+            asyncio.run(auth.context.callback_handler())
+
+    def test_noninteractive_with_cached_tokens_no_warning(self, tmp_path, monkeypatch, caplog):
+        """With cached tokens, non-interactive mode logs no 'no cached tokens' warning."""
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+        # Pre-populate cached tokens
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "atlassian.json").write_text(json.dumps({
+            "access_token": "cached",
+            "token_type": "Bearer",
+        }))
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            auth = build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
+
+        assert auth is not None
+        # Should NOT warn about missing cached tokens
+        assert "no cached tokens found" not in caplog.text.lower()
+
+    def test_noninteractive_without_cached_tokens_warns(self, tmp_path, monkeypatch, caplog):
+        """Without cached tokens, non-interactive mode logs a clear warning."""
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            auth = build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
+
+        assert auth is not None
+        assert "no cached tokens found" in caplog.text.lower()
+        assert "non-interactive" in caplog.text.lower()
+
+    def test_interactive_mode_uses_browser_handlers(self, monkeypatch):
+        """In interactive mode, the original browser-based handlers are used."""
+        try:
+            from mcp.client.auth import OAuthClientProvider
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+        import tools.mcp_oauth as mod
+        auth = build_oauth_auth("test", "https://example.com/mcp")
+        assert auth is not None
+        # The handlers should be the module-level functions, not the
+        # non-interactive closures
+        assert auth.context.redirect_handler is mod._redirect_to_browser
+        assert auth.context.callback_handler is mod._wait_for_callback

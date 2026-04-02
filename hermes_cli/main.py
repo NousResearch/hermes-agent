@@ -47,6 +47,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Optional
 
@@ -2686,24 +2687,15 @@ def _update_via_zip(args):
     if removed:
         print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
     
-    # Reinstall Python dependencies (try .[all] first for optional extras,
-    # fall back to . if extras fail — mirrors the install script behavior)
+    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
+    # breaks on this machine, keep base deps and reinstall the remaining extras
+    # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
     import subprocess
     uv_bin = shutil.which("uv")
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        try:
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
-                cwd=PROJECT_ROOT, check=True, env=uv_env,
-            )
-        except subprocess.CalledProcessError:
-            print("  ⚠ Optional extras failed, installing base dependencies...")
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                cwd=PROJECT_ROOT, check=True, env=uv_env,
-            )
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -2718,11 +2710,7 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        try:
-            subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
-        except subprocess.CalledProcessError:
-            print("  ⚠ Optional extras failed, installing base dependencies...")
-            subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+        _install_python_dependencies_with_optional_fallback(pip_cmd)
     
     # Sync skills
     try:
@@ -2922,6 +2910,67 @@ def _invalidate_update_cache():
     except Exception:
         pass
 
+
+def _load_installable_optional_extras() -> list[str]:
+    """Return optional dependency groups except the aggregate ``all`` extra."""
+    try:
+        with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
+            project = tomllib.load(handle).get("project", {})
+    except Exception:
+        return []
+
+    optional_deps = project.get("optional-dependencies", {})
+    if not isinstance(optional_deps, dict):
+        return []
+
+    return [name for name in optional_deps if name != "all"]
+
+
+
+def _install_python_dependencies_with_optional_fallback(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Install base deps plus as many optional extras as the environment supports."""
+    try:
+        subprocess.run(
+            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            env=env,
+        )
+        return
+    except subprocess.CalledProcessError:
+        print("  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually...")
+
+    subprocess.run(
+        install_cmd_prefix + ["install", "-e", ".", "--quiet"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        env=env,
+    )
+
+    failed_extras: list[str] = []
+    installed_extras: list[str] = []
+    for extra in _load_installable_optional_extras():
+        try:
+            subprocess.run(
+                install_cmd_prefix + ["install", "-e", f".[{extra}]", "--quiet"],
+                cwd=PROJECT_ROOT,
+                check=True,
+                env=env,
+            )
+            installed_extras.append(extra)
+        except subprocess.CalledProcessError:
+            failed_extras.append(extra)
+
+    if installed_extras:
+        print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
+    if failed_extras:
+        print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
@@ -3096,23 +3145,14 @@ def cmd_update(args):
         if removed:
             print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
         
-        # Reinstall Python dependencies (try .[all] first for optional extras,
-        # fall back to . if extras fail — mirrors the install script behavior)
+        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
+        # breaks on this machine, keep base deps and reinstall the remaining extras
+        # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
         uv_bin = shutil.which("uv")
         if uv_bin:
             uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            try:
-                subprocess.run(
-                    [uv_bin, "pip", "install", "-e", ".[all]", "--quiet"],
-                    cwd=PROJECT_ROOT, check=True, env=uv_env,
-                )
-            except subprocess.CalledProcessError:
-                print("  ⚠ Optional extras failed, installing base dependencies...")
-                subprocess.run(
-                    [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                    cwd=PROJECT_ROOT, check=True, env=uv_env,
-                )
+            _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -3127,11 +3167,7 @@ def cmd_update(args):
                     cwd=PROJECT_ROOT,
                     check=True,
                 )
-            try:
-                subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            except subprocess.CalledProcessError:
-                print("  ⚠ Optional extras failed, installing base dependencies...")
-                subprocess.run(pip_cmd + ["install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
+            _install_python_dependencies_with_optional_fallback(pip_cmd)
         
         # Check for Node.js deps
         if (PROJECT_ROOT / "package.json").exists():

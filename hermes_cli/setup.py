@@ -890,13 +890,16 @@ def _prompt_container_resources(config: dict):
 
 
 
-def setup_model_provider(config: dict):
+def setup_model_provider(config: dict, *, quick: bool = False):
     """Configure the inference provider and default model.
 
     Delegates to ``cmd_model()`` (the same flow used by ``hermes model``)
     for provider selection, credential prompting, and model picking.
     This ensures a single code path for all provider setup — any new
     provider added to ``hermes model`` is automatically available here.
+
+    When *quick* is True, skips credential rotation, vision, and TTS
+    configuration — used by the streamlined first-time quick setup.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -935,8 +938,8 @@ def setup_model_provider(config: dict):
 
     nous_subscription_selected = selected_provider == "nous"
 
-    # ── Same-provider fallback & rotation setup ──
-    if _supports_same_provider_pool_setup(selected_provider):
+    # ── Same-provider fallback & rotation setup (full setup only) ──
+    if not quick and _supports_same_provider_pool_setup(selected_provider):
         try:
             from types import SimpleNamespace
             from agent.credential_pool import load_pool
@@ -1014,21 +1017,20 @@ def setup_model_provider(config: dict):
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
-    # ── Vision & Image Analysis Setup ──
-    # Keep setup aligned with the actual runtime resolver the vision tools use.
-    try:
-        from agent.auxiliary_client import get_available_vision_backends
-
-        _vision_backends = set(get_available_vision_backends())
-    except Exception:
-        _vision_backends = set()
-
-    _vision_needs_setup = not bool(_vision_backends)
-
-    if selected_provider in _vision_backends:
-        # If the user just selected a backend Hermes can already use for
-        # vision, treat it as covered. Auth/setup failure returns earlier.
+    # ── Vision & Image Analysis Setup (full setup only) ──
+    if quick:
         _vision_needs_setup = False
+    else:
+        try:
+            from agent.auxiliary_client import get_available_vision_backends
+            _vision_backends = set(get_available_vision_backends())
+        except Exception:
+            _vision_backends = set()
+
+        _vision_needs_setup = not bool(_vision_backends)
+
+        if selected_provider in _vision_backends:
+            _vision_needs_setup = False
 
     if _vision_needs_setup:
         _prov_names = {
@@ -1109,9 +1111,7 @@ def setup_model_provider(config: dict):
 
     save_config(config)
 
-    # Offer TTS provider selection at the end of model setup, except when
-    # Nous subscription defaults are already being applied.
-    if selected_provider != "nous":
+    if not quick and selected_provider != "nous":
         _setup_tts_provider(config)
 
 
@@ -1651,14 +1651,39 @@ def setup_terminal_backend(config: dict):
 # =============================================================================
 
 
+def _apply_default_agent_settings(config: dict):
+    """Apply recommended defaults for all agent settings without prompting."""
+    config.setdefault("agent", {})["max_turns"] = 90
+    save_env_value("HERMES_MAX_ITERATIONS", "90")
+
+    config.setdefault("display", {})["tool_progress"] = "all"
+
+    config.setdefault("compression", {})["enabled"] = True
+    config["compression"]["threshold"] = 0.50
+
+    config.setdefault("session_reset", {}).update({
+        "mode": "both",
+        "idle_minutes": 1440,
+        "at_hour": 4,
+    })
+
+    save_config(config)
+    print_success("Applied recommended defaults:")
+    print_info("  Max iterations: 90")
+    print_info("  Tool progress: all")
+    print_info("  Compression threshold: 0.50")
+    print_info("  Session reset: inactivity (1440 min) + daily (4:00)")
+    print_info("  Run `hermes setup agent` later to customize.")
+
+
 def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
 
-    # ── Max Iterations ──
     print_header("Agent Settings")
     print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
     print()
 
+    # ── Max Iterations ──
     current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
         config.get("agent", {}).get("max_turns", 90)
     )
@@ -1821,499 +1846,422 @@ def setup_agent_settings(config: dict):
 # =============================================================================
 
 
+def _setup_telegram():
+    """Configure Telegram bot credentials and allowlist."""
+    print_header("Telegram")
+    existing = get_env_value("TELEGRAM_BOT_TOKEN")
+    if existing:
+        print_info("Telegram: already configured")
+        if not prompt_yes_no("Reconfigure Telegram?", False):
+            # Check missing allowlist on existing config
+            if not get_env_value("TELEGRAM_ALLOWED_USERS"):
+                print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
+                if prompt_yes_no("Add allowed users now?", True):
+                    print_info("   To find your Telegram user ID: message @userinfobot")
+                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    if allowed_users:
+                        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                        print_success("Telegram allowlist configured")
+            return
+
+    print_info("Create a bot via @BotFather on Telegram")
+    token = prompt("Telegram bot token", password=True)
+    if not token:
+        return
+    save_env_value("TELEGRAM_BOT_TOKEN", token)
+    print_success("Telegram token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your Telegram user ID:")
+    print_info("   1. Message @userinfobot on Telegram")
+    print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs (comma-separated, leave empty for open access)"
+    )
+    if allowed_users:
+        save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Telegram allowlist configured - only listed users can use the bot")
+    else:
+        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   For Telegram DMs, this is your user ID (same as above).")
+
+    first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
+    if first_user_id:
+        if prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
+            save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
+            print_success(f"Telegram home channel set to {first_user_id}")
+        else:
+            home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
+            if home_channel:
+                save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+    else:
+        print_info("   You can also set this later by typing /set-home in your Telegram chat.")
+        home_channel = prompt("Home channel ID (leave empty to set later)")
+        if home_channel:
+            save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+
+
+def _setup_discord():
+    """Configure Discord bot credentials and allowlist."""
+    print_header("Discord")
+    existing = get_env_value("DISCORD_BOT_TOKEN")
+    if existing:
+        print_info("Discord: already configured")
+        if not prompt_yes_no("Reconfigure Discord?", False):
+            if not get_env_value("DISCORD_ALLOWED_USERS"):
+                print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
+                if prompt_yes_no("Add allowed users now?", True):
+                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    if allowed_users:
+                        cleaned_ids = _clean_discord_user_ids(allowed_users)
+                        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+                        print_success("Discord allowlist configured")
+            return
+
+    print_info("Create a bot at https://discord.com/developers/applications")
+    token = prompt("Discord bot token", password=True)
+    if not token:
+        return
+    save_env_value("DISCORD_BOT_TOKEN", token)
+    print_success("Discord token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your Discord user ID:")
+    print_info("   1. Enable Developer Mode in Discord settings")
+    print_info("   2. Right-click your name → Copy ID")
+    print()
+    print_info("   You can also use Discord usernames (resolved on gateway start).")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+    )
+    if allowed_users:
+        cleaned_ids = _clean_discord_user_ids(allowed_users)
+        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+        print_success("Discord allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
+    print_info("   (requires Developer Mode in Discord settings)")
+    print_info("   You can also set this later by typing /set-home in a Discord channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+
+
+def _clean_discord_user_ids(raw: str) -> list:
+    """Strip common Discord mention prefixes from a comma-separated ID string."""
+    cleaned = []
+    for uid in raw.replace(" ", "").split(","):
+        uid = uid.strip()
+        if uid.startswith("<@") and uid.endswith(">"):
+            uid = uid.lstrip("<@!").rstrip(">")
+        if uid.lower().startswith("user:"):
+            uid = uid[5:]
+        if uid:
+            cleaned.append(uid)
+    return cleaned
+
+
+def _setup_slack():
+    """Configure Slack bot credentials."""
+    print_header("Slack")
+    existing = get_env_value("SLACK_BOT_TOKEN")
+    if existing:
+        print_info("Slack: already configured")
+        if not prompt_yes_no("Reconfigure Slack?", False):
+            return
+
+    print_info("Steps to create a Slack app:")
+    print_info("   1. Go to https://api.slack.com/apps → Create New App (from scratch)")
+    print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
+    print_info("      • Create an App-Level Token with 'connections:write' scope")
+    print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
+    print_info("      Required scopes: chat:write, app_mentions:read,")
+    print_info("      channels:history, channels:read, im:history,")
+    print_info("      im:read, im:write, users:read, files:write")
+    print_info("      Optional for private channels: groups:history")
+    print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
+    print_info("      Required events: message.im, message.channels, app_mention")
+    print_info("      Optional for private channels: message.groups")
+    print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
+    print_warning("     not public channels.")
+    print_info("   5. Install to Workspace: Settings → Install App")
+    print_info("   6. Reinstall the app after any scope or event changes")
+    print_info("   7. After installing, invite the bot to channels: /invite @YourBot")
+    print()
+    print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
+    print()
+    bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
+    if not bot_token:
+        return
+    save_env_value("SLACK_BOT_TOKEN", bot_token)
+    app_token = prompt("Slack App Token (xapp-...)", password=True)
+    if app_token:
+        save_env_value("SLACK_APP_TOKEN", app_token)
+    print_success("Slack tokens saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
+    )
+    if allowed_users:
+        save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Slack allowlist configured")
+    else:
+        print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
+        print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+
+
+def _setup_matrix():
+    """Configure Matrix credentials."""
+    print_header("Matrix")
+    existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
+    if existing:
+        print_info("Matrix: already configured")
+        if not prompt_yes_no("Reconfigure Matrix?", False):
+            return
+
+    print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
+    print_info("   1. Create a bot user on your homeserver, or use your own account")
+    print_info("   2. Get an access token from Element, or provide user ID + password")
+    print()
+    homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
+    if homeserver:
+        save_env_value("MATRIX_HOMESERVER", homeserver.rstrip("/"))
+
+    print()
+    print_info("Auth: provide an access token (recommended), or user ID + password.")
+    token = prompt("Access token (leave empty for password login)", password=True)
+    if token:
+        save_env_value("MATRIX_ACCESS_TOKEN", token)
+        user_id = prompt("User ID (@bot:server — optional, will be auto-detected)")
+        if user_id:
+            save_env_value("MATRIX_USER_ID", user_id)
+        print_success("Matrix access token saved")
+    else:
+        user_id = prompt("User ID (@bot:server)")
+        if user_id:
+            save_env_value("MATRIX_USER_ID", user_id)
+        password = prompt("Password", password=True)
+        if password:
+            save_env_value("MATRIX_PASSWORD", password)
+            print_success("Matrix credentials saved")
+
+    if token or get_env_value("MATRIX_PASSWORD"):
+        print()
+        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
+        if want_e2ee:
+            save_env_value("MATRIX_ENCRYPTION", "true")
+            print_success("E2EE enabled")
+
+        matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
+        try:
+            __import__("nio")
+        except ImportError:
+            print_info(f"Installing {matrix_pkg}...")
+            import subprocess
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
+                    capture_output=True, text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", matrix_pkg],
+                    capture_output=True, text=True,
+                )
+            if result.returncode == 0:
+                print_success(f"{matrix_pkg} installed")
+            else:
+                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        print()
+        print_info("🔒 Security: Restrict who can use your bot")
+        print_info("   Matrix user IDs look like @username:server")
+        print()
+        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+        if allowed_users:
+            save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
+            print_success("Matrix allowlist configured")
+        else:
+            print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+
+        print()
+        print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
+        print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
+        print_info("   You can also set this later by typing /set-home in a Matrix room.")
+        home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+        if home_room:
+            save_env_value("MATRIX_HOME_ROOM", home_room)
+
+
+def _setup_mattermost():
+    """Configure Mattermost bot credentials."""
+    print_header("Mattermost")
+    existing = get_env_value("MATTERMOST_TOKEN")
+    if existing:
+        print_info("Mattermost: already configured")
+        if not prompt_yes_no("Reconfigure Mattermost?", False):
+            return
+
+    print_info("Works with any self-hosted Mattermost instance.")
+    print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
+    print_info("   2. Copy the bot token")
+    print()
+    mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+    if mm_url:
+        save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
+    token = prompt("Bot token", password=True)
+    if not token:
+        return
+    save_env_value("MATTERMOST_TOKEN", token)
+    print_success("Mattermost token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your user ID: click your avatar → Profile")
+    print_info("   or use the API: GET /api/v4/users/me")
+    print()
+    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    if allowed_users:
+        save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Mattermost allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+    print_info("   To get a channel ID: click channel name → View Info → copy the ID")
+    print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+
+
+def _setup_whatsapp():
+    """Configure WhatsApp bridge."""
+    print_header("WhatsApp")
+    existing = get_env_value("WHATSAPP_ENABLED")
+    if existing:
+        print_info("WhatsApp: already enabled")
+        return
+
+    print_info("WhatsApp connects via a built-in bridge (Baileys).")
+    print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
+    print()
+    if prompt_yes_no("Enable WhatsApp now?", True):
+        save_env_value("WHATSAPP_ENABLED", "true")
+        print_success("WhatsApp enabled")
+        print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
+        print_info("or personal self-chat) and pair via QR code.")
+
+
+def _setup_webhooks():
+    """Configure webhook integration."""
+    print_header("Webhooks")
+    existing = get_env_value("WEBHOOK_ENABLED")
+    if existing:
+        print_info("Webhooks: already configured")
+        if not prompt_yes_no("Reconfigure webhooks?", False):
+            return
+
+    print()
+    print_warning("⚠  Webhook and SMS platforms require exposing gateway ports to the")
+    print_warning("   internet. For security, run the gateway in a sandboxed environment")
+    print_warning("   (Docker, VM, etc.) to limit blast radius from prompt injection.")
+    print()
+    print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/")
+    print()
+
+    port = prompt("Webhook port (default 8644)")
+    if port:
+        try:
+            save_env_value("WEBHOOK_PORT", str(int(port)))
+            print_success(f"Webhook port set to {port}")
+        except ValueError:
+            print_warning("Invalid port number, using default 8644")
+
+    secret = prompt("Global HMAC secret (shared across all routes)", password=True)
+    if secret:
+        save_env_value("WEBHOOK_SECRET", secret)
+        print_success("Webhook secret saved")
+    else:
+        print_warning("No secret set — you must configure per-route secrets in config.yaml")
+
+    save_env_value("WEBHOOK_ENABLED", "true")
+    print()
+    print_success("Webhooks enabled! Next steps:")
+    from hermes_constants import display_hermes_home as _dhh
+    print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
+    print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
+    print_info("      http://your-server:8644/webhooks/<route-name>")
+    print()
+    print_info("   Route configuration guide:")
+    print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
+    print()
+    print_info("   Open config in your editor:  hermes config edit")
+
+
+# Platform registry for the gateway checklist
+_GATEWAY_PLATFORMS = [
+    ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
+    ("Discord", "DISCORD_BOT_TOKEN", _setup_discord),
+    ("Slack", "SLACK_BOT_TOKEN", _setup_slack),
+    ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
+    ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
+    ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
+    ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
+]
+
+
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
     print_header("Messaging Platforms")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
-    print_info(f"   All platforms: {_DOCS_BASE}/user-guide/messaging")
+    print_info("Toggle with Space, confirm with Enter.")
     print()
 
-    # ── Telegram ──
-    existing_telegram = get_env_value("TELEGRAM_BOT_TOKEN")
-    if existing_telegram:
-        print_info("Telegram: already configured")
-        if prompt_yes_no("Reconfigure Telegram?", False):
-            existing_telegram = None
+    # Build checklist items, pre-selecting already-configured platforms
+    items = []
+    pre_selected = []
+    for i, (name, env_var, _func) in enumerate(_GATEWAY_PLATFORMS):
+        # Matrix has two possible env vars
+        is_configured = bool(get_env_value(env_var))
+        if name == "Matrix" and not is_configured:
+            is_configured = bool(get_env_value("MATRIX_PASSWORD"))
+        label = f"{name}  (configured)" if is_configured else name
+        items.append(label)
+        if is_configured:
+            pre_selected.append(i)
 
-    if not existing_telegram and prompt_yes_no("Set up Telegram bot?", False):
-        print_info("Create a bot via @BotFather on Telegram")
-        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/telegram")
-        print()
-        token = prompt("Telegram bot token", password=True)
-        if token:
-            save_env_value("TELEGRAM_BOT_TOKEN", token)
-            print_success("Telegram token saved")
+    selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
 
-            # Allowed users (security)
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   To find your Telegram user ID:")
-            print_info("   1. Message @userinfobot on Telegram")
-            print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
-            print()
-            existing_allowlist = get_env_value("TELEGRAM_ALLOWED_USERS")
-            if existing_allowlist:
-                print_info(f"   Current allowlist: {existing_allowlist}")
-            allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty to "
-                + ("keep current" if existing_allowlist else "allow open access")
-                + ")"
-            )
-            if allowed_users:
-                save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success(
-                    "Telegram allowlist configured - only listed users can use the bot"
-                )
-            elif existing_allowlist:
-                print_success(
-                    f"Keeping existing Telegram allowlist: {existing_allowlist}"
-                )
-            else:
-                print_info(
-                    "⚠️  No allowlist set - anyone who finds your bot can use it!"
-                )
+    if not selected:
+        print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
+        return
 
-            # Home channel setup with better guidance
-            print()
-            print_info("📬 Home Channel: where Hermes delivers cron job results,")
-            print_info("   cross-platform messages, and notifications.")
-            print_info("   For Telegram DMs, this is your user ID (same as above).")
-
-            first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
-            if first_user_id:
-                if prompt_yes_no(
-                    f"Use your user ID ({first_user_id}) as the home channel?", True
-                ):
-                    save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
-                    print_success(f"Telegram home channel set to {first_user_id}")
-                else:
-                    home_channel = prompt(
-                        "Home channel ID (or leave empty to set later with /set-home in Telegram)"
-                    )
-                    if home_channel:
-                        save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
-            else:
-                print_info(
-                    "   You can also set this later by typing /set-home in your Telegram chat."
-                )
-                home_channel = prompt("Home channel ID (leave empty to set later)")
-                if home_channel:
-                    save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
-
-    # Check/update existing Telegram allowlist
-    elif existing_telegram:
-        existing_allowlist = get_env_value("TELEGRAM_ALLOWED_USERS")
-        if not existing_allowlist:
-            print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
-            if prompt_yes_no("Add allowed users now?", True):
-                print_info("   To find your Telegram user ID: message @userinfobot")
-                allowed_users = prompt("Allowed user IDs (comma-separated)")
-                if allowed_users:
-                    save_env_value(
-                        "TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", "")
-                    )
-                    print_success("Telegram allowlist configured")
-
-    # ── Discord ──
-    existing_discord = get_env_value("DISCORD_BOT_TOKEN")
-    if existing_discord:
-        print_info("Discord: already configured")
-        if prompt_yes_no("Reconfigure Discord?", False):
-            existing_discord = None
-
-    if not existing_discord and prompt_yes_no("Set up Discord bot?", False):
-        print_info("Create a bot at https://discord.com/developers/applications")
-        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/discord")
-        print()
-        token = prompt("Discord bot token", password=True)
-        if token:
-            save_env_value("DISCORD_BOT_TOKEN", token)
-            print_success("Discord token saved")
-
-            # Allowed users (security)
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   To find your Discord user ID:")
-            print_info("   1. Enable Developer Mode in Discord settings")
-            print_info("   2. Right-click your name → Copy ID")
-            print()
-            print_info(
-                "   You can also use Discord usernames (resolved on gateway start)."
-            )
-            print()
-            existing_allowlist = get_env_value("DISCORD_ALLOWED_USERS")
-            if existing_allowlist:
-                print_info(f"   Current allowlist: {existing_allowlist}")
-            allowed_users = prompt(
-                "Allowed user IDs or usernames (comma-separated, leave empty to "
-                + ("keep current" if existing_allowlist else "allow open access")
-                + ")"
-            )
-            if allowed_users:
-                # Clean up common prefixes (user:123, <@123>, <@!123>)
-                cleaned_ids = []
-                for uid in allowed_users.replace(" ", "").split(","):
-                    uid = uid.strip()
-                    if uid.startswith("<@") and uid.endswith(">"):
-                        uid = uid.lstrip("<@!").rstrip(">")
-                    if uid.lower().startswith("user:"):
-                        uid = uid[5:]
-                    if uid:
-                        cleaned_ids.append(uid)
-                save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-                print_success("Discord allowlist configured")
-            elif existing_allowlist:
-                print_success(
-                    f"Keeping existing Discord allowlist: {existing_allowlist}"
-                )
-            else:
-                print_info(
-                    "⚠️  No allowlist set - anyone in servers with your bot can use it!"
-                )
-
-            # Home channel setup with better guidance
-            print()
-            print_info("📬 Home Channel: where Hermes delivers cron job results,")
-            print_info("   cross-platform messages, and notifications.")
-            print_info(
-                "   To get a channel ID: right-click a channel → Copy Channel ID"
-            )
-            print_info("   (requires Developer Mode in Discord settings)")
-            print_info(
-                "   You can also set this later by typing /set-home in a Discord channel."
-            )
-            home_channel = prompt(
-                "Home channel ID (leave empty to set later with /set-home)"
-            )
-            if home_channel:
-                save_env_value("DISCORD_HOME_CHANNEL", home_channel)
-
-    # Check/update existing Discord allowlist
-    elif existing_discord:
-        existing_allowlist = get_env_value("DISCORD_ALLOWED_USERS")
-        if not existing_allowlist:
-            print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
-            if prompt_yes_no("Add allowed users now?", True):
-                print_info(
-                    "   To find Discord ID: Enable Developer Mode, right-click name → Copy ID"
-                )
-                allowed_users = prompt("Allowed user IDs (comma-separated)")
-                if allowed_users:
-                    # Clean up common prefixes (user:123, <@123>, <@!123>)
-                    cleaned_ids = []
-                    for uid in allowed_users.replace(" ", "").split(","):
-                        uid = uid.strip()
-                        if uid.startswith("<@") and uid.endswith(">"):
-                            uid = uid.lstrip("<@!").rstrip(">")
-                        if uid.lower().startswith("user:"):
-                            uid = uid[5:]
-                        if uid:
-                            cleaned_ids.append(uid)
-                    save_env_value(
-                        "DISCORD_ALLOWED_USERS", ",".join(cleaned_ids)
-                    )
-                    print_success("Discord allowlist configured")
-
-    # ── Slack ──
-    existing_slack = get_env_value("SLACK_BOT_TOKEN")
-    if existing_slack:
-        print_info("Slack: already configured")
-        if prompt_yes_no("Reconfigure Slack?", False):
-            existing_slack = None
-
-    if not existing_slack and prompt_yes_no("Set up Slack bot?", False):
-        print_info("Steps to create a Slack app:")
-        print_info(
-            "   1. Go to https://api.slack.com/apps → Create New App (from scratch)"
-        )
-        print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
-        print_info("      • Create an App-Level Token with 'connections:write' scope")
-        print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
-        print_info("      Required scopes: chat:write, app_mentions:read,")
-        print_info("      channels:history, channels:read, im:history,")
-        print_info("      im:read, im:write, users:read, files:write")
-        print_info("      Optional for private channels: groups:history")
-        print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-        print_info("      Required events: message.im, message.channels, app_mention")
-        print_info("      Optional for private channels: message.groups")
-        print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
-        print_warning("     not public channels.")
-        print_info("   5. Install to Workspace: Settings → Install App")
-        print_info("   6. Reinstall the app after any scope or event changes")
-        print_info(
-            "   7. After installing, invite the bot to channels: /invite @YourBot"
-        )
-        print()
-        print_info(
-            f"   Full guide: {_DOCS_BASE}/user-guide/messaging/slack"
-        )
-        print()
-        bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
-        if bot_token:
-            save_env_value("SLACK_BOT_TOKEN", bot_token)
-            app_token = prompt("Slack App Token (xapp-...)", password=True)
-            if app_token:
-                save_env_value("SLACK_APP_TOKEN", app_token)
-            print_success("Slack tokens saved")
-
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info(
-                "   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID"
-            )
-            print()
-            existing_allowlist = get_env_value("SLACK_ALLOWED_USERS")
-            if existing_allowlist:
-                print_info(f"   Current allowlist: {existing_allowlist}")
-            allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty to "
-                + ("keep current" if existing_allowlist else "deny everyone except paired users")
-                + ")"
-            )
-            if allowed_users:
-                save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("Slack allowlist configured")
-            elif existing_allowlist:
-                print_success(
-                    f"Keeping existing Slack allowlist: {existing_allowlist}"
-                )
-            else:
-                print_warning(
-                    "⚠️  No Slack allowlist set - unpaired users will be denied by default."
-                )
-                print_info(
-                    "   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access."
-                )
-
-    # ── Matrix ──
-    existing_matrix = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
-    if existing_matrix:
-        print_info("Matrix: already configured")
-        if prompt_yes_no("Reconfigure Matrix?", False):
-            existing_matrix = None
-
-    if not existing_matrix and prompt_yes_no("Set up Matrix?", False):
-        print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
-        print_info("   1. Create a bot user on your homeserver, or use your own account")
-        print_info("   2. Get an access token from Element, or provide user ID + password")
-        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/matrix")
-        print()
-        homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
-        if homeserver:
-            save_env_value("MATRIX_HOMESERVER", homeserver.rstrip("/"))
-
-        print()
-        print_info("Auth: provide an access token (recommended), or user ID + password.")
-        token = prompt("Access token (leave empty for password login)", password=True)
-        if token:
-            save_env_value("MATRIX_ACCESS_TOKEN", token)
-            user_id = prompt("User ID (@bot:server — optional, will be auto-detected)")
-            if user_id:
-                save_env_value("MATRIX_USER_ID", user_id)
-            print_success("Matrix access token saved")
-        else:
-            user_id = prompt("User ID (@bot:server)")
-            if user_id:
-                save_env_value("MATRIX_USER_ID", user_id)
-            password = prompt("Password", password=True)
-            if password:
-                save_env_value("MATRIX_PASSWORD", password)
-                print_success("Matrix credentials saved")
-
-        if token or get_env_value("MATRIX_PASSWORD"):
-            # E2EE
-            print()
-            want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
-            if want_e2ee:
-                save_env_value("MATRIX_ENCRYPTION", "true")
-                print_success("E2EE enabled")
-
-            # Auto-install matrix-nio
-            matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
-            try:
-                __import__("nio")
-            except ImportError:
-                print_info(f"Installing {matrix_pkg}...")
-                import subprocess
-
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                        capture_output=True,
-                        text=True,
-                    )
-                else:
-                    result = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", matrix_pkg],
-                        capture_output=True,
-                        text=True,
-                    )
-                if result.returncode == 0:
-                    print_success(f"{matrix_pkg} installed")
-                else:
-                    print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
-                    if result.stderr:
-                        print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
-
-            # Allowed users
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   Matrix user IDs look like @username:server")
-            print()
-            existing_allowlist = get_env_value("MATRIX_ALLOWED_USERS")
-            if existing_allowlist:
-                print_info(f"   Current allowlist: {existing_allowlist}")
-            allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty to "
-                + ("keep current" if existing_allowlist else "allow open access")
-                + ")"
-            )
-            if allowed_users:
-                save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("Matrix allowlist configured")
-            elif existing_allowlist:
-                print_success(
-                    f"Keeping existing Matrix allowlist: {existing_allowlist}"
-                )
-            else:
-                print_info(
-                    "⚠️  No allowlist set - anyone who can message the bot can use it!"
-                )
-
-            # Home room
-            print()
-            print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
-            print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
-            print_info("   You can also set this later by typing /set-home in a Matrix room.")
-            home_room = prompt("Home room ID (leave empty to set later with /set-home)")
-            if home_room:
-                save_env_value("MATRIX_HOME_ROOM", home_room)
-
-    # ── Mattermost ──
-    existing_mattermost = get_env_value("MATTERMOST_TOKEN")
-    if existing_mattermost:
-        print_info("Mattermost: already configured")
-        if prompt_yes_no("Reconfigure Mattermost?", False):
-            existing_mattermost = None
-
-    if not existing_mattermost and prompt_yes_no("Set up Mattermost?", False):
-        print_info("Works with any self-hosted Mattermost instance.")
-        print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
-        print_info("   2. Copy the bot token")
-        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/mattermost")
-        print()
-        mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
-        if mm_url:
-            save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
-        token = prompt("Bot token", password=True)
-        if token:
-            save_env_value("MATTERMOST_TOKEN", token)
-            print_success("Mattermost token saved")
-
-            # Allowed users
-            print()
-            print_info("🔒 Security: Restrict who can use your bot")
-            print_info("   To find your user ID: click your avatar → Profile")
-            print_info("   or use the API: GET /api/v4/users/me")
-            print()
-            existing_allowlist = get_env_value("MATTERMOST_ALLOWED_USERS")
-            if existing_allowlist:
-                print_info(f"   Current allowlist: {existing_allowlist}")
-            allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty to "
-                + ("keep current" if existing_allowlist else "allow open access")
-                + ")"
-            )
-            if allowed_users:
-                save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                print_success("Mattermost allowlist configured")
-            elif existing_allowlist:
-                print_success(
-                    f"Keeping existing Mattermost allowlist: {existing_allowlist}"
-                )
-            else:
-                print_info(
-                    "⚠️  No allowlist set - anyone who can message the bot can use it!"
-                )
-
-            # Home channel
-            print()
-            print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
-            print_info("   To get a channel ID: click channel name → View Info → copy the ID")
-            print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-            home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
-            if home_channel:
-                save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
-
-    # ── WhatsApp ──
-    existing_whatsapp = get_env_value("WHATSAPP_ENABLED")
-    if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
-        print_info("WhatsApp connects via a built-in bridge (Baileys).")
-        print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
-        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/whatsapp")
-        print()
-        if prompt_yes_no("Enable WhatsApp now?", True):
-            save_env_value("WHATSAPP_ENABLED", "true")
-            print_success("WhatsApp enabled")
-            print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
-            print_info("or personal self-chat) and pair via QR code.")
-
-    # ── Webhooks ──
-    existing_webhook = get_env_value("WEBHOOK_ENABLED")
-    if existing_webhook:
-        print_info("Webhooks: already configured")
-        if prompt_yes_no("Reconfigure webhooks?", False):
-            existing_webhook = None
-
-    if not existing_webhook and prompt_yes_no("Set up webhooks? (GitHub, GitLab, etc.)", False):
-        print()
-        print_warning(
-            "⚠  Webhook and SMS platforms require exposing gateway ports to the"
-        )
-        print_warning(
-            "   internet. For security, run the gateway in a sandboxed environment"
-        )
-        print_warning(
-            "   (Docker, VM, etc.) to limit blast radius from prompt injection."
-        )
-        print()
-        print_info(
-            f"   Full guide: {_DOCS_BASE}/user-guide/messaging/webhooks"
-        )
-        print()
-
-        port = prompt("Webhook port (default 8644)")
-        if port:
-            try:
-                save_env_value("WEBHOOK_PORT", str(int(port)))
-                print_success(f"Webhook port set to {port}")
-            except ValueError:
-                print_warning("Invalid port number, using default 8644")
-
-        secret = prompt("Global HMAC secret (shared across all routes)", password=True)
-        if secret:
-            save_env_value("WEBHOOK_SECRET", secret)
-            print_success("Webhook secret saved")
-        else:
-            print_warning("No secret set — you must configure per-route secrets in config.yaml")
-
-        save_env_value("WEBHOOK_ENABLED", "true")
-        print()
-        print_success("Webhooks enabled! Next steps:")
-        from hermes_constants import display_hermes_home as _dhh
-        print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
-        print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
-        print_info("      http://your-server:8644/webhooks/<route-name>")
-        print()
-        print_info(
-            "   Route configuration guide:"
-        )
-        print_info(
-            f"   {_DOCS_BASE}/user-guide/messaging/webhooks#configuring-routes"
-        )
-        print()
-        print_info("   Open config in your editor:  hermes config edit")
+    for idx in selected:
+        name, _env_var, setup_func = _GATEWAY_PLATFORMS[idx]
+        setup_func()
 
     # ── Gateway Service Setup ──
     any_messaging = (
@@ -2839,25 +2787,20 @@ def run_setup_wizard(args):
     else:
         # ── First-Time Setup ──
         print()
-        print_info("We'll walk you through:")
-        print_info("  1. Model & Provider — choose your AI provider and model")
-        print_info("  2. Terminal Backend — where your agent runs commands")
-        print_info("  3. Agent Settings — iterations, compression, session reset")
-        print_info("  4. Messaging Platforms — connect Telegram, Discord, etc.")
-        print_info("  5. Tools — configure TTS, web search, image generation, etc.")
-        print()
-        print_info("Press Enter to begin, or Ctrl+C to exit.")
-        try:
-            input(color("  Press Enter to start... ", Colors.YELLOW))
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return
 
         # Offer OpenClaw migration before configuration begins
         migration_ran = _offer_openclaw_migration(hermes_home)
         if migration_ran:
-            # Reload config in case migration wrote to it
             config = load_config()
+
+        setup_mode = prompt_choice("How would you like to set up Hermes?", [
+            "Quick setup — provider, model & messaging (recommended)",
+            "Full setup — configure everything",
+        ], 0)
+
+        if setup_mode == 0:
+            _run_first_time_quick_setup(config, hermes_home, is_existing)
+            return
 
     # ── Full Setup — run all sections ──
     print_header("Configuration Location")
@@ -2897,6 +2840,67 @@ def run_setup_wizard(args):
     # Save and show summary
     save_config(config)
     _print_setup_summary(config, hermes_home)
+
+    _offer_launch_chat()
+
+
+def _offer_launch_chat():
+    """Prompt the user to jump straight into chat after setup."""
+    print()
+    if prompt_yes_no("Launch hermes chat now?", True):
+        from hermes_cli.main import cmd_chat
+        from types import SimpleNamespace
+        cmd_chat(SimpleNamespace(
+            query=None, resume=None, continue_last=None, model=None,
+            provider=None, effort=None, skin=None, oneshot=False,
+            quiet=False, verbose=False, toolsets=None, skills=None,
+            yolo=False, source=None, worktree=False, checkpoints=False,
+            pass_session_id=False, max_turns=None,
+        ))
+
+
+def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
+    """Streamlined first-time setup: provider + model only.
+
+    Applies sensible defaults for TTS (Edge), terminal (local), agent
+    settings, and tools — the user can customize later via
+    ``hermes setup <section>``.
+    """
+    # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
+    setup_model_provider(config, quick=True)
+
+    # Step 2: Apply defaults for everything else
+    _apply_default_agent_settings(config)
+    config.setdefault("terminal", {}).setdefault("backend", "local")
+
+    save_config(config)
+
+    # Step 3: Offer messaging gateway setup
+    print()
+    gateway_choice = prompt_choice(
+        "Connect a messaging platform? (Telegram, Discord, etc.)",
+        [
+            "Set up messaging now (recommended)",
+            "Skip — set up later with 'hermes setup gateway'",
+        ],
+        0,
+    )
+
+    if gateway_choice == 0:
+        setup_gateway(config)
+        save_config(config)
+
+    print()
+    print_success("Setup complete! You're ready to go.")
+    print()
+    print_info("  Configure all settings:    hermes setup")
+    if gateway_choice != 0:
+        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+    print()
+
+    _print_setup_summary(config, hermes_home)
+
+    _offer_launch_chat()
 
 
 def _run_quick_setup(config: dict, hermes_home):

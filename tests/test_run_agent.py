@@ -411,8 +411,9 @@ class TestInit:
             patch("run_agent.OpenAI"),
         ):
             a = AIAgent(
-                api_key="test-key-1234567890",
+                api_key="test-k...7890",
                 model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -792,6 +793,7 @@ class TestBuildApiKwargs:
         assert kwargs["timeout"] == 1800.0
 
     def test_provider_preferences_injected(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
         agent.providers_allowed = ["Anthropic"]
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -799,6 +801,8 @@ class TestBuildApiKwargs:
 
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "anthropic/claude-sonnet-4-20250514"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         reasoning = kwargs["extra_body"]["reasoning"]
@@ -806,6 +810,8 @@ class TestBuildApiKwargs:
         assert reasoning["effort"] == "medium"
 
     def test_reasoning_config_custom(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "anthropic/claude-sonnet-4-20250514"
         agent.reasoning_config = {"enabled": False}
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -818,6 +824,7 @@ class TestBuildApiKwargs:
         assert "reasoning" not in kwargs.get("extra_body", {})
 
     def test_reasoning_sent_for_supported_openrouter_model(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "qwen/qwen3.5-plus-02-15"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -3156,9 +3163,11 @@ class TestStreamingApiCall:
     def test_api_exception_falls_back_to_non_streaming(self, agent):
         """When streaming fails before any deltas, fallback to non-streaming is attempted."""
         agent.client.chat.completions.create.side_effect = ConnectionError("fail")
-        # The fallback also uses the same client, so it'll fail too
-        with pytest.raises(ConnectionError, match="fail"):
-            agent._interruptible_streaming_api_call({"messages": []})
+        # Prevent stream retry logic from replacing the mock client
+        with patch.object(agent, "_replace_primary_openai_client", return_value=False):
+            # The fallback also uses the same client, so it'll fail too
+            with pytest.raises(ConnectionError, match="fail"):
+                agent._interruptible_streaming_api_call({"messages": []})
 
     def test_response_has_uuid_id(self, agent):
         chunks = [_make_chunk(content="x"), _make_chunk(finish_reason="stop")]

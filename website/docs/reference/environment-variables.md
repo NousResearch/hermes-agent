@@ -118,6 +118,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TERMINAL_CWD` | Working directory for all terminal sessions |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |
 
+For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETIME_SECONDS` controls when Hermes cleans up an idle terminal session, and later resumes may recreate the sandbox rather than keep the same live processes running.
+
 ## SSH Backend
 
 | Variable | Description |

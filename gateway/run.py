@@ -1052,6 +1052,15 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+        # Clear RAM cache on startup to prevent stale data
+        try:
+            from tools.ram_cache import cache_clear, CACHE_ROOT
+            CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+            cleared = cache_clear()
+            if cleared:
+                logger.info("RAM cache cleared: %d stale entries removed", cleared)
+        except Exception:
+            pass
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()

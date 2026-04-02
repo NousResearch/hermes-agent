@@ -1115,9 +1115,12 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # Send response if any
+            # Send response if any.  A None/empty response is normal when
+            # streaming already delivered the text (already_sent=True) or
+            # when the message was queued behind an active agent.  Log at
+            # DEBUG to avoid noisy warnings for expected behavior.
             if not response:
-                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)

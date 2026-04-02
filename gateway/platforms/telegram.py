@@ -900,7 +900,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # best-effort truncation
                 return SendResult(success=True, message_id=message_id)
-            # Flood control / RetryAfter — back off and retry once
+            # Flood control / RetryAfter — short waits are retried inline,
+            # long waits (>5s) return a failure so the caller can decide
+            # whether to wait or degrade gracefully.  (grammY auto-retry
+            # pattern: maxDelaySeconds threshold.)
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
@@ -908,6 +911,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
                 )
+                if wait > 5.0:
+                    # Long wait — return failure immediately so callers
+                    # (progress edits, stream consumer) aren't blocked.
+                    return SendResult(
+                        success=False,
+                        error=f"flood_control:{wait}",
+                    )
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(

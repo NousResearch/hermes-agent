@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -26,6 +27,35 @@ logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
+
+# Patterns for stripping thinking/reasoning blocks from streamed content.
+# Matches complete blocks and also unclosed trailing blocks (still being generated).
+_THINK_TAGS = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD")
+_COMPLETE_THINK_RE = re.compile(
+    r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>.*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>',
+    re.DOTALL | re.IGNORECASE,
+)
+_UNCLOSED_THINK_RE = re.compile(
+    r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>(?:(?!</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>).)*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Remove complete and unclosed thinking/reasoning blocks from streamed text.
+
+    Handles both fully closed blocks like ``<think>...</think>`` and
+    partially streamed blocks where the closing tag hasn't arrived yet.
+    """
+    if not text or "<" not in text:
+        return text
+    # Strip complete blocks first
+    text = _COMPLETE_THINK_RE.sub("", text)
+    # Strip any trailing unclosed block (still being streamed)
+    text = _UNCLOSED_THINK_RE.sub("", text)
+    # Collapse excessive blank lines left behind by removed blocks
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
 
 
 @dataclass
@@ -116,22 +146,31 @@ class GatewayStreamConsumer:
                 )
 
                 if should_edit and self._accumulated:
-                    # Split overflow: if accumulated text exceeds the platform
+                    # Strip thinking/reasoning blocks before display
+                    display_text = _strip_think_blocks(self._accumulated)
+                    if not display_text:
+                        # All content so far is inside a thinking block —
+                        # skip this edit cycle and wait for real content.
+                        if got_done:
+                            return
+                        await asyncio.sleep(0.05)
+                        continue
+
+                    # Split overflow: if clean text exceeds the platform
                     # limit, finalize the current message and start a new one.
                     while (
-                        len(self._accumulated) > _safe_limit
+                        len(display_text) > _safe_limit
                         and self._message_id is not None
                     ):
-                        split_at = self._accumulated.rfind("\n", 0, _safe_limit)
+                        split_at = display_text.rfind("\n", 0, _safe_limit)
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
-                        chunk = self._accumulated[:split_at]
+                        chunk = display_text[:split_at]
                         await self._send_or_edit(chunk)
-                        self._accumulated = self._accumulated[split_at:].lstrip("\n")
+                        display_text = display_text[split_at:].lstrip("\n")
                         self._message_id = None
                         self._last_sent_text = ""
 
-                    display_text = self._accumulated
                     if not got_done:
                         display_text += self.cfg.cursor
 
@@ -139,9 +178,10 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor
-                    if self._accumulated and self._message_id:
-                        await self._send_or_edit(self._accumulated)
+                    # Final edit without cursor — strip thinking blocks
+                    final_text = _strip_think_blocks(self._accumulated)
+                    if final_text and self._message_id:
+                        await self._send_or_edit(final_text)
                     return
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -150,7 +190,7 @@ class GatewayStreamConsumer:
             # Best-effort final edit on cancellation
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    await self._send_or_edit(_strip_think_blocks(self._accumulated) or self._last_sent_text)
                 except Exception:
                     pass
         except Exception as e:

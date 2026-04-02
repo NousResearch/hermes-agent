@@ -34,9 +34,19 @@ _BLOCKED_HOSTNAMES = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 198.18.0.0/15 (Benchmarking Range, RFC 2544) is used by Clash fake IP and
+# some VPN tools. Python's ipaddress reports is_private=True, but these are
+# actually usable public routing space in most environments.
+_FAKEIP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
+    # Fake IP range (Clash/WireGuard) — must be checked before is_private
+    # because Python's ipaddress reports these as private but they actually
+    # route via the VPN tunnel and are publicly accessible.
+    if ip in _FAKEIP_NETWORK:
+        return False  # Allow
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         return True
     if ip.is_multicast or ip.is_unspecified:

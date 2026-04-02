@@ -103,12 +103,6 @@ from agent.trajectory import (
 )
 from utils import atomic_json_write, env_var_enabled
 
-HONCHO_TOOL_NAMES = {
-    "honcho_context",
-    "honcho_profile",
-    "honcho_search",
-    "honcho_conclude",
-}
 
 
 class _SafeWriter:
@@ -221,9 +215,6 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
-    "honcho_context",
-    "honcho_profile",
-    "honcho_search",
     "read_file",
     "search_files",
     "session_search",
@@ -340,44 +331,13 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return left_parts[:common_len] == right_parts[:common_len]
 
 
-def _inject_honcho_turn_context(content, turn_context: str):
-    """Append Honcho recall to the current-turn user message without mutating history.
 
-    The returned content is sent to the API for this turn only. Keeping Honcho
-    recall out of the system prompt preserves the stable cache prefix while
-    still giving the model continuity context.
-    """
-    if not turn_context:
-        return content
+_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
-    note = (
-        "[System note: The following Honcho memory was retrieved from prior "
-        "sessions. It is continuity context for this turn only, not new user "
-        "input.]\n\n"
-        f"{turn_context}"
-    )
-
-    if isinstance(content, list):
-        return list(content) + [{"type": "text", "text": note}]
-
-    text = "" if content is None else str(content)
-    if not text.strip():
-        return note
-    return f"{text}\n\n{note}"
-
-
-# Budget warning text patterns injected by _get_budget_warning().
 _BUDGET_WARNING_RE = re.compile(
     r"\[BUDGET(?:\s+WARNING)?:\s+Iteration\s+\d+/\d+\..*?\]",
     re.DOTALL,
 )
-
-
-# Regex to match lone surrogate code points (U+D800..U+DFFF).
-# These are invalid in UTF-8 and cause UnicodeEncodeError when the OpenAI SDK
-# serialises messages to JSON.  Common source: clipboard paste from Google Docs
-# or other rich-text editors on some platforms.
-_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -507,9 +467,6 @@ class AIAgent:
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
-        honcho_session_key: str = None,
-        honcho_manager=None,
-        honcho_config=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
@@ -556,10 +513,6 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
-            honcho_session_key (str): Session key for Honcho integration (e.g., "telegram:123456" or CLI session_id).
-                When provided and Honcho is enabled in config, enables persistent cross-session user modeling.
-            honcho_manager: Optional shared HonchoSessionManager owned by the caller.
-            honcho_config: Optional HonchoClientConfig corresponding to honcho_manager.
         """
         _install_safe_stdio()
 
@@ -1070,75 +1023,80 @@ class AIAgent:
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
-        # Honcho AI-native memory (cross-session user modeling)
-        # Reads $HERMES_HOME/honcho.json (instance) or ~/.honcho/config.json (global).
-        self._honcho = None  # HonchoSessionManager | None
-        self._honcho_session_key = honcho_session_key
-        self._honcho_config = None  # HonchoClientConfig | None
-        self._honcho_exit_hook_registered = False
+
+
+        # Memory provider plugin (external — one at a time, alongside built-in)
+        # Reads memory.provider from config to select which plugin to activate.
+        self._memory_manager = None
         if not skip_memory:
             try:
-                if honcho_manager is not None:
-                    hcfg = honcho_config or getattr(honcho_manager, "_config", None)
-                    self._honcho_config = hcfg
-                    if hcfg and self._honcho_should_activate(hcfg):
-                        self._honcho = honcho_manager
-                        self._activate_honcho(
-                            hcfg,
-                            enabled_toolsets=enabled_toolsets,
-                            disabled_toolsets=disabled_toolsets,
-                            session_db=session_db,
-                        )
-                else:
-                    from honcho_integration.client import HonchoClientConfig, get_honcho_client
-                    hcfg = HonchoClientConfig.from_global_config()
-                    self._honcho_config = hcfg
-                    if self._honcho_should_activate(hcfg):
-                        from honcho_integration.session import HonchoSessionManager
-                        client = get_honcho_client(hcfg)
-                        self._honcho = HonchoSessionManager(
-                            honcho=client,
-                            config=hcfg,
-                            context_tokens=hcfg.context_tokens,
-                        )
-                        self._activate_honcho(
-                            hcfg,
-                            enabled_toolsets=enabled_toolsets,
-                            disabled_toolsets=disabled_toolsets,
-                            session_db=session_db,
-                        )
+                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+
+                # Auto-migrate: if Honcho was actively configured (enabled +
+                # credentials) but memory.provider is not set, activate the
+                # honcho plugin automatically.  Just having the config file
+                # is not enough — the user may have disabled Honcho or the
+                # file may be from a different tool.
+                if not _mem_provider_name:
+                    try:
+                        from plugins.memory.honcho.client import HonchoClientConfig as _HCC
+                        _hcfg = _HCC.from_global_config()
+                        if _hcfg.enabled and (_hcfg.api_key or _hcfg.base_url):
+                            _mem_provider_name = "honcho"
+                            # Persist so this only auto-migrates once
+                            try:
+                                from hermes_cli.config import load_config as _lc, save_config as _sc
+                                _cfg = _lc()
+                                _cfg.setdefault("memory", {})["provider"] = "honcho"
+                                _sc(_cfg)
+                            except Exception:
+                                pass
+                            if not self.quiet_mode:
+                                print("  ✓ Auto-migrated Honcho to memory provider plugin.")
+                                print("    Your config and data are preserved.\n")
+                    except Exception:
+                        pass
+
+                if _mem_provider_name:
+                    from agent.memory_manager import MemoryManager as _MemoryManager
+                    from plugins.memory import load_memory_provider as _load_mem
+                    self._memory_manager = _MemoryManager()
+                    _mp = _load_mem(_mem_provider_name)
+                    if _mp and _mp.is_available():
+                        self._memory_manager.add_provider(_mp)
+                    if self._memory_manager.providers:
+                        from hermes_constants import get_hermes_home as _ghh
+                        _init_kwargs = {
+                            "session_id": self.session_id,
+                            "platform": platform or "cli",
+                            "hermes_home": str(_ghh()),
+                            "agent_context": "primary",
+                        }
+                        # Profile identity for per-profile provider scoping
+                        try:
+                            from hermes_cli.profiles import get_active_profile_name
+                            _profile = get_active_profile_name()
+                            _init_kwargs["agent_identity"] = _profile
+                            _init_kwargs["agent_workspace"] = "hermes"
+                        except Exception:
+                            pass
+                        self._memory_manager.initialize_all(**_init_kwargs)
+                        logger.info("Memory provider '%s' activated", _mem_provider_name)
                     else:
-                        if not hcfg.enabled:
-                            logger.debug("Honcho disabled in global config")
-                        elif not (hcfg.api_key or hcfg.base_url):
-                            logger.debug("Honcho enabled but no API key or base URL configured")
-                        else:
-                            logger.debug("Honcho enabled but missing API key or disabled in config")
-            except Exception as e:
-                logger.warning("Honcho init failed — memory disabled: %s", e)
-                print(f"  Honcho init failed: {e}")
-                print("  Run 'hermes honcho setup' to reconfigure.")
-                self._honcho = None
+                        logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                        self._memory_manager = None
+            except Exception as _mpe:
+                logger.warning("Memory provider plugin init failed: %s", _mpe)
+                self._memory_manager = None
 
-        # Tools are initially discovered before Honcho activation. If Honcho
-        # stays inactive, remove any stale honcho_* tools from prior process state.
-        if not self._honcho:
-            self._strip_honcho_tools_from_surface()
-
-        # Gate local memory writes based on per-peer memory modes.
-        # AI peer governs MEMORY.md; user peer governs USER.md.
-        # "honcho" = Honcho only, disable local writes.
-        if self._honcho_config and self._honcho:
-            _hcfg = self._honcho_config
-            _agent_mode = _hcfg.peer_memory_mode(_hcfg.ai_peer)
-            _user_mode = _hcfg.peer_memory_mode(_hcfg.peer_name or "user")
-            if _agent_mode == "honcho":
-                self._memory_flush_min_turns = 0
-                self._memory_enabled = False
-                logger.debug("peer %s memory_mode=honcho: local MEMORY.md writes disabled", _hcfg.ai_peer)
-            if _user_mode == "honcho":
-                self._user_profile_enabled = False
-                logger.debug("peer %s memory_mode=honcho: local USER.md writes disabled", _hcfg.peer_name or "user")
+        # Inject memory provider tool schemas into the tool surface
+        if self._memory_manager and self.tools is not None:
+            for _schema in self._memory_manager.get_all_tool_schemas():
+                _wrapped = {"type": "function", "function": _schema}
+                self.tools.append(_wrapped)
+                _tname = _schema.get("name", "")
+                if _tname:
+                    self.valid_tool_names.add(_tname)
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -2382,6 +2340,23 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None
         _set_interrupt(False)
+
+    def shutdown_memory_provider(self, messages: list = None) -> None:
+        """Shut down the memory provider — call at actual session boundaries.
+
+        This calls on_session_end() then shutdown_all() on the memory
+        manager. NOT called per-turn — only at CLI exit, /reset, gateway
+        session expiry, etc.
+        """
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_session_end(messages or [])
+            except Exception:
+                pass
+            try:
+                self._memory_manager.shutdown_all()
+            except Exception:
+                pass
     
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
@@ -2420,228 +2395,14 @@ class AIAgent:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
 
-    # ── Honcho integration helpers ──
 
-    def _honcho_should_activate(self, hcfg) -> bool:
-        """Return True when Honcho should be active.
 
-        Self-hosted Honcho may be configured with a base_url and no API key,
-        so activation should accept either credential style.
-        """
-        if not hcfg or not hcfg.enabled:
-            return False
-        if not (hcfg.api_key or hcfg.base_url):
-            return False
-        return True
 
-    def _strip_honcho_tools_from_surface(self) -> None:
-        """Remove Honcho tools from the active tool surface."""
-        if not self.tools:
-            self.valid_tool_names = set()
-            return
 
-        self.tools = [
-            tool for tool in self.tools
-            if tool.get("function", {}).get("name") not in HONCHO_TOOL_NAMES
-        ]
-        self.valid_tool_names = {
-            tool["function"]["name"] for tool in self.tools
-        } if self.tools else set()
 
-    def _activate_honcho(
-        self,
-        hcfg,
-        *,
-        enabled_toolsets: Optional[List[str]],
-        disabled_toolsets: Optional[List[str]],
-        session_db,
-    ) -> None:
-        """Finish Honcho setup once a session manager is available."""
-        if not self._honcho:
-            return
 
-        if not self._honcho_session_key:
-            session_title = None
-            if session_db is not None:
-                try:
-                    session_title = session_db.get_session_title(self.session_id or "")
-                except Exception:
-                    pass
-            self._honcho_session_key = (
-                hcfg.resolve_session_name(
-                    session_title=session_title,
-                    session_id=self.session_id,
-                )
-                or "hermes-default"
-            )
 
-        honcho_sess = self._honcho.get_or_create(self._honcho_session_key)
-        if not honcho_sess.messages:
-            try:
-                from hermes_cli.config import get_hermes_home
 
-                mem_dir = str(get_hermes_home() / "memories")
-                self._honcho.migrate_memory_files(
-                    self._honcho_session_key,
-                    mem_dir,
-                )
-            except Exception as exc:
-                logger.debug("Memory files migration failed (non-fatal): %s", exc)
-
-        from tools.honcho_tools import set_session_context
-
-        set_session_context(self._honcho, self._honcho_session_key)
-
-        # Rebuild tool surface after Honcho context injection. Tool availability
-        # is check_fn-gated and may change once session context is attached.
-        self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
-            quiet_mode=True,
-        )
-        self.valid_tool_names = {
-            tool["function"]["name"] for tool in self.tools
-        } if self.tools else set()
-
-        if hcfg.recall_mode == "context":
-            self._strip_honcho_tools_from_surface()
-            if not self.quiet_mode:
-                print("  Honcho active — recall_mode: context (Honcho tools hidden)")
-        else:
-            if not self.quiet_mode:
-                print(f"  Honcho active — recall_mode: {hcfg.recall_mode}")
-
-        logger.info(
-            "Honcho active (session: %s, user: %s, workspace: %s, "
-            "write_frequency: %s, memory_mode: %s)",
-            self._honcho_session_key,
-            hcfg.peer_name,
-            hcfg.workspace_id,
-            hcfg.write_frequency,
-            hcfg.memory_mode,
-        )
-
-        recall_mode = hcfg.recall_mode
-        if recall_mode != "tools":
-            try:
-                ctx = self._honcho.get_prefetch_context(self._honcho_session_key)
-                if ctx:
-                    self._honcho.set_context_result(self._honcho_session_key, ctx)
-                    logger.debug("Honcho context pre-warmed for first turn")
-            except Exception as exc:
-                logger.debug("Honcho context prefetch failed (non-fatal): %s", exc)
-
-        self._register_honcho_exit_hook()
-
-    def _register_honcho_exit_hook(self) -> None:
-        """Register a process-exit flush hook without clobbering signal handlers."""
-        if self._honcho_exit_hook_registered or not self._honcho:
-            return
-
-        honcho_ref = weakref.ref(self._honcho)
-
-        def _flush_honcho_on_exit():
-            manager = honcho_ref()
-            if manager is None:
-                return
-            try:
-                manager.flush_all()
-            except (Exception, KeyboardInterrupt) as exc:
-                logger.debug("Honcho flush on exit failed (non-fatal): %s", exc)
-
-        atexit.register(_flush_honcho_on_exit)
-        self._honcho_exit_hook_registered = True
-
-    def _queue_honcho_prefetch(self, user_message: str) -> None:
-        """Queue turn-end Honcho prefetch so the next turn can consume cached results."""
-        if not self._honcho or not self._honcho_session_key:
-            return
-
-        recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
-        if recall_mode == "tools":
-            return
-
-        try:
-            self._honcho.prefetch_context(self._honcho_session_key, user_message)
-            self._honcho.prefetch_dialectic(self._honcho_session_key, user_message or "What were we working on?")
-        except Exception as exc:
-            logger.debug("Honcho background prefetch failed (non-fatal): %s", exc)
-
-    def _honcho_prefetch(self, user_message: str) -> str:
-        """Assemble the first-turn Honcho context from the pre-warmed cache."""
-        if not self._honcho or not self._honcho_session_key:
-            return ""
-        try:
-            parts = []
-
-            ctx = self._honcho.pop_context_result(self._honcho_session_key)
-            if ctx:
-                rep = ctx.get("representation", "")
-                card = ctx.get("card", "")
-                if rep:
-                    parts.append(f"## User representation\n{rep}")
-                if card:
-                    parts.append(card)
-                ai_rep = ctx.get("ai_representation", "")
-                ai_card = ctx.get("ai_card", "")
-                if ai_rep:
-                    parts.append(f"## AI peer representation\n{ai_rep}")
-                if ai_card:
-                    parts.append(ai_card)
-
-            dialectic = self._honcho.pop_dialectic_result(self._honcho_session_key)
-            if dialectic:
-                parts.append(f"## Continuity synthesis\n{dialectic}")
-
-            if not parts:
-                return ""
-            header = (
-                "# Honcho Memory (persistent cross-session context)\n"
-                "Use this to answer questions about the user, prior sessions, "
-                "and what you were working on together. Do not call tools to "
-                "look up information that is already present here.\n"
-            )
-            return header + "\n\n".join(parts)
-        except Exception as e:
-            logger.debug("Honcho prefetch failed (non-fatal): %s", e)
-            return ""
-
-    def _honcho_save_user_observation(self, content: str) -> str:
-        """Route a memory tool target=user add to Honcho.
-
-        Sends the content as a user peer message so Honcho's reasoning
-        model can incorporate it into the user representation.
-        """
-        if not content or not content.strip():
-            return json.dumps({"success": False, "error": "Content cannot be empty."})
-        try:
-            session = self._honcho.get_or_create(self._honcho_session_key)
-            session.add_message("user", f"[observation] {content.strip()}")
-            self._honcho.save(session)
-            return json.dumps({
-                "success": True,
-                "target": "user",
-                "message": "Saved to Honcho user model.",
-            })
-        except Exception as e:
-            logger.debug("Honcho user observation failed: %s", e)
-            return json.dumps({"success": False, "error": f"Honcho save failed: {e}"})
-
-    def _honcho_sync(self, user_content: str, assistant_content: str) -> None:
-        """Sync the user/assistant message pair to Honcho."""
-        if not self._honcho or not self._honcho_session_key:
-            return
-        try:
-            session = self._honcho.get_or_create(self._honcho_session_key)
-            session.add_message("user", user_content)
-            session.add_message("assistant", assistant_content)
-            self._honcho.save(session)
-            logger.info("Honcho sync queued for session %s (%d messages)",
-                        self._honcho_session_key, len(session.messages))
-        except Exception as e:
-            logger.warning("Honcho sync failed: %s", e)
-            if not self.quiet_mode:
-                print(f"  Honcho write failed: {e}")
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -2671,8 +2432,8 @@ class AIAgent:
         if not _soul_loaded:
             # Fallback to hardcoded identity
             _ai_peer_name = (
-                self._honcho_config.ai_peer
-                if self._honcho_config and self._honcho_config.ai_peer != "hermes"
+                None
+                if False
                 else None
             )
             if _ai_peer_name:
@@ -2728,59 +2489,7 @@ class AIAgent:
                 if "gemini" in _model_lower or "gemma" in _model_lower:
                     prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
 
-        # Honcho CLI awareness: tell Hermes about its own management commands
         # so it can refer the user to them rather than reinventing answers.
-        if self._honcho and self._honcho_session_key:
-            hcfg = self._honcho_config
-            mode = hcfg.memory_mode if hcfg else "hybrid"
-            freq = hcfg.write_frequency if hcfg else "async"
-            recall_mode = hcfg.recall_mode if hcfg else "hybrid"
-            honcho_block = (
-                "# Honcho memory integration\n"
-                f"Active. Session: {self._honcho_session_key}. "
-                f"Mode: {mode}. Write frequency: {freq}. Recall: {recall_mode}.\n"
-            )
-            if recall_mode == "context":
-                honcho_block += (
-                    "Honcho context is injected into this system prompt below. "
-                    "All memory retrieval comes from this context — no Honcho tools "
-                    "are available. Answer questions about the user, prior sessions, "
-                    "and recent work directly from the Honcho Memory section.\n"
-                )
-            elif recall_mode == "tools":
-                honcho_block += (
-                    "Honcho tools:\n"
-                    "  honcho_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
-                    "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
-                    "  honcho_profile                          — user's peer card, key facts, no LLM\n"
-                    "  honcho_conclude <conclusion>            — write a fact about the user to memory\n"
-                )
-            else:  # hybrid
-                honcho_block += (
-                    "Honcho context (user representation, peer card, and recent session summary) "
-                    "is injected into this system prompt below. Use it to answer continuity "
-                    "questions ('where were we?', 'what were we working on?') WITHOUT calling "
-                    "any tools. Only call Honcho tools when you need information beyond what is "
-                    "already present in the Honcho Memory section.\n"
-                    "Honcho tools:\n"
-                    "  honcho_context <question>           — ask Honcho a question, LLM-synthesized answer\n"
-                    "  honcho_search <query>                   — semantic search, raw excerpts, no LLM\n"
-                    "  honcho_profile                          — user's peer card, key facts, no LLM\n"
-                    "  honcho_conclude <conclusion>            — write a fact about the user to memory\n"
-                )
-            honcho_block += (
-                "Management commands (refer users here instead of explaining manually):\n"
-                "  hermes honcho status                    — show full config + connection\n"
-                "  hermes honcho mode [hybrid|honcho]       — show or set memory mode\n"
-                "  hermes honcho tokens [--context N] [--dialectic N] — show or set token budgets\n"
-                "  hermes honcho peer [--user NAME] [--ai NAME] [--reasoning LEVEL]\n"
-                "  hermes honcho sessions                  — list directory→session mappings\n"
-                "  hermes honcho map <name>                — map cwd to a session name\n"
-                "  hermes honcho identity [<file>] [--show] — seed or show AI peer identity\n"
-                "  hermes honcho migrate                   — migration guide from openclaw-honcho\n"
-                "  hermes honcho setup                     — full interactive wizard"
-            )
-            prompt_parts.append(honcho_block)
 
         # Note: ephemeral_system_prompt is NOT included here. It's injected at
         # API-call time only so it stays out of the cached/stored system prompt.
@@ -2792,11 +2501,20 @@ class AIAgent:
                 mem_block = self._memory_store.format_for_system_prompt("memory")
                 if mem_block:
                     prompt_parts.append(mem_block)
-            # USER.md is always included when enabled -- Honcho prefetch is additive.
+            # USER.md is always included when enabled.
             if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # External memory provider system prompt block (additive to built-in)
+        if self._memory_manager:
+            try:
+                _ext_mem_block = self._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    prompt_parts.append(_ext_mem_block)
+            except Exception:
+                pass
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -5607,10 +5325,6 @@ class AIAgent:
             return
         if "memory" not in self.valid_tool_names or not self._memory_store:
             return
-        # honcho-only agent mode: skip local MEMORY.md flush
-        _hcfg = getattr(self, '_honcho_config', None)
-        if _hcfg and _hcfg.peer_memory_mode(_hcfg.ai_peer) == "honcho":
-            return
         effective_min = min_turns if min_turns is not None else self._memory_flush_min_turns
         if self._user_turn_count < effective_min:
             return
@@ -5734,8 +5448,6 @@ class AIAgent:
                             old_text=args.get("old_text"),
                             store=self._memory_store,
                         )
-                        if self._honcho and flush_target == "user" and args.get("action") == "add":
-                            self._honcho_save_user_observation(args.get("content", ""))
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
@@ -5760,6 +5472,13 @@ class AIAgent:
         """
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
+
+        # Notify external memory provider before compression discards context
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_pre_compress(messages)
+            except Exception:
+                pass
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
@@ -5887,10 +5606,19 @@ class AIAgent:
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
-            # Also send user observations to Honcho when active
-            if self._honcho and target == "user" and function_args.get("action") == "add":
-                self._honcho_save_user_observation(function_args.get("content", ""))
+            # Bridge: notify external memory provider of built-in memory writes
+            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+                try:
+                    self._memory_manager.on_memory_write(
+                        function_args.get("action", ""),
+                        target,
+                        function_args.get("content", ""),
+                    )
+                except Exception:
+                    pass
             return result
+        elif self._memory_manager and self._memory_manager.has_tool(function_name):
+            return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
             return _clarify_tool(
@@ -5912,8 +5640,6 @@ class AIAgent:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                honcho_manager=self._honcho,
-                honcho_session_key=self._honcho_session_key,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -6237,9 +5963,6 @@ class AIAgent:
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
                 )
-                # Also send user observations to Honcho when active
-                if self._honcho and target == "user" and function_args.get("action") == "add":
-                    self._honcho_save_user_observation(function_args.get("content", ""))
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
@@ -6299,8 +6022,6 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        honcho_manager=self._honcho,
-                        honcho_session_key=self._honcho_session_key,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -6318,8 +6039,6 @@ class AIAgent:
                     function_result = handle_function_call(
                         function_name, function_args, effective_task_id,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        honcho_manager=self._honcho,
-                        honcho_session_key=self._honcho_session_key,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -6633,7 +6352,6 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
-        sync_honcho: bool = True,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -6649,8 +6367,7 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
-            sync_honcho: When False, skip writing the final synthetic turn back
-                to Honcho or queuing follow-up prefetch work.
+                    or queuing follow-up prefetch work.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -6734,7 +6451,6 @@ class AIAgent:
         self._user_turn_count += 1
 
         # Preserve the original user message (no nudge injection).
-        # Honcho should receive the actual user input, not system nudges.
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
         # Track memory nudge trigger (turn-based, checked here).
@@ -6748,27 +6464,6 @@ class AIAgent:
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
                 self._turns_since_memory = 0
-
-        # Honcho prefetch consumption:
-        # - First turn: bake into cached system prompt (stable for the session).
-        # - Later turns: attach recall to the current-turn user message at
-        #   API-call time only (never persisted to history / session DB).
-        #
-        # This keeps the system-prefix cache stable while still allowing turn N
-        # to consume background prefetch results from turn N-1.
-        self._honcho_context = ""
-        self._honcho_turn_context = ""
-        _recall_mode = (self._honcho_config.recall_mode if self._honcho_config else "hybrid")
-        if self._honcho and self._honcho_session_key and _recall_mode != "tools":
-            try:
-                prefetched_context = self._honcho_prefetch(original_user_message)
-                if prefetched_context:
-                    if not conversation_history:
-                        self._honcho_context = prefetched_context
-                    else:
-                        self._honcho_turn_context = prefetched_context
-            except Exception as e:
-                logger.debug("Honcho prefetch failed (non-fatal): %s", e)
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -6807,13 +6502,6 @@ class AIAgent:
             else:
                 # First turn of a new session — build from scratch.
                 self._cached_system_prompt = self._build_system_prompt(system_message)
-                # Bake Honcho context into the prompt so it's stable for
-                # the entire session (not re-fetched per turn).
-                if self._honcho_context:
-                    self._cached_system_prompt = (
-                        self._cached_system_prompt + "\n\n" + self._honcho_context
-                    ).strip()
-
                 # Plugin hook: on_session_start
                 # Fired once when a brand-new session is created (not on
                 # continuation).  Plugins can use this to initialise
@@ -6935,7 +6623,18 @@ class AIAgent:
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
-        
+
+        # External memory provider: prefetch once before the tool loop.
+        # Reuse the cached result on every iteration to avoid re-calling
+        # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
+        _ext_prefetch_cache = ""
+        if self._memory_manager:
+            try:
+                _query = user_message if isinstance(user_message, str) else ""
+                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+            except Exception:
+                pass
+
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -6984,10 +6683,11 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                if idx == current_turn_user_idx and msg.get("role") == "user" and self._honcho_turn_context:
-                    api_msg["content"] = _inject_honcho_turn_context(
-                        api_msg.get("content", ""), self._honcho_turn_context
-                    )
+                # External memory provider prefetch: inject cached recalled context
+                if idx == current_turn_user_idx and msg.get("role") == "user" and _ext_prefetch_cache:
+                    _base = api_msg.get("content", "")
+                    if isinstance(_base, str):
+                        api_msg["content"] = _base + "\n\n" + _ext_prefetch_cache
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -7016,8 +6716,8 @@ class AIAgent:
 
             # Build the final system message: cached prompt + ephemeral system prompt.
             # Ephemeral additions are API-call-time only (not persisted to session DB).
-            # Honcho later-turn recall is intentionally kept OUT of the system prompt
-            # so the stable cache prefix remains unchanged.
+            # External recall context is injected into the user message, not the system
+            # prompt, so the stable cache prefix remains unchanged.
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
@@ -8730,10 +8430,6 @@ class AIAgent:
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
 
-        # Sync conversation to Honcho for user modeling
-        if final_response and not interrupted and sync_honcho:
-            self._honcho_sync(original_user_message, final_response)
-            self._queue_honcho_prefetch(original_user_message)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.
@@ -8807,6 +8503,14 @@ class AIAgent:
             _should_review_skills = True
             self._iters_since_skill = 0
 
+        # External memory provider: sync the completed turn + queue next prefetch
+        if self._memory_manager and final_response and user_message:
+            try:
+                self._memory_manager.sync_all(user_message, final_response)
+                self._memory_manager.queue_prefetch_all(user_message)
+            except Exception:
+                pass
+
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
@@ -8818,6 +8522,13 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        # Note: Memory provider on_session_end() + shutdown_all() are NOT
+        # called here — run_conversation() is called once per user message in
+        # multi-turn sessions. Shutting down after every turn would kill the
+        # provider before the second message. Actual session-end cleanup is
+        # handled by the CLI (atexit / /reset) and gateway (session expiry /
+        # _reset_session).
 
         # Plugin hook: on_session_end
         # Fired at the very end of every run_conversation call.

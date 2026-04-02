@@ -54,9 +54,10 @@ class TestCronSessionBypass:
         # session_store.load_transcript should never be called
         runner.session_store.load_transcript.assert_not_called()
 
-    def test_cron_session_with_honcho_key_skipped(self):
+    def test_cron_session_with_prefix_skipped(self):
+        """Cron sessions with different prefixes are still skipped."""
         runner = _make_runner()
-        runner._flush_memories_for_session("cron_daily_20260323", "some-honcho-key")
+        runner._flush_memories_for_session("cron_daily_20260323")
         runner.session_store.load_transcript.assert_not_called()
 
     def test_non_cron_session_proceeds(self):

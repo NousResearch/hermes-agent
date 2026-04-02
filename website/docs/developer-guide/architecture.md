@@ -24,7 +24,7 @@ hermes-agent/
 ├── tools/                    # tool implementations and terminal environments
 ├── gateway/                  # messaging gateway, session routing, delivery, pairing, hooks
 ├── cron/                     # scheduled job storage and scheduler
-├── honcho_integration/       # Honcho memory integration
+├── plugins/memory/           # Memory provider plugins (honcho, openviking, mem0, etc.)
 ├── acp_adapter/              # ACP editor integration server
 ├── acp_registry/             # ACP registry manifest + icon
 ├── environments/             # Hermes RL / benchmark environment framework

@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from honcho_integration.client import HonchoClientConfig
-from honcho_integration.session import (
+from plugins.memory.honcho.client import HonchoClientConfig
+from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
     _ASYNC_SHUTDOWN,

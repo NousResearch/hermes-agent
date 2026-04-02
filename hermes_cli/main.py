@@ -3206,12 +3206,12 @@ def cmd_update(args):
 
         # Sync Honcho host blocks to all profiles
         try:
-            from honcho_integration.cli import sync_honcho_profiles_quiet
+            from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
             synced = sync_honcho_profiles_quiet()
             if synced:
                 print(f"\n-> Honcho: synced {synced} profile(s)")
         except Exception:
-            pass  # honcho not installed or not configured
+            pass  # honcho plugin not installed or not configured
 
         # Check for config migrations
         print()
@@ -3555,13 +3555,14 @@ def cmd_profile(args):
                 else:
                     print(f"Cloned config, .env, SOUL.md from {source_label}.")
 
-            # Auto-clone Honcho config for the new profile
-            try:
-                from honcho_integration.cli import clone_honcho_for_profile
-                if clone_honcho_for_profile(name):
-                    print(f"Honcho config cloned (host: hermes.{name})")
-            except Exception:
-                pass  # Honcho not installed or not configured
+            # Auto-clone Honcho config for the new profile (only with --clone/--clone-all)
+            if clone or clone_all:
+                try:
+                    from plugins.memory.honcho.cli import clone_honcho_for_profile
+                    if clone_honcho_for_profile(name):
+                        print(f"Honcho config cloned (peer: {name})")
+                except Exception:
+                    pass  # Honcho plugin not installed or not configured
 
             # Seed bundled skills (skip if --clone-all already copied them)
             if not clone_all:
@@ -4449,20 +4450,17 @@ For more help on a command:
     plugins_parser.set_defaults(func=cmd_plugins)
 
     # =========================================================================
-    # honcho command
+    # honcho command — Honcho-specific config (peer, mode, tokens, profiles)
+    # Provider selection happens via 'hermes memory setup'.
     # =========================================================================
     honcho_parser = subparsers.add_parser(
         "honcho",
-        help="Manage Honcho AI memory integration",
+        help="Manage Honcho memory provider config (peer, mode, profiles)",
         description=(
-            "Honcho is a memory layer that persists across sessions.\n\n"
-            "Each conversation is stored as a peer interaction in a workspace. "
-            "Honcho builds a representation of the user over time — conclusions, "
-            "patterns, context — and surfaces the relevant slice at the start of "
-            "each turn so Hermes knows who you are without you having to repeat yourself.\n\n"
-            "Modes: hybrid (Honcho + local MEMORY.md), honcho (Honcho only), "
-            "local (MEMORY.md only). Write frequency is configurable so memory "
-            "writes never block the response."
+            "Configure Honcho-specific settings. Honcho is now a memory provider\n"
+            "plugin — initial setup is via 'hermes memory setup'. These commands\n"
+            "manage Honcho's own config: peer names, memory mode, token budgets,\n"
+            "per-profile host blocks, and cross-profile observability."
         ),
         formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
     )
@@ -4472,7 +4470,7 @@ For more help on a command:
     )
     honcho_subparsers = honcho_parser.add_subparsers(dest="honcho_command")
 
-    honcho_subparsers.add_parser("setup", help="Interactive setup wizard for Honcho integration")
+    honcho_subparsers.add_parser("setup", help="Initial Honcho setup (redirects to hermes memory setup)")
     honcho_status = honcho_subparsers.add_parser("status", help="Show current Honcho config and connection status")
     honcho_status.add_argument("--all", action="store_true", help="Show config overview across all profiles")
     honcho_subparsers.add_parser("peers", help="Show peer identities across all profiles")
@@ -4540,10 +4538,54 @@ For more help on a command:
     honcho_subparsers.add_parser("sync", help="Sync Honcho config to all existing profiles")
 
     def cmd_honcho(args):
-        from honcho_integration.cli import honcho_command
+        sub = getattr(args, "honcho_command", None)
+        if sub == "setup":
+            # Redirect to the generic memory setup
+            print("\n  Honcho is now configured via the memory provider system.")
+            print("  Running 'hermes memory setup'...\n")
+            from hermes_cli.memory_setup import memory_command
+            memory_command(args)
+            return
+        from plugins.memory.honcho.cli import honcho_command
         honcho_command(args)
 
     honcho_parser.set_defaults(func=cmd_honcho)
+
+    # =========================================================================
+    # memory command
+    # =========================================================================
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Configure external memory provider",
+        description=(
+            "Set up and manage external memory provider plugins.\n\n"
+            "Available providers: honcho, openviking, mem0, hindsight,\n"
+            "holographic, retaindb, byterover.\n\n"
+            "Only one external provider can be active at a time.\n"
+            "Built-in memory (MEMORY.md/USER.md) is always active."
+        ),
+    )
+    memory_sub = memory_parser.add_subparsers(dest="memory_command")
+    memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
+    memory_sub.add_parser("status", help="Show current memory provider config")
+    memory_off_p = memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+
+    def cmd_memory(args):
+        sub = getattr(args, "memory_command", None)
+        if sub == "off":
+            from hermes_cli.config import load_config, save_config
+            config = load_config()
+            if not isinstance(config.get("memory"), dict):
+                config["memory"] = {}
+            config["memory"]["provider"] = ""
+            save_config(config)
+            print("\n  ✓ Memory provider: built-in only")
+            print("  Saved to config.yaml\n")
+        else:
+            from hermes_cli.memory_setup import memory_command
+            memory_command(args)
+
+    memory_parser.set_defaults(func=cmd_memory)
 
     # =========================================================================
     # tools command

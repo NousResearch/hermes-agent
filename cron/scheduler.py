@@ -443,8 +443,28 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_db=_session_db,
         )
         
-        result = agent.run_conversation(prompt)
-        
+        # Run the agent with a timeout so a hung API call or tool doesn't
+        # block the cron ticker thread indefinitely.  Default 10 minutes;
+        # override via env var.  Uses a separate thread because
+        # run_conversation is synchronous.
+        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _cron_pool:
+            _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+            try:
+                result = _cron_future.result(timeout=_cron_timeout)
+            except concurrent.futures.TimeoutError:
+                logger.error(
+                    "Job '%s' timed out after %.0fs — interrupting agent",
+                    job_name, _cron_timeout,
+                )
+                if hasattr(agent, "interrupt"):
+                    agent.interrupt("Cron job timed out")
+                raise TimeoutError(
+                    f"Cron job '{job_name}' timed out after "
+                    f"{int(_cron_timeout // 60)} minutes"
+                )
+
         final_response = result.get("final_response", "") or ""
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).

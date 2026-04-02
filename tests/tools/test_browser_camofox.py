@@ -235,8 +235,13 @@ class TestCamofoxGetImages:
         mock_post.return_value = _mock_response(json_data={"tabId": "tab10", "url": "https://x.com"})
         camofox_navigate("https://x.com", task_id="t10")
 
+        # camofox_get_images parses images from the accessibility tree snapshot
+        snapshot_text = (
+            '- img "Logo"\n'
+            '  /url: https://x.com/img.png\n'
+        )
         mock_get.return_value = _mock_response(json_data={
-            "images": [{"src": "https://x.com/img.png", "alt": "Logo"}],
+            "snapshot": snapshot_text,
         })
         result = json.loads(camofox_get_images(task_id="t10"))
         assert result["success"] is True

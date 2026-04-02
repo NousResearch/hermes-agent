@@ -230,7 +230,13 @@ def get_all_skills_dirs() -> List[Path]:
 
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
-    hermes = (frontmatter.get("metadata") or {}).get("hermes") or {}
+    metadata = frontmatter.get("metadata")
+    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        hermes = {}
     return {
         "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
         "requires_toolsets": hermes.get("requires_toolsets", []),

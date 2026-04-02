@@ -742,6 +742,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
         
+        # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
+        
         try:
             # Format and split message if needed
             formatted = self.format_message(content)

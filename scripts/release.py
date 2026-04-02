@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -128,12 +129,34 @@ def git(*args, cwd=None):
     return result.stdout.strip()
 
 
+def git_result(*args, cwd=None):
+    """Run a git command and return the full CompletedProcess."""
+    return subprocess.run(
+        ["git"] + list(args),
+        capture_output=True,
+        text=True,
+        cwd=cwd or str(REPO_ROOT),
+    )
+
+
 def get_last_tag():
     """Get the most recent CalVer tag."""
     tags = git("tag", "--list", "v20*", "--sort=-v:refname")
     if tags:
         return tags.split("\n")[0]
     return None
+
+
+def next_available_tag(base_tag: str) -> tuple[str, str]:
+    """Return a tag/calver pair, suffixing same-day releases when needed."""
+    if not git("tag", "--list", base_tag):
+        return base_tag, base_tag.removeprefix("v")
+
+    suffix = 2
+    while git("tag", "--list", f"{base_tag}.{suffix}"):
+        suffix += 1
+    tag_name = f"{base_tag}.{suffix}"
+    return tag_name, tag_name.removeprefix("v")
 
 
 def get_current_version():
@@ -190,6 +213,41 @@ def update_version_files(semver: str, calver_date: str):
         flags=re.MULTILINE,
     )
     PYPROJECT_FILE.write_text(pyproject)
+
+
+def build_release_artifacts(semver: str) -> list[Path]:
+    """Build sdist/wheel artifacts for the current release.
+
+    Returns the artifact paths when the local environment has ``python -m build``
+    available. If build tooling is missing or the build fails, returns an empty
+    list and lets the release proceed without attached Python artifacts.
+    """
+    dist_dir = REPO_ROOT / "dist"
+    shutil.rmtree(dist_dir, ignore_errors=True)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "build", "--sdist", "--wheel"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("  ⚠ Could not build Python release artifacts.")
+        stderr = result.stderr.strip()
+        stdout = result.stdout.strip()
+        if stderr:
+            print(f"    {stderr.splitlines()[-1]}")
+        elif stdout:
+            print(f"    {stdout.splitlines()[-1]}")
+        print("    Install the 'build' package to attach semver-named sdist/wheel assets.")
+        return []
+
+    artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
+    matching = [p for p in artifacts if semver in p.name]
+    if not matching:
+        print("  ⚠ Built artifacts did not match the expected release version.")
+        return []
+    return matching
 
 
 def resolve_author(name: str, email: str) -> str:
@@ -424,18 +482,10 @@ def main():
         now = datetime.now()
         calver_date = f"{now.year}.{now.month}.{now.day}"
 
-    tag_name = f"v{calver_date}"
-
-    # Check for existing tag with same date
-    existing = git("tag", "--list", tag_name)
-    if existing and not args.publish:
-        # Append a suffix for same-day releases
-        suffix = 2
-        while git("tag", "--list", f"{tag_name}.{suffix}"):
-            suffix += 1
-        tag_name = f"{tag_name}.{suffix}"
-        calver_date = f"{calver_date}.{suffix}"
-        print(f"Note: Tag {tag_name[:-2]} already exists, using {tag_name}")
+    base_tag = f"v{calver_date}"
+    tag_name, calver_date = next_available_tag(base_tag)
+    if tag_name != base_tag:
+        print(f"Note: Tag {base_tag} already exists, using {tag_name}")
 
     # Determine semver
     current_version = get_current_version()
@@ -494,41 +544,83 @@ def main():
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
             # Commit version bump
-            git("add", str(VERSION_FILE), str(PYPROJECT_FILE))
-            git("commit", "-m", f"chore: bump version to v{new_version} ({calver_date})")
+            add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
+            if add_result.returncode != 0:
+                print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
+                return
+
+            commit_result = git_result(
+                "commit", "-m", f"chore: bump version to v{new_version} ({calver_date})"
+            )
+            if commit_result.returncode != 0:
+                print(f"  ✗ Failed to commit version bump: {commit_result.stderr.strip()}")
+                return
             print(f"  ✓ Committed version bump")
 
         # Create annotated tag
-        git("tag", "-a", tag_name, "-m",
-            f"Hermes Agent v{new_version} ({calver_date})\n\nWeekly release")
+        tag_result = git_result(
+            "tag", "-a", tag_name, "-m",
+            f"Hermes Agent v{new_version} ({calver_date})\n\nWeekly release"
+        )
+        if tag_result.returncode != 0:
+            print(f"  ✗ Failed to create tag {tag_name}: {tag_result.stderr.strip()}")
+            return
         print(f"  ✓ Created tag {tag_name}")
 
         # Push
-        push_result = git("push", "origin", "HEAD", "--tags")
-        print(f"  ✓ Pushed to origin")
+        push_result = git_result("push", "origin", "HEAD", "--tags")
+        if push_result.returncode == 0:
+            print(f"  ✓ Pushed to origin")
+        else:
+            print(f"  ✗ Failed to push to origin: {push_result.stderr.strip()}")
+            print("    Continue manually after fixing access:")
+            print("    git push origin HEAD --tags")
+
+        # Build semver-named Python artifacts so downstream packagers
+        # (e.g. Homebrew) can target them without relying on CalVer tag names.
+        artifacts = build_release_artifacts(new_version)
+        if artifacts:
+            print("  ✓ Built release artifacts:")
+            for artifact in artifacts:
+                print(f"    - {artifact.relative_to(REPO_ROOT)}")
 
         # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog)
 
-        result = subprocess.run(
-            ["gh", "release", "create", tag_name,
-             "--title", f"Hermes Agent v{new_version} ({calver_date})",
-             "--notes-file", str(changelog_file)],
-            capture_output=True, text=True,
-            cwd=str(REPO_ROOT),
-        )
+        gh_cmd = [
+            "gh", "release", "create", tag_name,
+            "--title", f"Hermes Agent v{new_version} ({calver_date})",
+            "--notes-file", str(changelog_file),
+        ]
+        gh_cmd.extend(str(path) for path in artifacts)
 
-        changelog_file.unlink(missing_ok=True)
-
-        if result.returncode == 0:
-            print(f"  ✓ GitHub release created: {result.stdout.strip()}")
+        gh_bin = shutil.which("gh")
+        if gh_bin:
+            result = subprocess.run(
+                gh_cmd,
+                capture_output=True, text=True,
+                cwd=str(REPO_ROOT),
+            )
         else:
-            print(f"  ✗ GitHub release failed: {result.stderr}")
-            print(f"    Tag was created. Create the release manually:")
-            print(f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})'")
+            result = None
 
-        print(f"\n  🎉 Release v{new_version} ({tag_name}) published!")
+        if result and result.returncode == 0:
+            changelog_file.unlink(missing_ok=True)
+            print(f"  ✓ GitHub release created: {result.stdout.strip()}")
+            print(f"\n  🎉 Release v{new_version} ({tag_name}) published!")
+        else:
+            if result is None:
+                print("  ✗ GitHub release skipped: `gh` CLI not found.")
+            else:
+                print(f"  ✗ GitHub release failed: {result.stderr.strip()}")
+            print(f"    Release notes kept at: {changelog_file}")
+            print(f"    Tag was created locally. Create the release manually:")
+            print(
+                f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
+                f"--notes-file .release_notes.md {' '.join(str(path) for path in artifacts)}"
+            )
+            print(f"\n  ✓ Release artifacts prepared for manual publish: v{new_version} ({tag_name})")
     else:
         print(f"\n{'='*60}")
         print(f"  Dry run complete. To publish, add --publish")

@@ -622,6 +622,134 @@ class TestHasAnyProviderConfigured:
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
 
+    def test_claude_code_creds_ignored_on_fresh_install(self, monkeypatch, tmp_path):
+        """Claude Code credentials should NOT skip the wizard when Hermes is unconfigured."""
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        # Clear all provider env vars so earlier checks don't short-circuit
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        # Simulate valid Claude Code credentials
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.is_claude_code_token_valid",
+            lambda creds: True,
+        )
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is False
+
+    def test_config_provider_counts(self, monkeypatch, tmp_path):
+        """config.yaml with model.provider set should count as configured."""
+        import yaml
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
+        }))
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Clear all provider env vars
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_config_base_url_counts(self, monkeypatch, tmp_path):
+        """config.yaml with model.base_url set (custom endpoint) should count."""
+        import yaml
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "model": {"default": "my-model", "base_url": "http://localhost:11434/v1"},
+        }))
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_config_api_key_counts(self, monkeypatch, tmp_path):
+        """config.yaml with model.api_key set should count."""
+        import yaml
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "model": {"default": "my-model", "api_key": "sk-test-key"},
+        }))
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
+    def test_config_dict_no_provider_no_creds_still_false(self, monkeypatch, tmp_path):
+        """config.yaml model dict with empty default and no creds stays false."""
+        import yaml
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "model": {"default": ""},
+        }))
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is False
+
+    def test_claude_code_creds_counted_when_hermes_configured(self, monkeypatch, tmp_path):
+        """Claude Code credentials should count when Hermes has been explicitly configured."""
+        import yaml
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        # Write a config with a non-default model to simulate explicit configuration
+        config_file = hermes_home / "config.yaml"
+        config_file.write_text(yaml.dump({"model": {"default": "my-local-model"}}))
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Clear all provider env vars
+        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+            monkeypatch.delenv(var, raising=False)
+        # Simulate valid Claude Code credentials
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.read_claude_code_credentials",
+            lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
+        )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.is_claude_code_token_valid",
+            lambda creds: True,
+        )
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+
 
 # =============================================================================
 # Kimi Code auto-detection tests

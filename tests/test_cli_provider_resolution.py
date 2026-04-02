@@ -560,6 +560,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
+    monkeypatch.setattr(hermes_main, "_require_tty", lambda *a: None)
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"model": {"default": "gpt-5", "provider": "nous"}},

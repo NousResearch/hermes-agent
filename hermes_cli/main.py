@@ -858,10 +858,10 @@ def cmd_setup(args):
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
-    select_provider_and_model()
+    select_provider_and_model(args=args)
 
 
-def select_provider_and_model():
+def select_provider_and_model(args=None):
     """Core provider selection + model picking logic.
 
     Shared by ``cmd_model`` (``hermes model``) and the setup wizard

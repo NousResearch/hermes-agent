@@ -80,6 +80,7 @@ from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from hermes_constants import get_hermes_home
 
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
@@ -167,8 +168,7 @@ def _get_snapshot_threshold() -> int:
     ``DEFAULT_SNAPSHOT_THRESHOLD`` (20000) if unset or unreadable.
     """
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-        config_path = hermes_home / "config.yaml"
+        config_path = get_hermes_home() / "config.yaml"
         if config_path.exists():
             import yaml
             with open(config_path, encoding="utf-8") as f:
@@ -179,6 +179,12 @@ def _get_snapshot_threshold() -> int:
     except Exception as e:
         logger.debug("Could not read snapshot_threshold from config: %s", e)
     return DEFAULT_SNAPSHOT_THRESHOLD
+
+
+# Public wrapper for camofox and other modules
+def get_browser_snapshot_threshold() -> int:
+    """Public API to get the configured browser snapshot threshold."""
+    return _get_snapshot_threshold()
 
 
 def _get_vision_model() -> Optional[str]:

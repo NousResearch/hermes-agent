@@ -272,12 +272,12 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
 
         # Apply same summarization logic as the main browser tool
         from tools.browser_tool import (
-            _get_snapshot_threshold,
+            get_browser_snapshot_threshold,
             _extract_relevant_content,
             _truncate_snapshot,
         )
 
-        threshold = _get_snapshot_threshold()
+        threshold = get_browser_snapshot_threshold()
         if len(snapshot) > threshold:
             if user_task:
                 snapshot = _extract_relevant_content(snapshot, user_task)

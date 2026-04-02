@@ -105,13 +105,15 @@ Reviewers are explicitly instructed to:
 - Penalizing authors for honest limitation acknowledgment
 - Rejecting for missing citations to reviewer's own work
 
-### Timeline (NeurIPS 2025)
+### Timeline (NeurIPS 2025 — verify dates for current year)
 
 - Bidding: May 17-21
 - Reviewing period: May 29 - July 2
 - Author rebuttals: July 24-30
 - Discussion period: July 31 - August 13
 - Final notifications: September 18
+
+> **Note**: These dates are from the 2025 cycle. Always check the current year's call for papers at the venue website.
 
 ---
 
@@ -195,6 +197,70 @@ ACL has a dedicated ethics review process for:
 - Dual-use concerns
 - Data privacy issues
 - Bias and fairness implications
+
+---
+
+## AAAI Reviewer Guidelines
+
+### Evaluation Criteria
+
+AAAI reviewers evaluate along similar axes to NeurIPS/ICML but with some differences:
+
+| Criterion | Weight | Notes |
+|-----------|--------|-------|
+| **Technical quality** | High | Soundness of approach, correctness of results |
+| **Significance** | High | Importance of the problem and contribution |
+| **Novelty** | Medium-High | New ideas, methods, or insights |
+| **Clarity** | Medium | Clear writing, well-organized presentation |
+| **Reproducibility** | Medium | Sufficient detail to reproduce results |
+
+### AAAI-Specific Considerations
+
+- **Broader AI scope**: AAAI covers all of AI, not just ML. Papers on planning, reasoning, knowledge representation, NLP, vision, robotics, and multi-agent systems are all in scope. Reviewers may not be deep ML specialists.
+- **Formatting strictness**: AAAI reviewers are instructed to flag formatting violations. Non-compliant papers may be desk-rejected before review.
+- **Application papers**: AAAI is more receptive to application-focused work than NeurIPS/ICML. Framing a strong application contribution is viable.
+- **Senior Program Committee**: AAAI uses SPCs (Senior Program Committee members) who mediate between reviewers and make accept/reject recommendations.
+
+### Scoring (AAAI Scale)
+
+- **Strong Accept**: Clearly above threshold, excellent contribution
+- **Accept**: Above threshold, good contribution with minor issues
+- **Weak Accept**: Borderline, merits outweigh concerns
+- **Weak Reject**: Borderline, concerns outweigh merits
+- **Reject**: Below threshold, significant issues
+- **Strong Reject**: Well below threshold
+
+---
+
+## COLM Reviewer Guidelines
+
+### Evaluation Criteria
+
+COLM reviews focus on relevance to language modeling in addition to standard criteria:
+
+| Criterion | Weight | Notes |
+|-----------|--------|-------|
+| **Relevance** | High | Must be relevant to language modeling community |
+| **Technical quality** | High | Sound methodology, well-supported claims |
+| **Novelty** | Medium-High | New insights about language models |
+| **Clarity** | Medium | Clear presentation, reproducible |
+| **Significance** | Medium-High | Impact on LM research and practice |
+
+### COLM-Specific Considerations
+
+- **Language model focus**: Reviewers will assess whether the contribution advances understanding of language models. General ML contributions need explicit LM framing.
+- **Newer venue norms**: COLM is newer than NeurIPS/ICML, so reviewer calibration varies more. Write more defensively — anticipate a wider range of reviewer expertise.
+- **ICLR-derived process**: Review process is modeled on ICLR (open reviews, author response period, discussion among reviewers).
+- **Broad interpretation of "language modeling"**: Includes training, evaluation, alignment, safety, efficiency, applications, theory, multimodality (if language is central), and social impact of LMs.
+
+### Scoring
+
+COLM uses an ICLR-style scoring system:
+- **8-10**: Strong accept (top papers)
+- **6-7**: Weak accept (solid contribution)
+- **5**: Borderline
+- **3-4**: Weak reject (below threshold)
+- **1-2**: Strong reject
 
 ---
 

@@ -1505,7 +1505,12 @@ class AIAgent:
             for detail in assistant_message.reasoning_details:
                 if isinstance(detail, dict):
                     # Extract summary from reasoning detail object
-                    summary = detail.get('summary') or detail.get('content') or detail.get('text')
+                    summary = (
+                        detail.get('summary')
+                        or detail.get('thinking')
+                        or detail.get('content')
+                        or detail.get('text')
+                    )
                     if summary and summary not in reasoning_parts:
                         reasoning_parts.append(summary)
 

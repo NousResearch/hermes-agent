@@ -289,7 +289,7 @@ class CitationManager:
                 )
                 if resp.status_code == 200:
                     sources.append("CrossRef")
-            except:
+            except Exception:
                 pass
 
         # Check arXiv if ID available
@@ -301,7 +301,7 @@ class CitationManager:
                 )
                 if "<entry>" in resp.text and "<title>" in resp.text:
                     sources.append("arXiv")
-            except:
+            except Exception:
                 pass
 
         return len(sources) >= 2, sources
@@ -318,7 +318,7 @@ class CitationManager:
                 )
                 if resp.status_code == 200:
                     return resp.text
-            except:
+            except Exception:
                 pass
 
         # Fallback: generate from paper data
@@ -419,7 +419,7 @@ def batch_cite(queries: List[str], output_file: str = "references.bib"):
 | Customization | Limited | Highly flexible |
 | Backend | bibtex | Biber (recommended) |
 
-**Recommendation**: Use BibLaTeX with Biber for new papers.
+**Recommendation**: Use natbib with BibTeX for conference submissions — all major venue templates (NeurIPS, ICML, ICLR, ACL, AAAI, COLM) ship with natbib and `.bst` files. BibLaTeX with Biber is an option for journals or personal projects where you control the template.
 
 ### LaTeX Setup
 

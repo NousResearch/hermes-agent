@@ -225,8 +225,6 @@ Provide context before asking the reader to consider anything new. This applies 
 
 ---
 
----
-
 ## Micro-Level Writing Tips
 
 ### From Ethan Perez (Anthropic)

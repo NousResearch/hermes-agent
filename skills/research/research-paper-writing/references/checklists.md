@@ -10,6 +10,8 @@ This reference documents the mandatory checklist requirements for major ML/AI co
 - [ICML Paper Checklist](#icml-paper-checklist)
 - [ICLR Requirements](#iclr-requirements)
 - [ACL Requirements](#acl-requirements)
+- [AAAI Requirements](#aaai-requirements)
+- [COLM Requirements](#colm-requirements)
 - [Universal Pre-Submission Checklist](#universal-pre-submission-checklist)
 
 ---
@@ -277,6 +279,77 @@ If applicable:
 - [ ] Annotator details provided
 - [ ] Agreement metrics reported
 - [ ] Compensation documented
+
+---
+
+## AAAI Requirements
+
+### Formatting (Strictest of All Venues)
+
+AAAI enforces formatting rules more strictly than any other major venue. Papers that deviate from the template are desk-rejected.
+
+- [ ] Use the **exact** AAAI style file without modification — no `\setlength`, no `\vspace` hacks, no font overrides
+- [ ] 7 pages main content (8 for camera-ready with author info)
+- [ ] Two-column format, Times font (set by template)
+- [ ] References and appendices do not count toward page limit
+- [ ] Abstract must be a single paragraph
+- [ ] Do not modify margins, column widths, or font sizes
+
+### Required Sections
+
+- [ ] Abstract (single paragraph, no math or citations)
+- [ ] Introduction with clear contribution statement
+- [ ] References in AAAI format (uses `aaai2026.bst`)
+- [ ] Appendix (optional, unlimited)
+
+### Ethics and Reproducibility
+
+- [ ] Broader impact statement (encouraged but not always mandatory — check current year's CFP)
+- [ ] Reproducibility details (datasets, code availability)
+- [ ] Acknowledge use of AI writing tools if applicable
+
+### Key Differences from Other Venues
+
+- **No separate limitations section required** (unlike ACL), but discussing limitations is recommended
+- **Strictest formatting enforcement** — the style checker will reject non-compliant PDFs
+- **No paper checklist** like NeurIPS has, but the universal checklist below still applies
+- **Unified template** covers main paper and supplementary in the same file
+
+---
+
+## COLM Requirements
+
+### Overview
+
+COLM (Conference on Language Modeling) focuses specifically on language model research. Framing must target this community.
+
+### Formatting
+
+- [ ] 9 pages main content (10 for camera-ready)
+- [ ] Use COLM template (based on ICLR template with modifications)
+- [ ] Double-blind review
+- [ ] References and appendices unlimited
+
+### Required Sections
+
+- [ ] Abstract
+- [ ] Introduction framed for language modeling community
+- [ ] Conclusion
+- [ ] References
+
+### Content Expectations
+
+- [ ] Contribution must be relevant to language models (broadly interpreted: training, evaluation, applications, theory, alignment, safety)
+- [ ] If the method is general, frame with language model examples
+- [ ] Baselines should include recent LM-specific methods where applicable
+
+### Key Differences from Other Venues
+
+- **Narrower scope** than NeurIPS/ICML — must frame for LM community
+- **Template derived from ICLR** — similar formatting rules
+- **Newer venue** — reviewer norms are still establishing; err on the side of thorough evaluation
+- **No mandatory checklist** like NeurIPS, but broader impact discussion is expected
+- **LLM disclosure**: If LLMs were used in research (code generation, data annotation, writing assistance), disclose this
 
 ---
 

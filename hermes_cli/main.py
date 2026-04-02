@@ -47,7 +47,6 @@ import argparse
 import os
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from typing import Optional
 
@@ -2912,8 +2911,15 @@ def _invalidate_update_cache():
 
 
 def _load_installable_optional_extras() -> list[str]:
-    """Return optional dependency groups except the aggregate ``all`` extra."""
+    """Return the optional extras referenced by the ``all`` group.
+
+    Only extras that ``[all]`` actually pulls in are retried individually.
+    Extras outside ``[all]`` (e.g. ``rl``, ``yc-bench``) are intentionally
+    excluded — they have heavy or platform-specific deps that most users
+    never installed.
+    """
     try:
+        import tomllib
         with (PROJECT_ROOT / "pyproject.toml").open("rb") as handle:
             project = tomllib.load(handle).get("project", {})
     except Exception:
@@ -2923,7 +2929,17 @@ def _load_installable_optional_extras() -> list[str]:
     if not isinstance(optional_deps, dict):
         return []
 
-    return [name for name in optional_deps if name != "all"]
+    # Parse the [all] group to find which extras it references.
+    # Entries look like "hermes-agent[matrix]" or "package-name[extra]".
+    all_refs = optional_deps.get("all", [])
+    referenced: list[str] = []
+    for ref in all_refs:
+        if "[" in ref and "]" in ref:
+            name = ref.split("[", 1)[1].split("]", 1)[0]
+            if name in optional_deps:
+                referenced.append(name)
+
+    return referenced
 
 
 

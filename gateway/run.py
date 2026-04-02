@@ -1938,6 +1938,7 @@ class GatewayRunner:
 
                 user_instruction = event.get_command_args().strip()
                 plan_path = build_plan_path(user_instruction)
+                event._original_text = event.text  # preserve bare user text for Honcho
                 event.text = build_skill_invocation_message(
                     "/plan",
                     user_instruction,
@@ -2087,6 +2088,7 @@ class GatewayRunner:
                         cmd_key, user_instruction, task_id=_quick_key
                     )
                     if msg:
+                        event._original_text = event.text  # preserve bare user text for Honcho
                         event.text = msg
                         # Fall through to normal message processing with skill content
                 else:
@@ -2696,6 +2698,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                persist_user_message=getattr(event, "_original_text", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -5450,6 +5453,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -6019,7 +6023,7 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id, persist_user_message=persist_user_message)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

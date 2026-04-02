@@ -217,6 +217,23 @@ In channels, always @mention the bot. Simply typing a message without mentioning
 This is intentional — it prevents the bot from responding to every message in busy channels.
 :::
 
+### Reply Threading
+
+By default, Hermes replies in a **thread** attached to the original message in channels. If your team prefers replies to go **directly to the channel** instead, you can disable threading:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      reply_in_thread: false
+```
+
+When `reply_in_thread` is `false`:
+- **Channel messages** — Hermes replies directly in the channel (no thread created)
+- **Thread messages** — Hermes still replies inside the existing thread to preserve conversation context
+
+The default is `true` (threaded replies), which matches the original behavior.
+
 ---
 
 

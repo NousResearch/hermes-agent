@@ -37,10 +37,27 @@ from typing import Any, Dict, List, Optional
 import httpx
 import yaml
 
-from hermes_cli.config import get_hermes_home, get_config_path
+try:
+    import hermes_cli.config as _config_mod
+except Exception:
+    _config_mod = None
 from hermes_constants import OPENROUTER_BASE_URL, display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+def get_hermes_home() -> Path:
+    """Resolve Hermes home even when tests stub hermes_cli.config minimally."""
+    if _config_mod is not None and hasattr(_config_mod, "get_hermes_home"):
+        return _config_mod.get_hermes_home()
+    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def get_config_path() -> Path:
+    """Resolve config path when hermes_cli.config stubs omit get_config_path."""
+    if _config_mod is not None and hasattr(_config_mod, "get_config_path"):
+        return _config_mod.get_config_path()
+    return get_hermes_home() / "config.yaml"
 
 try:
     import fcntl

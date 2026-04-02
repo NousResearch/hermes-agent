@@ -469,7 +469,6 @@ def _all_profile_host_configs() -> list[tuple[str, str, dict]]:
     Reads honcho.json once and maps each profile to its host block.
     """
     try:
-        from honcho_integration.client import HOST
         from hermes_cli.profiles import list_profiles
         profiles = list_profiles()
     except Exception:

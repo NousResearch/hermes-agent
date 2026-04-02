@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+MAX_REQUEST_BYTES = 10 * 1024 * 1024  # 10 MiB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -115,6 +115,26 @@ def _normalize_chat_content(
         return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
     except Exception:
         return ""
+
+
+class _APIRequestError(Exception):
+    """Structured request validation error for OpenAI-style responses."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        param: str = None,
+        code: str = None,
+        status: int = 400,
+        err_type: str = "invalid_request_error",
+    ):
+        super().__init__(message)
+        self.message = message
+        self.param = param
+        self.code = code
+        self.status = status
+        self.err_type = err_type
 
 
 def check_api_server_requirements() -> bool:
@@ -281,10 +301,12 @@ if AIOHTTP_AVAILABLE:
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
         if request.method in ("POST", "PUT", "PATCH"):
+            adapter = request.app.get("api_server_adapter")
+            max_request_bytes = getattr(adapter, "_max_request_bytes", MAX_REQUEST_BYTES)
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if int(cl) > max_request_bytes:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -386,6 +408,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._max_request_bytes: int = self._parse_positive_int(
+            extra.get("max_request_bytes", os.getenv("API_SERVER_MAX_REQUEST_BYTES")),
+            default=MAX_REQUEST_BYTES,
+            setting_name="API_SERVER_MAX_REQUEST_BYTES",
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -460,6 +487,279 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         return "*" in self._cors_origins or origin in self._cors_origins
+
+    @staticmethod
+    def _parse_positive_int(value: Any, *, default: int, setting_name: str) -> int:
+        """Parse a positive integer setting, falling back to a safe default."""
+        if value in (None, ""):
+            return default
+
+        if isinstance(value, str):
+            candidate = value.strip().replace("_", "")
+        else:
+            candidate = value
+
+        try:
+            parsed = int(candidate)
+        except (TypeError, ValueError):
+            logger.warning("Invalid %s=%r; using default %d", setting_name, value, default)
+            return default
+
+        if parsed <= 0:
+            logger.warning("Invalid %s=%r; using default %d", setting_name, value, default)
+            return default
+
+        return parsed
+
+    @staticmethod
+    def _error_response(error: "_APIRequestError") -> "web.Response":
+        """Convert a structured validation error into an OpenAI-style HTTP response."""
+        return web.json_response(
+            _openai_error(
+                error.message,
+                err_type=error.err_type,
+                param=error.param,
+                code=error.code,
+            ),
+            status=error.status,
+        )
+
+    async def _parse_json_body(self, request: "web.Request") -> Dict[str, Any]:
+        """Parse the request body and return OpenAI-style errors for common failures."""
+        try:
+            return await request.json()
+        except web.HTTPRequestEntityTooLarge:
+            raise _APIRequestError("Request body too large.", code="body_too_large", status=413)
+        except (json.JSONDecodeError, Exception):
+            raise _APIRequestError("Invalid JSON in request body")
+
+    @staticmethod
+    def _is_supported_image_source(source: Any) -> bool:
+        """Allow remote http(s) URLs and inline data:image/... URLs."""
+        if not isinstance(source, str):
+            return False
+
+        candidate = source.strip()
+        lowered = candidate.lower()
+        if lowered.startswith("http://") or lowered.startswith("https://"):
+            return True
+        if lowered.startswith("data:image/") and "," in candidate:
+            return True
+        return False
+
+    @staticmethod
+    def _extract_image_payload(
+        image_value: Any,
+        *,
+        detail: Any = None,
+        param_prefix: str,
+    ) -> Dict[str, Any]:
+        """Validate an image payload and normalize it to {'url', 'detail'?}."""
+        image_detail = detail
+        if isinstance(image_value, dict):
+            image_detail = image_value.get("detail", image_detail)
+            image_value = image_value.get("url")
+
+        if not isinstance(image_value, str) or not image_value.strip():
+            raise _APIRequestError(
+                "Image content parts must include a non-empty image URL.",
+                param=param_prefix,
+                code="invalid_image_url",
+            )
+
+        image_url = image_value.strip()
+        if not APIServerAdapter._is_supported_image_source(image_url):
+            lowered = image_url.lower()
+            if lowered.startswith("data:") and not lowered.startswith("data:image/"):
+                raise _APIRequestError(
+                    "Only image data URLs are supported. Uploaded files and non-image data payloads are not supported.",
+                    param=param_prefix,
+                    code="unsupported_content_type",
+                )
+            raise _APIRequestError(
+                "Image inputs must use http(s) URLs or data:image/... URLs.",
+                param=param_prefix,
+                code="invalid_image_url",
+            )
+
+        normalized = {"url": image_url}
+        if image_detail is not None:
+            if not isinstance(image_detail, str) or not image_detail.strip():
+                raise _APIRequestError(
+                    "Image detail must be a non-empty string when provided.",
+                    param=f"{param_prefix}.detail",
+                    code="invalid_detail",
+                )
+            normalized["detail"] = image_detail.strip()
+        return normalized
+
+    def _normalize_chat_content(self, content: Any, *, param_prefix: str) -> Any:
+        """Validate Chat Completions content and preserve text/image parts."""
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        if not isinstance(content, list):
+            raise _APIRequestError(
+                "Chat message content must be a string or an array of content parts.",
+                param=param_prefix,
+                code="invalid_content",
+            )
+
+        normalized_parts: List[Dict[str, Any]] = []
+        for idx, part in enumerate(content):
+            part_param = f"{param_prefix}[{idx}]"
+            if not isinstance(part, dict):
+                raise _APIRequestError(
+                    "Each chat content part must be an object.",
+                    param=part_param,
+                    code="invalid_content_part",
+                )
+
+            part_type = part.get("type")
+            if part_type == "text":
+                text = part.get("text")
+                if not isinstance(text, str):
+                    raise _APIRequestError(
+                        "Text content parts must include a string 'text' field.",
+                        param=f"{part_param}.text",
+                        code="invalid_content_part",
+                    )
+                normalized_parts.append({"type": "text", "text": text})
+                continue
+
+            if part_type == "image_url":
+                normalized_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": self._extract_image_payload(
+                            part.get("image_url"),
+                            detail=part.get("detail"),
+                            param_prefix=f"{part_param}.image_url",
+                        ),
+                    }
+                )
+                continue
+
+            if part_type in {"file", "input_file"}:
+                raise _APIRequestError(
+                    "Inline image inputs are supported, but uploaded files and document inputs are not supported on this endpoint.",
+                    param=f"{part_param}.type",
+                    code="unsupported_content_type",
+                )
+
+            raise _APIRequestError(
+                "Unsupported chat content part type. Only 'text' and 'image_url' are supported.",
+                param=f"{part_param}.type",
+                code="unsupported_content_type",
+            )
+
+        return normalized_parts
+
+    def _system_content_to_text(self, content: Any, *, param_prefix: str) -> str:
+        """Flatten system content to text while rejecting non-text multimodal parts."""
+        normalized = self._normalize_chat_content(content, param_prefix=param_prefix)
+        if isinstance(normalized, str):
+            return normalized
+
+        text_parts: List[str] = []
+        for idx, part in enumerate(normalized):
+            if part.get("type") != "text":
+                raise _APIRequestError(
+                    "System messages only support text content.",
+                    param=f"{param_prefix}[{idx}].type",
+                    code="unsupported_content_type",
+                )
+            text_parts.append(part.get("text", ""))
+        return "\n".join(text_parts)
+
+    def _normalize_responses_content(self, content: Any, *, param_prefix: str) -> Any:
+        """Normalize Responses API content to Hermes's internal chat-style format."""
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        if not isinstance(content, list):
+            raise _APIRequestError(
+                "Responses input content must be a string or an array of content parts.",
+                param=param_prefix,
+                code="invalid_content",
+            )
+
+        normalized_parts: List[Dict[str, Any]] = []
+        for idx, part in enumerate(content):
+            part_param = f"{param_prefix}[{idx}]"
+            if isinstance(part, str):
+                normalized_parts.append({"type": "text", "text": part})
+                continue
+
+            if not isinstance(part, dict):
+                raise _APIRequestError(
+                    "Each responses content part must be an object.",
+                    param=part_param,
+                    code="invalid_content_part",
+                )
+
+            part_type = part.get("type")
+            if part_type in {"input_text", "output_text", "text"}:
+                text = part.get("text")
+                if not isinstance(text, str):
+                    raise _APIRequestError(
+                        "Text content parts must include a string 'text' field.",
+                        param=f"{part_param}.text",
+                        code="invalid_content_part",
+                    )
+                normalized_parts.append({"type": "text", "text": text})
+                continue
+
+            if part_type in {"input_image", "image_url"}:
+                normalized_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": self._extract_image_payload(
+                            part.get("image_url"),
+                            detail=part.get("detail"),
+                            param_prefix=f"{part_param}.image_url",
+                        ),
+                    }
+                )
+                continue
+
+            if part_type in {"input_file", "file"}:
+                raise _APIRequestError(
+                    "Inline image inputs are supported, but uploaded files and document inputs are not supported on this endpoint.",
+                    param=f"{part_param}.type",
+                    code="unsupported_content_type",
+                )
+
+            raise _APIRequestError(
+                "Unsupported responses content part type. Only 'input_text' and 'input_image' are supported.",
+                param=f"{part_param}.type",
+                code="unsupported_content_type",
+            )
+
+        return normalized_parts
+
+    @staticmethod
+    def _content_has_visible_payload(content: Any) -> bool:
+        """True when content contains text or at least one image attachment."""
+        if isinstance(content, str):
+            return bool(content.strip())
+        if not isinstance(content, list):
+            return False
+
+        for part in content:
+            if isinstance(part, str) and part.strip():
+                return True
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type in {"text", "input_text", "output_text"} and str(part.get("text", "") or "").strip():
+                return True
+            if part_type in {"image_url", "input_image"}:
+                return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -620,9 +920,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Parse request body
         try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+            body = await self._parse_json_body(request)
+        except _APIRequestError as error:
+            return self._error_response(error)
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -635,28 +935,48 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
+        conversation_messages: List[Dict[str, Any]] = []
+        try:
+            for idx, msg in enumerate(messages):
+                if not isinstance(msg, dict):
+                    raise _APIRequestError(
+                        "Each chat message must be an object.",
+                        param=f"messages[{idx}]",
+                        code="invalid_message",
+                    )
 
-        for msg in messages:
-            role = msg.get("role", "")
-            content = _normalize_chat_content(msg.get("content", ""))
-            if role == "system":
-                # Accumulate system messages
-                if system_prompt is None:
-                    system_prompt = content
-                else:
-                    system_prompt = system_prompt + "\n" + content
-            elif role in ("user", "assistant"):
-                conversation_messages.append({"role": role, "content": content})
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "system":
+                    normalized_system = self._system_content_to_text(
+                        content,
+                        param_prefix=f"messages[{idx}].content",
+                    )
+                    if system_prompt is None:
+                        system_prompt = normalized_system
+                    else:
+                        system_prompt = system_prompt + "\n" + normalized_system
+                elif role in ("user", "assistant"):
+                    conversation_messages.append(
+                        {
+                            "role": role,
+                            "content": self._normalize_chat_content(
+                                content,
+                                param_prefix=f"messages[{idx}].content",
+                            ),
+                        }
+                    )
+        except _APIRequestError as error:
+            return self._error_response(error)
 
         # Extract the last user message as the primary input
-        user_message = ""
+        user_message: Any = ""
         history = []
         if conversation_messages:
             user_message = conversation_messages[-1].get("content", "")
             history = conversation_messages[:-1]
 
-        if not user_message:
+        if not self._content_has_visible_payload(user_message):
             return web.json_response(
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
@@ -1398,12 +1718,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Parse request body
         try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(
-                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
-                status=400,
-            )
+            body = await self._parse_json_body(request)
+        except _APIRequestError as error:
+            return self._error_response(error)
 
         raw_input = body.get("input")
         if raw_input is None:
@@ -1424,25 +1741,43 @@ class APIServerAdapter(BasePlatformAdapter):
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
-        input_messages: List[Dict[str, str]] = []
-        if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            for item in raw_input:
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif isinstance(item, dict):
-                    role = item.get("role", "user")
-                    content = _normalize_chat_content(item.get("content", ""))
-                    input_messages.append({"role": role, "content": content})
-        else:
-            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
+        input_messages: List[Dict[str, Any]] = []
+        try:
+            if isinstance(raw_input, str):
+                input_messages = [{"role": "user", "content": raw_input}]
+            elif isinstance(raw_input, list):
+                for idx, item in enumerate(raw_input):
+                    if isinstance(item, str):
+                        input_messages.append({"role": "user", "content": item})
+                    elif isinstance(item, dict):
+                        role = item.get("role", "user")
+                        if not isinstance(role, str) or not role.strip():
+                            role = "user"
+                        input_messages.append(
+                            {
+                                "role": role,
+                                "content": self._normalize_responses_content(
+                                    item.get("content", ""),
+                                    param_prefix=f"input[{idx}].content",
+                                ),
+                            }
+                        )
+                    else:
+                        raise _APIRequestError(
+                            "'input' array items must be strings or message objects.",
+                            param=f"input[{idx}]",
+                            code="invalid_input",
+                        )
+            else:
+                raise _APIRequestError("'input' must be a string or array", code="invalid_input")
+        except _APIRequestError as error:
+            return self._error_response(error)
 
         # Accept explicit conversation_history from the request body.
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -1456,7 +1791,17 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                role = entry["role"]
+                if not isinstance(role, str) or not role.strip():
+                    role = "user"
+                try:
+                    normalized_content = self._normalize_responses_content(
+                        entry["content"],
+                        param_prefix=f"conversation_history[{i}].content",
+                    )
+                except _APIRequestError as error:
+                    return self._error_response(error)
+                conversation_history.append({"role": role, "content": normalized_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -1476,8 +1821,8 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history.append(msg)
 
         # Last input message is the user_message
-        user_message = input_messages[-1].get("content", "") if input_messages else ""
-        if not user_message:
+        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        if not self._content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         # Truncation support
@@ -1983,8 +2328,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _run_agent(
         self,
-        user_message: str,
-        conversation_history: List[Dict[str, str]],
+        user_message: Any,
+        conversation_history: List[Dict[str, Any]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
@@ -2311,7 +2656,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            self._app = web.Application(middlewares=mws, client_max_size=self._max_request_bytes)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)

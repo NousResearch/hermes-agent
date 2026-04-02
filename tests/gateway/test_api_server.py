@@ -27,6 +27,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    body_limit_middleware,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -139,6 +140,7 @@ class TestAdapterInit:
         monkeypatch.setenv("API_SERVER_PORT", "7777")
         monkeypatch.setenv("API_SERVER_KEY", "sk-env")
         monkeypatch.setenv("API_SERVER_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:3000")
+        monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", "2097152")
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         assert adapter._host == "10.0.0.1"
@@ -148,6 +150,7 @@ class TestAdapterInit:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         )
+        assert adapter._max_request_bytes == 2_097_152
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +219,8 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
+    mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws, client_max_size=adapter._max_request_bytes)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
@@ -753,6 +756,32 @@ class TestChatCompletionsEndpoint:
             assert call_kwargs["conversation_history"][1] == {"role": "assistant", "content": "2"}
 
     @pytest.mark.asyncio
+    async def test_multimodal_content_passed_through(self, adapter):
+        """Chat Completions preserves text + image_url content arrays."""
+        mock_result = {"final_response": "That looks like a cat.", "messages": [], "api_calls": 1}
+        multimodal_message = [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": multimodal_message}],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == multimodal_message
+            assert call_kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
     async def test_agent_error_returns_500(self, adapter):
         """Agent exception returns 500."""
         app = _create_app(adapter)
@@ -946,6 +975,40 @@ class TestResponsesEndpoint:
             # Last message is user_message, rest are history
             assert call_kwargs["user_message"] == "What is 2+2?"
             assert len(call_kwargs["conversation_history"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_multimodal_input_is_normalized_to_chat_style(self, adapter):
+        """Responses input_text/input_image parts become internal text/image_url parts."""
+        mock_result = {"final_response": "It is a cat.", "messages": [], "api_calls": 1}
+        expected_user_message = [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "Describe this image."},
+                                    {"type": "input_image", "image_url": "https://example.com/cat.png", "detail": "high"},
+                                ],
+                            }
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == expected_user_message
+            assert call_kwargs["conversation_history"] == []
 
     @pytest.mark.asyncio
     async def test_instructions_as_ephemeral_prompt(self, adapter):
@@ -1154,6 +1217,134 @@ class TestResponsesEndpoint:
                 json={"model": "hermes-agent", "input": 42},
             )
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_replays_multimodal_history(self, adapter):
+        """Stored multimodal turns survive previous_response_id chaining."""
+        first_result = {"final_response": "It looks like a cat.", "messages": [], "api_calls": 1}
+        second_result = {"final_response": "It is orange.", "messages": [], "api_calls": 1}
+        data_url = "data:image/png;base64,QUFBQQ=="
+        expected_first_user = [
+            {"type": "text", "text": "What is in this image?"},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (first_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "What is in this image?"},
+                                    {"type": "input_image", "image_url": data_url},
+                                ],
+                            }
+                        ],
+                    },
+                )
+
+            assert resp1.status == 200
+            response_id = (await resp1.json())["id"]
+
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (second_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "What color is it?",
+                        "previous_response_id": response_id,
+                    },
+                )
+
+            assert resp2.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"][0] == {
+                "role": "user",
+                "content": expected_first_user,
+            }
+            assert call_kwargs["conversation_history"][1] == {
+                "role": "assistant",
+                "content": "It looks like a cat.",
+            }
+
+    @pytest.mark.asyncio
+    async def test_chat_file_content_part_rejected(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "hermes-agent",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "file", "file": {"file_id": "file_123"}},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["type"] == "invalid_request_error"
+            assert data["error"]["code"] == "unsupported_content_type"
+
+    @pytest.mark.asyncio
+    async def test_responses_input_file_content_part_rejected(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_file", "file_id": "file_123"},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["type"] == "invalid_request_error"
+            assert data["error"]["code"] == "unsupported_content_type"
+
+    @pytest.mark.asyncio
+    async def test_non_image_data_url_rejected(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_image", "image_url": "data:text/plain;base64,SGVsbG8="},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["type"] == "invalid_request_error"
+            assert data["error"]["code"] == "unsupported_content_type"
 
 
 class TestResponsesStreaming:
@@ -2091,3 +2282,70 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+    @pytest.mark.asyncio
+    async def test_session_history_supports_multimodal_content(self, adapter):
+        """Session continuity keeps multimodal history and accepts a new multimodal turn."""
+        mock_result = {"final_response": "Still looks like a cat.", "messages": [], "api_calls": 1}
+        db_history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Earlier image"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/earlier.png"}},
+                ],
+            },
+            {"role": "assistant", "content": "I saw a cat."},
+        ]
+        new_message = [
+            {"type": "text", "text": "And this one?"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/new.png", "detail": "low"}},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        adapter._session_db = mock_db
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Hermes-Session-Id": "multimodal-session"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": new_message}]},
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["conversation_history"] == db_history
+            assert call_kwargs["user_message"] == new_message
+
+
+# ---------------------------------------------------------------------------
+# Body limits
+# ---------------------------------------------------------------------------
+
+
+class TestBodyLimits:
+    @pytest.mark.asyncio
+    async def test_custom_body_limit_rejects_large_request(self):
+        adapter = _make_adapter()
+        adapter._max_request_bytes = 256
+        app = _create_app(adapter)
+
+        payload = {
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "x" * 1024}],
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                data=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+            )
+
+            assert resp.status == 413
+            data = await resp.json()
+            assert data["error"]["type"] == "invalid_request_error"
+            assert data["error"]["code"] == "body_too_large"

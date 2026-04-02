@@ -694,6 +694,62 @@ def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     assert function_output["call_id"] == "call_pair123"
 
 
+def test_chat_messages_to_responses_input_preserves_multimodal_content(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    items = agent._chat_messages_to_responses_input(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this image."},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}},
+                ],
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe this image."},
+                {"type": "input_image", "image_url": "https://example.com/cat.png", "detail": "high"},
+            ],
+        }
+    ]
+
+
+def test_preflight_codex_api_kwargs_accepts_multimodal_content_parts(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    result = agent._preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Describe this image."},
+                        {"type": "input_image", "image_url": "https://example.com/cat.png", "detail": "low"},
+                    ],
+                }
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    assert result["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe this image."},
+                {"type": "input_image", "image_url": "https://example.com/cat.png", "detail": "low"},
+            ],
+        }
+    ]
+
+
 def test_preflight_codex_api_kwargs_strips_optional_function_call_id(monkeypatch):
     agent = _build_agent(monkeypatch)
     preflight = agent._preflight_codex_api_kwargs(

@@ -4057,7 +4057,10 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                content_text = ""
+                if not isinstance(content, list):
+                    content_text = str(content) if content is not None else ""
+                content_parts = self._chat_content_to_responses_parts(content)
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -4080,7 +4083,9 @@ class AIAgent:
                                     seen_item_ids.add(item_id)
                                 has_codex_reasoning = True
 
-                    if content_text.strip():
+                    if content_parts:
+                        items.append({"role": "assistant", "content": content_parts})
+                    elif content_text.strip():
                         items.append({"role": "assistant", "content": content_text})
                     elif has_codex_reasoning:
                         # The Responses API requires a following item after each
@@ -4133,7 +4138,10 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                if content_parts:
+                    items.append({"role": role, "content": content_parts})
+                else:
+                    items.append({"role": role, "content": content_text})
                 continue
 
             if role == "tool":
@@ -4151,6 +4159,48 @@ class AIAgent:
                 })
 
         return items
+
+    @staticmethod
+    def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+        """Convert chat-style multimodal parts to Responses API content parts."""
+        if not isinstance(content, list):
+            return []
+
+        converted: List[Dict[str, Any]] = []
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    converted.append({"type": "input_text", "text": part})
+                continue
+            if not isinstance(part, dict):
+                continue
+
+            part_type = part.get("type")
+            if part_type in {"text", "input_text", "output_text"}:
+                text = part.get("text")
+                if isinstance(text, str):
+                    converted.append({"type": "input_text", "text": text})
+                continue
+
+            if part_type in {"image_url", "input_image"}:
+                image_data = part.get("image_url", {})
+                detail = part.get("detail")
+                if isinstance(image_data, dict):
+                    detail = image_data.get("detail", detail)
+                    image_data = image_data.get("url")
+                if not isinstance(image_data, str) or not image_data:
+                    continue
+                image_part: Dict[str, Any] = {"type": "input_image", "image_url": image_data}
+                if isinstance(detail, str) and detail.strip():
+                    image_part["detail"] = detail.strip()
+                converted.append(image_part)
+                continue
+
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": "input_text", "text": text})
+
+        return converted
 
     def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(raw_items, list):
@@ -4233,6 +4283,55 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
+                if isinstance(content, list):
+                    normalized_content: List[Dict[str, Any]] = []
+                    for part_idx, part in enumerate(content):
+                        if isinstance(part, str):
+                            if part:
+                                normalized_content.append({"type": "input_text", "text": part})
+                            continue
+
+                        if not isinstance(part, dict):
+                            raise ValueError(
+                                f"Codex Responses input[{idx}].content[{part_idx}] must be an object."
+                            )
+
+                        part_type = part.get("type")
+                        if part_type in {"input_text", "output_text", "text"}:
+                            text = part.get("text")
+                            if text is None:
+                                text = ""
+                            if not isinstance(text, str):
+                                text = str(text)
+                            normalized_content.append({"type": "input_text", "text": text})
+                            continue
+
+                        if part_type in {"input_image", "image_url"}:
+                            image_data = part.get("image_url", {})
+                            detail = part.get("detail")
+                            if isinstance(image_data, dict):
+                                detail = image_data.get("detail", detail)
+                                image_data = image_data.get("url")
+                            if image_data is None:
+                                image_data = ""
+                            if not isinstance(image_data, str):
+                                image_data = str(image_data)
+                            image_part: Dict[str, Any] = {
+                                "type": "input_image",
+                                "image_url": image_data,
+                            }
+                            if isinstance(detail, str) and detail.strip():
+                                image_part["detail"] = detail.strip()
+                            normalized_content.append(image_part)
+                            continue
+
+                        raise ValueError(
+                            f"Codex Responses input[{idx}].content[{part_idx}] has unsupported part type {part_type!r}."
+                        )
+
+                    normalized.append({"role": role, "content": normalized_content})
+                    continue
+
                 if not isinstance(content, str):
                     content = str(content)
 

@@ -1,15 +1,14 @@
 """Tests for cred_proxy.substitutor placeholder substitution."""
 
 import pytest
-from pathlib import Path
 
 from cred_proxy.store import CredStore
 from cred_proxy.substitutor import substitute
 
 
 @pytest.fixture
-def store(tmp_path: Path) -> CredStore:
-    s = CredStore(key_file=tmp_path / "k.key", store_file=tmp_path / "s.enc")
+def store() -> CredStore:
+    s = CredStore()
     s.set("mytoken", "real-token-value")
     s.set("apikey", "sk-12345")
     return s

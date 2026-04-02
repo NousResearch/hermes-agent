@@ -302,7 +302,7 @@ def _make_run_env(env: dict) -> dict:
                 run_env["http_proxy"] = f"http://127.0.0.1:{_tcp_port}"
                 run_env["https_proxy"] = f"http://127.0.0.1:{_tcp_port}"
             # Build combined CA bundle: system bundle + proxy CA
-            _proxy_ca = _state / "cred-proxy-ca" / "ca.crt"
+            _proxy_ca = _state / "cred-proxy-ca" / "mitmproxy-ca-cert.pem"
             if _proxy_ca.exists():
                 _combined_ca = _state / "cred-proxy-ca" / "combined-ca.crt"
                 try:

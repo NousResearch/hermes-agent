@@ -10,13 +10,14 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 import sys
 from pathlib import Path
 
 _STATE_DIR = Path.home() / ".hermes" / "state"
 _PID_FILE = _STATE_DIR / "cred-proxy.pid"
 _PORT_FILE = _STATE_DIR / "cred-proxy.port"
-_SOCK_PATH = _STATE_DIR / "cred-proxy.sock"
+_SOCK_PATH = _STATE_DIR / "cred-proxy.sock"  # kept for status() compatibility
 _LOG_FILE = _STATE_DIR / "cred-proxy.log"
 
 
@@ -168,15 +169,14 @@ def start() -> None:
 # ---------------------------------------------------------------------------
 
 def _run_server() -> None:
-    """Configure logging and run the asyncio proxy server (blocks forever).
+    """Configure logging and run the mitmproxy server (blocks forever).
 
-    Binds both the Unix socket and a localhost TCP port before writing the
-    PID and port files, so callers polling is_running() only see the daemon
-    as ready once it is fully bound.
+    Pre-selects a free TCP port, then starts mitmproxy via DumpMaster.
+    Writes the PID and port files inside the mitmproxy 'running' hook so
+    callers polling is_running() only see the daemon as ready once it is
+    fully bound and listening.
     """
-    from .ca import LocalCA
-    from .server import CredProxy
-    from .store import CredStore
+    from .server import run_proxy
 
     logging.basicConfig(
         filename=str(_LOG_FILE),
@@ -187,11 +187,6 @@ def _run_server() -> None:
     def _on_sigterm(signum, frame):
         _remove_pid()
         _remove_port()
-        if _SOCK_PATH.exists():
-            try:
-                _SOCK_PATH.unlink()
-            except Exception:
-                pass
         sys.exit(0)
 
     try:
@@ -199,22 +194,18 @@ def _run_server() -> None:
     except (OSError, ValueError):
         pass  # Windows or restricted environment
 
-    def _on_started(port: int) -> None:
-        """Called by CredProxy.start() after both sockets are bound."""
+    # Pick a free port before handing off to mitmproxy
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    def _on_started() -> None:
+        """Called by mitmproxy's running hook once the proxy is listening."""
         _write_pid()
         _write_port(port)
 
-    store = CredStore()
-    ca = LocalCA()
-    proxy = CredProxy(store, ca, str(_SOCK_PATH))
-
     try:
-        asyncio.run(proxy.start(on_started=_on_started))
+        asyncio.run(run_proxy(port, on_started=_on_started))
     finally:
         _remove_pid()
         _remove_port()
-        try:
-            if _SOCK_PATH.exists():
-                _SOCK_PATH.unlink()
-        except Exception:
-            pass

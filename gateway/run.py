@@ -5468,15 +5468,25 @@ class GatewayRunner:
         _loop_for_step = asyncio.get_event_loop()
         _hooks_ref = self.hooks
 
-        def _step_callback_sync(iteration: int, tool_names: list) -> None:
+        def _step_callback_sync(iteration: int, prev_tools: list) -> None:
             try:
+                # prev_tools may be list[str] or list[dict] with "name"/"result"
+                # keys.  Normalise to keep "tool_names" backward-compatible for
+                # user-authored hooks that do ', '.join(tool_names)'.
+                _names: list[str] = []
+                for _t in (prev_tools or []):
+                    if isinstance(_t, dict):
+                        _names.append(_t.get("name") or "")
+                    else:
+                        _names.append(str(_t))
                 asyncio.run_coroutine_threadsafe(
                     _hooks_ref.emit("agent:step", {
                         "platform": source.platform.value if source.platform else "",
                         "user_id": source.user_id,
                         "session_id": session_id,
                         "iteration": iteration,
-                        "tool_names": tool_names,
+                        "tool_names": _names,
+                        "tools": prev_tools,
                     }),
                     _loop_for_step,
                 )

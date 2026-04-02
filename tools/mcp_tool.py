@@ -1845,6 +1845,20 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     _sync_mcp_toolsets(list(servers.keys()))
 
+    # Log a summary so ACP callers get visibility into what was registered.
+    with _lock:
+        connected = [n for n in new_servers if n in _servers]
+        new_tool_count = sum(
+            len(getattr(_servers[n], "_registered_tool_names", []))
+            for n in connected
+        )
+    failed = len(new_servers) - len(connected)
+    if new_tool_count or failed:
+        summary = f"MCP: registered {new_tool_count} tool(s) from {len(connected)} server(s)"
+        if failed:
+            summary += f" ({failed} failed)"
+        logger.info(summary)
+
     return _existing_tool_names()
 
 

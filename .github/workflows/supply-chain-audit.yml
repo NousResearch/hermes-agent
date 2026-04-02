@@ -169,6 +169,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           SEVERITY="⚠️ Supply Chain Risk Detected"
           if [ "${{ steps.scan.outputs.critical }}" = "true" ]; then
             SEVERITY="🚨 CRITICAL Supply Chain Risk Detected"
@@ -184,6 +185,11 @@ jobs:
           *Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
 
           gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          COMMENT_EXIT=$?
+          if [ "$COMMENT_EXIT" -ne 0 ]; then
+            echo "::warning::Unable to post PR comment (likely fork token permissions). Continuing without comment."
+          fi
+          exit 0
 
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'

@@ -3097,52 +3097,61 @@ def login_command(args) -> None:
     raise SystemExit(0)
 
 
-def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
+def _login_openai_codex(
+    args,
+    pconfig: ProviderConfig,
+    *,
+    force_new_login: bool = False,
+) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
 
+    del args, pconfig  # kept for parity with other provider login helpers
+
     # Check for existing Hermes-owned credentials
-    try:
-        existing = resolve_codex_runtime_credentials()
-        # Verify the resolved token is actually usable (not expired).
-        # resolve_codex_runtime_credentials attempts refresh, so if we get
-        # here the token should be valid — but double-check before telling
-        # the user "Login successful!".
-        _resolved_key = existing.get("api_key", "")
-        if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
-            print("Existing Codex credentials found in Hermes auth store.")
-            try:
-                reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                reuse = "y"
-            if reuse in ("", "y", "yes"):
-                config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
-                print()
-                print("Login successful!")
-                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
-                return
-        else:
-            print("Existing Codex credentials are expired. Starting fresh login...")
-    except AuthError:
-        pass
+    if not force_new_login:
+        try:
+            existing = resolve_codex_runtime_credentials()
+            # Verify the resolved token is actually usable (not expired).
+            # resolve_codex_runtime_credentials attempts refresh, so if we get
+            # here the token should be valid — but double-check before telling
+            # the user "Login successful!".
+            _resolved_key = existing.get("api_key", "")
+            if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
+                print("Existing Codex credentials found in Hermes auth store.")
+                try:
+                    reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    reuse = "y"
+                if reuse in ("", "y", "yes"):
+                    config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
+                    print()
+                    print("Login successful!")
+                    print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                    return
+            else:
+                print("Existing Codex credentials are expired. Starting fresh login...")
+        except AuthError:
+            pass
 
     # Check for existing Codex CLI tokens we can import
-    cli_tokens = _import_codex_cli_tokens()
-    if cli_tokens:
-        print("Found existing Codex CLI credentials at ~/.codex/auth.json")
-        print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
-        try:
-            do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            do_import = "n"
-        if do_import in ("y", "yes"):
-            _save_codex_tokens(cli_tokens)
-            base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
-            config_path = _update_config_for_provider("openai-codex", base_url)
-            print()
-            print("Credentials imported. Note: if Codex CLI refreshes its token,")
-            print("Hermes will keep working independently with its own session.")
-            print(f"  Config updated: {config_path} (model.provider=openai-codex)")
-            return
+    if not force_new_login:
+        cli_tokens = _import_codex_cli_tokens()
+        if cli_tokens:
+            print("Found existing Codex CLI credentials at ~/.codex/auth.json")
+            print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
+            try:
+                do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "n"
+            if do_import in ("y", "yes"):
+                _save_codex_tokens(cli_tokens)
+                base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+                config_path = _update_config_for_provider("openai-codex", base_url)
+                print()
+                print("Credentials imported. Note: if Codex CLI refreshes its token,")
+                print("Hermes will keep working independently with its own session.")
+                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
     print()

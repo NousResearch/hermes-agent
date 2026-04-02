@@ -1,14 +1,7 @@
-"""Modal cloud execution environment using the Modal SDK directly.
+"""Modal cloud execution environment using the native Modal SDK directly.
 
-Replaces the previous swe-rex ModalDeployment wrapper with native Modal
-Sandbox.create() + Sandbox.exec() calls.  This eliminates the need for
-swe-rex's HTTP runtime server and unencrypted tunnel, fixing:
-  - AsyncUsageWarning from synchronous App.lookup in async context
-  - DeprecationError from unencrypted_ports / .url on unencrypted tunnels
-
-Supports persistent filesystem snapshots: when enabled, the sandbox's
-filesystem is snapshotted on cleanup and restored on next creation, so
-installed packages, project files, and config changes survive across sessions.
+Uses ``Sandbox.create()`` + ``Sandbox.exec()`` instead of the older runtime
+wrapper, while preserving Hermes' persistent snapshot behavior across sessions.
 """
 
 import asyncio
@@ -16,17 +9,21 @@ import json
 import logging
 import shlex
 import threading
-import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli.config import get_hermes_home
-from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from hermes_constants import get_hermes_home
+from tools.environments.modal_common import (
+    BaseModalExecutionEnvironment,
+    ModalExecStart,
+    PreparedModalExec,
+)
 
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "modal_snapshots.json"
+_DIRECT_SNAPSHOT_NAMESPACE = "direct"
 
 
 def _load_snapshots() -> Dict[str, str]:
@@ -45,12 +42,72 @@ def _save_snapshots(data: Dict[str, str]) -> None:
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
 
 
-class _AsyncWorker:
-    """Background thread with its own event loop for async-safe Modal calls.
+def _direct_snapshot_key(task_id: str) -> str:
+    return f"{_DIRECT_SNAPSHOT_NAMESPACE}:{task_id}"
 
-    Allows sync code to submit async coroutines and block for results,
-    even when called from inside another running event loop (e.g. Atropos).
-    """
+
+def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
+    """Return a snapshot id and whether it came from the legacy key format."""
+    snapshots = _load_snapshots()
+
+    namespaced_key = _direct_snapshot_key(task_id)
+    snapshot_id = snapshots.get(namespaced_key)
+    if isinstance(snapshot_id, str) and snapshot_id:
+        return snapshot_id, False
+
+    legacy_snapshot_id = snapshots.get(task_id)
+    if isinstance(legacy_snapshot_id, str) and legacy_snapshot_id:
+        return legacy_snapshot_id, True
+
+    return None, False
+
+
+def _store_direct_snapshot(task_id: str, snapshot_id: str) -> None:
+    """Persist the direct Modal snapshot id under the direct namespace."""
+    snapshots = _load_snapshots()
+    snapshots[_direct_snapshot_key(task_id)] = snapshot_id
+    snapshots.pop(task_id, None)
+    _save_snapshots(snapshots)
+
+
+def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
+    """Remove direct Modal snapshot entries for a task, including legacy keys."""
+    snapshots = _load_snapshots()
+    updated = False
+
+    for key in (_direct_snapshot_key(task_id), task_id):
+        value = snapshots.get(key)
+        if value is None:
+            continue
+        if snapshot_id is None or value == snapshot_id:
+            snapshots.pop(key, None)
+            updated = True
+
+    if updated:
+        _save_snapshots(snapshots)
+
+
+def _resolve_modal_image(image_spec: Any) -> Any:
+    """Convert registry references or snapshot ids into Modal image objects."""
+    import modal as _modal
+
+    if not isinstance(image_spec, str):
+        return image_spec
+
+    if image_spec.startswith("im-"):
+        return _modal.Image.from_id(image_spec)
+
+    return _modal.Image.from_registry(
+        image_spec,
+        setup_dockerfile_commands=[
+            "RUN rm -rf /usr/local/lib/python*/site-packages/pip* 2>/dev/null; "
+            "python -m ensurepip --upgrade --default-pip 2>/dev/null || true",
+        ],
+    )
+
+
+class _AsyncWorker:
+    """Background thread with its own event loop for async-safe Modal calls."""
 
     def __init__(self):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -81,14 +138,19 @@ class _AsyncWorker:
             self._thread.join(timeout=10)
 
 
-class ModalEnvironment(BaseEnvironment):
-    """Modal cloud execution via native Modal SDK.
+@dataclass
+class _DirectModalExecHandle:
+    thread: threading.Thread
+    result_holder: Dict[str, Any]
 
-    Uses Modal's Sandbox.create() for container lifecycle and Sandbox.exec()
-    for command execution — no intermediate HTTP server or tunnel required.
-    Adds sudo -S support, configurable resources (CPU, memory, disk),
-    and optional filesystem persistence via Modal's snapshot API.
-    """
+
+class ModalEnvironment(BaseModalExecutionEnvironment):
+    """Modal cloud execution via native Modal sandboxes."""
+
+    _stdin_mode = "heredoc"
+    _poll_interval_seconds = 0.2
+    _interrupt_output = "[Command interrupted - Modal sandbox terminated]"
+    _unexpected_error_prefix = "Modal execution error"
 
     def __init__(
         self,
@@ -107,39 +169,21 @@ class ModalEnvironment(BaseEnvironment):
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()
+        self._synced_files: Dict[str, tuple] = {}
 
         sandbox_kwargs = dict(modal_sandbox_kwargs or {})
 
-        # If persistent, try to restore from a previous snapshot
-        restored_image = None
+        restored_snapshot_id = None
+        restored_from_legacy_key = False
         if self._persistent:
-            snapshot_id = _load_snapshots().get(self._task_id)
-            if snapshot_id:
-                try:
-                    import modal
-                    restored_image = modal.Image.from_id(snapshot_id)
-                    logger.info("Modal: restoring from snapshot %s", snapshot_id[:20])
-                except Exception as e:
-                    logger.warning("Modal: failed to restore snapshot, using base image: %s", e)
-                    restored_image = None
-
-        effective_image = restored_image if restored_image else image
-
-        # Pre-build a modal.Image with pip fix for Modal's legacy image builder.
-        # Some task images have broken pip; fix via ensurepip before Modal uses it.
-        import modal as _modal
-        if isinstance(effective_image, str):
-            effective_image = _modal.Image.from_registry(
-                effective_image,
-                setup_dockerfile_commands=[
-                    "RUN rm -rf /usr/local/lib/python*/site-packages/pip* 2>/dev/null; "
-                    "python -m ensurepip --upgrade --default-pip 2>/dev/null || true",
-                ],
+            restored_snapshot_id, restored_from_legacy_key = _get_snapshot_restore_candidate(
+                self._task_id
             )
+            if restored_snapshot_id:
+                logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
 
-        # Mount credential files (OAuth tokens, etc.) declared by skills.
-        # These are read-only copies so the sandbox can authenticate with
-        # external services but can't modify the host's credentials.
+        import modal as _modal
+
         cred_mounts = []
         try:
             from tools.credential_files import get_credential_file_mounts, iter_skills_files
@@ -171,34 +215,63 @@ class ModalEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Modal: could not load credential file mounts: %s", e)
 
-        # Start the async worker thread and create sandbox on it
-        # so all gRPC channels are bound to the worker's event loop.
         self._worker.start()
 
-        async def _create_sandbox():
-            app = await _modal.App.lookup.aio(
-                "hermes-agent", create_if_missing=True
-            )
+        async def _create_sandbox(image_spec: Any):
+            app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
             create_kwargs = dict(sandbox_kwargs)
             if cred_mounts:
                 existing_mounts = list(create_kwargs.pop("mounts", []))
                 existing_mounts.extend(cred_mounts)
                 create_kwargs["mounts"] = existing_mounts
             sandbox = await _modal.Sandbox.create.aio(
-                "sleep", "infinity",
-                image=effective_image,
+                "sleep",
+                "infinity",
+                image=image_spec,
                 app=app,
                 timeout=int(create_kwargs.pop("timeout", 3600)),
                 **create_kwargs,
             )
             return app, sandbox
 
-        self._app, self._sandbox = self._worker.run_coroutine(
-            _create_sandbox(), timeout=300
-        )
-        # Track synced files to avoid redundant pushes.
-        # Key: container_path, Value: (mtime, size) of last synced version.
-        self._synced_files: Dict[str, tuple] = {}
+        try:
+            target_image_spec = restored_snapshot_id or image
+            try:
+                # _resolve_modal_image keeps the Modal bootstrap fix together:
+                # it applies setup_dockerfile_commands with ensurepip before
+                # Modal builds registry images, while snapshot ids restore via
+                # modal.Image.from_id() without rebuilding.
+                effective_image = _resolve_modal_image(target_image_spec)
+                self._app, self._sandbox = self._worker.run_coroutine(
+                    _create_sandbox(effective_image),
+                    timeout=300,
+                )
+            except Exception as exc:
+                if not restored_snapshot_id:
+                    raise
+
+                logger.warning(
+                    "Modal: failed to restore snapshot %s, retrying with base image: %s",
+                    restored_snapshot_id[:20],
+                    exc,
+                )
+                _delete_direct_snapshot(self._task_id, restored_snapshot_id)
+                base_image = _resolve_modal_image(image)
+                self._app, self._sandbox = self._worker.run_coroutine(
+                    _create_sandbox(base_image),
+                    timeout=300,
+                )
+            else:
+                if restored_snapshot_id and restored_from_legacy_key:
+                    _store_direct_snapshot(self._task_id, restored_snapshot_id)
+                    logger.info(
+                        "Modal: migrated legacy snapshot entry for task %s",
+                        self._task_id,
+                    )
+        except Exception:
+            self._worker.stop()
+            raise
+
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
 
     def _push_file_to_sandbox(self, host_path: str, container_path: str) -> bool:
@@ -253,86 +326,57 @@ class ModalEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Modal: file sync failed: %s", e)
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
-        # Sync credential files before each command so mid-session
-        # OAuth setups are picked up without requiring a restart.
+    def _before_execute(self) -> None:
         self._sync_files()
 
-        if stdin_data is not None:
-            marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
-            while marker in stdin_data:
-                marker = f"HERMES_EOF_{uuid.uuid4().hex[:8]}"
-            command = f"{command} << '{marker}'\n{stdin_data}\n{marker}"
-
-        exec_command, sudo_stdin = self._prepare_command(command)
-
-        # Modal sandboxes execute commands via exec() and cannot pipe
-        # subprocess stdin directly.  When a sudo password is present,
-        # use a shell-level pipe from printf.
-        if sudo_stdin is not None:
-            exec_command = (
-                f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
-            )
-
-        effective_cwd = cwd or self.cwd
-        effective_timeout = timeout or self.timeout
-
-        # Wrap command with cd + stderr merge
-        full_command = f"cd {shlex.quote(effective_cwd)} && {exec_command}"
-
-        # Run in a background thread so we can poll for interrupts
+    def _start_modal_exec(self, prepared: PreparedModalExec) -> ModalExecStart:
+        full_command = f"cd {shlex.quote(prepared.cwd)} && {prepared.command}"
         result_holder = {"value": None, "error": None}
 
         def _run():
             try:
                 async def _do_execute():
                     process = await self._sandbox.exec.aio(
-                        "bash", "-c", full_command,
-                        timeout=effective_timeout,
+                        "bash",
+                        "-c",
+                        full_command,
+                        timeout=prepared.timeout,
                     )
-                    # Read stdout; redirect stderr to stdout in the shell
-                    # command so we get merged output
                     stdout = await process.stdout.read.aio()
                     stderr = await process.stderr.read.aio()
                     exit_code = await process.wait.aio()
-                    # Merge stdout + stderr (stderr after stdout)
+                    if isinstance(stdout, bytes):
+                        stdout = stdout.decode("utf-8", errors="replace")
+                    if isinstance(stderr, bytes):
+                        stderr = stderr.decode("utf-8", errors="replace")
                     output = stdout
                     if stderr:
                         output = f"{stdout}\n{stderr}" if stdout else stderr
-                    return output, exit_code
+                    return self._result(output, exit_code)
 
-                output, exit_code = self._worker.run_coroutine(
-                    _do_execute(), timeout=effective_timeout + 30
+                result_holder["value"] = self._worker.run_coroutine(
+                    _do_execute(),
+                    timeout=prepared.timeout + 30,
                 )
-                result_holder["value"] = {
-                    "output": output,
-                    "returncode": exit_code,
-                }
             except Exception as e:
                 result_holder["error"] = e
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        while t.is_alive():
-            t.join(timeout=0.2)
-            if is_interrupted():
-                try:
-                    self._worker.run_coroutine(
-                        self._sandbox.terminate.aio(),
-                        timeout=15,
-                    )
-                except Exception:
-                    pass
-                return {
-                    "output": "[Command interrupted - Modal sandbox terminated]",
-                    "returncode": 130,
-                }
+        return ModalExecStart(handle=_DirectModalExecHandle(thread=t, result_holder=result_holder))
 
-        if result_holder["error"]:
-            return {"output": f"Modal execution error: {result_holder['error']}", "returncode": 1}
-        return result_holder["value"]
+    def _poll_modal_exec(self, handle: _DirectModalExecHandle) -> dict | None:
+        if handle.thread.is_alive():
+            return None
+        if handle.result_holder["error"]:
+            return self._error_result(f"Modal execution error: {handle.result_holder['error']}")
+        return handle.result_holder["value"]
+
+    def _cancel_modal_exec(self, handle: _DirectModalExecHandle) -> None:
+        self._worker.run_coroutine(
+            self._sandbox.terminate.aio(),
+            timeout=15,
+        )
 
     def cleanup(self):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
@@ -351,11 +395,12 @@ class ModalEnvironment(BaseEnvironment):
                     snapshot_id = None
 
                 if snapshot_id:
-                    snapshots = _load_snapshots()
-                    snapshots[self._task_id] = snapshot_id
-                    _save_snapshots(snapshots)
-                    logger.info("Modal: saved filesystem snapshot %s for task %s",
-                                snapshot_id[:20], self._task_id)
+                    _store_direct_snapshot(self._task_id, snapshot_id)
+                    logger.info(
+                        "Modal: saved filesystem snapshot %s for task %s",
+                        snapshot_id[:20],
+                        self._task_id,
+                    )
             except Exception as e:
                 logger.warning("Modal: filesystem snapshot failed: %s", e)
 

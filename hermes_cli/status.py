@@ -15,8 +15,10 @@ from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
+from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 def check_mark(ok: bool) -> str:
     if ok:
@@ -185,6 +187,31 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+
+    # =========================================================================
+    # Nous Subscription Features
+    # =========================================================================
+    if managed_nous_tools_enabled():
+        features = get_nous_subscription_features(config)
+        print()
+        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        if not features.nous_auth_present:
+            print("  Nous Portal   ✗ not logged in")
+        else:
+            print("  Nous Portal   ✓ managed tools available")
+        for feature in features.items():
+            if feature.managed_by_nous:
+                state = "active via Nous subscription"
+            elif feature.active:
+                current = feature.current_provider or "configured provider"
+                state = f"active via {current}"
+            elif feature.included_by_default and features.nous_auth_present:
+                state = "included by subscription, not currently selected"
+            elif feature.key == "modal" and features.nous_auth_present:
+                state = "available via subscription (optional)"
+            else:
+                state = "not configured"
+            print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
 
     # =========================================================================
     # API-Key Providers

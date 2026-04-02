@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +26,6 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
     if value is None:
         return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in ("true", "1", "yes", "on"):
@@ -36,7 +33,7 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
         if lowered in ("false", "0", "no", "off"):
             return False
         return default
-    return default
+    return is_truthy_value(value, default=default)
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
@@ -908,5 +905,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
-

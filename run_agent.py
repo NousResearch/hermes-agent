@@ -901,6 +901,12 @@ class AIAgent:
         # Config shape: {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
         self._fallback_model = fallback_model if isinstance(fallback_model, dict) else None
         self._fallback_activated = False
+        self._primary_model = self.model
+        self._primary_provider = self.provider
+        self._primary_base_url = getattr(self, "base_url", None)
+        self._primary_api_mode = getattr(self, "api_mode", "chat_completions")
+        self._primary_api_key = getattr(self, "api_key", "")
+        self._primary_client_kwargs = dict(self._client_kwargs) if isinstance(getattr(self, "_client_kwargs", None), dict) else {}
         if self._fallback_model:
             fb_p = self._fallback_model.get("provider", "")
             fb_m = self._fallback_model.get("model", "")
@@ -4427,6 +4433,99 @@ class AIAgent:
             logging.error("Failed to activate fallback model: %s", e)
             return False
 
+    def _restore_primary_runtime(self) -> bool:
+        """Restore the configured primary runtime after a turn-scoped fallback.
+
+        Gateway creates a fresh agent per message, but long-lived CLI sessions
+        reuse the same AIAgent instance. Without an explicit reset, one transient
+        failure can leave the session pinned to the fallback provider for every
+        later turn. Restoring at the start of each new turn keeps the preferred
+        model authoritative unless the current turn actually needs fallback.
+        """
+        if not self._fallback_activated:
+            return False
+
+        try:
+            self.model = self._primary_model
+            self.provider = self._primary_provider
+            self.base_url = self._primary_base_url
+            self.api_mode = self._primary_api_mode
+            self.api_key = self._primary_api_key
+            self._client_kwargs = dict(self._primary_client_kwargs)
+
+            if self.api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+
+                self._anthropic_api_key = self.api_key
+                self._anthropic_base_url = self.base_url
+                self._anthropic_client = build_anthropic_client(self.api_key, self.base_url)
+                self._is_anthropic_oauth = _is_oauth_token(self.api_key)
+                self.client = None
+            else:
+                self.client = self._create_openai_client(
+                    self._client_kwargs, reason="restore_primary_runtime", shared=True
+                )
+
+            self._fallback_activated = False
+            logging.info(
+                "Primary runtime restored for new turn: %s (%s)",
+                self.model,
+                self.provider,
+            )
+            return True
+        except Exception as e:
+            logging.warning("Failed to restore primary runtime: %s", e)
+            return False
+
+    def _try_recover_primary_transport(self, api_error: Exception, *, retry_count: int, max_retries: int) -> bool:
+        """Attempt one extra primary-provider recovery cycle for transient transport failures.
+
+        For direct/custom endpoints like Z.AI, transient read timeouts do not
+        necessarily indicate an outage. Before downgrading the turn to a fallback
+        model, rebuild the primary client once and give it a short cool-down.
+        """
+        if self._fallback_activated:
+            return False
+
+        provider = (getattr(self, "provider", "") or "").strip().lower()
+        error_type = type(api_error).__name__
+        if provider not in {"custom", "zai"}:
+            return False
+        if error_type not in {"ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "RemoteProtocolError"}:
+            return False
+
+        try:
+            self._emit_status(
+                f"🔁 Primary transport looked transient on {provider}; rebuilding client before fallback..."
+            )
+            if getattr(self, "client", None) is not None:
+                try:
+                    self._close_openai_client(self.client, reason="primary_recovery", shared=True)
+                except Exception:
+                    pass
+            self.client = self._create_openai_client(
+                dict(self._primary_client_kwargs),
+                reason="primary_recovery",
+                shared=True,
+            )
+            self._client_kwargs = dict(self._primary_client_kwargs)
+            self.model = self._primary_model
+            self.provider = self._primary_provider
+            self.base_url = self._primary_base_url
+            self.api_mode = self._primary_api_mode
+            self.api_key = self._primary_api_key
+            wait_time = min(3 + retry_count, 8)
+            self._vprint(
+                f"{self.log_prefix}🔁 Transient primary transport failure on {provider}; "
+                f"rebuilt client and waiting {wait_time}s before one last primary attempt.",
+                force=True,
+            )
+            time.sleep(wait_time)
+            return True
+        except Exception as e:
+            logging.warning("Primary transport recovery failed: %s", e)
+            return False
+
     # ── End provider fallback ──────────────────────────────────────────────
 
     @staticmethod
@@ -6006,6 +6105,7 @@ class AIAgent:
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
+        self._restore_primary_runtime()
 
         # Sanitize surrogate characters from user input.  Clipboard paste from
         # rich-text editors (Google Docs, Word, etc.) can inject lone surrogates
@@ -6405,6 +6505,7 @@ class AIAgent:
             api_start_time = time.time()
             retry_count = 0
             max_retries = 3
+            primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted = False
             anthropic_auth_retry_attempted = False
@@ -7221,6 +7322,12 @@ class AIAgent:
                         }
 
                     if retry_count >= max_retries:
+                        if not primary_recovery_attempted and self._try_recover_primary_transport(
+                            api_error, retry_count=retry_count, max_retries=max_retries
+                        ):
+                            primary_recovery_attempted = True
+                            retry_count = 0
+                            continue
                         # Try fallback before giving up entirely
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():

@@ -643,7 +643,12 @@ class SimplexAdapter(BasePlatformAdapter):
         """Send a text message."""
         if chat_id.startswith("group:"):
             group_id = chat_id[6:]
-            command = f"#{group_id} {content}"
+            # Use the /_send structured API with numeric group ID (#<id>) to
+            # avoid ambiguity when multiple groups share the same display name.
+            # Use json.dumps for the full payload to correctly escape newlines,
+            # backslashes, and other special characters in the message text.
+            composed = json.dumps([{"msgContent": {"type": "text", "text": content}}])
+            command = f"/_send #{group_id} json {composed}"
         else:
             command = f"@{chat_id} {content}"
 

@@ -1643,7 +1643,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.7.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -1682,6 +1682,7 @@ all = [
     { name = "faster-whisper" },
     { name = "honcho-ai" },
     { name = "lark-oapi" },
+    { name = "matrix-nio", extra = ["e2e"] },
     { name = "mcp" },
     { name = "modal" },
     { name = "numpy" },
@@ -1800,6 +1801,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["feishu"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["matrix"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["messaging"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["modal"], marker = "extra == 'all'" },

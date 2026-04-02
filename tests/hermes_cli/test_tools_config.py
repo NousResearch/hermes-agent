@@ -381,3 +381,63 @@ class TestPlatformToolsetConsistency:
                 f"Platform {platform!r} in tools_config but missing from "
                 f"skills_config PLATFORMS"
             )
+
+
+def test_get_platform_tools_auto_enables_honcho_when_configured():
+    """Honcho toolset is auto-enabled when configured, even with explicit platform_toolsets.
+
+    This ensures honcho tools are available when:
+    1. User has run `hermes tools` to customize toolset config (platform_toolsets exists)
+    2. User has run `hermes honcho setup` (valid HonchoClientConfig exists)
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/4523
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    config = {"platform_toolsets": {"cli": ["web", "memory"]}}
+
+    # Mock HonchoClientConfig to simulate a configured Honcho instance
+    mock_config = SimpleNamespace(enabled=True, api_key="test-key", base_url="https://honcho.example.com")
+
+    with patch(
+        "honcho_integration.client.HonchoClientConfig.from_global_config",
+        return_value=mock_config,
+    ):
+        enabled = _get_platform_tools(config, "cli")
+
+    assert "honcho" in enabled, "honcho toolset should be auto-enabled when configured"
+    assert "web" in enabled, "explicitly selected toolsets should still be present"
+    assert "memory" in enabled, "explicitly selected toolsets should still be present"
+
+
+def test_get_platform_tools_does_not_enable_honcho_when_not_configured():
+    """Honcho toolset is NOT auto-enabled when not configured."""
+    from unittest.mock import patch
+
+    config = {"platform_toolsets": {"cli": ["web", "memory"]}}
+
+    # Simulate honcho_integration not being configured (import error)
+    with patch.dict("sys.modules", {"honcho_integration": None, "honcho_integration.client": None}):
+        enabled = _get_platform_tools(config, "cli")
+
+    assert "honcho" not in enabled, "honcho should not be enabled when not configured"
+
+
+def test_get_platform_tools_does_not_enable_honcho_when_disabled():
+    """Honcho toolset is NOT auto-enabled when explicitly disabled."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    config = {"platform_toolsets": {"cli": ["web", "memory"]}}
+
+    # Mock HonchoClientConfig with enabled=False
+    mock_config = SimpleNamespace(enabled=False, api_key="test-key", base_url="https://honcho.example.com")
+
+    with patch(
+        "honcho_integration.client.HonchoClientConfig.from_global_config",
+        return_value=mock_config,
+    ):
+        enabled = _get_platform_tools(config, "cli")
+
+    assert "honcho" not in enabled, "honcho should not be enabled when disabled in config"

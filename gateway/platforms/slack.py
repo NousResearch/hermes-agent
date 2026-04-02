@@ -219,36 +219,80 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a message to a Slack channel or DM."""
+        """Send a message to a Slack channel or DM.
+
+        If the content contains markdown tables, they are rendered as
+        Block Kit table blocks for rich display. Only one table per
+        message is supported; additional tables fall back to code blocks.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Convert standard markdown → Slack mrkdwn
-            formatted = self.format_message(content)
-
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
-
-            # reply_broadcast: also post thread replies to the main channel.
-            # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
+            is_first_msg = True
 
-            for i, chunk in enumerate(chunks):
-                kwargs = {
-                    "channel": chat_id,
-                    "text": chunk,
-                }
-                if thread_ts:
-                    kwargs["thread_ts"] = thread_ts
-                    # Only broadcast the first chunk of the first reply
-                    if broadcast and i == 0:
-                        kwargs["reply_broadcast"] = True
+            # Check if content contains markdown tables
+            segments = self._split_content_around_tables(content)
+            has_table = any(seg_type == "table" for seg_type, _ in segments)
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            if has_table:
+                # Send segments individually: text as mrkdwn, tables as blocks
+                for seg_type, seg_content in segments:
+                    kwargs = {"channel": chat_id}
+                    if thread_ts:
+                        kwargs["thread_ts"] = thread_ts
+                        if broadcast and is_first_msg:
+                            kwargs["reply_broadcast"] = True
+
+                    if seg_type == "table":
+                        rows = self._parse_markdown_table(seg_content)
+                        if rows:
+                            table_block = self._rows_to_block_kit_table(rows)
+                            kwargs["blocks"] = [table_block]
+                            kwargs["text"] = "(table)"  # Fallback for notifications
+                        else:
+                            # Parse failed — send as formatted text
+                            formatted = self.format_message(seg_content)
+                            kwargs["text"] = formatted
+                    else:
+                        formatted = self.format_message(seg_content)
+                        if not formatted.strip():
+                            continue
+                        kwargs["text"] = formatted
+
+                    try:
+                        last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                    except Exception as table_err:
+                        # Block Kit table failed — fall back to code block
+                        if seg_type == "table":
+                            logger.warning("[Slack] Block Kit table failed, falling back to code block: %s", table_err)
+                            fallback = f"```\n{seg_content}\n```"
+                            kwargs.pop("blocks", None)
+                            kwargs["text"] = fallback
+                            last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                        else:
+                            raise
+
+                    is_first_msg = False
+            else:
+                # No tables — standard text path
+                formatted = self.format_message(content)
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+                for i, chunk in enumerate(chunks):
+                    kwargs = {
+                        "channel": chat_id,
+                        "text": chunk,
+                    }
+                    if thread_ts:
+                        kwargs["thread_ts"] = thread_ts
+                        if broadcast and i == 0:
+                            kwargs["reply_broadcast"] = True
+
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
             return SendResult(
                 success=True,
@@ -354,6 +398,130 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=self._resolve_thread_ts(reply_to, metadata),
         )
         return SendResult(success=True, raw_response=result)
+
+    # ----- Markdown table → Block Kit table conversion -----
+
+    @staticmethod
+    def _parse_markdown_table(table_text: str) -> Optional[list]:
+        """Parse a markdown table into a list of rows (list of cell strings).
+
+        Returns None if the text isn't a valid markdown table.
+        Each row is a list of stripped cell values.
+        The separator row (---|---) is excluded.
+        """
+        lines = [l.strip() for l in table_text.strip().splitlines() if l.strip()]
+        if len(lines) < 2:
+            return None
+
+        rows = []
+        for i, line in enumerate(lines):
+            if not line.startswith("|") or not line.endswith("|"):
+                # Allow lines without leading/trailing pipe (some markdown flavors)
+                if "|" not in line:
+                    return None
+
+            cells = [c.strip() for c in line.split("|")]
+            # Remove empty first/last from leading/trailing pipes
+            if cells and cells[0] == "":
+                cells = cells[1:]
+            if cells and cells[-1] == "":
+                cells = cells[:-1]
+
+            if not cells:
+                return None
+
+            # Check if this is a separator row (---|---|---)
+            if all(re.match(r"^[-:]+$", c) for c in cells):
+                continue  # Skip separator
+
+            rows.append(cells)
+
+        if len(rows) < 2:  # Need at least header + 1 data row
+            return None
+
+        # Validate consistent column count
+        col_count = len(rows[0])
+        for row in rows:
+            if len(row) != col_count:
+                # Pad short rows, truncate long rows
+                while len(row) < col_count:
+                    row.append("")
+                if len(row) > col_count:
+                    row[:] = row[:col_count]
+
+        return rows
+
+    @staticmethod
+    def _rows_to_block_kit_table(rows: list) -> dict:
+        """Convert parsed rows to a Slack Block Kit table block.
+
+        First row is treated as the header.
+        Cells use raw_text type for simplicity and safety.
+        """
+        block_rows = []
+        for row in rows:
+            block_row = []
+            for cell in row:
+                block_row.append({
+                    "type": "raw_text",
+                    "text": str(cell)[:500]  # Slack cell text limit safety
+                })
+            block_rows.append(block_row)
+
+        return {
+            "type": "table",
+            "rows": block_rows[:100],  # Max 100 rows
+        }
+
+    @staticmethod
+    def _split_content_around_tables(content: str) -> list:
+        """Split content into segments of text and markdown tables.
+
+        Returns a list of tuples: ("text", content) or ("table", table_text).
+        Only the FIRST table is marked as "table"; subsequent tables are
+        converted to code blocks (Slack only allows one table per message).
+        """
+        # Match markdown table blocks: lines starting with | and containing |
+        table_pattern = re.compile(
+            r"((?:^[ \t]*\|.+\|[ \t]*$\n?){3,})",
+            re.MULTILINE,
+        )
+
+        segments = []
+        last_end = 0
+        table_found = False
+
+        for match in table_pattern.finditer(content):
+            start, end = match.start(), match.end()
+
+            # Add text before table
+            if start > last_end:
+                text_before = content[last_end:start].strip()
+                if text_before:
+                    segments.append(("text", text_before))
+
+            table_text = match.group(0)
+
+            if not table_found:
+                segments.append(("table", table_text))
+                table_found = True
+            else:
+                # Second+ table: convert to code block fallback
+                segments.append(("text", f"```\n{table_text}\n```"))
+
+            last_end = end
+
+        # Add remaining text after last table
+        if last_end < len(content):
+            remaining = content[last_end:].strip()
+            if remaining:
+                segments.append(("text", remaining))
+
+        # No tables found — return entire content as text
+        if not segments:
+            segments.append(("text", content))
+
+        return segments
 
     # ----- Markdown → mrkdwn conversion -----
 

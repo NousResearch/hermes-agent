@@ -657,6 +657,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.DISCORD].enabled = True
         config.platforms[Platform.DISCORD].token = discord_token
     
+    # Reply threading mode for Discord (off/first/all)
+    discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
+    if discord_reply_mode in ("off", "first", "all"):
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
+
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
         config.platforms[Platform.DISCORD].home_channel = HomeChannel(

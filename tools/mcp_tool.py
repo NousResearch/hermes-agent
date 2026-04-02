@@ -1401,7 +1401,19 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return {"type": "object", "properties": {}}
 
     if schema.get("type") == "object" and "properties" not in schema:
-        return {**schema, "properties": {}}
+        # Drop required — there are no properties for it to reference
+        result = {k: v for k, v in schema.items() if k != "required"}
+        return {**result, "properties": {}}
+
+    # Filter required to only include properties that actually exist
+    if schema.get("type") == "object" and "required" in schema:
+        properties = schema.get("properties", {})
+        valid_required = [r for r in schema["required"] if r in properties]
+        if len(valid_required) != len(schema["required"]):
+            if valid_required:
+                schema = {**schema, "required": valid_required}
+            else:
+                schema = {k: v for k, v in schema.items() if k != "required"}
 
     return schema
 

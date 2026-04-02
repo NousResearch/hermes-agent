@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    ROCKETCHAT = "rocketchat"
 
 
 @dataclass
@@ -285,6 +286,15 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # Rocket.Chat: username+password (recommended) or PAT fallback
+            elif platform == Platform.ROCKETCHAT and config.extra.get("url") and (
+                (config.extra.get("username") and config.extra.get("password"))
+                or (
+                    (config.token or config.extra.get("token"))
+                    and config.extra.get("user_id")
+                )
+            ):
                 connected.append(platform)
         return connected
     
@@ -890,6 +900,35 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # Rocket.Chat
+    rocketchat_url = os.getenv("ROCKETCHAT_URL", "")
+    rocketchat_username = os.getenv("ROCKETCHAT_USERNAME", "")
+    rocketchat_password = os.getenv("ROCKETCHAT_PASSWORD", "")
+    rocketchat_token = os.getenv("ROCKETCHAT_TOKEN", "")
+    rocketchat_user_id = os.getenv("ROCKETCHAT_USER_ID", "")
+    has_userpass = bool(rocketchat_username and rocketchat_password)
+    has_pat = bool(rocketchat_token and rocketchat_user_id)
+    if rocketchat_url and (has_userpass or has_pat):
+        if Platform.ROCKETCHAT not in config.platforms:
+            config.platforms[Platform.ROCKETCHAT] = PlatformConfig()
+        config.platforms[Platform.ROCKETCHAT].enabled = True
+        config.platforms[Platform.ROCKETCHAT].extra["url"] = rocketchat_url
+        if has_userpass:
+            config.platforms[Platform.ROCKETCHAT].extra["username"] = rocketchat_username
+            config.platforms[Platform.ROCKETCHAT].extra["password"] = rocketchat_password
+        if has_pat:
+            config.platforms[Platform.ROCKETCHAT].token = rocketchat_token
+            config.platforms[Platform.ROCKETCHAT].extra["user_id"] = rocketchat_user_id
+    elif rocketchat_username or rocketchat_token:
+        logger.warning("ROCKETCHAT_URL not set — Rocket.Chat adapter will not start")
+    rocketchat_home = os.getenv("ROCKETCHAT_HOME_CHANNEL")
+    if rocketchat_home and Platform.ROCKETCHAT in config.platforms:
+        config.platforms[Platform.ROCKETCHAT].home_channel = HomeChannel(
+            platform=Platform.ROCKETCHAT,
+            chat_id=rocketchat_home,
+            name=os.getenv("ROCKETCHAT_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

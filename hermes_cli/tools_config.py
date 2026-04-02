@@ -149,7 +149,8 @@ PLATFORMS = {
     "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
     "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
-    "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
+    "mattermost":   {"label": "💬 Mattermost",   "default_toolset": "hermes-mattermost"},
+    "rocketchat":   {"label": "🚀 Rocket.Chat", "default_toolset": "hermes-rocketchat"},
 }
 
 
@@ -453,6 +454,11 @@ def _get_enabled_platforms() -> List[str]:
         enabled.append("slack")
     if get_env_value("WHATSAPP_ENABLED"):
         enabled.append("whatsapp")
+    if get_env_value("ROCKETCHAT_URL") and (
+        (get_env_value("ROCKETCHAT_USERNAME") and get_env_value("ROCKETCHAT_PASSWORD"))
+        or (get_env_value("ROCKETCHAT_TOKEN") and get_env_value("ROCKETCHAT_USER_ID"))
+    ):
+        enabled.append("rocketchat")
     return enabled
 
 

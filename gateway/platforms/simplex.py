@@ -669,8 +669,10 @@ class SimplexAdapter(BasePlatformAdapter):
             # avoid ambiguity when multiple groups share the same display name.
             # The plain '#<name>' chat command looks up by display name and
             # fails if the name is not unique or matches the wrong group.
-            escaped = content.replace('"', '\\"')
-            command = f'/_send #{group_id} json [{{"msgContent":{{"type":"text","text":"{escaped}"}}}}]'
+            # Use json.dumps for the full payload to correctly escape newlines,
+            # backslashes, and other special characters in the message text.
+            composed = json.dumps([{"msgContent": {"type": "text", "text": content}}])
+            command = f"/_send #{group_id} json {composed}"
         else:
             command = f"@{chat_id} {content}"
 

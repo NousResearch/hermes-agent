@@ -5445,6 +5445,8 @@ class GatewayRunner:
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
+            tool_count = [0]         # Total tools invoked (for "latest" mode counter)
+            _latest_mode = progress_mode == "latest"  # Show only the most recent tool
 
             while True:
                 try:
@@ -5459,14 +5461,26 @@ class GatewayRunner:
                     else:
                         msg = raw
                         progress_lines.append(msg)
+                        tool_count[0] += 1
+
+                    # Build display text based on mode
+                    if _latest_mode:
+                        # "latest" mode: show only the most recent tool with a step counter
+                        latest_line = progress_lines[-1] if progress_lines else msg
+                        if tool_count[0] > 1:
+                            display_text = f"[{tool_count[0]}] {latest_line}"
+                        else:
+                            display_text = latest_line
+                    else:
+                        # Default: show all accumulated tool lines
+                        display_text = "\n".join(progress_lines)
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
-                            content=full_text,
+                            content=display_text,
                         )
                         if not result.success:
                             # Platform doesn't support editing — stop trying,
@@ -5475,9 +5489,8 @@ class GatewayRunner:
                             await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                     else:
                         if can_edit:
-                            # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
-                            result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                            # First tool: send as new message
+                            result = await adapter.send(chat_id=source.chat_id, content=display_text, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)

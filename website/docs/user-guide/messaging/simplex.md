@@ -1,99 +1,218 @@
-# SimpleX Chat
+---
+sidebar_position: 17
+title: "SimpleX"
+description: "Set up Hermes Agent as a SimpleX Chat bot via simplex-chat WebSocket API"
+---
 
-[SimpleX Chat](https://simplex.chat/) is a private, decentralised messaging platform where users own their contacts and groups. Unlike other platforms, SimpleX assigns no persistent user IDs — every contact is identified by an opaque internal ID generated at connection time, which makes it one of the most private messengers available.
+# SimpleX Setup
+
+Hermes connects to SimpleX Chat through the [simplex-chat](https://simplex.chat/) terminal app running with its WebSocket API enabled. The adapter streams messages in real-time via WebSocket JSON events and sends responses via WebSocket JSON commands.
+
+SimpleX Chat is the first messenger with no user identifiers — not even random numbers. It uses pairwise per-queue identifiers and routes messages through relay servers, providing strong metadata privacy. This makes it an excellent choice for privacy-sensitive agent deployments.
+
+:::info Dependency
+The SimpleX adapter requires the `websockets` Python package. Install it with: `pip install websockets` (or `uv pip install websockets`).
+:::
+
+---
 
 ## Prerequisites
 
-- The **simplex-chat** CLI installed and running as a daemon
-- Python package **websockets** (`pip install websockets`)
+- **simplex-chat** — SimpleX Chat terminal client ([GitHub](https://github.com/simplex-chat/simplex-chat), [Downloads](https://simplex.chat/downloads/))
+- **websockets** Python package — `pip install websockets`
 
-## Install simplex-chat
-
-Download the latest release from the [simplex-chat GitHub releases](https://github.com/simplex-chat/simplex-chat/releases) page, or via Docker:
+### Installing simplex-chat
 
 ```bash
-# Linux / macOS binary
+# Linux (static binary)
 curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86-64 -o simplex-chat
 chmod +x simplex-chat
+sudo mv simplex-chat /usr/local/bin/
 
-# Or Docker
-docker run -p 5225:5225 simplexchat/simplex-chat -p 5225
+# Arch Linux (AUR)
+yay -S simplex-chat-bin
+
+# macOS
+brew install simplex-chat
 ```
 
-## Start the daemon
+---
+
+## Step 1: Create a SimpleX Identity
+
+SimpleX doesn't use phone numbers, emails, or usernames. Each instance has its own identity, created on first run.
 
 ```bash
+# Start simplex-chat interactively to create an identity
+simplex-chat
+
+# At the prompt, set a display name:
+> /profile HermesAgent
+
+# Generate a one-time invitation link for connecting:
+> /connect
+# This prints a simplex:// URI — share it with users who should be able to talk to the bot
+
+# Exit interactive mode
+> /quit
+```
+
+---
+
+## Step 2: Start simplex-chat with WebSocket API
+
+```bash
+# Start with WebSocket API on port 5225
 simplex-chat -p 5225
 ```
 
-The daemon listens on WebSocket at `ws://127.0.0.1:5225` by default.
+:::tip
+Keep this running in the background. Use `systemd`, `tmux`, or `screen`. For production, create a systemd service:
 
-## Configure Hermes
+```ini
+[Unit]
+Description=SimpleX Chat WebSocket API
+After=network.target
 
-### Via setup wizard
+[Service]
+Type=simple
+User=hermes
+ExecStart=/usr/local/bin/simplex-chat -p 5225
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+:::
+
+---
+
+## Step 3: Configure Hermes
+
+The easiest way:
 
 ```bash
-hermes setup gateway
+hermes gateway setup
 ```
 
-Select **SimpleX Chat** and follow the prompts.
+Select **SimpleX** from the platform menu. The wizard will prompt for the WebSocket URL and configure access settings.
 
-### Via environment variables
+### Manual Configuration
 
-Add these to `~/.hermes/.env`:
+Add to `~/.hermes/.env`:
 
-```
+```bash
+# Required
 SIMPLEX_WS_URL=ws://127.0.0.1:5225
-SIMPLEX_ALLOWED_USERS=<contact-id-1>,<contact-id-2>
-SIMPLEX_HOME_CHANNEL=<contact-id>
+
+# Security (recommended)
+SIMPLEX_ALLOWED_USERS=42,108                     # Comma-separated contact IDs
+# Or allow all contacts:
+# SIMPLEX_ALLOW_ALL_USERS=true
+
+# Optional
+SIMPLEX_AUTO_ACCEPT=true                          # Auto-accept incoming contact requests (default: true)
+SIMPLEX_GROUP_ALLOWED=99,201                      # Group IDs to monitor, or * for all (omit to disable)
+SIMPLEX_HOME_CHANNEL=42                           # Default delivery target for cron jobs
+SIMPLEX_HOME_CHANNEL_NAME=Home                    # Display name for the home channel
 ```
 
-| Variable | Required | Description |
-|---|---|---|
-| `SIMPLEX_WS_URL` | Yes | WebSocket URL of the simplex-chat daemon |
-| `SIMPLEX_ALLOWED_USERS` | Recommended | Comma-separated contact IDs allowed to use the agent |
-| `SIMPLEX_ALLOW_ALL_USERS` | Optional | Set `true` to allow every contact (use carefully) |
-| `SIMPLEX_HOME_CHANNEL` | Optional | Default contact ID for cron job delivery |
-| `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
+Then start the gateway:
 
-## Find your contact ID
-
-After starting the daemon, open a conversation with your agent contact. The contact ID will appear in session logs or via `hermes send_message action=list`.
-
-## Authorization
-
-By default **all contacts are denied**. You must either:
-
-1. Set `SIMPLEX_ALLOWED_USERS` to a comma-separated list of contact IDs, or
-2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes gateway pair`.
-
-## Using SimpleX with cron jobs
-
-```python
-cronjob(
-    action="create",
-    schedule="every 1h",
-    deliver="simplex",          # uses SIMPLEX_HOME_CHANNEL
-    prompt="Check for alerts and summarise."
-)
+```bash
+hermes gateway              # Foreground
+hermes gateway install      # Install as a user service
+sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
-Or target a specific contact:
+---
 
-```python
-send_message(target="simplex:<contact-id>", message="Done!")
-```
+## Access Control
 
-## Privacy notes
+### DM Access
 
-- SimpleX never reveals phone numbers or email addresses — contacts use opaque IDs
-- The connection between Hermes and the daemon is local WebSocket (`ws://127.0.0.1:5225`) — no data leaves your machine
-- Messages are end-to-end encrypted by the SimpleX protocol before reaching the daemon
+DM access follows the same pattern as all other Hermes platforms:
+
+1. **`SIMPLEX_ALLOWED_USERS` set** — only those contact IDs can message
+2. **No allowlist set** — unknown users get a DM pairing code (approve via `hermes pairing approve simplex CODE`)
+3. **`SIMPLEX_ALLOW_ALL_USERS=true`** — anyone can message (use with caution)
+
+### Contact Requests
+
+When `SIMPLEX_AUTO_ACCEPT=true` (the default), the bot automatically accepts incoming contact requests. Set to `false` to require manual approval.
+
+### Group Access
+
+Group access is controlled by the `SIMPLEX_GROUP_ALLOWED` env var:
+
+| Configuration | Behavior |
+|---------------|----------|
+| Not set (default) | All group messages are ignored. The bot only responds to DMs. |
+| Set with group IDs | Only listed groups are monitored (e.g., `99,201`). |
+| Set to `*` | The bot responds in any group it's a member of. |
+
+---
+
+## Features
+
+### Attachments
+
+The adapter supports sending and receiving:
+
+- **Images** — PNG, JPEG, GIF, WebP (auto-detected via magic bytes)
+- **Audio** — MP3, OGG, WAV, M4A (voice messages transcribed if Whisper is configured)
+- **Documents** — PDF and other file types
+
+### Health Monitoring
+
+The adapter monitors the WebSocket connection and automatically reconnects if:
+- The connection drops (with exponential backoff: 2s → 60s, with jitter)
+- No activity is detected for 120 seconds (forces reconnect)
+
+### Contact ID Redaction
+
+Contact IDs are partially redacted in logs for privacy:
+- `12345678` → `12**78`
+
+---
 
 ## Troubleshooting
 
-**"Cannot reach daemon"** — Ensure `simplex-chat -p 5225` is running and the port matches `SIMPLEX_WS_URL`.
+| Problem | Solution |
+|---------|----------|
+| **"Cannot reach simplex-chat"** during setup | Ensure simplex-chat is running with WebSocket API: `simplex-chat -p 5225` |
+| **Messages not received** | Check that `SIMPLEX_ALLOWED_USERS` includes the sender's contact ID, or enable `SIMPLEX_ALLOW_ALL_USERS` |
+| **"websockets not installed"** | Install the dependency: `pip install websockets` |
+| **Connection keeps dropping** | Check simplex-chat logs. Ensure the WebSocket port isn't blocked by a firewall. |
+| **Group messages ignored** | Configure `SIMPLEX_GROUP_ALLOWED` with specific group IDs, or `*` to allow all groups. |
+| **Bot responds to no one** | Configure `SIMPLEX_ALLOWED_USERS`, use DM pairing, or set `SIMPLEX_ALLOW_ALL_USERS=true`. |
+| **Contact requests not accepted** | Ensure `SIMPLEX_AUTO_ACCEPT=true` (default) or manually accept via simplex-chat CLI. |
 
-**"websockets not installed"** — Run `pip install websockets`.
+---
 
-**Messages not received** — Check that the contact's ID is in `SIMPLEX_ALLOWED_USERS` or approve them via DM pairing.
+## Security
+
+:::warning
+**Always configure access controls.** The bot has terminal access by default. Without `SIMPLEX_ALLOWED_USERS` or DM pairing, the gateway denies all incoming messages as a safety measure.
+:::
+
+- Contact IDs are redacted in all log output
+- Use DM pairing or explicit allowlists for safe onboarding of new users
+- Keep groups disabled unless you specifically need group support
+- SimpleX provides strong metadata privacy — no user identifiers, pairwise connections, onion routing available
+- The simplex-chat data directory (`~/.simplex/`) contains identity keys — protect it like a password
+
+---
+
+## Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SIMPLEX_WS_URL` | Yes | — | simplex-chat WebSocket endpoint (e.g., `ws://127.0.0.1:5225`) |
+| `SIMPLEX_ALLOWED_USERS` | No | — | Comma-separated contact IDs allowed to interact |
+| `SIMPLEX_ALLOW_ALL_USERS` | No | `false` | Allow any contact to interact (skip allowlist) |
+| `SIMPLEX_AUTO_ACCEPT` | No | `true` | Auto-accept incoming contact requests |
+| `SIMPLEX_GROUP_ALLOWED` | No | — | Group IDs to monitor, or `*` for all (omit to disable groups) |
+| `SIMPLEX_HOME_CHANNEL` | No | — | Default delivery target for cron jobs |
+| `SIMPLEX_HOME_CHANNEL_NAME` | No | `Home` | Display name for the home channel |

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(git add:*)",
+      "Bash(git merge:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(ssh juja:*)",
+      "Bash(gh repo:*)",
+      "Bash(gh api:*)",
+      "Bash(ls:*)",
+      "Bash(ssh:*)",
+      "Bash(gh pr:*)",
+      "Bash(git rebase:*)",
+      "Bash(GIT_EDITOR=true git rebase --continue)",
+      "Bash(git diff:*)",
+      "Bash(GIT_EDITOR=true git merge upstream/main -m \"Merge upstream/main into feature/simplex-adapter\")",
+      "Bash(GIT_EDITOR=true git commit --no-edit)",
+      "Bash(grep:*)",
+      "Bash(uv run:*)"
+    ]
+  }
+}

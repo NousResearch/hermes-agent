@@ -738,6 +738,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.SIMPLEX:
+            result = await _send_simplex(pconfig.extra, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
@@ -1908,3 +1910,41 @@ registry.register(
     check_fn=_check_send_message,
     emoji="📨",
 )
+
+async def _send_simplex(extra, chat_id, message):
+    """Send via SimpleX Chat WebSocket API (one-shot connection)."""
+    import asyncio
+    try:
+        import websockets
+    except ImportError:
+        return {"error": "websockets not installed. Run: pip install websockets"}
+    try:
+        ws_url = extra.get("ws_url") or os.getenv("SIMPLEX_WS_URL", "")
+        if not ws_url:
+            return {"error": "SimpleX not configured (SIMPLEX_WS_URL required)"}
+
+        if chat_id.startswith("group:"):
+            group_id = chat_id[6:]
+            command = f"#{group_id} {message}"
+        else:
+            command = f"@{chat_id} {message}"
+
+        corr_id = f"send_{int(time.time() * 1000)}"
+        payload = json.dumps({"corrId": corr_id, "cmd": command})
+
+        async with websockets.connect(ws_url, open_timeout=10, close_timeout=5) as ws:
+            await ws.send(payload)
+            # Wait for correlated response
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                data = json.loads(raw)
+                resp = data.get("resp", {})
+                resp_type = resp.get("type", "")
+                if "error" in resp_type.lower():
+                    return {"error": f"SimpleX error: {resp.get('chatError', resp)}"}
+            except asyncio.TimeoutError:
+                pass  # No response is acceptable for simplex-chat
+
+        return {"success": True, "platform": "simplex", "chat_id": chat_id}
+    except Exception as e:
+        return {"error": f"SimpleX send failed: {e}"}

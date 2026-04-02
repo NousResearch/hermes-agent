@@ -3661,6 +3661,28 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "simplex",
+        "label": "SimpleX Chat",
+        "emoji": "🔒",
+        "token_var": "SIMPLEX_WS_URL",
+        "setup_instructions": [
+            "1. Install simplex-chat from https://simplex.chat/docs/cli.html",
+            "2. Start the chat daemon with WebSocket API: simplex-chat -p 5225",
+            "3. The bot connects via WebSocket — no public endpoint needed",
+            "4. Add a contact by sharing your SimpleX address, or scan QR code",
+            "5. Restrict access with SIMPLEX_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "SIMPLEX_WS_URL", "prompt": "WebSocket URL (e.g. ws://127.0.0.1:5225)", "password": False,
+             "help": "The WebSocket URL where simplex-chat is listening (started with -p flag)."},
+            {"name": "SIMPLEX_ALLOWED_USERS", "prompt": "Allowed contact IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which SimpleX contacts can interact with the bot."},
+            {"name": "SIMPLEX_HOME_CHANNEL", "prompt": "Home contact/group ID (optional, for cron/notifications)", "password": False,
+             "help": "Contact or group ID for scheduled results and notifications."},
+        ],
+    },
+    {
         "key": "yuanbao",
         "label": "Yuanbao",
         "emoji": "💎",
@@ -3778,6 +3800,10 @@ def _platform_status(platform: dict) -> str:
             return "configured"
         if val or account:
             return "partially configured"
+        return "not configured"
+    if platform.get("key") == "simplex":
+        if val:
+            return "configured"
         return "not configured"
     if platform.get("key") == "email":
         pwd = get_env_value("EMAIL_PASSWORD")

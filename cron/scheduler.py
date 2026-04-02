@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -448,22 +449,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # override via env var.  Uses a separate thread because
         # run_conversation is synchronous.
         _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _cron_pool:
-            _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
-            try:
-                result = _cron_future.result(timeout=_cron_timeout)
-            except concurrent.futures.TimeoutError:
-                logger.error(
-                    "Job '%s' timed out after %.0fs — interrupting agent",
-                    job_name, _cron_timeout,
-                )
-                if hasattr(agent, "interrupt"):
-                    agent.interrupt("Cron job timed out")
-                raise TimeoutError(
-                    f"Cron job '{job_name}' timed out after "
-                    f"{int(_cron_timeout // 60)} minutes"
-                )
+        _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+        try:
+            result = _cron_future.result(timeout=_cron_timeout)
+        except concurrent.futures.TimeoutError:
+            logger.error(
+                "Job '%s' timed out after %.0fs — interrupting agent",
+                job_name, _cron_timeout,
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out")
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            raise TimeoutError(
+                f"Cron job '{job_name}' timed out after "
+                f"{int(_cron_timeout // 60)} minutes"
+            )
+        finally:
+            _cron_pool.shutdown(wait=False)
 
         final_response = result.get("final_response", "") or ""
         # Use a separate variable for log display; keep final_response clean

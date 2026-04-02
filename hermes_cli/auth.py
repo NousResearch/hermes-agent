@@ -200,6 +200,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="opencode-go",
         name="OpenCode Go",
         auth_type="api_key",
+        # OpenCode Go mixes API surfaces by model:
+        # - GLM / Kimi use OpenAI-compatible chat completions under /v1
+        # - MiniMax models use Anthropic Messages under /v1/messages
+        # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",

@@ -125,6 +125,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "moonshot": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
     "minimax": [
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
@@ -944,6 +950,53 @@ def copilot_model_api_mode(
             # For non-GPT-5 models, check if they only support messages API
             if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
                 return "anthropic_messages"
+
+    return "chat_completions"
+
+
+def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:
+    """Normalize OpenCode config IDs to the bare model slug used in API requests."""
+    provider = normalize_provider(provider_id)
+    current = str(model_id or "").strip()
+    if not current or provider not in {"opencode-zen", "opencode-go"}:
+        return current
+
+    prefix = f"{provider}/"
+    if current.lower().startswith(prefix):
+        return current[len(prefix):]
+    return current
+
+
+def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str]) -> str:
+    """Determine the API mode for an OpenCode Zen / Go model.
+
+    OpenCode routes different models behind different API surfaces:
+
+    - GPT-5 / Codex models on Zen use ``/v1/responses``
+    - Claude models on Zen use ``/v1/messages``
+    - MiniMax models on Go use ``/v1/messages``
+    - GLM / Kimi on Go use ``/v1/chat/completions``
+    - Other Zen models (Gemini, GLM, Kimi, MiniMax, Qwen, etc.) use
+      ``/v1/chat/completions``
+
+    This follows the published OpenCode docs for Zen and Go endpoints.
+    """
+    provider = normalize_provider(provider_id)
+    normalized = normalize_opencode_model_id(provider_id, model_id).lower()
+    if not normalized:
+        return "chat_completions"
+
+    if provider == "opencode-go":
+        if normalized.startswith("minimax-"):
+            return "anthropic_messages"
+        return "chat_completions"
+
+    if provider == "opencode-zen":
+        if normalized.startswith("claude-"):
+            return "anthropic_messages"
+        if normalized.startswith("gpt-"):
+            return "codex_responses"
+        return "chat_completions"
 
     return "chat_completions"
 

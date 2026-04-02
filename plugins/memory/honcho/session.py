@@ -110,6 +110,9 @@ class HonchoSessionManager:
         self._dialectic_max_chars: int = (
             config.dialectic_max_chars if config else 600
         )
+        self._observation_mode: str = (
+            config.observation_mode if config else "unified"
+        )
 
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
@@ -159,13 +162,18 @@ class HonchoSessionManager:
 
         session = self.honcho.session(session_id)
 
-        # Configure peer observation settings.
-        # observe_me=True for AI peer so Honcho watches what the agent says
-        # and builds its representation over time — enabling identity formation.
+        # Configure peer observation settings based on observation_mode.
+        # Unified: user peer observes self, AI peer passive — all agents share
+        #          one observation pool via user self-observations.
+        # Directional: AI peer observes user — each agent keeps its own view.
         try:
             from honcho.session import SessionPeerConfig
-            user_config = SessionPeerConfig(observe_me=True, observe_others=True)
-            ai_config = SessionPeerConfig(observe_me=True, observe_others=True)
+            if self._observation_mode == "directional":
+                user_config = SessionPeerConfig(observe_me=True, observe_others=False)
+                ai_config = SessionPeerConfig(observe_me=False, observe_others=True)
+            else:  # unified (default)
+                user_config = SessionPeerConfig(observe_me=True, observe_others=False)
+                ai_config = SessionPeerConfig(observe_me=False, observe_others=False)
 
             session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
         except Exception as e:
@@ -493,12 +501,27 @@ class HonchoSessionManager:
         if not session:
             return ""
 
-        peer_id = session.assistant_peer_id if peer == "ai" else session.user_peer_id
-        target_peer = self._get_or_create_peer(peer_id)
         level = reasoning_level or self._dynamic_reasoning_level(query)
 
         try:
-            result = target_peer.chat(query, reasoning_level=level) or ""
+            if self._observation_mode == "directional":
+                # AI peer queries about the user (cross-observation)
+                if peer == "ai":
+                    ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
+                    result = ai_peer_obj.chat(query, reasoning_level=level) or ""
+                else:
+                    ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
+                    result = ai_peer_obj.chat(
+                        query,
+                        target=session.user_peer_id,
+                        reasoning_level=level,
+                    ) or ""
+            else:
+                # Unified: user peer queries self, or AI peer queries self
+                peer_id = session.assistant_peer_id if peer == "ai" else session.user_peer_id
+                target_peer = self._get_or_create_peer(peer_id)
+                result = target_peer.chat(query, reasoning_level=level) or ""
+
             # Apply Hermes-side char cap before caching
             if result and self._dialectic_max_chars and len(result) > self._dialectic_max_chars:
                 result = result[:self._dialectic_max_chars].rsplit(" ", 1)[0] + " …"
@@ -895,9 +918,16 @@ class HonchoSessionManager:
             logger.warning("No session cached for '%s', skipping conclusion", session_key)
             return False
 
-        assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
         try:
-            conclusions_scope = assistant_peer.conclusions_of(session.user_peer_id)
+            if self._observation_mode == "directional":
+                # AI peer creates conclusion about user (cross-observation)
+                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
+                conclusions_scope = assistant_peer.conclusions_of(session.user_peer_id)
+            else:
+                # Unified: user peer creates self-conclusion
+                user_peer = self._get_or_create_peer(session.user_peer_id)
+                conclusions_scope = user_peer.conclusions_of(session.user_peer_id)
+
             conclusions_scope.create([{
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,

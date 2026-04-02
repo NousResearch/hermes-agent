@@ -192,6 +192,91 @@ class TestHistoryDisplay:
         assert "A" * 250 + "..." not in output
 
 
+class TestRootLevelProviderOverride:
+    """Root-level provider/base_url in config.yaml must NOT override model.provider."""
+
+    def test_model_provider_wins_over_root_provider(self, tmp_path, monkeypatch):
+        """model.provider takes priority — root-level provider is only a fallback."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root-level key
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+                "provider": "openrouter",  # correct canonical key
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["provider"] == "openrouter"
+
+    def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
+        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root key
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+                # no explicit model.provider — defaults provide "auto"
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        # Root-level "opencode-go" must NOT leak through
+        assert cfg["model"]["provider"] != "opencode-go"
+
+    def test_normalize_root_model_keys_moves_to_model(self):
+        """_normalize_root_model_keys migrates root keys into model section."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "opencode-go",
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "some-model",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        # Root keys removed
+        assert "provider" not in result
+        assert "base_url" not in result
+        # Migrated into model section
+        assert result["model"]["provider"] == "opencode-go"
+        assert result["model"]["base_url"] == "https://example.com/v1"
+
+    def test_normalize_root_model_keys_does_not_override_existing(self):
+        """Existing model.provider is never overridden by root-level key."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "stale-provider",
+            "model": {
+                "default": "some-model",
+                "provider": "correct-provider",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["provider"] == "correct-provider"
+        assert "provider" not in result  # root key still cleaned up
+
+
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):
         cli = _make_cli()

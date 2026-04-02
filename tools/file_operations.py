@@ -71,6 +71,9 @@ WRITE_DENIED_PREFIXES = [
         os.path.join(_HOME, ".kube"),
         "/etc/sudoers.d",
         "/etc/systemd",
+        os.path.join(_HOME, ".docker"),
+        os.path.join(_HOME, ".azure"),
+        os.path.join(_HOME, ".config", "gh"),
     ]
 ]
 

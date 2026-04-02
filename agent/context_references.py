@@ -17,7 +17,7 @@ REFERENCE_PATTERN = re.compile(
     r"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
-_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube")
+_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = (
     Path(".ssh") / "authorized_keys",

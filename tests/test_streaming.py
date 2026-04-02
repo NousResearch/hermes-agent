@@ -782,3 +782,35 @@ class TestCodexStreamCallbacks:
 
         response = agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
+
+    def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
+        from run_agent import AIAgent
+        import httpx
+
+        fallback_response = SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="fallback from create stream")],
+            )],
+            status="completed",
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.side_effect = httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body"
+        )
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        with patch.object(agent, "_run_codex_create_stream_fallback", return_value=fallback_response) as mock_fallback:
+            response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response is fallback_response
+        mock_fallback.assert_called_once_with({}, client=mock_client)

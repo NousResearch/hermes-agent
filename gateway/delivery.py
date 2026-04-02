@@ -70,12 +70,15 @@ class DeliveryTarget:
         if target == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id format
+        # Check for platform:chat_id or platform:chat_id:thread_id format
         if ":" in target:
-            platform_str, chat_id = target.split(":", 1)
+            parts = target.split(":", 2)
+            platform_str = parts[0]
+            chat_id = parts[1] if len(parts) > 1 else None
+            thread_id = parts[2] if len(parts) > 2 else None
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, is_explicit=True)
+                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
@@ -94,6 +97,8 @@ class DeliveryTarget:
             return "origin"
         if self.platform == Platform.LOCAL:
             return "local"
+        if self.chat_id and self.thread_id:
+            return f"{self.platform.value}:{self.chat_id}:{self.thread_id}"
         if self.chat_id:
             return f"{self.platform.value}:{self.chat_id}"
         return self.platform.value

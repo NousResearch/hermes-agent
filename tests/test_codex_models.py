@@ -187,12 +187,12 @@ class TestNormalizeModelForProvider:
         assert cli.model == "claude-opus-4.6"
 
     def test_default_model_replaced(self):
-        """The untouched default (anthropic/claude-opus-4.6) gets swapped."""
+        """No model configured (empty default) gets swapped for codex."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
-                "default": "anthropic/claude-opus-4.6",
-                "base_url": "https://openrouter.ai/api/v1",
+                "default": "",
+                "base_url": "",
                 "provider": "auto",
             },
             "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
@@ -219,12 +219,12 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.3-codex"
 
     def test_default_fallback_when_api_fails(self):
-        """Default model falls back to gpt-5.3-codex when API unreachable."""
+        """No model configured falls back to gpt-5.3-codex when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
-                "default": "anthropic/claude-opus-4.6",
-                "base_url": "https://openrouter.ai/api/v1",
+                "default": "",
+                "base_url": "",
                 "provider": "auto",
             },
             "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},

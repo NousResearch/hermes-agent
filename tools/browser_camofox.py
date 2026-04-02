@@ -15,7 +15,7 @@ Setup::
     npm install && npm start   # downloads Camoufox (~300MB) on first run
 
     # Option 2: Docker
-    docker run -p 9377:9377 jo-inc/camofox-browser
+    docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
 
 Then set ``CAMOFOX_URL=http://localhost:9377`` in ``~/.hermes/.env``.
 """
@@ -34,6 +34,9 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from hermes_cli.config import load_config
+from tools.browser_camofox_state import get_camofox_identity
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -42,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30  # seconds per HTTP request
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
+_vnc_url: Optional[str] = None  # cached from /health response
+_vnc_url_checked = False  # only probe once per process
 
 
 def get_camofox_url() -> str:
@@ -56,14 +61,50 @@ def is_camofox_mode() -> bool:
 
 def check_camofox_available() -> bool:
     """Verify the Camofox server is reachable."""
+    global _vnc_url, _vnc_url_checked
     url = get_camofox_url()
     if not url:
         return False
     try:
         resp = requests.get(f"{url}/health", timeout=5)
+        if resp.status_code == 200 and not _vnc_url_checked:
+            try:
+                data = resp.json()
+                vnc_port = data.get("vncPort")
+                if isinstance(vnc_port, int) and 1 <= vnc_port <= 65535:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(url)
+                    host = parsed.hostname or "localhost"
+                    _vnc_url = f"http://{host}:{vnc_port}"
+            except (ValueError, KeyError):
+                pass
+            _vnc_url_checked = True
         return resp.status_code == 200
     except Exception:
         return False
+
+
+def get_vnc_url() -> Optional[str]:
+    """Return the VNC URL if the Camofox server exposes one, or None."""
+    if not _vnc_url_checked:
+        check_camofox_available()
+    return _vnc_url
+
+
+def _managed_persistence_enabled() -> bool:
+    """Return whether Hermes-managed persistence is enabled for Camofox.
+
+    When enabled, sessions use a stable profile-scoped userId so the
+    Camofox server can map it to a persistent browser profile directory.
+    When disabled (default), each session gets a random userId (ephemeral).
+
+    Controlled by ``browser.camofox.managed_persistence`` in config.yaml.
+    """
+    try:
+        camofox_cfg = load_config().get("browser", {}).get("camofox", {})
+    except Exception:
+        return False
+    return bool(camofox_cfg.get("managed_persistence"))
 
 
 # ---------------------------------------------------------------------------
@@ -75,16 +116,31 @@ _sessions_lock = threading.Lock()
 
 
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
-    """Get or create a camofox session for the given task."""
+    """Get or create a camofox session for the given task.
+
+    When managed persistence is enabled, uses a deterministic userId
+    derived from the Hermes profile so the Camofox server can map it
+    to the same persistent browser profile across restarts.
+    """
     task_id = task_id or "default"
     with _sessions_lock:
         if task_id in _sessions:
             return _sessions[task_id]
-        session = {
-            "user_id": f"hermes_{uuid.uuid4().hex[:10]}",
-            "tab_id": None,
-            "session_key": f"task_{task_id[:16]}",
-        }
+        if _managed_persistence_enabled():
+            identity = get_camofox_identity(task_id)
+            session = {
+                "user_id": identity["user_id"],
+                "tab_id": None,
+                "session_key": identity["session_key"],
+                "managed": True,
+            }
+        else:
+            session = {
+                "user_id": f"hermes_{uuid.uuid4().hex[:10]}",
+                "tab_id": None,
+                "session_key": f"task_{task_id[:16]}",
+                "managed": False,
+            }
         _sessions[task_id] = session
         return session
 
@@ -172,11 +228,19 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 {"userId": session["user_id"], "url": url},
                 timeout=60,
             )
-        return json.dumps({
+        result = {
             "success": True,
             "url": data.get("url", url),
             "title": data.get("title", ""),
-        })
+        }
+        vnc = get_vnc_url()
+        if vnc:
+            result["vnc_url"] = vnc
+            result["vnc_hint"] = (
+                "Browser is visible via VNC. "
+                "Share this link with the user so they can watch the browser live."
+            )
+        return json.dumps(result)
     except requests.HTTPError as e:
         return json.dumps({"success": False, "error": f"Navigation failed: {e}"})
     except requests.ConnectionError:
@@ -184,7 +248,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             "success": False,
             "error": f"Cannot connect to Camofox at {get_camofox_url()}. "
                      "Is the server running? Start with: npm start (in camofox-browser dir) "
-                     "or: docker run -p 9377:9377 jo-inc/camofox-browser",
+                     "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser",
         })
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
@@ -421,6 +485,12 @@ def camofox_vision(question: str, annotate: bool = False,
             except Exception:
                 pass
 
+        # Redact secrets from annotation context before sending to vision LLM.
+        # The screenshot image itself cannot be redacted, but at least the
+        # text-based accessibility tree snippet won't leak secret values.
+        from agent.redact import redact_sensitive_text
+        annotation_context = redact_sensitive_text(annotation_context)
+
         # Send to vision LLM
         from agent.auxiliary_client import call_llm
 
@@ -436,7 +506,7 @@ def camofox_vision(question: str, annotate: bool = False,
         except Exception:
             _vision_timeout = 120
 
-        analysis = call_llm(
+        response = call_llm(
             messages=[{
                 "role": "user",
                 "content": [
@@ -452,6 +522,11 @@ def camofox_vision(question: str, annotate: bool = False,
             task="vision",
             timeout=_vision_timeout,
         )
+        analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
+
+        # Redact secrets the vision LLM may have read from the screenshot.
+        from agent.redact import redact_sensitive_text
+        analysis = redact_sensitive_text(analysis)
 
         return json.dumps({
             "success": True,

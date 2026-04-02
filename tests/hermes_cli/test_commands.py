@@ -12,10 +12,13 @@ from hermes_cli.commands import (
     SUBCOMMANDS,
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
+    _TG_NAME_LIMIT,
+    _clamp_telegram_names,
     gateway_help_lines,
     resolve_command,
     slack_subcommand_map,
     telegram_bot_commands,
+    telegram_menu_commands,
 )
 
 
@@ -504,3 +507,83 @@ class TestGhostText:
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
+
+
+# ---------------------------------------------------------------------------
+# Telegram command name clamping (32-char limit)
+# ---------------------------------------------------------------------------
+
+
+class TestClampTelegramNames:
+    """Tests for _clamp_telegram_names() — 32-char enforcement + collision."""
+
+    def test_short_names_unchanged(self):
+        entries = [("help", "Show help"), ("status", "Show status")]
+        result = _clamp_telegram_names(entries, set())
+        assert result == entries
+
+    def test_long_name_truncated(self):
+        long = "a" * 40
+        result = _clamp_telegram_names([(long, "desc")], set())
+        assert len(result) == 1
+        assert result[0][0] == "a" * _TG_NAME_LIMIT
+        assert result[0][1] == "desc"
+
+    def test_collision_with_reserved_gets_digit_suffix(self):
+        # The truncated form collides with a reserved name
+        prefix = "x" * _TG_NAME_LIMIT
+        long_name = "x" * 40
+        result = _clamp_telegram_names([(long_name, "d")], reserved={prefix})
+        assert len(result) == 1
+        name = result[0][0]
+        assert len(name) == _TG_NAME_LIMIT
+        assert name == "x" * (_TG_NAME_LIMIT - 1) + "0"
+
+    def test_collision_between_entries_gets_incrementing_digits(self):
+        # Two long names that truncate to the same 32-char prefix
+        base = "y" * 40
+        entries = [(base + "_alpha", "d1"), (base + "_beta", "d2")]
+        result = _clamp_telegram_names(entries, set())
+        assert len(result) == 2
+        assert result[0][0] == "y" * _TG_NAME_LIMIT
+        assert result[1][0] == "y" * (_TG_NAME_LIMIT - 1) + "0"
+
+    def test_collision_with_reserved_and_entries_skips_taken_digits(self):
+        prefix = "z" * _TG_NAME_LIMIT
+        digit0 = "z" * (_TG_NAME_LIMIT - 1) + "0"
+        # Reserve both the plain truncation and digit-0
+        reserved = {prefix, digit0}
+        long_name = "z" * 50
+        result = _clamp_telegram_names([(long_name, "d")], reserved)
+        assert len(result) == 1
+        assert result[0][0] == "z" * (_TG_NAME_LIMIT - 1) + "1"
+
+    def test_all_digits_exhausted_drops_entry(self):
+        prefix = "w" * _TG_NAME_LIMIT
+        # Reserve the plain truncation + all 10 digit slots
+        reserved = {prefix} | {"w" * (_TG_NAME_LIMIT - 1) + str(d) for d in range(10)}
+        long_name = "w" * 50
+        result = _clamp_telegram_names([(long_name, "d")], reserved)
+        assert result == []
+
+    def test_exact_32_chars_not_truncated(self):
+        name = "a" * _TG_NAME_LIMIT
+        result = _clamp_telegram_names([(name, "desc")], set())
+        assert result[0][0] == name
+
+    def test_duplicate_short_name_deduplicated(self):
+        entries = [("foo", "d1"), ("foo", "d2")]
+        result = _clamp_telegram_names(entries, set())
+        assert len(result) == 1
+        assert result[0] == ("foo", "d1")
+
+
+class TestTelegramMenuCommands:
+    """Integration: telegram_menu_commands enforces the 32-char limit."""
+
+    def test_all_names_within_limit(self):
+        menu, _ = telegram_menu_commands(max_commands=100)
+        for name, _desc in menu:
+            assert 1 <= len(name) <= _TG_NAME_LIMIT, (
+                f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
+            )

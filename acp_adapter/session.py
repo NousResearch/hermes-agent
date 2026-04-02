@@ -426,7 +426,7 @@ class SessionManager:
 
         config = load_config()
         model_cfg = config.get("model")
-        default_model = "anthropic/claude-opus-4.6"
+        default_model = ""
         config_provider = None
         if isinstance(model_cfg, dict):
             default_model = str(model_cfg.get("default") or default_model)

@@ -720,7 +720,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Determine if this is a DM or channel message
         channel_type = event.get("channel_type", "")
-        is_dm = channel_type == "im"
+        is_dm = channel_type in ("im", "mpim")  # Both 1:1 and group DMs
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -852,14 +852,20 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
         )
 
-        # Add 👀 reaction to acknowledge receipt
-        await self._add_reaction(channel_id, ts, "eyes")
+        # In listen-all channels, only react when bot is @mentioned or in a DM.
+        # This prevents reacting to every casual message in the channel.
+        _should_react = is_dm or (bot_uid and f"<@{bot_uid}>" in event.get("text", ""))
+
+        if _should_react:
+            # Add 👀 reaction to acknowledge receipt
+            await self._add_reaction(channel_id, ts, "eyes")
 
         await self.handle_message(msg_event)
 
-        # Replace 👀 with ✅ when done
-        await self._remove_reaction(channel_id, ts, "eyes")
-        await self._add_reaction(channel_id, ts, "white_check_mark")
+        if _should_react:
+            # Replace 👀 with ✅ when done
+            await self._remove_reaction(channel_id, ts, "eyes")
+            await self._add_reaction(channel_id, ts, "white_check_mark")
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""

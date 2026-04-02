@@ -7221,11 +7221,13 @@ class AIAgent:
                         self.session_cost_source = cost_result.source
 
                         # Persist token counts to session DB for /insights.
-                        # Gateway sessions persist via session_store.update_session()
-                        # after run_conversation returns, so only persist here for
-                        # CLI (and other non-gateway) platforms to avoid double-counting.
-                        if (self._session_db and self.session_id
-                                and getattr(self, 'platform', None) == 'cli'):
+                        # Do this for every platform with a session_id so non-CLI
+                        # sessions (gateway, cron, delegated runs) cannot lose
+                        # token/accounting data if a higher-level persistence path
+                        # is skipped or fails. Gateway/session-store writes use
+                        # absolute totals, so they safely overwrite these per-call
+                        # deltas instead of double-counting them.
+                        if self._session_db and self.session_id:
                             try:
                                 self._session_db.update_token_counts(
                                     self.session_id,

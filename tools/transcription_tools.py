@@ -128,10 +128,11 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
 
 def _has_openai_audio_backend() -> bool:
     """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
-    stt_config = _load_stt_config()
-    openai_cfg = stt_config.get("openai", {})
-    cfg_api_key = openai_cfg.get("api_key", "")
-    return bool(cfg_api_key or resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
+    try:
+        _resolve_openai_audio_client_config()
+        return True
+    except ValueError:
+        return False
 
 
 def _find_binary(binary_name: str) -> Optional[str]:

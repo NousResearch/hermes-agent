@@ -152,6 +152,27 @@ class TestMaxPending:
 # ---------------------------------------------------------------------------
 
 
+class TestHasApprovedUsers:
+    def test_no_approved_users(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            assert store.has_approved_users("telegram") is False
+
+    def test_has_approved_users_after_approval(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            store.approve_code("telegram", code)
+            assert store.has_approved_users("telegram") is True
+
+    def test_has_approved_users_platform_isolated(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            store.approve_code("telegram", code)
+            assert store.has_approved_users("discord") is False
+
+
 class TestApprovalFlow:
     def test_approve_valid_code(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):

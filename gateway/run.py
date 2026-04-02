@@ -1641,7 +1641,22 @@ class GatewayRunner:
 
         if not platform_allowlist and not global_allowlist:
             # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+                return True
+            # No auth configured at all -- auto-approve the first user on this
+            # platform so the bot owner doesn't hit a chicken-and-egg problem
+            # ("ask the bot owner to approve" when you ARE the bot owner).
+            platform_name = source.platform.value if source.platform else ""
+            if platform_name and not self.pairing_store.has_approved_users(platform_name):
+                self.pairing_store._approve_user(
+                    platform_name, user_id, source.user_name or ""
+                )
+                logger.info(
+                    "Auto-approved first user %s (%s) on %s (no auth configured)",
+                    user_id, source.user_name, platform_name,
+                )
+                return True
+            return False
 
         # Check if user is in any allowlist
         allowed_ids = set()

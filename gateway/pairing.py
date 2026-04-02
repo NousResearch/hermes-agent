@@ -94,6 +94,11 @@ class PairingStore:
         approved = self._load_json(self._approved_path(platform))
         return user_id in approved
 
+    def has_approved_users(self, platform: str) -> bool:
+        """Check if any users have been approved on a platform."""
+        approved = self._load_json(self._approved_path(platform))
+        return bool(approved)
+
     def list_approved(self, platform: str = None) -> list:
         """List approved users, optionally filtered by platform."""
         results = []

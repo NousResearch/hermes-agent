@@ -90,6 +90,87 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypat
     assert runner._is_user_authorized(source) is True
 
 
+def test_auto_approve_first_user_when_no_auth_configured(monkeypatch, tmp_path):
+    """When no auth mechanism is configured and no users are approved,
+    the first user to DM is auto-approved (bot-owner bootstrap)."""
+    _clear_auth_env(monkeypatch)
+    from gateway.pairing import PairingStore
+    from unittest.mock import patch as _patch
+
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+    )
+    runner, _adapter = _make_runner(Platform.TELEGRAM, config)
+    # Use a real PairingStore so auto-approve writes persist
+    with _patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        runner.pairing_store = PairingStore()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="owner123",
+            chat_id="owner123",
+            user_name="Owner",
+            chat_type="dm",
+        )
+        assert runner._is_user_authorized(source) is True
+        assert runner.pairing_store.is_approved("telegram", "owner123") is True
+
+
+def test_second_user_not_auto_approved(monkeypatch, tmp_path):
+    """After the first user is auto-approved, subsequent users must pair."""
+    _clear_auth_env(monkeypatch)
+    from gateway.pairing import PairingStore
+    from unittest.mock import patch as _patch
+
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+    )
+    runner, _adapter = _make_runner(Platform.TELEGRAM, config)
+    with _patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        runner.pairing_store = PairingStore()
+        # First user auto-approved
+        source1 = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="owner123",
+            chat_id="owner123",
+            user_name="Owner",
+            chat_type="dm",
+        )
+        assert runner._is_user_authorized(source1) is True
+
+        # Second user is NOT auto-approved
+        source2 = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="stranger456",
+            chat_id="stranger456",
+            user_name="Stranger",
+            chat_type="dm",
+        )
+        assert runner._is_user_authorized(source2) is False
+
+
+def test_no_auto_approve_when_allowlist_configured(monkeypatch, tmp_path):
+    """Auto-approve should not trigger when an allowlist env var is set."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "someone_else")
+    from gateway.pairing import PairingStore
+    from unittest.mock import patch as _patch
+
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+    )
+    runner, _adapter = _make_runner(Platform.TELEGRAM, config)
+    with _patch("gateway.pairing.PAIRING_DIR", tmp_path):
+        runner.pairing_store = PairingStore()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="owner123",
+            chat_id="owner123",
+            user_name="Owner",
+            chat_type="dm",
+        )
+        assert runner._is_user_authorized(source) is False
+
+
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)

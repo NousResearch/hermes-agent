@@ -103,3 +103,33 @@ class TestHonchoClientConfigAutoEnable:
 
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
+
+
+class TestSanitizeUrl:
+    """Test that non-printable characters in base_url disable Honcho gracefully."""
+
+    def test_clean_url_passes_through(self, tmp_path):
+        """A well-formed base_url is accepted unchanged."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text('{"baseUrl": "https://honcho.example.com", "apiKey": "key123"}')
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url == "https://honcho.example.com"
+        assert cfg.enabled is True
+
+    def test_nonprintable_url_is_rejected(self, tmp_path):
+        """A base_url containing a terminal escape sequence is silently dropped."""
+        config_path = tmp_path / "config.json"
+        # Simulate a URL with an accidentally pasted escape character
+        bad_url = "https://honcho.example.com/\x1b[0m/api"
+        import json
+        config_path.write_text(json.dumps({"baseUrl": bad_url, "apiKey": "key123"}))
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.base_url is None
+
+    def test_nonprintable_env_url_is_rejected(self, monkeypatch):
+        """HONCHO_BASE_URL with non-printable chars is dropped in from_env()."""
+        monkeypatch.setenv("HONCHO_BASE_URL", "https://host.com/\x1b[0m")
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+        cfg = HonchoClientConfig.from_env()
+        assert cfg.base_url is None
+        assert cfg.enabled is False

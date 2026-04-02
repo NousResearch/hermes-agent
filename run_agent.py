@@ -1116,7 +1116,7 @@ class AIAgent:
                             logger.debug("Honcho enabled but missing API key or disabled in config")
             except Exception as e:
                 logger.warning("Honcho init failed — memory disabled: %s", e)
-                print(f"  Honcho init failed: {e}")
+                print(f"  Honcho init failed: {e!r}")
                 print("  Run 'hermes honcho setup' to reconfigure.")
                 self._honcho = None
 
@@ -2540,7 +2540,7 @@ class AIAgent:
         except Exception as e:
             logger.warning("Honcho sync failed: %s", e)
             if not self.quiet_mode:
-                print(f"  Honcho write failed: {e}")
+                print(f"  Honcho write failed: {e!r}")
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """

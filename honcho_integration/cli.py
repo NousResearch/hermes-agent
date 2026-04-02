@@ -768,6 +768,28 @@ def cmd_migrate(args) -> None:
     print()
 
 
+
+def cmd_disable(args) -> None:
+    """Disable Honcho integration by setting enabled: false in config."""
+    cfg = _read_config()
+    cfg.setdefault("hosts", {}).setdefault(HOST, {})["enabled"] = False
+    # Also clear root-level enabled so there is no ambiguity
+    cfg["enabled"] = False
+    _write_config(cfg)
+    print("\n  Honcho integration disabled.\n")
+    # Warn if environment variables could re-enable Honcho at next startup
+    env_key = os.environ.get("HONCHO_API_KEY", "")
+    env_url = os.environ.get("HONCHO_BASE_URL", "")
+    if env_key or env_url:
+        print("  ⚠  The following environment variables are still set and may")
+        print("     re-enable Honcho on next startup:")
+        if env_key:
+            print(f"       HONCHO_API_KEY={env_key[:8]}...")
+        if env_url:
+            print(f"       HONCHO_BASE_URL={env_url}")
+        print("     Unset them to fully disable Honcho.\n")
+
+
 def honcho_command(args) -> None:
     """Route honcho subcommands."""
     sub = getattr(args, "honcho_command", None)
@@ -789,6 +811,8 @@ def honcho_command(args) -> None:
         cmd_identity(args)
     elif sub == "migrate":
         cmd_migrate(args)
+    elif sub == "disable":
+        cmd_disable(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate\n")
+        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate, disable\n")

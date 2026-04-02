@@ -34,6 +34,7 @@ Usage:
     hermes honcho identity                 # Show AI peer identity representation
     hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
     hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
+    hermes honcho disable                  # Disable Honcho and warn about leftover environment variables
     hermes version             Show version
     hermes update              Update to latest version
     hermes uninstall           Uninstall Hermes Agent
@@ -4573,6 +4574,10 @@ For more help on a command:
     honcho_subparsers.add_parser(
         "migrate",
         help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
+    )
+    honcho_subparsers.add_parser(
+        "disable",
+        help="Disable Honcho integration and warn about leftover environment variables",
     )
 
     def cmd_honcho(args):

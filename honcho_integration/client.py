@@ -27,6 +27,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _sanitize_url(url: str | None) -> str | None:
+    """Return url unchanged, or None if it contains non-printable ASCII characters.
+
+    A stray terminal escape sequence (e.g. \x1b from copy-paste) in a URL
+    causes the Honcho SDK to raise ``Invalid non-printable ASCII character``
+    at client construction time, which previously crashed the entire tool
+    surface.  Catching it here keeps Honcho disabled with a clear warning
+    rather than propagating a confusing error.
+    """
+    if url is None:
+        return None
+    if all(0x20 <= ord(c) < 0x7F for c in url):
+        return url
+    logger.warning(
+        "Honcho base_url contains non-printable characters and will be ignored: %r",
+        url,
+    )
+    return None
+
+
 GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
@@ -138,7 +159,7 @@ class HonchoClientConfig:
     def from_env(cls, workspace_id: str = "hermes") -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         api_key = os.environ.get("HONCHO_API_KEY")
-        base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+        base_url = _sanitize_url(os.environ.get("HONCHO_BASE_URL", "").strip() or None)
         return cls(
             workspace_id=workspace_id,
             api_key=api_key,
@@ -197,7 +218,7 @@ class HonchoClientConfig:
             or raw.get("environment", "production")
         )
 
-        base_url = (
+        base_url = _sanitize_url(
             raw.get("baseUrl")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
@@ -408,7 +429,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             hermes_cfg = load_config()
             honcho_cfg = hermes_cfg.get("honcho", {})
             if isinstance(honcho_cfg, dict):
-                resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
+                resolved_base_url = _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
         except Exception:
             pass
 

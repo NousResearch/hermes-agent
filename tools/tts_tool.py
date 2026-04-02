@@ -2,11 +2,12 @@
 """
 Text-to-Speech Tool Module
 
-Supports four TTS providers:
+Supports five TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- Script (external command): Calls a user-specified command with --text and --out args
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -350,6 +351,57 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     return output_path
 
 
+
+# ===========================================================================
+# Provider: Script (external command)
+# ===========================================================================
+
+def _check_script_available(tts_config: Dict[str, Any]) -> bool:
+    """Check if the configured script TTS command exists and is executable."""
+    script_config = tts_config.get("script", {})
+    command = script_config.get("command", "")
+    if not command:
+        return False
+    return os.path.isfile(command) and os.access(command, os.X_OK)
+
+
+def _generate_script_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech by calling an external command.
+
+    The command is invoked with ``--text`` and ``--out`` arguments and is
+    expected to write an audio file (WAV, MP3, or OGG) to the ``--out``
+    path.  Additional fixed arguments can be supplied via the
+    ``tts.script.args`` config list.
+
+    Config example::
+
+        tts:
+          provider: "script"
+          script:
+            command: "/path/to/tts-wrapper.sh"
+            args: ["--voice", "default"]
+            timeout: 120
+    """
+    script_config = tts_config.get("script", {})
+    command = script_config.get("command", "")
+    extra_args = script_config.get("args", [])
+    timeout = int(script_config.get("timeout", 120))
+
+    if not command:
+        raise ValueError("Script TTS provider requires tts.script.command in config.yaml")
+
+    cmd = [command] + list(extra_args) + ["--text", text, "--out", output_path]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"Script TTS failed (exit {result.returncode}): {stderr[:500] or 'no error output'}")
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise RuntimeError("Script TTS command exited 0 but produced no output file")
+
+    return output_path
+
 # ===========================================================================
 # Main tool function
 # ===========================================================================
@@ -444,6 +496,16 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "script":
+            if not _check_script_available(tts_config):
+                return json.dumps({
+                    "success": False,
+                    "error": "Script TTS provider selected but tts.script.command is not set "
+                    "or the command is not executable. Check config.yaml.",
+                }, ensure_ascii=False)
+            logger.info("Generating speech with script TTS...")
+            _generate_script_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -484,7 +546,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "script") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -557,6 +619,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if _check_neutts_available():
+        return True
+    if _check_script_available(_load_tts_config()):
         return True
     return False
 

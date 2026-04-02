@@ -234,6 +234,32 @@ class TestDeliverResultWrapping:
         assert sent_content == "Clean output only."
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
+        assert send_mock.call_args.kwargs["media_files"] == []
+
+    def test_delivery_extracts_media_before_sending(self):
+        """Cron delivery should strip MEDIA tags from text and pass attachments separately."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "test-job",
+                "name": "media-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Screenshot attached.\nMEDIA:/tmp/test.png")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][3]
+        assert "MEDIA:/tmp/test.png" not in sent_content
+        assert "Screenshot attached." in sent_content
+        assert send_mock.call_args.kwargs["media_files"] == [("/tmp/test.png", False)]
 
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""

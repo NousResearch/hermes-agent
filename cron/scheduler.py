@@ -150,6 +150,7 @@ def _deliver_result(job: dict, content: str) -> None:
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
+    from gateway.platforms.base import BasePlatformAdapter
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
@@ -205,8 +206,17 @@ def _deliver_result(job: dict, content: str) -> None:
     else:
         delivery_content = content
 
+    media_files, cleaned_content = BasePlatformAdapter.extract_media(delivery_content)
+
     # Run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
+    coro = _send_to_platform(
+        platform,
+        pconfig,
+        chat_id,
+        cleaned_content,
+        thread_id=thread_id,
+        media_files=media_files,
+    )
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -217,7 +227,17 @@ def _deliver_result(job: dict, content: str) -> None:
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id))
+            future = pool.submit(
+                asyncio.run,
+                _send_to_platform(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    cleaned_content,
+                    thread_id=thread_id,
+                    media_files=media_files,
+                ),
+            )
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)

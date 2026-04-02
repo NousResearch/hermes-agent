@@ -750,17 +750,15 @@ class SessionStore:
             and source.thread_id
             and entry.created_at == entry.updated_at  # brand-new session
             and not was_auto_reset
-        ): 
-            parent_key = build_session_key(
-                SessionSource(
-                    platform=source.platform,
-                    chat_id=source.chat_id,
-                    chat_type="dm",
-                    user_id=source.user_id,
-                    # no thread_id — this is the parent DM session
-                ),
-                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+        ):
+            parent_source = SessionSource(
+                platform=source.platform,
+                chat_id=source.chat_id,
+                chat_type="dm",
+                user_id=source.user_id,
+                # no thread_id — this is the parent DM session
             )
+            parent_key = self._generate_session_key(parent_source)
             with self._lock:
                 parent_entry = self._entries.get(parent_key)
             if parent_entry and parent_entry.session_id != entry.session_id:

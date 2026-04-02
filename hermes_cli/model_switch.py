@@ -26,6 +26,7 @@ class ModelSwitchResult:
     provider_changed: bool = False
     api_key: str = ""
     base_url: str = ""
+    api_mode: str = ""
     persist: bool = False
     error_message: str = ""
     warning_message: str = ""
@@ -73,6 +74,7 @@ def switch_model(
         detect_provider_for_model,
         validate_requested_model,
         _PROVIDER_LABELS,
+        opencode_model_api_mode,
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -98,11 +100,13 @@ def switch_model(
     # Step 4: Resolve credentials for target provider
     api_key = current_api_key
     base_url = current_base_url
+    api_mode = ""
     if provider_changed:
         try:
             runtime = resolve_runtime_provider(requested=target_provider)
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
+            api_mode = runtime.get("api_mode", "")
         except Exception as e:
             provider_label = _PROVIDER_LABELS.get(target_provider, target_provider)
             if target_provider == "custom":
@@ -130,6 +134,7 @@ def switch_model(
             runtime = resolve_runtime_provider(requested=current_provider)
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
+            api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
@@ -166,6 +171,12 @@ def switch_model(
         and ("localhost" in (base_url or "") or "127.0.0.1" in (base_url or ""))
     )
 
+    if target_provider in {"opencode-zen", "opencode-go"}:
+        # Recompute against the requested new model, not the currently-configured
+        # model used during runtime resolution. OpenCode mixes API surfaces by
+        # model family, so a same-provider model switch can change api_mode.
+        api_mode = opencode_model_api_mode(target_provider, new_model)
+
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
@@ -173,6 +184,7 @@ def switch_model(
         provider_changed=provider_changed,
         api_key=api_key,
         base_url=base_url,
+        api_mode=api_mode,
         persist=bool(validation.get("persist")),
         warning_message=validation.get("message") or "",
         is_custom_target=is_custom_target,

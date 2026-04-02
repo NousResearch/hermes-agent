@@ -13,38 +13,6 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 
-class TestHonchoAtexitFlush:
-    """run_agent.py — _register_honcho_exit_hook atexit handler."""
-
-    def test_keyboard_interrupt_during_flush_does_not_propagate(self):
-        """The atexit handler must swallow KeyboardInterrupt from flush_all()."""
-        mock_manager = MagicMock()
-        mock_manager.flush_all.side_effect = KeyboardInterrupt
-
-        # Capture functions passed to atexit.register
-        registered_fns = []
-        original_register = atexit.register
-
-        def capturing_register(fn, *args, **kwargs):
-            registered_fns.append(fn)
-            # Don't actually register — we don't want side effects
-
-        with patch("atexit.register", side_effect=capturing_register):
-            from run_agent import AIAgent
-            agent = object.__new__(AIAgent)
-            agent._honcho = mock_manager
-            agent._honcho_exit_hook_registered = False
-            agent._register_honcho_exit_hook()
-
-        # Our handler is the last one registered
-        assert len(registered_fns) >= 1, "atexit handler was not registered"
-        flush_handler = registered_fns[-1]
-
-        # Invoke the registered handler — must not raise
-        flush_handler()
-        mock_manager.flush_all.assert_called_once()
-
-
 class TestCronJobCleanup:
     """cron/scheduler.py — end_session + close in the finally block."""
 

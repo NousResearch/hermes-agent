@@ -60,8 +60,6 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
-    # Honcho memory tools (gated on honcho being active via check_fn)
-    "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -196,11 +194,8 @@ TOOLSETS = {
         "includes": []
     },
 
-    "honcho": {
-        "description": "Honcho AI-native memory for persistent cross-session user modeling",
-        "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],
-        "includes": []
-    },
+    # "honcho" toolset removed — Honcho is now a memory provider plugin.
+    # Tools are injected via MemoryManager, not the toolset system.
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
@@ -279,8 +274,7 @@ TOOLSETS = {
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-            # Honcho memory tools (gated on honcho being active via check_fn)
-            "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
+
         ],
         "includes": []
     },

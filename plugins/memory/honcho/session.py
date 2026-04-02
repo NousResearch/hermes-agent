@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
-from honcho_integration.client import get_honcho_client
+from plugins.memory.honcho.client import get_honcho_client
 
 if TYPE_CHECKING:
     from honcho import Honcho
@@ -162,11 +162,17 @@ class HonchoSessionManager:
         # Configure peer observation settings.
         # observe_me=True for AI peer so Honcho watches what the agent says
         # and builds its representation over time — enabling identity formation.
-        from honcho.session import SessionPeerConfig
-        user_config = SessionPeerConfig(observe_me=True, observe_others=True)
-        ai_config = SessionPeerConfig(observe_me=True, observe_others=True)
+        try:
+            from honcho.session import SessionPeerConfig
+            user_config = SessionPeerConfig(observe_me=True, observe_others=True)
+            ai_config = SessionPeerConfig(observe_me=True, observe_others=True)
 
-        session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
+            session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
+        except Exception as e:
+            logger.warning(
+                "Honcho session '%s' add_peers failed (non-fatal): %s",
+                session_id, e,
+            )
 
         # Load existing messages via context() - single call for messages + metadata
         existing_messages = []
@@ -231,7 +237,7 @@ class HonchoSessionManager:
             chat_id = parts[1] if len(parts) > 1 else key
             user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
 
-        assistant_peer_id = (
+        assistant_peer_id = self._sanitize_id(
             self._config.ai_peer if self._config else "hermes-assistant"
         )
 

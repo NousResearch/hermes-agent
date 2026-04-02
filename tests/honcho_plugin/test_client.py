@@ -1,4 +1,4 @@
-"""Tests for honcho_integration/client.py — Honcho client configuration."""
+"""Tests for plugins/memory/honcho/client.py — Honcho client configuration."""
 
 import json
 import os
@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from honcho_integration.client import (
+from plugins.memory.honcho.client import (
     HonchoClientConfig,
     get_honcho_client,
     reset_honcho_client,
@@ -461,7 +461,7 @@ class TestProfileScopedConfig:
                 "hermes.dreamer": {"peerName": "dreamer-user"},
             },
         }))
-        with patch("honcho_integration.client.resolve_active_host", return_value="hermes.dreamer"):
+        with patch("plugins.memory.honcho.client.resolve_active_host", return_value="hermes.dreamer"):
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.host == "hermes.dreamer"
         assert config.peer_name == "dreamer-user"
@@ -469,7 +469,7 @@ class TestProfileScopedConfig:
 
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
-        import honcho_integration.client as mod
+        import plugins.memory.honcho.client as mod
         mod._honcho_client = MagicMock()
         assert mod._honcho_client is not None
         reset_honcho_client()

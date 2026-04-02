@@ -1,9 +1,9 @@
-"""Tests for honcho_integration/session.py — HonchoSession and helpers."""
+"""Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from honcho_integration.session import (
+from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )

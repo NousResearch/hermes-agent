@@ -42,6 +42,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/tools',
             'user-guide/features/skills',
             'user-guide/features/memory',
+            'user-guide/features/memory-providers',
             'user-guide/features/context-files',
             'user-guide/features/context-references',
             'user-guide/features/personality',
@@ -166,6 +167,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'developer-guide/adding-tools',
             'developer-guide/adding-providers',
+            'developer-guide/memory-provider-plugin',
             'developer-guide/creating-skills',
             'developer-guide/extending-the-cli',
           ],

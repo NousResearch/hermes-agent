@@ -86,33 +86,23 @@ The gateway also runs maintenance tasks such as:
 
 ## Honcho interaction
 
-When Honcho is enabled, the gateway keeps persistent Honcho managers aligned with session lifetimes and platform-specific session keys.
+When a memory provider plugin (e.g. Honcho) is enabled, the gateway creates an AIAgent per incoming message with the same session ID. The memory provider's `initialize()` receives the session ID and creates the appropriate backend session. Tools are routed through the `MemoryManager`, which handles all provider lifecycle hooks (prefetch, sync, session end).
 
-### Session routing
+### Memory provider session routing
 
-Honcho tools (`honcho_profile`, `honcho_search`, `honcho_context`, `honcho_conclude`) need to execute against the correct user's Honcho session. In a multi-user gateway, the process-global module state in `tools/honcho_tools.py` is insufficient — multiple sessions may be active concurrently.
-
-The solution threads session context through the call chain:
+Memory provider tools (e.g. `honcho_profile`, `viking_search`) are routed through the MemoryManager in `_invoke_tool()`:
 
 ```
 AIAgent._invoke_tool()
-  → handle_function_call(honcho_manager=..., honcho_session_key=...)
-    → registry.dispatch(**kwargs)
-      → _handle_honcho_*(args, **kw)
-        → _resolve_session_context(**kw)   # prefers explicit kwargs over module globals
+  → self._memory_manager.handle_tool_call(name, args)
+    → provider.handle_tool_call(name, args)
 ```
 
-`_resolve_session_context()` in `honcho_tools.py` checks for `honcho_manager` and `honcho_session_key` in the kwargs first, falling back to the module-global `_session_manager` / `_session_key` for CLI mode where there's only one session.
+Each memory provider manages its own session lifecycle internally. The `initialize()` method receives the session ID, and `on_session_end()` handles cleanup and final flush.
 
 ### Memory flush lifecycle
 
-When a session is reset, resumed, or expires, the gateway flushes memories before discarding context. The flush creates a temporary `AIAgent` with:
-
-- `session_id` set to the old session's ID (so transcripts load correctly)
-- `honcho_session_key` set to the gateway session key (so Honcho writes go to the right place)
-- `sync_honcho=False` passed to `run_conversation()` (so the synthetic flush turn doesn't write back to Honcho's conversation history)
-
-After the flush completes, any queued Honcho writes are drained and the gateway-level Honcho manager is shut down for that session key.
+When a session is reset, resumed, or expires, the gateway flushes built-in memories before discarding context. The flush creates a temporary `AIAgent` that runs a memory-only conversation turn. The memory provider's `on_session_end()` hook fires during this process, giving external providers a chance to persist any buffered data.
 
 ## Related docs
 

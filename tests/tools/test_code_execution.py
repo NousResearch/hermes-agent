@@ -805,5 +805,14 @@ for i in range(15000):
             self.assertIn("total", output)
 
 
+def test_execute_code_redacts_sensitive_output(monkeypatch):
+    from tools.code_execution_tool import execute_code
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret-1234567890")
+    result = json.loads(execute_code("import os; print(os.getenv('OPENAI_API_KEY'))", task_id="test-redact"))
+    assert result["status"] == "success"
+    assert "sk-test-secret-1234567890" not in result["output"]
+    assert "***" in result["output"] or "..." in result["output"]
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -503,6 +503,7 @@ from cron import get_job
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
 from tools.skills_tool import set_secret_capture_callback
+from tools.secrets_tool import set_secrets_request_callback
 from hermes_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
@@ -5838,6 +5839,7 @@ class HermesCLI:
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
+        set_secrets_request_callback(self._secret_capture_callback)
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -6556,6 +6558,7 @@ class HermesCLI:
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
+        set_secrets_request_callback(self._secret_capture_callback)
 
         # Ensure tirith security scanner is available (downloads if needed).
         # Warn the user if tirith is enabled in config but not available,
@@ -7790,6 +7793,7 @@ class HermesCLI:
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            set_secrets_request_callback(None)
             # Flush + shut down Honcho async writer (drains queue before exit)
             if self.agent and getattr(self.agent, '_honcho', None):
                 try:

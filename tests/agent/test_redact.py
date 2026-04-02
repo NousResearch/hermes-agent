@@ -54,6 +54,21 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("fal_abc123def456ghi789jkl")
         assert "abc123def456" not in result
 
+    def test_twilio_account_sid(self):
+        sid = "AC" + ("1" * 16) + ("a" * 16)
+        result = redact_sensitive_text(sid)
+        assert sid not in result
+
+    def test_twilio_auth_token_bare(self):
+        token = ("0" * 16) + ("a" * 16)
+        result = redact_sensitive_text(token)
+        assert token not in result
+
+    def test_jwt_bare(self):
+        jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhIjoiYiIsImMiOiJkIiwicm9sZSI6ImFkbWluIn0.c2lnbmF0dXJlMTIzNDU2Nzg5MGFiY2RlZg"
+        result = redact_sensitive_text(jwt)
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in result
+
     def test_short_token_fully_masked(self):
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result

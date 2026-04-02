@@ -48,8 +48,8 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console",
     # Text-to-speech
     "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
+    # Planning, memory, secrets
+    "todo", "memory", "secrets",
     # Session history search
     "session_search",
     # Clarifying questions

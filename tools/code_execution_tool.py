@@ -605,6 +605,13 @@ def execute_code(
         stderr_text = redact_sensitive_text(stderr_text)
 
         # Build response
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout_text = redact_sensitive_text(stdout_text)
+            stderr_text = redact_sensitive_text(stderr_text)
+        except Exception:
+            pass
+
         result: Dict[str, Any] = {
             "status": status,
             "output": stdout_text,

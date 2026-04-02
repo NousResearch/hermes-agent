@@ -214,10 +214,33 @@ def _get_required_environment_variables(
 ) -> List[Dict[str, Any]]:
     setup = _normalize_setup_metadata(frontmatter)
     required_raw = frontmatter.get("required_environment_variables")
+    requires_secrets_raw = frontmatter.get("requires_secrets")
+
     if isinstance(required_raw, dict):
         required_raw = [required_raw]
     if not isinstance(required_raw, list):
         required_raw = []
+
+    if isinstance(requires_secrets_raw, dict):
+        requires_secrets_raw = [requires_secrets_raw]
+    if not isinstance(requires_secrets_raw, list):
+        requires_secrets_raw = []
+
+    # `requires_secrets` is a friendlier alias for skill authors. Normalize it
+    # into the existing required_environment_variables pipeline so prompt,
+    # validation, env passthrough, and gateway hints all work unchanged.
+    for item in requires_secrets_raw:
+        if isinstance(item, str):
+            required_raw.append({"name": item})
+        elif isinstance(item, dict):
+            required_raw.append(
+                {
+                    "name": item.get("key") or item.get("name") or item.get("env_var"),
+                    "prompt": item.get("prompt") or item.get("description") or item.get("label"),
+                    "help": item.get("instructions") or item.get("help") or item.get("provider_url") or item.get("url"),
+                    "required_for": item.get("required_for") or item.get("description"),
+                }
+            )
 
     required: List[Dict[str, Any]] = []
     seen: set[str] = set()

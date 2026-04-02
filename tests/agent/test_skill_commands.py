@@ -207,6 +207,46 @@ Generate some audio.
         assert len(calls) == 1
         assert calls[0][0] == "TENOR_API_KEY"
 
+    def test_requires_secrets_alias_triggers_secure_capture(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        calls = []
+
+        def fake_secret_callback(var_name, prompt, metadata=None):
+            calls.append((var_name, prompt, metadata))
+            os.environ[var_name] = "stored-in-test"
+            return {
+                "success": True,
+                "stored_as": var_name,
+                "validated": False,
+                "skipped": False,
+            }
+
+        monkeypatch.setattr(
+            skills_tool_module,
+            "_secret_capture_callback",
+            fake_secret_callback,
+            raising=False,
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "test-skill",
+                frontmatter_extra=(
+                    "requires_secrets:\n"
+                    "  - key: TENOR_API_KEY\n"
+                    "    description: Tenor API key\n"
+                    "    instructions: Find it in the Tenor dashboard\n"
+                ),
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/test-skill", "do stuff")
+
+        assert msg is not None
+        assert len(calls) == 1
+        assert calls[0][0] == "TENOR_API_KEY"
+        assert "tenor" in (calls[0][2].get("required_for", "") or "").lower()
+
     def test_gateway_still_loads_skill_but_returns_setup_guidance(
         self, tmp_path, monkeypatch
     ):

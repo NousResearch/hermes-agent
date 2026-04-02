@@ -624,6 +624,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             for _p in _paths_to_check:
                 _update_read_timestamp(_p, task_id)
         result_json = json.dumps(result_dict, ensure_ascii=False)
+        try:
+            result_json = redact_sensitive_text(result_json)
+        except Exception:
+            pass
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):

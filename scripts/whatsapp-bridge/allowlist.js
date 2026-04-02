@@ -68,6 +68,11 @@ export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
     return true;
   }
 
+  // "*" means allow everyone (consistent with SIGNAL_GROUP_ALLOWED_USERS)
+  if (allowedUsers.has('*')) {
+    return true;
+  }
+
   const aliases = expandWhatsAppIdentifiers(senderId, sessionDir);
   for (const alias of aliases) {
     if (allowedUsers.has(alias)) {

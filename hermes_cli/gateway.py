@@ -463,6 +463,32 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _hermes_home_for_target_user(target_home_dir: str) -> str:
+    """Remap the current HERMES_HOME to the equivalent under a target user's home.
+
+    When installing a system service via sudo, get_hermes_home() resolves to
+    root's home.  This translates it to the target user's equivalent path:
+      /root/.hermes                    → /home/alice/.hermes
+      /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
+      /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
+    """
+    current_hermes = get_hermes_home().resolve()
+    current_default = (Path.home() / ".hermes").resolve()
+    target_default = Path(target_home_dir) / ".hermes"
+
+    # Default ~/.hermes → remap to target user's default
+    if current_hermes == current_default:
+        return str(target_default)
+
+    # Profile or subdir of ~/.hermes → preserve the relative structure
+    try:
+        relative = current_hermes.relative_to(current_default)
+        return str(target_default / relative)
+    except ValueError:
+        # Completely custom path (not under ~/.hermes) — keep as-is
+        return str(current_hermes)
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -478,12 +504,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
 
-    hermes_home = str(get_hermes_home().resolve())
-
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        hermes_home = _hermes_home_for_target_user(home_dir)
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
@@ -518,6 +543,7 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
+    hermes_home = str(get_hermes_home().resolve())
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
@@ -1066,11 +1092,12 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
-def run_gateway(verbose: bool = False, replace: bool = False):
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
     Args:
-        verbose: Enable verbose logging output.
+        verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
+        quiet: Suppress all stderr log output.
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
@@ -1089,7 +1116,8 @@ def run_gateway(verbose: bool = False, replace: bool = False):
     
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
-    success = asyncio.run(start_gateway(replace=replace))
+    verbosity = None if quiet else verbose
+    success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
         sys.exit(1)
 
@@ -1863,9 +1891,10 @@ def gateway_command(args):
     
     # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
-        verbose = getattr(args, 'verbose', False)
+        verbose = getattr(args, 'verbose', 0)
+        quiet = getattr(args, 'quiet', False)
         replace = getattr(args, 'replace', False)
-        run_gateway(verbose, replace=replace)
+        run_gateway(verbose, quiet=quiet, replace=replace)
         return
 
     if subcmd == "setup":
@@ -1993,7 +2022,7 @@ def gateway_command(args):
 
             # Start fresh
             print("Starting gateway...")
-            run_gateway(verbose=False)
+            run_gateway(verbose=0)
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)

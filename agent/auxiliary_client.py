@@ -7,7 +7,7 @@ the best available backend without duplicating fallback logic.
 Resolution order for text tasks (auto mode):
   1. OpenRouter  (OPENROUTER_API_KEY)
   2. Nous Portal (~/.hermes/auth.json active provider)
-  3. Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
+  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
   4. Codex OAuth (Responses API via chatgpt.com with gpt-5.3-codex,
      wrapped to look like a chat.completions client)
   5. Native Anthropic
@@ -47,7 +47,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
-from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from hermes_cli.config import get_hermes_home
+from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,45 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # vision via Responses.
 _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+
+def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry)."""
+    try:
+        pool = load_pool(provider)
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not load pool for %s: %s", provider, exc)
+        return False, None
+    if not pool or not pool.has_credentials():
+        return False, None
+    try:
+        return True, pool.select()
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
+        return True, None
+
+
+def _pool_runtime_api_key(entry: Any) -> str:
+    if entry is None:
+        return ""
+    # Use the PooledCredential.runtime_api_key property which handles
+    # provider-specific fallback (e.g. agent_key for nous).
+    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+    return str(key or "").strip()
+
+
+def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
+    if entry is None:
+        return str(fallback or "").strip().rstrip("/")
+    # runtime_base_url handles provider-specific logic (e.g. nous prefers inference_base_url).
+    # Fall back through inference_base_url and base_url for non-PooledCredential entries.
+    url = (
+        getattr(entry, "runtime_base_url", None)
+        or getattr(entry, "inference_base_url", None)
+        or getattr(entry, "base_url", None)
+        or fallback
+    )
+    return str(url or "").strip().rstrip("/")
 
 
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
@@ -438,6 +478,22 @@ def _read_nous_auth() -> Optional[dict]:
     Returns the provider state dict if Nous is active with tokens,
     otherwise None.
     """
+    pool_present, entry = _select_pool_entry("nous")
+    if pool_present:
+        if entry is None:
+            return None
+        return {
+            "access_token": getattr(entry, "access_token", ""),
+            "refresh_token": getattr(entry, "refresh_token", None),
+            "agent_key": getattr(entry, "agent_key", None),
+            "inference_base_url": _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL),
+            "portal_base_url": getattr(entry, "portal_base_url", None),
+            "client_id": getattr(entry, "client_id", None),
+            "scope": getattr(entry, "scope", None),
+            "token_type": getattr(entry, "token_type", "Bearer"),
+            "source": "pool",
+        }
+
     try:
         if not _AUTH_JSON_PATH.is_file():
             return None
@@ -466,6 +522,11 @@ def _nous_base_url() -> str:
 
 def _read_codex_access_token() -> Optional[str]:
     """Read a valid, non-expired Codex OAuth access token from Hermes auth store."""
+    pool_present, entry = _select_pool_entry("openai-codex")
+    if pool_present:
+        token = _pool_runtime_api_key(entry)
+        return token or None
+
     try:
         from hermes_cli.auth import _read_codex_tokens
         data = _read_codex_tokens()
@@ -511,6 +572,24 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             continue
         if provider_id == "anthropic":
             return _try_anthropic()
+
+        pool_present, entry = _select_pool_entry(provider_id)
+        if pool_present:
+            api_key = _pool_runtime_api_key(entry)
+            if not api_key:
+                continue
+
+            base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
+            logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
+            extra = {}
+            if "api.kimi.com" in base_url.lower():
+                extra["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+            elif "api.githubcopilot.com" in base_url.lower():
+                from hermes_cli.models import copilot_default_headers
+
+                extra["default_headers"] = copilot_default_headers()
+            return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
         api_key = str(creds.get("api_key", "")).strip()
@@ -561,6 +640,16 @@ def _get_auxiliary_env_override(task: str, suffix: str) -> Optional[str]:
 
 
 def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
+    pool_present, entry = _select_pool_entry("openrouter")
+    if pool_present:
+        or_key = _pool_runtime_api_key(entry)
+        if not or_key:
+            return None, None
+        base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+        logger.debug("Auxiliary client: OpenRouter via pool")
+        return OpenAI(api_key=or_key, base_url=base_url,
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
@@ -576,22 +665,22 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     global auxiliary_is_nous
     auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
+    model = "gemini-3-flash" if nous.get("source") == "pool" else _NOUS_MODEL
     return (
-        OpenAI(api_key=_nous_api_key(nous), base_url=_nous_base_url()),
-        _NOUS_MODEL,
+        OpenAI(
+            api_key=_nous_api_key(nous),
+            base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
+        ),
+        model,
     )
 
 
 def _read_main_model() -> str:
-    """Read the user's configured main model from config/env.
+    """Read the user's configured main model from config.yaml.
 
-    Falls back through HERMES_MODEL → LLM_MODEL → config.yaml model.default
-    so the auxiliary client can use the same model as the main agent when no
-    dedicated auxiliary model is available.
+    config.yaml model.default is the single source of truth for the active
+    model. Environment variables are no longer consulted.
     """
-    from_env = os.getenv("OPENAI_MODEL") or os.getenv("HERMES_MODEL") or os.getenv("LLM_MODEL")
-    if from_env:
-        return from_env.strip()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -658,11 +747,19 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
-    codex_token = _read_codex_access_token()
-    if not codex_token:
-        return None, None
+    pool_present, entry = _select_pool_entry("openai-codex")
+    if pool_present:
+        codex_token = _pool_runtime_api_key(entry)
+        if not codex_token:
+            return None, None
+        base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+    else:
+        codex_token = _read_codex_access_token()
+        if not codex_token:
+            return None, None
+        base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-    real_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+    real_client = OpenAI(api_key=codex_token, base_url=base_url)
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
@@ -672,14 +769,21 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     except ImportError:
         return None, None
 
-    token = resolve_anthropic_token()
+    pool_present, entry = _select_pool_entry("anthropic")
+    if pool_present:
+        if entry is None:
+            return None, None
+        token = _pool_runtime_api_key(entry)
+    else:
+        entry = None
+        token = resolve_anthropic_token()
     if not token:
         return None, None
 
     # Allow base URL override from config.yaml model.base_url, but only
     # when the configured provider is anthropic — otherwise a non-Anthropic
     # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-    base_url = _ANTHROPIC_DEFAULT_BASE_URL
+    base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
     try:
         from hermes_cli.config import load_config
         cfg = load_config()

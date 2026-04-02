@@ -15,6 +15,80 @@ logger = logging.getLogger(__name__)
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
+# ---------------------------------------------------------------------------
+# Read-size guard: cap the character count returned to the model.
+# We're model-agnostic so we can't count tokens; characters are a safe proxy.
+# 100K chars ≈ 25–35K tokens across typical tokenisers.  Files larger than
+# this in a single read are a context-window hazard — the model should use
+# offset+limit to read the relevant section.
+#
+# Configurable via config.yaml:  file_read_max_chars: 200000
+# ---------------------------------------------------------------------------
+_DEFAULT_MAX_READ_CHARS = 100_000
+_max_read_chars_cached: int | None = None
+
+
+def _get_max_read_chars() -> int:
+    """Return the configured max characters per file read.
+
+    Reads ``file_read_max_chars`` from config.yaml on first call, caches
+    the result for the lifetime of the process.  Falls back to the
+    built-in default if the config is missing or invalid.
+    """
+    global _max_read_chars_cached
+    if _max_read_chars_cached is not None:
+        return _max_read_chars_cached
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg.get("file_read_max_chars")
+        if isinstance(val, (int, float)) and val > 0:
+            _max_read_chars_cached = int(val)
+            return _max_read_chars_cached
+    except Exception:
+        pass
+    _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
+    return _max_read_chars_cached
+
+# If the total file size exceeds this AND the caller didn't specify a narrow
+# range (limit <= 200), we include a hint encouraging targeted reads.
+_LARGE_FILE_HINT_BYTES = 512_000  # 512 KB
+
+# ---------------------------------------------------------------------------
+# Device path blocklist — reading these hangs the process (infinite output
+# or blocking on input).  Checked by path only (no I/O).
+# ---------------------------------------------------------------------------
+_BLOCKED_DEVICE_PATHS = frozenset({
+    # Infinite output — never reach EOF
+    "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",
+    # Blocks waiting for input
+    "/dev/stdin", "/dev/tty", "/dev/console",
+    # Nonsensical to read
+    "/dev/stdout", "/dev/stderr",
+    # fd aliases
+    "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
+})
+
+
+def _is_blocked_device(filepath: str) -> bool:
+    """Return True if the path would hang the process (infinite output or blocking input).
+
+    Uses the *literal* path — no symlink resolution — because the model
+    specifies paths directly and realpath follows symlinks all the way
+    through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
+    the check.
+    """
+    normalized = os.path.expanduser(filepath)
+    if normalized in _BLOCKED_DEVICE_PATHS:
+        return True
+    # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
+    if normalized.startswith("/proc/") and normalized.endswith(
+        ("/fd/0", "/fd/1", "/fd/2")
+    ):
+        return True
+    return False
+
+
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
@@ -53,11 +127,21 @@ def _is_expected_write_exception(exc: Exception) -> bool:
 _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
-# Track files read per task to detect re-read loops after context compression.
+# Track files read per task to detect re-read loops and deduplicate reads.
 # Per task_id we store:
 #   "last_key":     the key of the most recent read/search call (or None)
 #   "consecutive":  how many times that exact call has been repeated in a row
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
+#   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
+#                   Used to skip re-reads of unchanged files.  Reset on
+#                   context compression (the original content is summarised
+#                   away so the model needs the full content again).
+#   "read_timestamps": dict mapping resolved_path → modification-time float
+#                      recorded when the file was last read (or written) by
+#                      this task.  Used by write_file and patch to detect
+#                      external changes between the agent's read and write.
+#                      Updated after successful writes so consecutive edits
+#                      by the same task don't trigger false warnings.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
 
@@ -195,8 +279,19 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
-        # Security: block direct reads of internal Hermes cache/index files
-        # to prevent prompt injection via catalog or hub metadata files.
+        # ── Device path guard ─────────────────────────────────────────
+        # Block paths that would hang the process (infinite output,
+        # blocking on input).  Pure path check — no I/O.
+        if _is_blocked_device(path):
+            return json.dumps({
+                "error": (
+                    f"Cannot read '{path}': this is a device file that would "
+                    "block or produce infinite output."
+                ),
+            })
+
+        # ── Hermes internal path guard ────────────────────────────────
+        # Prevent prompt injection via catalog or hub metadata files.
         import pathlib as _pathlib
         from hermes_constants import get_hermes_home as _get_hh
         _resolved = _pathlib.Path(path).expanduser().resolve()
@@ -217,20 +312,83 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 })
             except ValueError:
                 pass
+
+        # ── Dedup check ───────────────────────────────────────────────
+        # If we already read this exact (path, offset, limit) and the
+        # file hasn't been modified since, return a lightweight stub
+        # instead of re-sending the same content.  Saves context tokens.
+        resolved_str = str(_resolved)
+        dedup_key = (resolved_str, offset, limit)
+        with _read_tracker_lock:
+            task_data = _read_tracker.setdefault(task_id, {
+                "last_key": None, "consecutive": 0,
+                "read_history": set(), "dedup": {},
+            })
+            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+
+        if cached_mtime is not None:
+            try:
+                current_mtime = os.path.getmtime(resolved_str)
+                if current_mtime == cached_mtime:
+                    return json.dumps({
+                        "content": (
+                            "File unchanged since last read. The content from "
+                            "the earlier read_file result in this conversation is "
+                            "still current — refer to that instead of re-reading."
+                        ),
+                        "path": path,
+                        "dedup": True,
+                    }, ensure_ascii=False)
+            except OSError:
+                pass  # stat failed — fall through to full read
+
+        # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         if result.content:
             result.content = redact_sensitive_text(result.content)
         result_dict = result.to_dict()
 
-        # Track reads to detect *consecutive* re-read loops.
-        # The counter resets whenever any other tool is called in between,
-        # so only truly back-to-back identical reads trigger warnings/blocks.
+        # ── Character-count guard ─────────────────────────────────────
+        # We're model-agnostic so we can't count tokens; characters are
+        # the best proxy we have.  If the read produced an unreasonable
+        # amount of content, reject it and tell the model to narrow down.
+        # Note: we check the formatted content (with line-number prefixes),
+        # not the raw file size, because that's what actually enters context.
+        content_len = len(result.content or "")
+        file_size = result_dict.get("file_size", 0)
+        max_chars = _get_max_read_chars()
+        if content_len > max_chars:
+            total_lines = result_dict.get("total_lines", "unknown")
+            return json.dumps({
+                "error": (
+                    f"Read produced {content_len:,} characters which exceeds "
+                    f"the safety limit ({max_chars:,} chars). "
+                    "Use offset and limit to read a smaller range. "
+                    f"The file has {total_lines} lines total."
+                ),
+                "path": path,
+                "total_lines": total_lines,
+                "file_size": file_size,
+            }, ensure_ascii=False)
+
+        # Large-file hint: if the file is big and the caller didn't ask
+        # for a narrow window, nudge toward targeted reads.
+        if (file_size and file_size > _LARGE_FILE_HINT_BYTES
+                and limit > 200
+                and result_dict.get("truncated")):
+            result_dict.setdefault("_hint", (
+                f"This file is large ({file_size:,} bytes). "
+                "Consider reading only the section you need with offset and limit "
+                "to keep context usage efficient."
+            ))
+
+        # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
         with _read_tracker_lock:
-            task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set(),
-            })
+            # Ensure "dedup" key exists (backward compat with old tracker state)
+            if "dedup" not in task_data:
+                task_data["dedup"] = {}
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -238,6 +396,17 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["last_key"] = read_key
                 task_data["consecutive"] = 1
             count = task_data["consecutive"]
+
+            # Store mtime at read time for two purposes:
+            # 1. Dedup: skip identical re-reads of unchanged files.
+            # 2. Staleness: warn on write/patch if the file changed since
+            #    the agent last read it (external edit, concurrent agent, etc.).
+            try:
+                _mtime_now = os.path.getmtime(resolved_str)
+                task_data["dedup"][dedup_key] = _mtime_now
+                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            except OSError:
+                pass  # Can't stat — skip tracking for this entry
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
@@ -296,6 +465,28 @@ def clear_read_tracker(task_id: str = None):
             _read_tracker.clear()
 
 
+def reset_file_dedup(task_id: str = None):
+    """Clear the deduplication cache for file reads.
+
+    Called after context compression — the original read content has been
+    summarised away, so the model needs the full content if it reads the
+    same file again.  Without this, reads after compression would return
+    a "file unchanged" stub pointing at content that no longer exists in
+    context.
+
+    Call with a task_id to clear just that task, or without to clear all.
+    """
+    with _read_tracker_lock:
+        if task_id:
+            task_data = _read_tracker.get(task_id)
+            if task_data and "dedup" in task_data:
+                task_data["dedup"].clear()
+        else:
+            for task_data in _read_tracker.values():
+                if "dedup" in task_data:
+                    task_data["dedup"].clear()
+
+
 def notify_other_tool_call(task_id: str = "default"):
     """Reset consecutive read/search counter for a task.
 
@@ -312,15 +503,71 @@ def notify_other_tool_call(task_id: str = "default"):
             task_data["consecutive"] = 0
 
 
+def _update_read_timestamp(filepath: str, task_id: str) -> None:
+    """Record the file's current modification time after a successful write.
+
+    Called after write_file and patch so that consecutive edits by the
+    same task don't trigger false staleness warnings — each write
+    refreshes the stored timestamp to match the file's new state.
+    """
+    try:
+        resolved = str(Path(filepath).expanduser().resolve())
+        current_mtime = os.path.getmtime(resolved)
+    except (OSError, ValueError):
+        return
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if task_data is not None:
+            task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
+
+
+def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+    """Check whether a file was modified since the agent last read it.
+
+    Returns a warning string if the file is stale (mtime changed since
+    the last read_file call for this task), or None if the file is fresh
+    or was never read.  Does not block — the write still proceeds.
+    """
+    try:
+        resolved = str(Path(filepath).expanduser().resolve())
+    except (OSError, ValueError):
+        return None
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id)
+        if not task_data:
+            return None
+        read_mtime = task_data.get("read_timestamps", {}).get(resolved)
+    if read_mtime is None:
+        return None  # File was never read — nothing to compare against
+    try:
+        current_mtime = os.path.getmtime(resolved)
+    except OSError:
+        return None  # Can't stat — file may have been deleted, let write handle it
+    if current_mtime != read_mtime:
+        return (
+            f"Warning: {filepath} was modified since you last read it "
+            "(external edit or concurrent agent). The content you read may be "
+            "stale. Consider re-reading the file to verify before writing."
+        )
+    return None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return json.dumps({"error": sensitive_err}, ensure_ascii=False)
     try:
+        stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
         result = file_ops.write_file(path, content)
-        return json.dumps(result.to_dict(), ensure_ascii=False)
+        result_dict = result.to_dict()
+        if stale_warning:
+            result_dict["_warning"] = stale_warning
+        # Refresh the stored timestamp so consecutive writes by this
+        # task don't trigger false staleness warnings.
+        _update_read_timestamp(path, task_id)
+        return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
@@ -346,6 +593,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if sensitive_err:
             return json.dumps({"error": sensitive_err}, ensure_ascii=False)
     try:
+        # Check staleness for all files this patch will touch.
+        stale_warnings = []
+        for _p in _paths_to_check:
+            _sw = _check_file_staleness(_p, task_id)
+            if _sw:
+                stale_warnings.append(_sw)
+
         file_ops = _get_file_ops(task_id)
         
         if mode == "replace":
@@ -362,6 +616,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             return json.dumps({"error": f"Unknown mode: {mode}"})
         
         result_dict = result.to_dict()
+        if stale_warnings:
+            result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+        # Refresh stored timestamps for all successfully-patched paths so
+        # consecutive edits by this task don't trigger false warnings.
+        if not result_dict.get("error"):
+            for _p in _paths_to_check:
+                _update_read_timestamp(_p, task_id)
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
@@ -466,7 +727,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {

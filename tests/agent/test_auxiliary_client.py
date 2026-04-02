@@ -198,7 +198,8 @@ class TestAnthropicOAuthFlag:
     def test_api_key_no_oauth_flag(self, monkeypatch):
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-testkey1234"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
@@ -206,6 +207,31 @@ class TestAnthropicOAuthFlag:
             assert isinstance(client, AnthropicAuxiliaryClient)
             adapter = client.chat.completions
             assert adapter._is_oauth is False
+
+    def test_pool_entry_takes_priority_over_legacy_resolution(self):
+        class _Entry:
+            access_token = "sk-ant-oat01-pooled"
+            base_url = "https://api.anthropic.com"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", side_effect=AssertionError("legacy path should not run")),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            client, model = _try_anthropic()
+
+        assert client is not None
+        assert model == "claude-haiku-4-5-20251001"
+        assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
 class TestExpiredCodexFallback:
@@ -392,7 +418,8 @@ class TestExplicitProviderRouting:
     def test_explicit_anthropic_api_key(self, monkeypatch):
         """provider='anthropic' + regular API key should work with is_oauth=False."""
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api-regular-key"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             client, model = resolve_provider_client("anthropic")
             assert client is not None
@@ -465,9 +492,16 @@ class TestGetTextAuxiliaryClient:
         assert model == "google/gemini-3-flash-preview"
 
     def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         # Override the autouse monkeypatch for codex
         monkeypatch.setattr(
             "agent.auxiliary_client._read_codex_access_token",
@@ -535,6 +569,32 @@ class TestGetTextAuxiliaryClient:
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
 
+    def test_codex_pool_entry_takes_priority_over_auth_store(self):
+        class _Entry:
+            access_token = "pooled-codex-token"
+            base_url = "https://chatgpt.com/backend-api/codex"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI"),
+            patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
+        ):
+            from agent.auxiliary_client import _try_codex
+
+            client, model = _try_codex()
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.2-codex"
+
     def test_returns_none_when_nothing_available(self, monkeypatch):
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -582,6 +642,35 @@ class TestVisionClientFallback:
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
         assert model == "claude-haiku-4-5-20251001"
+
+
+class TestAuxiliaryPoolAwareness:
+    def test_try_nous_uses_pool_entry(self):
+        class _Entry:
+            access_token = "pooled-access-token"
+            agent_key = "pooled-agent-key"
+            inference_base_url = "https://inference.pool.example/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            client, model = _try_nous()
+
+        assert client is not None
+        assert model == "gemini-3-flash"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "pooled-agent-key"
+        assert call_kwargs["base_url"] == "https://inference.pool.example/v1"
 
     def test_resolve_provider_client_copilot_uses_runtime_credentials(self, monkeypatch):
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
@@ -726,10 +815,17 @@ class TestVisionClientFallback:
 
     def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
         """When explicitly forced to 'main', vision CAN use custom endpoint."""
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
@@ -827,9 +923,16 @@ class TestResolveForcedProvider:
         assert model is None
 
     def test_forced_main_uses_custom(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")
@@ -858,10 +961,17 @@ class TestResolveForcedProvider:
 
     def test_forced_main_skips_openrouter_nous(self, monkeypatch):
         """Even if OpenRouter key is set, 'main' skips it."""
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://local:8080/v1")
         monkeypatch.setenv("OPENAI_API_KEY", "local-key")
-        monkeypatch.setenv("OPENAI_MODEL", "my-local-model")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")

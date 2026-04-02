@@ -67,6 +67,14 @@
   border-bottom: 1px solid rgba(255, 215, 0, 0.08);
 }
 
+/* backdrop-filter creates a stacking context that hides
+   .navbar-sidebar menu content (Docusaurus #6996). Remove it
+   while the mobile sidebar is open — both classes live on the
+   same <nav> element. */
+.navbar.navbar-sidebar--show {
+  backdrop-filter: none;
+}
+
 .navbar__title {
   font-weight: 600;
   letter-spacing: -0.02em;

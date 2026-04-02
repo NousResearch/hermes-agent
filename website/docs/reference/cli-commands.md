@@ -21,6 +21,7 @@ hermes [global-options] <command> [subcommand/options]
 | Option | Description |
 |--------|-------------|
 | `--version`, `-V` | Show version and exit. |
+| `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
 | `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
@@ -37,6 +38,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
+| `hermes auth` | Manage credential pools — add, list, remove, reset, set strategy. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
@@ -46,10 +48,14 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes honcho` | Manage Honcho cross-session memory integration. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
+| `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
+| `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
+| `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
+| `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. |
 | `hermes uninstall` | Remove Hermes from the system. |
@@ -67,7 +73,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `alibaba`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -76,6 +82,7 @@ Common options:
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
 | `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
+| `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 
 Examples:
 
@@ -185,6 +192,22 @@ Useful options for `login`:
 - `--timeout <seconds>`
 - `--ca-bundle <pem>`
 - `--insecure`
+
+## `hermes auth`
+
+Manage credential pools for same-provider key rotation. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
+
+```bash
+hermes auth                                              # Interactive wizard
+hermes auth list                                         # Show all pools
+hermes auth list openrouter                              # Show specific provider
+hermes auth add openrouter --api-key sk-or-v1-xxx        # Add API key
+hermes auth add anthropic --type oauth                   # Add OAuth credential
+hermes auth remove openrouter 2                          # Remove by index
+hermes auth reset openrouter                             # Clear cooldowns
+```
+
+Subcommands: `add`, `list`, `remove`, `reset`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes status`
 
@@ -505,6 +528,56 @@ hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
+```
+
+## `hermes profile`
+
+```bash
+hermes profile <subcommand>
+```
+
+Manage profiles — multiple isolated Hermes instances, each with its own config, sessions, skills, and home directory.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all profiles. |
+| `use <name>` | Set a sticky default profile. |
+| `create <name> [--clone] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, and `SOUL.md` from the active profile. |
+| `delete <name> [-y]` | Delete a profile. |
+| `show <name>` | Show profile details (home directory, config, etc.). |
+| `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |
+| `rename <old> <new>` | Rename a profile. |
+| `export <name> [-o FILE]` | Export a profile to a `.tar.gz` archive. |
+| `import <archive> [--name NAME]` | Import a profile from a `.tar.gz` archive. |
+
+Examples:
+
+```bash
+hermes profile list
+hermes profile create work --clone
+hermes profile use work
+hermes profile alias work --name h-work
+hermes profile export work -o work-backup.tar.gz
+hermes profile import work-backup.tar.gz --name restored
+hermes -p work chat -q "Hello from work profile"
+```
+
+## `hermes completion`
+
+```bash
+hermes completion [bash|zsh]
+```
+
+Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Hermes commands, subcommands, and profile names.
+
+Examples:
+
+```bash
+# Bash
+hermes completion bash >> ~/.bashrc
+
+# Zsh
+hermes completion zsh >> ~/.zshrc
 ```
 
 ## Maintenance commands

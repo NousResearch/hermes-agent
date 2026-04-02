@@ -55,16 +55,47 @@ def register_credential_file(
 
     *relative_path* is relative to ``HERMES_HOME`` (e.g. ``google_token.json``).
     Returns True if the file exists on the host and was registered.
+
+    Security: rejects absolute paths and path traversal sequences (``..``).
+    The resolved host path must remain inside HERMES_HOME so that a malicious
+    skill cannot declare ``required_credential_files: ['../../.ssh/id_rsa']``
+    and exfiltrate sensitive host files into a container sandbox.
     """
     hermes_home = _resolve_hermes_home()
+
+    # Reject absolute paths — they bypass the HERMES_HOME sandbox entirely.
+    if os.path.isabs(relative_path):
+        logger.warning(
+            "credential_files: rejected absolute path %r (must be relative to HERMES_HOME)",
+            relative_path,
+        )
+        return False
+
     host_path = hermes_home / relative_path
-    if not host_path.is_file():
-        logger.debug("credential_files: skipping %s (not found)", host_path)
+
+    # Resolve symlinks and normalise ``..`` before the containment check so
+    # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
+    try:
+        resolved = host_path.resolve()
+        hermes_home_resolved = hermes_home.resolve()
+        resolved.relative_to(hermes_home_resolved)  # raises ValueError if outside
+    except ValueError:
+        logger.warning(
+            "credential_files: rejected path traversal %r "
+            "(resolves to %s, outside HERMES_HOME %s)",
+            relative_path,
+            resolved,
+            hermes_home_resolved,
+        )
+        return False
+
+    if not resolved.is_file():
+        logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
-    _registered_files[container_path] = str(host_path)
-    logger.debug("credential_files: registered %s -> %s", host_path, container_path)
+    _registered_files[container_path] = str(resolved)
+    logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
 
 
@@ -110,11 +141,27 @@ def _load_config_files() -> List[Dict[str, str]]:
                 cfg = yaml.safe_load(f) or {}
             cred_files = cfg.get("terminal", {}).get("credential_files")
             if isinstance(cred_files, list):
+                hermes_home_resolved = hermes_home.resolve()
                 for item in cred_files:
                     if isinstance(item, str) and item.strip():
-                        host_path = hermes_home / item.strip()
+                        rel = item.strip()
+                        if os.path.isabs(rel):
+                            logger.warning(
+                                "credential_files: rejected absolute config path %r", rel,
+                            )
+                            continue
+                        host_path = (hermes_home / rel).resolve()
+                        try:
+                            host_path.relative_to(hermes_home_resolved)
+                        except ValueError:
+                            logger.warning(
+                                "credential_files: rejected config path traversal %r "
+                                "(resolves to %s, outside HERMES_HOME %s)",
+                                rel, host_path, hermes_home_resolved,
+                            )
+                            continue
                         if host_path.is_file():
-                            container_path = f"/root/.hermes/{item.strip()}"
+                            container_path = f"/root/.hermes/{rel}"
                             result.append({
                                 "host_path": str(host_path),
                                 "container_path": container_path,

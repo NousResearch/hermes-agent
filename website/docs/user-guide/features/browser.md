@@ -11,6 +11,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 
 - **Browserbase cloud mode** via [Browserbase](https://browserbase.com) for managed cloud browsers and anti-bot tooling
 - **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
+- **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
 - **Local Chrome via CDP** — connect browser tools to your own Chrome instance using `/browser connect`
 - **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
 
@@ -53,6 +54,50 @@ BROWSER_USE_API_KEY=***
 ```
 
 Get your API key at [browser-use.com](https://browser-use.com). Browser Use provides a cloud browser via its REST API. If both Browserbase and Browser Use credentials are set, Browserbase takes priority.
+
+### Camofox local mode
+
+[Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
+
+```bash
+# Install and run
+git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
+npm install && npm start   # downloads Camoufox (~300MB) on first run
+
+# Or via Docker
+docker run -d --network host -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
+```
+
+Then set in `~/.hermes/.env`:
+
+```bash
+CAMOFOX_URL=http://localhost:9377
+```
+
+Or configure via `hermes tools` → Browser Automation → Camofox.
+
+When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.
+
+#### Persistent browser sessions
+
+By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions:
+
+```yaml
+# In ~/.hermes/config.yaml
+browser:
+  camofox:
+    managed_persistence: true
+```
+
+When enabled, Hermes sends a stable profile-scoped identity to Camofox. The Camofox server maps this identity to a persistent browser profile directory, so cookies, logins, and localStorage survive across restarts. Different Hermes profiles get different browser profiles (profile isolation).
+
+:::note
+The Camofox server must also be configured with `CAMOFOX_PROFILE_DIR` on the server side for persistence to work.
+:::
+
+#### VNC live view
+
+When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
 
 ### Local Chrome via CDP (`/browser connect`)
 

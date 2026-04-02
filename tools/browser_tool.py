@@ -78,6 +78,7 @@ except Exception:
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
+from tools.tool_backend_helpers import normalize_browser_cloud_provider
 
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
@@ -245,7 +246,9 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
 
     Reads ``config["browser"]["cloud_provider"]`` once and caches the result
-    for the process lifetime.  If unset → local mode (None).
+    for the process lifetime. An explicit ``local`` provider disables cloud
+    fallback. If unset, fall back to Browserbase when direct or managed
+    Browserbase credentials are available.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
     if _cloud_provider_resolved:
@@ -259,12 +262,43 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
             import yaml
             with open(config_path) as f:
                 cfg = yaml.safe_load(f) or {}
-            provider_key = cfg.get("browser", {}).get("cloud_provider")
+            browser_cfg = cfg.get("browser", {})
+            provider_key = None
+            if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
+                provider_key = normalize_browser_cloud_provider(
+                    browser_cfg.get("cloud_provider")
+                )
+                if provider_key == "local":
+                    _cached_cloud_provider = None
+                    return None
             if provider_key and provider_key in _PROVIDER_REGISTRY:
                 _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
+
+    if _cached_cloud_provider is None:
+        fallback_provider = BrowserbaseProvider()
+        if fallback_provider.is_configured():
+            _cached_cloud_provider = fallback_provider
+
     return _cached_cloud_provider
+
+
+def _get_browserbase_config_or_none() -> Optional[Dict[str, Any]]:
+    """Return Browserbase direct or managed config, or None when unavailable."""
+    return BrowserbaseProvider()._get_config_or_none()
+
+
+def _get_browserbase_config() -> Dict[str, Any]:
+    """Return Browserbase config or raise when neither direct nor managed mode is available."""
+    return BrowserbaseProvider()._get_config()
+
+
+def _is_local_mode() -> bool:
+    """Return True when the browser tool will use a local browser backend."""
+    if _get_cdp_override():
+        return False
+    return _get_cloud_provider() is None
 
 
 def _is_local_backend() -> bool:
@@ -1970,7 +2004,7 @@ if __name__ == "__main__":
             print("     Install: npm install -g agent-browser && agent-browser install --with-deps")
         if _cp is not None and not _cp.is_configured():
             print(f"   - {_cp.provider_name()} credentials not configured")
-            print("   Tip: remove cloud_provider from config to use free local mode instead")
+            print("   Tip: set browser.cloud_provider to 'local' to use free local mode instead")
     
     print("\n📋 Available Browser Tools:")
     for schema in BROWSER_TOOL_SCHEMAS:

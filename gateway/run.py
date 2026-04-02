@@ -303,6 +303,28 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _build_media_placeholder(event) -> str:
+    """Build a text placeholder for media-only events so they aren't dropped.
+
+    When a photo/document is queued during active processing and later
+    dequeued, only .text is extracted.  If the event has no caption,
+    the media would be silently lost.  This builds a placeholder that
+    the vision enrichment pipeline will replace with a real description.
+    """
+    parts = []
+    media_urls = getattr(event, "media_urls", None) or []
+    media_types = getattr(event, "media_types", None) or []
+    for i, url in enumerate(media_urls):
+        mtype = media_types[i] if i < len(media_types) else ""
+        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+            parts.append(f"[User sent an image: {url}]")
+        elif mtype.startswith("audio/"):
+            parts.append(f"[User sent audio: {url}]")
+        else:
+            parts.append(f"[User sent a file: {url}]")
+    return "\n".join(parts)
+
+
 def _check_unavailable_skill(command_name: str) -> str | None:
     """Check if a command matches a known-but-inactive skill.
 
@@ -5384,11 +5406,13 @@ class GatewayRunner:
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
+            _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
             while True:
                 try:
                     raw = progress_queue.get_nowait()
-                    
+
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
@@ -5399,6 +5423,15 @@ class GatewayRunner:
                         msg = raw
                         progress_lines.append(msg)
 
+                    # Throttle edits: batch rapid tool updates into fewer
+                    # API calls to avoid hitting Telegram flood control.
+                    # (grammY auto-retry pattern: proactively rate-limit
+                    # instead of reacting to 429s.)
+                    _now = time.monotonic()
+                    if _now - _last_edit_ts < _PROGRESS_EDIT_INTERVAL:
+                        await asyncio.sleep(0.1)
+                        continue
+
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
@@ -5408,8 +5441,15 @@ class GatewayRunner:
                             content=full_text,
                         )
                         if not result.success:
-                            # Platform doesn't support editing — stop trying,
-                            # send just this new line as a separate message
+                            _err = (getattr(result, "error", "") or "").lower()
+                            if "flood" in _err or "retry after" in _err:
+                                # Flood control hit — disable further edits,
+                                # switch to sending new messages only for
+                                # important updates.  Don't block 23s.
+                                logger.info(
+                                    "[%s] Progress edits disabled due to flood control",
+                                    adapter.name,
+                                )
                             can_edit = False
                             await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                     else:
@@ -5422,6 +5462,8 @@ class GatewayRunner:
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+
+                    _last_edit_ts = time.monotonic()
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
@@ -5977,6 +6019,11 @@ class GatewayRunner:
                     pending_event = adapter.get_pending_message(session_key)
                     if pending_event:
                         pending = pending_event.text
+                        # Preserve media context for photo/document events
+                        # whose text is empty (no caption). Without this,
+                        # captionless photos are silently dropped.
+                        if not pending and getattr(pending_event, "media_urls", None):
+                            pending = _build_media_placeholder(pending_event)
                     elif result.get("interrupt_message"):
                         pending = result.get("interrupt_message")
                 else:
@@ -5985,7 +6032,10 @@ class GatewayRunner:
                     pending_event = adapter.get_pending_message(session_key)
                     if pending_event:
                         pending = pending_event.text
-                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                        if not pending and getattr(pending_event, "media_urls", None):
+                            pending = _build_media_placeholder(pending_event)
+                        if pending:
+                            logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
             
             if pending:
                 logger.debug("Processing pending message: '%s...'", pending[:40])

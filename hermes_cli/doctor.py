@@ -738,6 +738,74 @@ def run_doctor(args):
         check_warn("Honcho check failed", str(_e))
 
     # =========================================================================
+    # OpenViking knowledge base
+    # =========================================================================
+    print()
+    print(color("◆ OpenViking Knowledge Base", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from plugins.memory.openviking import OpenVikingMemoryProvider, _get_httpx
+        _ov_provider = OpenVikingMemoryProvider()
+        if not _ov_provider.is_available():
+            check_warn("OpenViking not configured", "(set OPENVIKING_ENDPOINT in .env)")
+        else:
+            _ov_endpoint = os.environ.get("OPENVIKING_ENDPOINT", "")
+            if not _ov_endpoint:
+                # Read from .env directly
+                try:
+                    _ov_env = get_env_path()
+                    if _ov_env.exists():
+                        for _line in _ov_env.read_text().splitlines():
+                            if _line.strip().startswith("OPENVIKING_ENDPOINT="):
+                                _ov_endpoint = _line.strip().split("=", 1)[1].strip()
+                                break
+                except Exception:
+                    pass
+
+            _httpx = _get_httpx()
+            if _httpx is None:
+                check_warn("OpenViking configured but httpx not installed", "(pip install httpx)")
+            elif not _ov_endpoint:
+                check_warn("OpenViking endpoint could not be resolved")
+            else:
+                print(f"  Checking OpenViking at {_ov_endpoint}...", end="", flush=True)
+                try:
+                    _ov_resp = _httpx.get(f"{_ov_endpoint.rstrip('/')}/health", timeout=3.0)
+                    if _ov_resp.status_code == 200:
+                        # Also check what's in the knowledge base
+                        try:
+                            _ov_headers = {
+                                "Content-Type": "application/json",
+                                "X-OpenViking-Account": os.environ.get("OPENVIKING_ACCOUNT", "default"),
+                                "X-OpenViking-User": os.environ.get("OPENVIKING_USER", "default"),
+                            }
+                            _ov_ls = _httpx.get(
+                                f"{_ov_endpoint.rstrip('/')}/api/v1/fs/ls",
+                                params={"uri": "viking://"},
+                                headers=_ov_headers,
+                                timeout=5.0,
+                            )
+                            _ov_items = _ov_ls.json().get("result", []) if _ov_ls.status_code == 200 else []
+                            _ov_count = len(_ov_items) if isinstance(_ov_items, list) else 0
+                            print(f"\r  {color('✓', Colors.GREEN)} OpenViking connected"
+                                  f" {color(f'({_ov_endpoint}, {_ov_count} top-level entries)', Colors.DIM)}       ")
+                        except Exception:
+                            print(f"\r  {color('✓', Colors.GREEN)} OpenViking connected"
+                                  f" {color(f'({_ov_endpoint})', Colors.DIM)}                    ")
+                    else:
+                        print(f"\r  {color('✗', Colors.RED)} OpenViking unhealthy"
+                              f" {color(f'(HTTP {_ov_resp.status_code})', Colors.DIM)}                    ")
+                        issues.append(f"OpenViking server at {_ov_endpoint} returned HTTP {_ov_resp.status_code}")
+                except Exception as _ov_e:
+                    print(f"\r  {color('✗', Colors.RED)} OpenViking unreachable"
+                          f" {color(f'({_ov_e})', Colors.DIM)}                    ")
+                    issues.append(f"OpenViking unreachable at {_ov_endpoint}: {_ov_e}")
+    except ImportError:
+        check_warn("OpenViking plugin not found")
+    except Exception as _ov_e:
+        check_warn("OpenViking check failed", str(_ov_e))
+
+    # =========================================================================
     # Profiles
     # =========================================================================
     try:

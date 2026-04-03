@@ -242,8 +242,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return "openviking"
 
     def is_available(self) -> bool:
-        """Check if OpenViking endpoint is configured. No network calls."""
-        return bool(os.environ.get("OPENVIKING_ENDPOINT"))
+        """Check if OpenViking endpoint is configured. No network calls.
+
+        Checks env vars first, then falls back to reading the .env file
+        directly (needed when called outside the CLI runtime, e.g. during
+        'hermes memory setup' or 'hermes doctor').
+        """
+        if os.environ.get("OPENVIKING_ENDPOINT"):
+            return True
+        # Fallback: read .env file directly for out-of-process checks
+        try:
+            from hermes_cli.config import get_env_path
+            env_path = get_env_path()
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if line.startswith("OPENVIKING_ENDPOINT=") and line.split("=", 1)[1].strip():
+                        return True
+        except Exception:
+            pass
+        return False
 
     def get_config_schema(self):
         return [

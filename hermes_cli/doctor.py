@@ -132,6 +132,42 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_persistent_memory_health(issues: list[str]) -> None:
+    """Report local persistent memory database and markdown export health."""
+    memories_dir = HERMES_HOME / "memories"
+    if memories_dir.exists():
+        check_ok(f"{_DHH}/memories/ directory exists")
+        memory_file = memories_dir / "MEMORY.md"
+        user_file = memories_dir / "USER.md"
+        if memory_file.exists():
+            size = len(memory_file.read_text(encoding="utf-8").strip())
+            check_ok(f"MEMORY.md exists ({size} chars)")
+        else:
+            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+        if user_file.exists():
+            size = len(user_file.read_text(encoding="utf-8").strip())
+            check_ok(f"USER.md exists ({size} chars)")
+        else:
+            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+    else:
+        check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
+
+    memory_db_path = HERMES_HOME / "memory.db"
+    if memory_db_path.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(memory_db_path))
+            cursor = conn.execute("SELECT COUNT(*) FROM memory_entries WHERE status = 'active'")
+            count = cursor.fetchone()[0]
+            conn.close()
+            check_ok(f"{_DHH}/memory.db exists ({count} active entries)")
+        except Exception as e:
+            check_warn(f"{_DHH}/memory.db exists but has issues: {e}")
+            issues.append(f"Inspect {_DHH}/memory.db")
+    else:
+        check_info(f"{_DHH}/memory.db not created yet (will be created on first memory write)")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -421,28 +457,13 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
+    # Check persistent memory health
     memories_dir = hermes_home / "memories"
-    if memories_dir.exists():
-        check_ok(f"{_DHH}/memories/ directory exists")
-        memory_file = memories_dir / "MEMORY.md"
-        user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
-        else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-        if user_file.exists():
-            size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
-        else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
-    else:
-        check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
-        if should_fix:
-            memories_dir.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH}/memories/")
-            fixed_count += 1
+    if not memories_dir.exists() and should_fix:
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        check_ok(f"Created {_DHH}/memories/")
+        fixed_count += 1
+    _check_persistent_memory_health(issues)
     
     # Check SQLite session store
     state_db_path = hermes_home / "state.db"

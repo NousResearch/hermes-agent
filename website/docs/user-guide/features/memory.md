@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
 title: "Persistent Memory"
-description: "How Hermes Agent remembers across sessions — MEMORY.md, USER.md, and session search"
+description: "How Hermes Agent remembers across sessions — memory.db, markdown exports, and session search"
 ---
 
 # Persistent Memory
@@ -10,14 +10,15 @@ Hermes Agent has bounded, curated memory that persists across sessions. This let
 
 ## How It Works
 
-Two files make up the agent's memory:
+Hermes now stores memory in a local SQLite database and keeps markdown exports for compatibility:
 
-| File | Purpose | Char Limit |
-|------|---------|------------|
-| **MEMORY.md** | Agent's personal notes — environment facts, conventions, things learned | 2,200 chars (~800 tokens) |
-| **USER.md** | User profile — your preferences, communication style, expectations | 1,375 chars (~500 tokens) |
+| Store | Purpose | Location |
+|------|---------|----------|
+| **memory.db** | Canonical persistent memory store with active/superseded/forgotten records | `~/.hermes/memory.db` |
+| **MEMORY.md** | Export of active agent-note memories for compatibility and inspection | `~/.hermes/memories/MEMORY.md` |
+| **USER.md** | Export of active user-profile memories for compatibility and inspection | `~/.hermes/memories/USER.md` |
 
-Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
+The agent still manages memory via the `memory` tool — it can add, replace, or remove entries. On session start, Hermes loads a compact retrieved snapshot from the SQLite store into the system prompt. The markdown files are exports, not the source of truth.
 
 :::info
 Character limits keep memory focused. When memory is full, the agent consolidates or replaces entries to make room for new information.
@@ -78,7 +79,7 @@ For information the agent needs to remember about the environment, workflows, an
 - Environment facts (OS, tools, project structure)
 - Project conventions and configuration
 - Tool quirks and workarounds discovered
-- Completed task diary entries
+- Stable lessons learned that will matter again
 - Skills and techniques that worked
 
 ### `user` — User Profile
@@ -101,7 +102,7 @@ The agent saves automatically — you don't need to ask. It saves when it learns
 - **Environment facts:** "This server runs Debian 12 with PostgreSQL 16" → save to `memory`
 - **Corrections:** "Don't use `sudo` for Docker commands, user is in docker group" → save to `memory`
 - **Conventions:** "Project uses tabs, 120-char line width, Google-style docstrings" → save to `memory`
-- **Completed work:** "Migrated database from MySQL to PostgreSQL on 2026-01-15" → save to `memory`
+- **Stable lesson learned:** "Staging SSH uses port 2222, not 22" → save to `memory`
 - **Explicit requests:** "Remember that my API key rotation happens monthly" → save to `memory`
 
 ### Skip These

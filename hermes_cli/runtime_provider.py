@@ -538,6 +538,13 @@ def _resolve_explicit_runtime(
     return None
 
 
+
+def _inject_headers(runtime, headers):
+    """Inject default_headers into a runtime dict (non-destructive)."""
+    if headers:
+        runtime.setdefault("default_headers", {}).update(headers)
+    return runtime
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -547,6 +554,9 @@ def resolve_runtime_provider(
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
 
+    # Read default_headers from model config and inject into every return path.
+    _cfg_headers = _parse_default_headers(_get_model_config())
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -554,7 +564,7 @@ def resolve_runtime_provider(
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
-        return custom_runtime
+        return _inject_headers(custom_runtime, _cfg_headers)
 
     provider = resolve_provider(
         requested_provider,
@@ -570,7 +580,7 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     if explicit_runtime:
-        return explicit_runtime
+        return _inject_headers(explicit_runtime, _cfg_headers)
 
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":
@@ -605,20 +615,21 @@ def resolve_runtime_provider(
                 or getattr(entry, "access_token", "")
             )
         if entry is not None and pool_api_key:
-            return _resolve_runtime_from_pool_entry(
+            result = _resolve_runtime_from_pool_entry(
                 provider=provider,
                 entry=entry,
                 requested_provider=requested_provider,
                 model_cfg=model_cfg,
                 pool=pool,
             )
+            return _inject_headers(result, _cfg_headers)
 
     if provider == "nous":
         creds = resolve_nous_runtime_credentials(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
             timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
         )
-        return {
+        return _inject_headers({
             "provider": "nous",
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
@@ -626,11 +637,11 @@ def resolve_runtime_provider(
             "source": creds.get("source", "portal"),
             "expires_at": creds.get("expires_at"),
             "requested_provider": requested_provider,
-        }
+        }, _cfg_headers)
 
     if provider == "openai-codex":
         creds = resolve_codex_runtime_credentials()
-        return {
+        return _inject_headers({
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": creds.get("base_url", "").rstrip("/"),
@@ -638,11 +649,11 @@ def resolve_runtime_provider(
             "source": creds.get("source", "hermes-auth-store"),
             "last_refresh": creds.get("last_refresh"),
             "requested_provider": requested_provider,
-        }
+        }, _cfg_headers)
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
-        return {
+        return _inject_headers({
             "provider": "copilot-acp",
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
@@ -651,7 +662,7 @@ def resolve_runtime_provider(
             "args": list(creds.get("args") or []),
             "source": creds.get("source", "process"),
             "requested_provider": requested_provider,
-        }
+        }, _cfg_headers)
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
@@ -670,14 +681,14 @@ def resolve_runtime_provider(
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
-        return {
+        return _inject_headers({
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
             "source": "env",
             "requested_provider": requested_provider,
-        }
+        }, _cfg_headers)
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
@@ -700,14 +711,14 @@ def resolve_runtime_provider(
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
-        return {
+        return _inject_headers({
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
-        }
+        }, _cfg_headers)
 
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,
@@ -715,7 +726,7 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
-    return runtime
+    return _inject_headers(runtime, _cfg_headers)
 
 
 def format_runtime_provider_error(error: Exception) -> str:

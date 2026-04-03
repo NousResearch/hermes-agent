@@ -426,6 +426,7 @@ class AIAgent:
         self,
         base_url: str = None,
         api_key: str = None,
+        default_headers: Dict[str, str] = None,
         provider: str = None,
         api_mode: str = None,
         acp_command: str = None,
@@ -541,6 +542,7 @@ class AIAgent:
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         self.base_url = base_url or ""
+        self.default_headers = default_headers or {}
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
@@ -826,6 +828,15 @@ class AIAgent:
                     }
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+
+            # Merge user-configured default_headers (e.g., for LiteLLM OAuth passthrough).
+            # Applied after all provider-specific headers so user headers have lower
+            # priority and do not accidentally overwrite provider-required headers.
+            if self.default_headers:
+                _user_headers = self.default_headers.copy()
+                if "default_headers" in client_kwargs:
+                    _user_headers.update(client_kwargs["default_headers"])
+                client_kwargs["default_headers"] = _user_headers
 
             # Enable fine-grained tool streaming for Claude on OpenRouter.
             # Without this, Anthropic buffers the entire tool call and goes

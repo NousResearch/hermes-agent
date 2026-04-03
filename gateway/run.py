@@ -295,6 +295,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
+        "default_headers": runtime.get("default_headers"),
         "provider": runtime.get("provider"),
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),

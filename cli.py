@@ -2100,6 +2100,7 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+        self._default_headers = runtime.get("default_headers")
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.
@@ -2129,6 +2130,7 @@ class HermesCLI:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "default_headers": getattr(self, "_default_headers", None),
             },
         )
 
@@ -2200,12 +2202,14 @@ class HermesCLI:
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
                 "credential_pool": getattr(self, "_credential_pool", None),
+                "default_headers": getattr(self, "_default_headers", None),
             }
             effective_model = model_override or self.model
             self.agent = AIAgent(
                 model=effective_model,
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
+                default_headers=runtime.get("default_headers"),
                 provider=runtime.get("provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),

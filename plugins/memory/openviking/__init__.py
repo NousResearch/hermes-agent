@@ -51,9 +51,11 @@ def _get_httpx():
 class _VikingClient:
     """Thin HTTP client for the OpenViking REST API."""
 
-    def __init__(self, endpoint: str, api_key: str = ""):
+    def __init__(self, endpoint: str, api_key: str = "", account: str = "default", user: str = "default"):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
+        self._account = account or "default"
+        self._user = user or "default"
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -62,6 +64,9 @@ class _VikingClient:
         h = {"Content-Type": "application/json"}
         if self._api_key:
             h["X-API-Key"] = self._api_key
+        # Trusted-mode auth: always send account + user headers
+        h["X-OpenViking-Account"] = self._account
+        h["X-OpenViking-User"] = self._user
         return h
 
     def _url(self, path: str) -> str:
@@ -256,11 +261,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
         self._api_key = os.environ.get("OPENVIKING_API_KEY", "")
+        self._account = os.environ.get("OPENVIKING_ACCOUNT", "default")
+        self._user = os.environ.get("OPENVIKING_USER", "default")
         self._session_id = session_id
         self._turn_count = 0
 
         try:
-            self._client = _VikingClient(self._endpoint, self._api_key)
+            self._client = _VikingClient(self._endpoint, self._api_key, self._account, self._user)
             if not self._client.health():
                 logger.warning("OpenViking server at %s is not reachable", self._endpoint)
                 self._client = None
@@ -274,9 +281,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Provide brief info about the knowledge base
         try:
             # Check what's in the knowledge base via a root listing
-            resp = self._client.post("/api/v1/browse", {"action": "stat", "path": "viking://"})
-            result = resp.get("result", {})
-            children = result.get("children", 0)
+            resp = self._client.get("/api/v1/fs/ls", params={"uri": "viking://"})
+            result = resp.get("result", [])
+            children = len(result) if isinstance(result, list) else 0
             if children == 0:
                 return ""
             return (
@@ -312,7 +319,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def _run():
             try:
-                client = _VikingClient(self._endpoint, self._api_key)
+                client = _VikingClient(self._endpoint, self._api_key, self._account, self._user)
                 resp = client.post("/api/v1/search/find", {
                     "query": query,
                     "top_k": 5,
@@ -347,7 +354,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def _sync():
             try:
-                client = _VikingClient(self._endpoint, self._api_key)
+                client = _VikingClient(self._endpoint, self._api_key, self._account, self._user)
                 sid = self._session_id
 
                 # Add user message
@@ -398,7 +405,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         def _write():
             try:
-                client = _VikingClient(self._endpoint, self._api_key)
+                client = _VikingClient(self._endpoint, self._api_key, self._account, self._user)
                 # Add as a user message with memory context so the commit
                 # picks it up as an explicit memory during extraction
                 client.post(f"/api/v1/sessions/{self._session_id}/messages", {
@@ -486,16 +493,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return json.dumps({"error": "uri is required"})
 
         level = args.get("level", "overview")
-        # Map our level names to OpenViking endpoints
+        # Map our level names to OpenViking GET endpoints
         if level == "abstract":
-            resp = self._client.post("/api/v1/read/abstract", {"uri": uri})
+            resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
         elif level == "full":
-            resp = self._client.post("/api/v1/read", {"uri": uri, "level": "read"})
+            resp = self._client.get("/api/v1/content/read", params={"uri": uri})
         else:  # overview
-            resp = self._client.post("/api/v1/read", {"uri": uri, "level": "overview"})
+            resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
 
-        result = resp.get("result", {})
-        content = result.get("content", "")
+        result = resp.get("result", "")
+        # result is a plain string from the content endpoints
+        content = result if isinstance(result, str) else result.get("content", "")
 
         # Truncate very long content to avoid flooding the context
         if len(content) > 8000:
@@ -511,20 +519,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
         action = args.get("action", "list")
         path = args.get("path", "viking://")
 
-        resp = self._client.post("/api/v1/browse", {
-            "action": action,
-            "path": path,
-        })
+        # Map action to the correct fs endpoint (all GET with uri= param)
+        endpoint_map = {"tree": "/api/v1/fs/tree", "list": "/api/v1/fs/ls", "stat": "/api/v1/fs/stat"}
+        endpoint = endpoint_map.get(action, "/api/v1/fs/ls")
+        resp = self._client.get(endpoint, params={"uri": path})
         result = resp.get("result", {})
 
-        # Format for readability
-        if action == "list" and "entries" in result:
+        # Format list/tree results for readability
+        if action in ("list", "tree") and isinstance(result, list):
             entries = []
-            for e in result["entries"][:50]:  # cap at 50 entries
+            for e in result[:50]:  # cap at 50 entries
                 entries.append({
-                    "name": e.get("name", ""),
+                    "name": e.get("rel_path", e.get("name", "")),
                     "uri": e.get("uri", ""),
-                    "type": "dir" if e.get("is_dir") else "file",
+                    "type": "dir" if e.get("isDir") else "file",
+                    "abstract": e.get("abstract", ""),
                 })
             return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
 

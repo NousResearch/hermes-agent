@@ -151,6 +151,7 @@ def _install_dependencies(provider_name: str) -> None:
         "honcho-ai": "honcho",
         "mem0ai": "mem0",
         "hindsight-client": "hindsight_client",
+        "hindsight-all": "hindsight",
     }
 
     # Check which packages are missing
@@ -166,22 +167,43 @@ def _install_dependencies(provider_name: str) -> None:
         return
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
-            check=True, timeout=120,
-            capture_output=True,
-        )
-        print(f"  ✓ Installed {', '.join(missing)}")
-    except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
-        stderr = (e.stderr or b"").decode()[:200]
-        if stderr:
-            print(f"    {stderr}")
-        print(f"  Run manually: pip install {' '.join(missing)}")
-    except Exception as e:
-        print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: pip install {' '.join(missing)}")
+    installed = False
+
+    # Try uv first (fast, doesn't require pip in the venv)
+    import shutil
+    uv_path = shutil.which("uv")
+    if uv_path:
+        try:
+            subprocess.run(
+                [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+                check=True, timeout=120,
+                capture_output=True,
+            )
+            print(f"  ✓ Installed {', '.join(missing)}")
+            installed = True
+        except (subprocess.CalledProcessError, Exception):
+            pass  # fall through to pip
+
+    # Fall back to pip
+    if not installed:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+                check=True, timeout=120,
+                capture_output=True,
+            )
+            print(f"  ✓ Installed {', '.join(missing)}")
+            installed = True
+        except subprocess.CalledProcessError as e:
+            print(f"  ⚠ Failed to install {', '.join(missing)}")
+            stderr = (e.stderr or b"").decode()[:200]
+            if stderr:
+                print(f"    {stderr}")
+        except Exception as e:
+            print(f"  ⚠ Install failed: {e}")
+
+    if not installed:
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -294,6 +316,12 @@ def cmd_setup(args) -> None:
             choices = field.get("choices")
             env_var = field.get("env_var")
             url = field.get("url")
+
+            # Skip fields whose "when" condition doesn't match
+            when = field.get("when")
+            if when and isinstance(when, dict):
+                if not all(provider_config.get(k) == v for k, v in when.items()):
+                    continue
 
             if choices and not is_secret:
                 # Use curses picker for choice fields

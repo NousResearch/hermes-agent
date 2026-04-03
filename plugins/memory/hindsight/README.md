@@ -4,7 +4,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 
 ## Requirements
 
-- Cloud: `pip install hindsight-client` + API key from [app.hindsight.vectorize.io](https://app.hindsight.vectorize.io)
+- Cloud: `pip install hindsight-client` + API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io)
 - Local: `pip install hindsight` + LLM API key for embeddings
 
 ## Setup

@@ -8,6 +8,7 @@ import pytest
 
 from tools.browser_camofox import (
     camofox_back,
+    camofox_profile,
     camofox_click,
     camofox_close,
     camofox_console,
@@ -220,6 +221,33 @@ class TestCamofoxConsole:
         assert result["success"] is True
         assert result["total_messages"] == 0
         assert "not available" in result["note"]
+
+
+class TestCamofoxProfile:
+    def test_metrics_shape_matches_default_backend(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        with patch("tools.browser_camofox.camofox_eval") as mock_eval:
+            mock_eval.return_value = json.dumps({
+                "success": True,
+                "result": json.dumps({"url": "https://example.com", "dom": {"total_nodes": 12}}),
+            })
+            result = json.loads(camofox_profile("metrics", task_id="t_profile"))
+
+        assert result["success"] is True
+        assert result["metrics"]["url"] == "https://example.com"
+        assert result["metrics"]["dom"]["total_nodes"] == 12
+
+    def test_clear_shape_matches_default_backend(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        with patch("tools.browser_camofox.camofox_eval") as mock_eval:
+            mock_eval.return_value = json.dumps({
+                "success": True,
+                "result": json.dumps({"cleared": True}),
+            })
+            result = json.loads(camofox_profile("clear", task_id="t_profile"))
+
+        assert result["success"] is True
+        assert result["cleared"] is True
 
 
 # ---------------------------------------------------------------------------

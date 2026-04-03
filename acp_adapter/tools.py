@@ -41,6 +41,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_back": "execute",
     "browser_close": "execute",
     "browser_get_images": "read",
+    "browser_debug": "execute",
     # Agent internals
     "delegate_task": "execute",
     "vision_analyze": "read",
@@ -85,6 +86,14 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         if urls:
             return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
         return "web extract"
+    if tool_name == "browser_debug":
+        action = args.get("action", "")
+        if action == "eval":
+            expr = args.get("expression", "")
+            if len(expr) > 60:
+                expr = expr[:57] + "..."
+            return f"browser debug eval: {expr}" if expr else "browser debug eval"
+        return f"browser debug: {action or 'help'}"
     if tool_name == "delegate_task":
         goal = args.get("goal", "")
         if goal and len(goal) > 60:

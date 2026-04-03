@@ -360,6 +360,8 @@ def _socket_safe_tmpdir() -> str:
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
 _active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
 _recording_sessions: set = set()  # task_ids with active recordings
+_network_monitor_sessions: set = set()  # task_ids with active JS-level network monitoring
+_network_log_buffers: Dict[str, List[Dict[str, Any]]] = {}  # task_id -> merged network entries
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -647,6 +649,56 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": ["question"]
+        }
+    },
+    {
+        "name": "browser_debug",
+        "description": "Advanced browser debugging and inspection through one action-based tool. Supports JavaScript evaluation, network monitoring, accessibility inspection, and lightweight profile/performance metrics. Requires browser_navigate first.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "eval",
+                        "network_help", "network_enable", "network_disable", "network_get_log", "network_clear",
+                        "accessibility_help", "accessibility_tree", "accessibility_query", "accessibility_node",
+                        "profile_help", "profile_metrics", "profile_clear"
+                    ],
+                    "description": "Debug action to perform."
+                },
+                "expression": {
+                    "type": "string",
+                    "description": "JavaScript expression for action=eval."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of entries for action=network_get_log.",
+                    "default": 50
+                },
+                "filter": {
+                    "type": "string",
+                    "description": "Optional URL substring filter for action=network_get_log."
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Maximum accessibility tree depth for action=accessibility_tree. 0 means no limit.",
+                    "default": 0
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Accessible name substring for action=accessibility_query."
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Accessibility role for action=accessibility_query."
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector for action=accessibility_node."
+                }
+            },
+            "required": ["action"]
         }
     },
     {
@@ -1089,6 +1141,683 @@ def _extract_relevant_content(
         return _truncate_snapshot(snapshot_text)
 
 
+def _run_eval_command(
+    task_id: str,
+    expression: str,
+    timeout: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run JavaScript evaluation in the current page context."""
+    return _run_browser_command(
+        task_id,
+        "eval",
+        [expression],
+        timeout=timeout or max(_get_command_timeout(), 60),
+    )
+
+
+def _normalize_eval_output(raw_result: Any) -> Dict[str, Any]:
+    """Normalize agent-browser eval output into a stable JSON response."""
+    result = raw_result
+    parsed_json = False
+
+    if isinstance(raw_result, str):
+        try:
+            result = json.loads(raw_result)
+            parsed_json = True
+        except (TypeError, ValueError):
+            result = raw_result
+
+    payload = {
+        "success": True,
+        "result": result,
+        "result_type": type(result).__name__,
+    }
+    if parsed_json:
+        payload["raw_result"] = raw_result
+    return payload
+
+
+def _snapshot_payload(
+    full: bool = False,
+    task_id: Optional[str] = None,
+    user_task: Optional[str] = None,
+    truncate: bool = True,
+) -> Dict[str, Any]:
+    """Internal snapshot helper with optional truncation control."""
+    effective_task_id = task_id or "default"
+
+    args = []
+    if not full:
+        args.extend(["-c"])
+
+    result = _run_browser_command(effective_task_id, "snapshot", args)
+    if not result.get("success"):
+        return {
+            "success": False,
+            "error": result.get("error", "Failed to get snapshot"),
+        }
+
+    data = result.get("data", {})
+    snapshot_text = data.get("snapshot", "")
+    refs = data.get("refs", {})
+
+    if truncate and len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
+        snapshot_text = _extract_relevant_content(snapshot_text, user_task)
+    elif truncate and len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        snapshot_text = _truncate_snapshot(snapshot_text)
+
+    return {
+        "success": True,
+        "snapshot": snapshot_text,
+        "element_count": len(refs) if refs else 0,
+    }
+
+
+def _network_monitor_install_expression() -> str:
+    """Install or refresh the in-page Hermes network monitor."""
+    return r"""
+(() => {
+  const state = window.__hermesNetworkMonitor = window.__hermesNetworkMonitor || {};
+  if (!Array.isArray(state.log)) state.log = [];
+  if (!state.perfKeys) state.perfKeys = {};
+  if (typeof state.maxEntries !== "number") state.maxEntries = 200;
+
+  const nowMs = () => Date.now();
+  const toUrl = (value) => {
+    try {
+      return new URL(String(value || ""), location.href).href;
+    } catch {
+      return String(value || "");
+    }
+  };
+  const trim = () => {
+    if (state.log.length > state.maxEntries) {
+      state.log = state.log.slice(state.log.length - state.maxEntries);
+    }
+  };
+  const push = (entry) => {
+    state.log.push(entry);
+    trim();
+  };
+
+  state.capturePerformance = () => {
+    const navEntries = performance.getEntriesByType("navigation") || [];
+    for (const entry of navEntries) {
+      const key = `nav:${entry.name}:${entry.startTime}`;
+      if (state.perfKeys[key]) continue;
+      state.perfKeys[key] = true;
+      push({
+        url: entry.name || location.href,
+        method: "GET",
+        status: null,
+        status_text: "",
+        type: "navigation",
+        initiator_type: "navigation",
+        start_time: entry.startTime / 1000,
+        end_time: (entry.startTime + entry.duration) / 1000,
+        duration_ms: entry.duration,
+        transfer_size: entry.transferSize || 0,
+        encoded_size: entry.encodedBodySize || 0,
+        decoded_size: entry.decodedBodySize || 0,
+      });
+    }
+
+    const resourceEntries = performance.getEntriesByType("resource") || [];
+    for (const entry of resourceEntries) {
+      const key = `res:${entry.name}:${entry.startTime}:${entry.initiatorType || ""}`;
+      if (state.perfKeys[key]) continue;
+      state.perfKeys[key] = true;
+      push({
+        url: entry.name || "",
+        method: "GET",
+        status: null,
+        status_text: "",
+        type: entry.initiatorType || "resource",
+        initiator_type: entry.initiatorType || "resource",
+        start_time: entry.startTime / 1000,
+        end_time: (entry.startTime + entry.duration) / 1000,
+        duration_ms: entry.duration,
+        transfer_size: entry.transferSize || 0,
+        encoded_size: entry.encodedBodySize || 0,
+        decoded_size: entry.decodedBodySize || 0,
+      });
+    }
+  };
+
+  if (!state.installed) {
+    state.installed = true;
+
+    const originalFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (originalFetch) {
+      state.originalFetch = originalFetch;
+      window.fetch = async (...args) => {
+        const input = args[0];
+        const init = args[1] || {};
+        const method = String(init.method || input?.method || "GET").toUpperCase();
+        const url = toUrl(input?.url || input);
+        const started = nowMs();
+        try {
+          const response = await originalFetch(...args);
+          push({
+            url,
+            method,
+            status: Number(response.status || 0),
+            status_text: response.statusText || "",
+            type: "fetch",
+            initiator_type: "fetch",
+            start_time: started / 1000,
+            end_time: nowMs() / 1000,
+            duration_ms: nowMs() - started,
+          });
+          return response;
+        } catch (error) {
+          push({
+            url,
+            method,
+            status: 0,
+            status_text: "",
+            type: "fetch",
+            initiator_type: "fetch",
+            start_time: started / 1000,
+            end_time: nowMs() / 1000,
+            duration_ms: nowMs() - started,
+            error: String(error),
+          });
+          throw error;
+        }
+      };
+    }
+
+    const xhrOpen = XMLHttpRequest.prototype.open;
+    const xhrSend = XMLHttpRequest.prototype.send;
+    state.originalXHROpen = xhrOpen;
+    state.originalXHRSend = xhrSend;
+
+    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+      this.__hermesNetworkMeta = {
+        method: String(method || "GET").toUpperCase(),
+        url: toUrl(url),
+        started: 0,
+      };
+      return xhrOpen.call(this, method, url, ...rest);
+    };
+
+    XMLHttpRequest.prototype.send = function(...args) {
+      const meta = this.__hermesNetworkMeta || {
+        method: "GET",
+        url: location.href,
+        started: 0,
+      };
+      meta.started = nowMs();
+      this.addEventListener("loadend", () => {
+        push({
+          url: meta.url,
+          method: meta.method,
+          status: Number(this.status || 0),
+          status_text: this.statusText || "",
+          type: "xhr",
+          initiator_type: "xhr",
+          start_time: meta.started / 1000,
+          end_time: nowMs() / 1000,
+          duration_ms: nowMs() - meta.started,
+        });
+      }, { once: true });
+      this.addEventListener("error", () => {
+        push({
+          url: meta.url,
+          method: meta.method,
+          status: 0,
+          status_text: "",
+          type: "xhr",
+          initiator_type: "xhr",
+          start_time: meta.started / 1000,
+          end_time: nowMs() / 1000,
+          duration_ms: nowMs() - meta.started,
+          error: "Network error",
+        });
+      }, { once: true });
+      return xhrSend.apply(this, args);
+    };
+  }
+
+  state.capturePerformance();
+  return JSON.stringify({ installed: true, entries: state.log.length });
+})()
+""".strip()
+
+
+def _network_monitor_disable_expression() -> str:
+    """Disable the in-page Hermes network monitor."""
+    return r"""
+(() => {
+  const state = window.__hermesNetworkMonitor;
+  if (!state || !state.installed) {
+    return JSON.stringify({ disabled: false, reason: "not_enabled" });
+  }
+  if (state.originalFetch) {
+    window.fetch = state.originalFetch;
+  }
+  if (state.originalXHROpen) {
+    XMLHttpRequest.prototype.open = state.originalXHROpen;
+  }
+  if (state.originalXHRSend) {
+    XMLHttpRequest.prototype.send = state.originalXHRSend;
+  }
+  state.installed = false;
+  return JSON.stringify({ disabled: true, entries: state.log.length });
+})()
+""".strip()
+
+
+def _network_monitor_read_expression() -> str:
+    """Read the current network monitor log."""
+    return r"""
+(() => {
+  const state = window.__hermesNetworkMonitor || {};
+  if (typeof state.capturePerformance === "function") {
+    state.capturePerformance();
+  } else {
+    const temp = [];
+    const navEntries = performance.getEntriesByType("navigation") || [];
+    for (const entry of navEntries) {
+      temp.push({
+        url: entry.name || location.href,
+        method: "GET",
+        status: null,
+        status_text: "",
+        type: "navigation",
+        initiator_type: "navigation",
+        start_time: entry.startTime / 1000,
+        end_time: (entry.startTime + entry.duration) / 1000,
+        duration_ms: entry.duration,
+        transfer_size: entry.transferSize || 0,
+        encoded_size: entry.encodedBodySize || 0,
+        decoded_size: entry.decodedBodySize || 0,
+      });
+    }
+    const resourceEntries = performance.getEntriesByType("resource") || [];
+    for (const entry of resourceEntries) {
+      temp.push({
+        url: entry.name || "",
+        method: "GET",
+        status: null,
+        status_text: "",
+        type: entry.initiatorType || "resource",
+        initiator_type: entry.initiatorType || "resource",
+        start_time: entry.startTime / 1000,
+        end_time: (entry.startTime + entry.duration) / 1000,
+        duration_ms: entry.duration,
+        transfer_size: entry.transferSize || 0,
+        encoded_size: entry.encodedBodySize || 0,
+        decoded_size: entry.decodedBodySize || 0,
+      });
+    }
+    return JSON.stringify(temp);
+  }
+  return JSON.stringify(state.log || []);
+})()
+""".strip()
+
+
+def _network_monitor_clear_expression() -> str:
+    """Clear the current network monitor log."""
+    return r"""
+(() => {
+  const state = window.__hermesNetworkMonitor = window.__hermesNetworkMonitor || {};
+  state.log = [];
+  state.perfKeys = {};
+  return JSON.stringify({ cleared: true });
+})()
+""".strip()
+
+
+def _network_entry_key(entry: Dict[str, Any]) -> tuple:
+    """Stable key for deduplicating session-level network entries."""
+    return (
+        entry.get("url"),
+        entry.get("method"),
+        entry.get("type"),
+        entry.get("initiator_type"),
+        entry.get("start_time"),
+        entry.get("end_time"),
+        entry.get("status"),
+    )
+
+
+def _merge_network_entries(task_id: str, entries: List[Dict[str, Any]], max_entries: int = 500) -> List[Dict[str, Any]]:
+    """Merge fresh entries into the session-level network buffer."""
+    existing = _network_log_buffers.setdefault(task_id, [])
+    seen = {_network_entry_key(entry) for entry in existing}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key = _network_entry_key(entry)
+        if key in seen:
+            continue
+        existing.append(entry)
+        seen.add(key)
+    if len(existing) > max_entries:
+        del existing[:-max_entries]
+    return existing
+
+
+def _refresh_network_buffer(task_id: str) -> List[Dict[str, Any]]:
+    """Read current page timing/network entries and merge them into the session buffer."""
+    result = _run_eval_command(task_id, _network_monitor_read_expression())
+    if not result.get("success"):
+        return _network_log_buffers.get(task_id, [])
+
+    payload = _normalize_eval_output(result.get("data", {}).get("result"))
+    entries = payload.get("result", [])
+    if not isinstance(entries, list):
+        entries = []
+    return _merge_network_entries(task_id, entries)
+
+
+def _profile_metrics_expression() -> str:
+    """Build a lightweight performance metrics snapshot expression."""
+    return r"""
+(() => {
+  const nav = performance.getEntriesByType("navigation")[0] || null;
+  const resources = performance.getEntriesByType("resource") || [];
+  const byInitiator = {};
+  let totalTransfer = 0;
+  let totalDuration = 0;
+  for (const entry of resources) {
+    const key = entry.initiatorType || "other";
+    byInitiator[key] = (byInitiator[key] || 0) + 1;
+    totalTransfer += entry.transferSize || 0;
+    totalDuration += entry.duration || 0;
+  }
+
+  const memory = performance.memory ? {
+    used_js_heap_size: performance.memory.usedJSHeapSize,
+    total_js_heap_size: performance.memory.totalJSHeapSize,
+    js_heap_size_limit: performance.memory.jsHeapSizeLimit,
+  } : null;
+
+  return JSON.stringify({
+    url: location.href,
+    title: document.title,
+    timestamp_ms: Date.now(),
+    dom: {
+      total_nodes: document.querySelectorAll("*").length,
+      images: document.images.length,
+      scripts: document.scripts.length,
+      stylesheets: document.styleSheets.length,
+      forms: document.forms.length,
+      links: document.links.length
+    },
+    navigation: nav ? {
+      type: nav.type || "",
+      dom_content_loaded_ms: nav.domContentLoadedEventEnd || 0,
+      load_event_ms: nav.loadEventEnd || 0,
+      response_end_ms: nav.responseEnd || 0,
+      transfer_size: nav.transferSize || 0,
+      encoded_body_size: nav.encodedBodySize || 0,
+      decoded_body_size: nav.decodedBodySize || 0
+    } : null,
+    resources: {
+      count: resources.length,
+      total_transfer_size: totalTransfer,
+      total_duration_ms: totalDuration,
+      by_initiator: byInitiator
+    },
+    memory
+  });
+})()
+""".strip()
+
+
+def _profile_clear_expression() -> str:
+    """Clear browser timing/mark buffers."""
+    return r"""
+(() => {
+  performance.clearResourceTimings();
+  performance.clearMarks();
+  performance.clearMeasures();
+  return JSON.stringify({ cleared: true });
+})()
+""".strip()
+
+
+def _accessibility_query_expression(name: Optional[str], role: Optional[str]) -> str:
+    """Build an accessibility query expression, preferring computed AX data."""
+    name_json = json.dumps((name or "").lower())
+    role_json = json.dumps((role or "").lower())
+    return f"""
+(() => {{
+  const nameFilter = {name_json};
+  const roleFilter = {role_json};
+  const supportsComputedAX = typeof window.getComputedAccessibleNode === "function";
+
+  const getFallbackRole = (el) => {{
+    const explicit = (el.getAttribute("role") || "").trim();
+    if (explicit) return explicit.toLowerCase();
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "a" && el.hasAttribute("href")) return "link";
+    if (tag === "button") return "button";
+    if (tag === "select") return "combobox";
+    if (tag === "textarea") return "textbox";
+    if (tag === "input") {{
+      if (["button", "submit", "reset"].includes(type)) return "button";
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      return "textbox";
+    }}
+    if (/^h[1-6]$/.test(tag)) return "heading";
+    if (tag === "img") return "img";
+    if (tag === "nav") return "navigation";
+    if (tag === "main") return "main";
+    if (tag === "form") return "form";
+    return "";
+  }};
+
+  const getLabelText = (el) => {{
+    try {{
+      if (el.labels && el.labels.length) {{
+        return Array.from(el.labels).map((label) => label.innerText.trim()).filter(Boolean).join(" ");
+      }}
+    }} catch {{}}
+    const id = el.getAttribute("id");
+    if (id) {{
+      const label = document.querySelector(`label[for="${{CSS.escape(id)}}"]`);
+      if (label) return (label.innerText || "").trim();
+    }}
+    return "";
+  }};
+
+  const getFallbackName = (el) => {{
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {{
+      const labelText = labelledBy
+        .split(/\\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => (node.innerText || node.textContent || "").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (labelText) return labelText;
+    }}
+    const candidates = [
+      el.getAttribute("aria-label"),
+      el.getAttribute("alt"),
+      el.getAttribute("title"),
+      getLabelText(el),
+      el.getAttribute("placeholder"),
+      (el.value || "").trim(),
+      (el.innerText || "").trim(),
+      (el.textContent || "").trim(),
+    ];
+    return (candidates.find((value) => value && value.trim()) || "").trim();
+  }};
+
+  const getComputedAX = (el) => {{
+    if (!supportsComputedAX) return null;
+    try {{
+      const ax = window.getComputedAccessibleNode(el);
+      if (!ax) return null;
+      return {{
+        role: String(ax.role || "").trim().toLowerCase(),
+        name: String(ax.name || "").trim(),
+        description: String(ax.description || "").trim(),
+        value: String(ax.value || "").trim(),
+      }};
+    }} catch {{
+      return null;
+    }}
+  }};
+
+  const getSelector = (el) => {{
+    if (!(el instanceof Element)) return "";
+    if (el.id) return `#${{CSS.escape(el.id)}}`;
+    const parts = [];
+    let current = el;
+    while (current && current.nodeType === 1 && parts.length < 4) {{
+      let part = current.tagName.toLowerCase();
+      const siblings = current.parentElement
+        ? Array.from(current.parentElement.children).filter((child) => child.tagName === current.tagName)
+        : [];
+      if (siblings.length > 1) {{
+        part += `:nth-of-type(${{siblings.indexOf(current) + 1}})`;
+      }}
+      parts.unshift(part);
+      const candidate = parts.join(" > ");
+      try {{
+        if (document.querySelectorAll(candidate).length === 1) return candidate;
+      }} catch {{}}
+      current = current.parentElement;
+    }}
+    return parts.join(" > ");
+  }};
+
+  const matches = [];
+  for (const el of document.querySelectorAll("*")) {{
+    const computed = getComputedAX(el);
+    const role = computed?.role || getFallbackRole(el);
+    const name = computed?.name || getFallbackName(el);
+    if (!role && !name) continue;
+    if (nameFilter && !name.toLowerCase().includes(nameFilter)) continue;
+    if (roleFilter && role !== roleFilter) continue;
+    matches.push({{
+      role,
+      name,
+      description: computed?.description || "",
+      value: computed?.value || "",
+      source: computed ? "computed_ax" : "fallback_dom",
+      tag: el.tagName.toLowerCase(),
+      selector: getSelector(el),
+      text: (el.innerText || "").trim().slice(0, 200),
+      disabled: !!el.disabled,
+      href: el.href || "",
+    }});
+  }}
+  return JSON.stringify(matches.slice(0, 100));
+}})()
+""".strip()
+
+
+def _accessibility_node_expression(selector: str) -> str:
+    """Build an accessibility node expression, preferring computed AX data."""
+    selector_json = json.dumps(selector)
+    return f"""
+(() => {{
+  const selector = {selector_json};
+  const el = document.querySelector(selector);
+  if (!el) {{
+    return JSON.stringify({{ found: false, selector }});
+  }}
+
+  const supportsComputedAX = typeof window.getComputedAccessibleNode === "function";
+  const fallbackRole = (el.getAttribute("role") || "").trim().toLowerCase() || (() => {{
+    const tag = el.tagName.toLowerCase();
+    if (tag === "button") return "button";
+    if (tag === "a" && el.hasAttribute("href")) return "link";
+    if (/^h[1-6]$/.test(tag)) return "heading";
+    if (tag === "img") return "img";
+    if (tag === "input" || tag === "textarea") return "textbox";
+    return "";
+  }})();
+
+  const fallbackName = (() => {{
+    const labelledBy = (el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
+    const labelledText = labelledBy
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((node) => (node.innerText || node.textContent || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    return (
+      labelledText ||
+      el.getAttribute("aria-label") ||
+      el.getAttribute("alt") ||
+      el.getAttribute("title") ||
+      el.getAttribute("placeholder") ||
+      (el.innerText || "").trim() ||
+      (el.textContent || "").trim()
+    );
+  }})();
+
+  let computed = null;
+  if (supportsComputedAX) {{
+    try {{
+      const ax = window.getComputedAccessibleNode(el);
+      if (ax) {{
+        computed = {{
+          role: String(ax.role || "").trim().toLowerCase(),
+          name: String(ax.name || "").trim(),
+          description: String(ax.description || "").trim(),
+          value: String(ax.value || "").trim(),
+        }};
+      }}
+    }} catch {{}}
+  }}
+
+  const role = computed?.role || fallbackRole;
+  const name = computed?.name || (
+    el.getAttribute("aria-label") ||
+    fallbackName
+  );
+
+  return JSON.stringify({{
+    found: true,
+    selector,
+    role,
+    name: (name || "").trim(),
+    description: computed?.description || "",
+    value: computed?.value || "",
+    source: computed ? "computed_ax" : "fallback_dom",
+    tag: el.tagName.toLowerCase(),
+    text: (el.innerText || "").trim().slice(0, 400),
+    disabled: !!el.disabled,
+    expanded: el.getAttribute("aria-expanded"),
+    checked: el.getAttribute("aria-checked"),
+    selected: el.getAttribute("aria-selected"),
+    placeholder: el.getAttribute("placeholder") || "",
+    href: el.href || "",
+  }});
+}})()
+""".strip()
+
+
+def _filter_accessibility_tree_depth(tree_text: str, depth: int) -> str:
+    """Best-effort depth filter for accessibility tree snapshots."""
+    if depth <= 0:
+        return tree_text
+
+    filtered_lines: list[str] = []
+    for line in tree_text.splitlines():
+        if not line.strip():
+            filtered_lines.append(line)
+            continue
+        leading_spaces = len(line) - len(line.lstrip(" "))
+        approx_depth = leading_spaces // 2
+        if approx_depth <= depth:
+            filtered_lines.append(line)
+    return "\n".join(filtered_lines)
+
+
 def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
     """
     Simple truncation fallback for snapshots.
@@ -1222,6 +1951,13 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     "Consider upgrading Browserbase plan for proxy support."
                 )
             response["stealth_features"] = active_features
+
+        if effective_task_id in _network_monitor_sessions:
+            try:
+                _run_eval_command(effective_task_id, _network_monitor_install_expression())
+                _refresh_network_buffer(effective_task_id)
+            except Exception:
+                logger.debug("Failed to install network monitor after navigation", exc_info=True)
         
         return json.dumps(response, ensure_ascii=False)
     else:
@@ -1250,39 +1986,8 @@ def browser_snapshot(
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_snapshot
         return camofox_snapshot(full, task_id, user_task)
-
-    effective_task_id = task_id or "default"
-    
-    # Build command args based on full flag
-    args = []
-    if not full:
-        args.extend(["-c"])  # Compact mode
-    
-    result = _run_browser_command(effective_task_id, "snapshot", args)
-    
-    if result.get("success"):
-        data = result.get("data", {})
-        snapshot_text = data.get("snapshot", "")
-        refs = data.get("refs", {})
-        
-        # Check if snapshot needs summarization
-        if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
-            snapshot_text = _extract_relevant_content(snapshot_text, user_task)
-        elif len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
-            snapshot_text = _truncate_snapshot(snapshot_text)
-        
-        response = {
-            "success": True,
-            "snapshot": snapshot_text,
-            "element_count": len(refs) if refs else 0
-        }
-        
-        return json.dumps(response, ensure_ascii=False)
-    else:
-        return json.dumps({
-            "success": False,
-            "error": result.get("error", "Failed to get snapshot")
-        }, ensure_ascii=False)
+    response = _snapshot_payload(full=full, task_id=task_id, user_task=user_task, truncate=True)
+    return json.dumps(response, ensure_ascii=False)
 
 
 def browser_click(ref: str, task_id: Optional[str] = None) -> str:
@@ -1309,6 +2014,12 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "click", [ref])
     
     if result.get("success"):
+        if effective_task_id in _network_monitor_sessions:
+            try:
+                _run_eval_command(effective_task_id, _network_monitor_install_expression())
+                _refresh_network_buffer(effective_task_id)
+            except Exception:
+                logger.debug("Failed to refresh network monitor after click", exc_info=True)
         return json.dumps({
             "success": True,
             "clicked": ref
@@ -1346,6 +2057,12 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
     
     if result.get("success"):
+        if effective_task_id in _network_monitor_sessions:
+            try:
+                _run_eval_command(effective_task_id, _network_monitor_install_expression())
+                _refresh_network_buffer(effective_task_id)
+            except Exception:
+                logger.debug("Failed to refresh network monitor after type", exc_info=True)
         return json.dumps({
             "success": True,
             "typed": text,
@@ -1385,6 +2102,12 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "scroll", [direction])
     
     if result.get("success"):
+        if effective_task_id in _network_monitor_sessions:
+            try:
+                _run_eval_command(effective_task_id, _network_monitor_install_expression())
+                _refresh_network_buffer(effective_task_id)
+            except Exception:
+                logger.debug("Failed to refresh network monitor after scroll", exc_info=True)
         return json.dumps({
             "success": True,
             "scrolled": direction
@@ -1415,6 +2138,12 @@ def browser_back(task_id: Optional[str] = None) -> str:
     
     if result.get("success"):
         data = result.get("data", {})
+        if effective_task_id in _network_monitor_sessions:
+            try:
+                _run_eval_command(effective_task_id, _network_monitor_install_expression())
+                _refresh_network_buffer(effective_task_id)
+            except Exception:
+                logger.debug("Failed to refresh network monitor after back", exc_info=True)
         return json.dumps({
             "success": True,
             "url": data.get("url", "")
@@ -1445,6 +2174,12 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "press", [key])
     
     if result.get("success"):
+        if effective_task_id in _network_monitor_sessions:
+            try:
+                _run_eval_command(effective_task_id, _network_monitor_install_expression())
+                _refresh_network_buffer(effective_task_id)
+            except Exception:
+                logger.debug("Failed to refresh network monitor after key press", exc_info=True)
         return json.dumps({
             "success": True,
             "pressed": key
@@ -1483,6 +2218,308 @@ def browser_close(task_id: Optional[str] = None) -> str:
     if not had_session:
         response["warning"] = "Session may not have been active"
     return json.dumps(response, ensure_ascii=False)
+
+
+def browser_eval(expression: str, task_id: Optional[str] = None) -> str:
+    """Evaluate JavaScript in the current page context."""
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_eval
+        return camofox_eval(expression, task_id)
+
+    effective_task_id = task_id or "default"
+    result = _run_eval_command(effective_task_id, expression)
+    if not result.get("success"):
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "Failed to evaluate JavaScript"),
+        }, ensure_ascii=False)
+
+    raw_result = result.get("data", {}).get("result")
+    return json.dumps(_normalize_eval_output(raw_result), ensure_ascii=False)
+
+
+def browser_network(
+    action: str,
+    limit: int = 50,
+    filter: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Monitor and inspect browser network activity."""
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_network
+        return camofox_network(action=action, limit=limit, filter=filter, task_id=task_id)
+
+    effective_task_id = task_id or "default"
+
+    if action == "help":
+        return json.dumps({
+            "success": True,
+            "help": (
+                "browser_network actions: enable, disable, get_log, clear, help. "
+                "This uses a JS-level monitor plus Performance API resource timing, "
+                "so it is strongest for fetch/XHR/resource debugging rather than raw CDP tracing."
+            ),
+        }, ensure_ascii=False)
+
+    if action == "enable":
+        result = _run_eval_command(effective_task_id, _network_monitor_install_expression())
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to enable network monitoring"),
+            }, ensure_ascii=False)
+        _network_monitor_sessions.add(effective_task_id)
+        _network_log_buffers[effective_task_id] = []
+        _refresh_network_buffer(effective_task_id)
+        return json.dumps({
+            "success": True,
+            "enabled": True,
+            "task_id": effective_task_id,
+        }, ensure_ascii=False)
+
+    if action == "disable":
+        if effective_task_id in _network_monitor_sessions:
+            _refresh_network_buffer(effective_task_id)
+        result = _run_eval_command(effective_task_id, _network_monitor_disable_expression())
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to disable network monitoring"),
+            }, ensure_ascii=False)
+        _network_monitor_sessions.discard(effective_task_id)
+        payload = _normalize_eval_output(result.get("data", {}).get("result"))
+        payload["enabled"] = False
+        return json.dumps(payload, ensure_ascii=False)
+
+    if action == "clear":
+        result = _run_eval_command(effective_task_id, _network_monitor_clear_expression())
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to clear network log"),
+            }, ensure_ascii=False)
+        payload = _normalize_eval_output(result.get("data", {}).get("result"))
+        payload["cleared"] = True
+        _network_log_buffers[effective_task_id] = []
+        return json.dumps(payload, ensure_ascii=False)
+
+    if action == "get_log":
+        if effective_task_id in _network_monitor_sessions:
+            _run_eval_command(effective_task_id, _network_monitor_install_expression())
+            entries = _refresh_network_buffer(effective_task_id)
+        else:
+            entries = _network_log_buffers.get(effective_task_id, [])
+
+        if filter:
+            entries = [
+                entry for entry in entries
+                if filter.lower() in str(entry.get("url", "")).lower()
+            ]
+        if limit and limit > 0:
+            entries = entries[-limit:]
+
+        return json.dumps({
+            "success": True,
+            "entries": entries,
+            "count": len(entries),
+            "enabled": effective_task_id in _network_monitor_sessions,
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": False,
+        "error": f"Unknown browser_network action '{action}'",
+    }, ensure_ascii=False)
+
+
+def browser_accessibility(
+    action: str,
+    depth: int = 0,
+    name: Optional[str] = None,
+    role: Optional[str] = None,
+    selector: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Inspect the page's accessibility representation."""
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_accessibility
+        return camofox_accessibility(
+            action=action,
+            depth=depth,
+            name=name,
+            role=role,
+            selector=selector,
+            task_id=task_id,
+        )
+
+    effective_task_id = task_id or "default"
+
+    if action == "help":
+        return json.dumps({
+            "success": True,
+            "help": (
+                "browser_accessibility actions: tree, query, node, help. "
+                "tree returns the page accessibility snapshot, query searches by role/name, "
+                "and node inspects a DOM element selected by CSS selector."
+            ),
+        }, ensure_ascii=False)
+
+    if action == "tree":
+        snapshot = _snapshot_payload(full=True, task_id=effective_task_id, truncate=False)
+        if not snapshot.get("success"):
+            return json.dumps(snapshot, ensure_ascii=False)
+        tree_text = _filter_accessibility_tree_depth(snapshot.get("snapshot", ""), depth)
+        return json.dumps({
+            "success": True,
+            "tree": tree_text,
+            "depth": depth,
+            "source": "browser_snapshot",
+        }, ensure_ascii=False)
+
+    if action == "query":
+        result = _run_eval_command(
+            effective_task_id,
+            _accessibility_query_expression(name=name, role=role),
+        )
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to query accessibility state"),
+            }, ensure_ascii=False)
+        payload = _normalize_eval_output(result.get("data", {}).get("result"))
+        matches = payload.get("result", [])
+        if not isinstance(matches, list):
+            matches = []
+        return json.dumps({
+            "success": True,
+            "matches": matches,
+            "count": len(matches),
+        }, ensure_ascii=False)
+
+    if action == "node":
+        if not selector:
+            return json.dumps({
+                "success": False,
+                "error": "selector is required for browser_accessibility action=node",
+            }, ensure_ascii=False)
+        result = _run_eval_command(
+            effective_task_id,
+            _accessibility_node_expression(selector),
+        )
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to inspect accessibility node"),
+            }, ensure_ascii=False)
+        payload = _normalize_eval_output(result.get("data", {}).get("result"))
+        node = payload.get("result", {})
+        return json.dumps({
+            "success": True,
+            "node": node,
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": False,
+        "error": f"Unknown browser_accessibility action '{action}'",
+    }, ensure_ascii=False)
+
+
+def browser_profile(action: str, task_id: Optional[str] = None) -> str:
+    """Inspect lightweight browser performance/profile state."""
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_profile
+        return camofox_profile(action=action, task_id=task_id)
+
+    effective_task_id = task_id or "default"
+
+    if action == "help":
+        return json.dumps({
+            "success": True,
+            "help": (
+                "browser profile actions: metrics, clear, help. "
+                "metrics returns a lightweight Performance API and DOM snapshot. "
+                "clear clears performance resource timings, marks, and measures."
+            ),
+        }, ensure_ascii=False)
+
+    if action == "metrics":
+        result = _run_eval_command(effective_task_id, _profile_metrics_expression())
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to collect browser profile metrics"),
+            }, ensure_ascii=False)
+        payload = _normalize_eval_output(result.get("data", {}).get("result"))
+        return json.dumps({
+            "success": True,
+            "metrics": payload.get("result"),
+        }, ensure_ascii=False)
+
+    if action == "clear":
+        result = _run_eval_command(effective_task_id, _profile_clear_expression())
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Failed to clear browser profile state"),
+            }, ensure_ascii=False)
+        return json.dumps({
+            "success": True,
+            "cleared": True,
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": False,
+        "error": f"Unknown browser_profile action '{action}'",
+    }, ensure_ascii=False)
+
+
+def browser_debug(
+    action: str,
+    task_id: Optional[str] = None,
+    expression: Optional[str] = None,
+    limit: int = 50,
+    filter: Optional[str] = None,
+    depth: int = 0,
+    name: Optional[str] = None,
+    role: Optional[str] = None,
+    selector: Optional[str] = None,
+) -> str:
+    """Consolidated advanced browser inspection surface."""
+    action = (action or "").strip()
+
+    if action == "eval":
+        return browser_eval(expression or "", task_id=task_id)
+
+    if action == "network_help":
+        return browser_network("help", task_id=task_id)
+    if action == "network_enable":
+        return browser_network("enable", limit=limit, filter=filter, task_id=task_id)
+    if action == "network_disable":
+        return browser_network("disable", limit=limit, filter=filter, task_id=task_id)
+    if action == "network_get_log":
+        return browser_network("get_log", limit=limit, filter=filter, task_id=task_id)
+    if action == "network_clear":
+        return browser_network("clear", limit=limit, filter=filter, task_id=task_id)
+
+    if action == "accessibility_help":
+        return browser_accessibility("help", task_id=task_id)
+    if action == "accessibility_tree":
+        return browser_accessibility("tree", depth=depth, task_id=task_id)
+    if action == "accessibility_query":
+        return browser_accessibility("query", name=name, role=role, task_id=task_id)
+    if action == "accessibility_node":
+        return browser_accessibility("node", selector=selector, task_id=task_id)
+
+    if action == "profile_help":
+        return browser_profile("help", task_id=task_id)
+    if action == "profile_metrics":
+        return browser_profile("metrics", task_id=task_id)
+    if action == "profile_clear":
+        return browser_profile("clear", task_id=task_id)
+
+    return json.dumps({
+        "success": False,
+        "error": f"Unknown browser_debug action '{action}'",
+    }, ensure_ascii=False)
 
 
 def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
@@ -1873,6 +2910,8 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if session_info:
         bb_session_id = session_info.get("bb_session_id", "unknown")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
+        _network_monitor_sessions.discard(task_id)
+        _network_log_buffers.pop(task_id, None)
         
         # Stop auto-recording before closing (saves the file)
         _maybe_stop_recording(task_id)
@@ -2103,6 +3142,24 @@ registry.register(
     handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👁️",
+)
+registry.register(
+    name="browser_debug",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_debug"],
+    handler=lambda args, **kw: browser_debug(
+        action=args.get("action", ""),
+        task_id=kw.get("task_id"),
+        expression=args.get("expression"),
+        limit=args.get("limit", 50),
+        filter=args.get("filter"),
+        depth=args.get("depth", 0),
+        name=args.get("name"),
+        role=args.get("role"),
+        selector=args.get("selector"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🧪",
 )
 registry.register(
     name="browser_console",

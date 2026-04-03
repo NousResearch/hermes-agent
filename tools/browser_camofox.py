@@ -255,7 +255,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 
 
 def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
-                     user_task: Optional[str] = None) -> str:
+                     user_task: Optional[str] = None, truncate: bool = True) -> str:
     """Get accessibility tree snapshot from Camofox."""
     try:
         session = _get_session(task_id)
@@ -277,7 +277,7 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
             _truncate_snapshot,
         )
 
-        if len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+        if truncate and len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD:
             if user_task:
                 snapshot = _extract_relevant_content(snapshot, user_task)
             else:
@@ -535,6 +535,201 @@ def camofox_vision(question: str, annotate: bool = False,
         })
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
+
+
+def camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
+    """Evaluate JavaScript via Camofox when the server exposes an eval endpoint."""
+    try:
+        session = _get_session(task_id)
+        if not session["tab_id"]:
+            return json.dumps({"success": False, "error": "No browser session. Call browser_navigate first."})
+
+        data = _post(
+            f"/tabs/{session['tab_id']}/eval",
+            {"userId": session["user_id"], "expression": expression},
+            timeout=60,
+        )
+        return json.dumps({
+            "success": True,
+            "result": data.get("result"),
+            "result_type": type(data.get("result")).__name__,
+        })
+    except requests.HTTPError as e:
+        status = getattr(e.response, "status_code", None)
+        if status in {404, 405, 501}:
+            return json.dumps({
+                "success": False,
+                "error": "browser_eval is not available with this Camofox server build.",
+            })
+        return json.dumps({"success": False, "error": str(e)})
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
+def camofox_network(
+    action: str,
+    limit: int = 50,
+    filter: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Network monitoring is not currently available in the Camofox backend."""
+    if action == "help":
+        return json.dumps({
+            "success": True,
+            "help": (
+                "browser_network is not currently supported by the Camofox backend. "
+                "Use the default Hermes browser backend for network monitoring."
+            ),
+        })
+    return json.dumps({
+        "success": False,
+        "error": "browser_network is not currently supported by the Camofox backend.",
+    })
+
+
+def camofox_accessibility(
+    action: str,
+    depth: int = 0,
+    name: Optional[str] = None,
+    role: Optional[str] = None,
+    selector: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Best-effort accessibility inspection for Camofox."""
+    if action == "help":
+        return json.dumps({
+            "success": True,
+            "help": (
+                "browser_accessibility on Camofox supports tree and best-effort query. "
+                "node inspection requires browser_eval support from the server."
+            ),
+        })
+
+    if action == "tree":
+        payload = json.loads(camofox_snapshot(full=True, task_id=task_id, truncate=False))
+        if not payload.get("success"):
+            return json.dumps(payload)
+        tree = payload.get("snapshot", "")
+        if depth > 0:
+            lines = []
+            for line in tree.splitlines():
+                if not line.strip():
+                    lines.append(line)
+                    continue
+                leading_spaces = len(line) - len(line.lstrip(" "))
+                approx_depth = leading_spaces // 2
+                if approx_depth <= depth:
+                    lines.append(line)
+            tree = "\n".join(lines)
+        return json.dumps({"success": True, "tree": tree, "depth": depth})
+
+    if action == "query":
+        payload = json.loads(camofox_snapshot(full=True, task_id=task_id, truncate=False))
+        if not payload.get("success"):
+            return json.dumps(payload)
+        matches = []
+        name_filter = (name or "").lower()
+        role_filter = (role or "").lower()
+        for line in payload.get("snapshot", "").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            lower = text.lower()
+            if name_filter and name_filter not in lower:
+                continue
+            if role_filter and role_filter not in lower:
+                continue
+            matches.append({"line": text})
+        return json.dumps({"success": True, "matches": matches[:100], "count": min(len(matches), 100)})
+
+    if action == "node":
+        if not selector:
+            return json.dumps({"success": False, "error": "selector is required for action=node"})
+        from tools.browser_tool import _accessibility_node_expression
+
+        result = json.loads(camofox_eval(_accessibility_node_expression(selector), task_id=task_id))
+        if not result.get("success"):
+            return json.dumps(result)
+        node = result.get("result", {})
+        if isinstance(node, str):
+            try:
+                node = json.loads(node)
+            except Exception:
+                pass
+        return json.dumps({
+            "success": True,
+            "node": node,
+        })
+
+    return json.dumps({"success": False, "error": f"Unknown browser_accessibility action '{action}'"})
+
+
+def camofox_profile(action: str, task_id: Optional[str] = None) -> str:
+    """Best-effort profile support via eval when available."""
+    if action == "help":
+        return json.dumps({
+            "success": True,
+            "help": (
+                "browser profile actions: metrics, clear, help. "
+                "Camofox support depends on the server exposing an eval endpoint."
+            ),
+        })
+
+    if action == "metrics":
+        result = json.loads(camofox_eval(
+            r"""(() => JSON.stringify({
+  url: location.href,
+  title: document.title,
+  timestamp_ms: Date.now(),
+  dom: {
+    total_nodes: document.querySelectorAll("*").length,
+    images: document.images.length,
+    scripts: document.scripts.length,
+    forms: document.forms.length
+  },
+  resources: {
+    count: performance.getEntriesByType("resource").length
+  }
+}))()""",
+            task_id=task_id,
+        ))
+        if not result.get("success"):
+            return json.dumps(result)
+        metrics = result.get("result")
+        if isinstance(metrics, str):
+            try:
+                metrics = json.loads(metrics)
+            except Exception:
+                pass
+        return json.dumps({
+            "success": True,
+            "metrics": metrics,
+        })
+
+    if action == "clear":
+        result = json.loads(camofox_eval(
+            r"""(() => {
+  performance.clearResourceTimings();
+  performance.clearMarks();
+  performance.clearMeasures();
+  return JSON.stringify({cleared: true});
+})()""",
+            task_id=task_id,
+        ))
+        if not result.get("success"):
+            return json.dumps(result)
+        cleared = result.get("result")
+        if isinstance(cleared, str):
+            try:
+                cleared = json.loads(cleared)
+            except Exception:
+                pass
+        return json.dumps({
+            "success": True,
+            "cleared": bool(cleared.get("cleared")) if isinstance(cleared, dict) else bool(cleared),
+        })
+
+    return json.dumps({"success": False, "error": f"Unknown browser_profile action '{action}'"})
 
 
 def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:

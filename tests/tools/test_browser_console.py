@@ -116,6 +116,12 @@ class TestBrowserConsoleSchema:
         assert "clear" in props
         assert props["clear"]["type"] == "boolean"
 
+    def test_new_browser_schemas_present(self):
+        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+
+        names = {s["name"] for s in BROWSER_TOOL_SCHEMAS}
+        assert "browser_debug" in names
+
 
 class TestBrowserConsoleToolsetWiring:
     """browser_console must be reachable via toolset resolution."""
@@ -123,19 +129,109 @@ class TestBrowserConsoleToolsetWiring:
     def test_in_browser_toolset(self):
         from toolsets import TOOLSETS
         assert "browser_console" in TOOLSETS["browser"]["tools"]
+        assert "browser_debug" in TOOLSETS["browser"]["tools"]
 
     def test_in_hermes_core_tools(self):
         from toolsets import _HERMES_CORE_TOOLS
         assert "browser_console" in _HERMES_CORE_TOOLS
+        assert "browser_debug" in _HERMES_CORE_TOOLS
 
     def test_in_legacy_toolset_map(self):
         from model_tools import _LEGACY_TOOLSET_MAP
         assert "browser_console" in _LEGACY_TOOLSET_MAP["browser_tools"]
+        assert "browser_debug" in _LEGACY_TOOLSET_MAP["browser_tools"]
 
     def test_in_registry(self):
         from tools.registry import registry
         from tools import browser_tool  # noqa: F401
         assert "browser_console" in registry._tools
+        assert "browser_debug" in registry._tools
+
+
+class TestNewBrowserTools:
+    def test_browser_debug_network_enable_tracks_session(self):
+        from tools.browser_tool import browser_debug, _network_monitor_sessions
+
+        _network_monitor_sessions.discard("test")
+        with patch("tools.browser_tool._run_eval_command") as mock_eval:
+            mock_eval.return_value = {"success": True, "data": {"result": '{"installed":true}'}}
+            result = json.loads(browser_debug("network_enable", task_id="test"))
+
+        assert result["success"] is True
+        assert result["enabled"] is True
+        assert "test" in _network_monitor_sessions
+
+    def test_browser_debug_accessibility_tree_uses_snapshot(self):
+        from tools.browser_tool import browser_debug
+
+        with patch("tools.browser_tool._snapshot_payload") as mock_snapshot:
+            mock_snapshot.return_value = {"success": True, "snapshot": "root\n  button \"Submit\""}
+            result = json.loads(browser_debug("accessibility_tree", depth=1, task_id="test"))
+
+        assert result["success"] is True
+        assert "button" in result["tree"]
+        mock_snapshot.assert_called_once_with(full=True, task_id="test", truncate=False)
+
+    def test_browser_debug_eval_routes_to_eval(self):
+        from tools.browser_tool import browser_debug
+
+        with patch("tools.browser_tool.browser_eval") as mock_eval:
+            mock_eval.return_value = json.dumps({"success": True, "result": {"ok": True}})
+            result = json.loads(browser_debug("eval", expression="document.title", task_id="test"))
+
+        assert result["success"] is True
+        mock_eval.assert_called_once()
+
+    def test_browser_debug_profile_metrics_routes(self):
+        from tools.browser_tool import browser_debug
+
+        with patch("tools.browser_tool.browser_profile") as mock_profile:
+            mock_profile.return_value = json.dumps({"success": True, "metrics": {"dom": {"total_nodes": 10}}})
+            result = json.loads(browser_debug("profile_metrics", task_id="test"))
+
+        assert result["success"] is True
+        mock_profile.assert_called_once_with("metrics", task_id="test")
+
+    def test_browser_network_get_log_uses_buffer(self):
+        from tools.browser_tool import browser_network, _network_monitor_sessions, _network_log_buffers
+
+        _network_monitor_sessions.add("test")
+        _network_log_buffers["test"] = [{"url": "https://example.com", "method": "GET", "type": "navigation"}]
+        with patch("tools.browser_tool._run_eval_command") as mock_eval, \
+             patch("tools.browser_tool._refresh_network_buffer") as mock_refresh:
+            mock_eval.return_value = {"success": True, "data": {"result": '{"installed":true}'}}
+            mock_refresh.return_value = list(_network_log_buffers["test"])
+            result = json.loads(browser_network("get_log", task_id="test"))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["entries"][0]["url"] == "https://example.com"
+
+    def test_accessibility_helpers_prefer_computed_ax(self):
+        from tools.browser_tool import _accessibility_query_expression, _accessibility_node_expression
+
+        query_expr = _accessibility_query_expression("submit", "button")
+        node_expr = _accessibility_node_expression("#login")
+
+        assert "getComputedAccessibleNode" in query_expr
+        assert "computed_ax" in query_expr
+        assert "getComputedAccessibleNode" in node_expr
+        assert "computed_ax" in node_expr
+
+
+class TestCamofoxAccessibility:
+    def test_node_uses_eval_when_available(self):
+        from tools.browser_camofox import camofox_accessibility
+
+        with patch("tools.browser_camofox.camofox_eval") as mock_eval:
+            mock_eval.return_value = json.dumps({
+                "success": True,
+                "result": {"found": True, "selector": "#login"},
+            })
+            result = json.loads(camofox_accessibility("node", selector="#login", task_id="test"))
+
+        assert result["success"] is True
+        assert result["node"]["selector"] == "#login"
 
 
 # ── browser_vision annotate ──────────────────────────────────────────

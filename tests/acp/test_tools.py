@@ -55,6 +55,9 @@ class TestToolKindMap:
     def test_tool_kind_browser_navigate(self):
         assert get_tool_kind("browser_navigate") == "fetch"
 
+    def test_tool_kind_browser_debug(self):
+        assert get_tool_kind("browser_debug") == "execute"
+
     def test_unknown_tool_returns_other_kind(self):
         assert get_tool_kind("nonexistent_tool_xyz") == "other"
 

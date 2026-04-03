@@ -189,7 +189,12 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception:
             total = 0
         if total == 0:
-            return ""
+            return (
+                "# Holographic Memory\n"
+                "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
+                "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
+                "Use fact_feedback to rate facts after using them (trains trust scores)."
+            )
         return (
             f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
@@ -206,7 +211,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 return ""
             lines = []
             for r in results:
-                trust = r.get("trust", 0)
+                trust = r.get("trust_score", r.get("trust", 0))
                 lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
             return "## Holographic Memory\n" + "\n".join(lines)
         except Exception as e:

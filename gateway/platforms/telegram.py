@@ -155,6 +155,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Group Forum Topics: map of "chat_id:thread_id" -> topic config dict
+        self._group_topics_config: List[Dict[str, Any]] = self.config.extra.get("group_topics", [])
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -553,6 +555,16 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Forum topic lifecycle events (service messages — not caught by TEXT/MEDIA filters)
+            self._app.add_handler(TelegramMessageHandler(
+                (
+                    filters.StatusUpdate.FORUM_TOPIC_CREATED
+                    | filters.StatusUpdate.FORUM_TOPIC_EDITED
+                    | filters.StatusUpdate.FORUM_TOPIC_CLOSED
+                    | filters.StatusUpdate.FORUM_TOPIC_REOPENED
+                ),
+                self._handle_forum_topic_event
+            ))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -2401,7 +2413,82 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         await self.handle_message(event)
-    
+
+    async def _handle_forum_topic_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle forum topic lifecycle service messages.
+
+        These events (created/edited/closed/reopened) are delivered as
+        service messages that do NOT carry text or media, so the standard
+        TEXT / MEDIA handlers never fire.  Without this dedicated handler
+        the auto-discovery logic in ``_build_message_event`` is unreachable.
+        """
+        message = update.message
+        if not message:
+            return
+
+        chat = message.chat
+        # Only relevant for group/supergroup forums
+        if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return
+
+        thread_id_raw = message.message_thread_id
+        if not thread_id_raw:
+            return
+        thread_id_str = str(thread_id_raw)
+
+        # forum_topic_created — auto-register new topic
+        if hasattr(message, "forum_topic_created") and message.forum_topic_created:
+            created = message.forum_topic_created
+            created_name = getattr(created, "name", None)
+            if created_name:
+                emoji_id = getattr(created, "icon_custom_emoji_id", None)
+                self._persist_group_topic(
+                    chat_id=int(chat.id),
+                    thread_id=int(thread_id_str),
+                    topic_name=created_name,
+                    icon_custom_emoji_id=emoji_id,
+                )
+                logger.info(
+                    "[%s] Auto-registered new forum topic '%s' (thread_id=%s) via service message handler",
+                    self.name, created_name, thread_id_str,
+                )
+            return
+
+        # forum_topic_edited — update name in config
+        if hasattr(message, "forum_topic_edited") and message.forum_topic_edited:
+            edited = message.forum_topic_edited
+            new_name = getattr(edited, "name", None)
+            if new_name:
+                self._persist_group_topic_edit(
+                    chat_id=int(chat.id),
+                    thread_id=int(thread_id_str),
+                    new_name=new_name,
+                )
+                logger.info(
+                    "[%s] Updated forum topic name to '%s' (thread_id=%s) via service message handler",
+                    self.name, new_name, thread_id_str,
+                )
+            return
+
+        # forum_topic_closed / reopened
+        if hasattr(message, "forum_topic_closed") and message.forum_topic_closed:
+            self._persist_group_topic_edit(
+                chat_id=int(chat.id),
+                thread_id=int(thread_id_str),
+                is_closed=True,
+            )
+            logger.info("[%s] Forum topic closed (thread_id=%s)", self.name, thread_id_str)
+            return
+
+        if hasattr(message, "forum_topic_reopened") and message.forum_topic_reopened:
+            self._persist_group_topic_edit(
+                chat_id=int(chat.id),
+                thread_id=int(thread_id_str),
+                is_closed=False,
+            )
+            logger.info("[%s] Forum topic reopened (thread_id=%s)", self.name, thread_id_str)
+            return
+
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 
@@ -2599,6 +2686,146 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    def _get_group_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Look up group forum topic config by chat_id and thread_id.
+
+        Reads from config.extra['group_topics'] — a list of dicts:
+        [
+            {
+                "chat_id": -1003767930333,
+                "topics": [
+                    {"thread_id": 81, "name": "Deep Research", "skill": "deep-research-english"},
+                    {"thread_id": 19, "name": "General"}
+                ]
+            }
+        ]
+
+        Returns the topic config dict if found, or None.
+        """
+        if not thread_id or not self._group_topics_config:
+            return None
+
+        thread_id_int = int(thread_id)
+
+        for chat_entry in self._group_topics_config:
+            if str(chat_entry.get("chat_id")) == chat_id:
+                for t in chat_entry.get("topics", []):
+                    if t.get("thread_id") == thread_id_int:
+                        return t
+        return None
+
+    def _reload_group_topics_from_config(self) -> None:
+        """Re-read group_topics from config.yaml (hot-reload without restart)."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+
+            group_topics = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+                .get("group_topics", [])
+            )
+            if group_topics:
+                self._group_topics_config = group_topics
+        except Exception as e:
+            logger.debug("[%s] Failed to reload group_topics from config: %s", self.name, e)
+
+    def _persist_group_topic(
+        self, chat_id: int, thread_id: int, topic_name: str,
+        icon_custom_emoji_id: Optional[str] = None,
+    ) -> None:
+        """Auto-register a newly discovered group forum topic into config.yaml."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+            platforms = config.setdefault("platforms", {})
+            tg = platforms.setdefault("telegram", {})
+            extra = tg.setdefault("extra", {})
+            group_topics: list = extra.setdefault("group_topics", [])
+            chat_entry = None
+            for entry in group_topics:
+                if int(entry.get("chat_id", 0)) == int(chat_id):
+                    chat_entry = entry
+                    break
+            if chat_entry is None:
+                chat_entry = {"chat_id": int(chat_id), "topics": []}
+                group_topics.append(chat_entry)
+            topics = chat_entry.setdefault("topics", [])
+            for t in topics:
+                if t.get("thread_id") == int(thread_id):
+                    return
+            new_topic: Dict[str, Any] = {"thread_id": int(thread_id), "name": topic_name}
+            if icon_custom_emoji_id:
+                new_topic["icon_custom_emoji_id"] = icon_custom_emoji_id
+            topics.append(new_topic)
+            with open(config_path, "w") as f:
+                _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            logger.info(
+                "[%s] Auto-registered group topic '%s' (thread_id=%s) in config.yaml",
+                self.name, topic_name, thread_id,
+            )
+            self._group_topics_config = group_topics
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to persist group topic to config: %s",
+                self.name, e, exc_info=True,
+            )
+
+    def _persist_group_topic_edit(
+        self, chat_id: int, thread_id: int,
+        new_name: Optional[str] = None, is_closed: Optional[bool] = None,
+    ) -> None:
+        """Update a group forum topic in config.yaml when renamed or closed/reopened."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+            group_topics = (
+                config.get("platforms", {}).get("telegram", {})
+                .get("extra", {}).get("group_topics", [])
+            )
+            if not group_topics:
+                return
+            changed = False
+            for chat_entry in group_topics:
+                if int(chat_entry.get("chat_id", 0)) != int(chat_id):
+                    continue
+                for t in chat_entry.get("topics", []):
+                    if t.get("thread_id") == int(thread_id):
+                        if new_name and t.get("name") != new_name:
+                            t["name"] = new_name
+                            changed = True
+                        if is_closed is not None:
+                            t["is_closed"] = is_closed
+                            changed = True
+                        break
+            if changed:
+                with open(config_path, "w") as f:
+                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                logger.info(
+                    "[%s] Updated group topic (thread_id=%s) in config.yaml",
+                    self.name, thread_id,
+                )
+                self._group_topics_config = group_topics
+        except Exception as e:
+            logger.debug("[%s] Failed to update group topic in config: %s", self.name, e)
+
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""
         chat = message.chat
@@ -2616,6 +2843,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id_str = str(thread_id_raw) if thread_id_raw else None
         chat_topic = None
         topic_skill = None
+        topic_role = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
@@ -2644,6 +2872,56 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                     break
 
+            # forum_topic_created — auto-register new topic
+            if hasattr(message, "forum_topic_created") and message.forum_topic_created:
+                created = message.forum_topic_created
+                created_name = getattr(created, "name", None)
+                if created_name:
+                    emoji_id = getattr(created, "icon_custom_emoji_id", None)
+                    self._persist_group_topic(
+                        chat_id=int(chat.id),
+                        thread_id=int(thread_id_str),
+                        topic_name=created_name,
+                        icon_custom_emoji_id=emoji_id,
+                    )
+                    chat_topic = created_name
+
+            # forum_topic_edited — update name in config
+            elif hasattr(message, "forum_topic_edited") and message.forum_topic_edited:
+                edited = message.forum_topic_edited
+                new_name = getattr(edited, "name", None)
+                if new_name:
+                    self._persist_group_topic_edit(
+                        chat_id=int(chat.id),
+                        thread_id=int(thread_id_str),
+                        new_name=new_name,
+                    )
+                    chat_topic = new_name
+
+            # forum_topic_closed — mark in config
+            elif hasattr(message, "forum_topic_closed") and message.forum_topic_closed:
+                self._persist_group_topic_edit(
+                    chat_id=int(chat.id),
+                    thread_id=int(thread_id_str),
+                    is_closed=True,
+                )
+
+            # forum_topic_reopened — unmark in config
+            elif hasattr(message, "forum_topic_reopened") and message.forum_topic_reopened:
+                self._persist_group_topic_edit(
+                    chat_id=int(chat.id),
+                    thread_id=int(thread_id_str),
+                    is_closed=False,
+                )
+
+            # Hot-reload config in case topics were added after startup
+            if not chat_topic:
+                self._reload_group_topics_from_config()
+                group_topic_info = self._get_group_topic_info(str(chat.id), thread_id_str)
+                if group_topic_info:
+                    chat_topic = group_topic_info.get("name")
+                    topic_skill = group_topic_info.get("skill")
+
         # Build source
         source = self.build_source(
             chat_id=str(chat.id),
@@ -2671,6 +2949,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
+            topic_role=topic_role,
             timestamp=message.date,
         )
 

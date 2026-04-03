@@ -2362,6 +2362,18 @@ class GatewayRunner:
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
         
+        # Inject topic role description if available — reinforces topic-specific identity
+        # even when skill content might be ignored or truncated by the model.
+        _topic_role = getattr(event, "topic_role", None)
+        if _topic_role:
+            _role_injection = (
+                f"[TOPIC ROLE — MANDATORY: You are in a topic with a specific role. "
+                f"Your role in this topic: {_topic_role}. "
+                f"STRICTLY follow this role. Do NOT execute tasks outside this role's scope. "
+                f"Do NOT carry context from other topics. Stay in character.]\n\n"
+            )
+            context_prompt = _role_injection + context_prompt
+        
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):

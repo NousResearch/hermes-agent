@@ -1,6 +1,6 @@
 # CCD MCP Integration
 
-Wire [CCD](https://github.com/nousresearch/ccd) (Continuous Context Delivery) into
+Wire [CCD](https://github.com/dusk-network/ccd) (Continuous Context Development) into
 Hermes Agent as a native MCP server so its session-management, memory, and governance
 tools are available alongside built-in agent tools.
 

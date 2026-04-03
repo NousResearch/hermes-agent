@@ -2,12 +2,13 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Any
+from typing import Any, List, Optional
 
 
 @dataclass
 class ProductData:
     """Parsed product information from a web page."""
+
     name: str = ""
     price: Optional[float] = None
     original_price: Optional[float] = None
@@ -25,7 +26,7 @@ class BaseSiteParser(ABC):
     """Base class for site-specific parsers.
 
     To add support for a new site:
-    1. Create a new file in parsers/ (e.g., ``trendyol.py``)
+    1. Create a new file in parsers/ (e.g., ``target.py``)
     2. Subclass ``BaseSiteParser``
     3. Implement all abstract methods
     4. Register with ``register_parser()`` from ``parsers/__init__.py``
@@ -33,11 +34,11 @@ class BaseSiteParser(ABC):
 
     @abstractmethod
     def get_site_name(self) -> str:
-        """Return the human-readable site name (e.g., 'Amazon Türkiye')."""
+        """Return the human-readable site name (e.g., 'Amazon US')."""
 
     @abstractmethod
     def get_domains(self) -> List[str]:
-        """Return list of domains this parser handles (e.g., ['amazon.com.tr'])."""
+        """Return list of domains this parser handles (e.g., ['amazon.com'])."""
 
     @abstractmethod
     def can_handle(self, url: str) -> bool:
@@ -48,8 +49,9 @@ class BaseSiteParser(ABC):
         """Parse HTML and return structured product data."""
 
     def search(self, query: str, scraper: Any) -> Optional[dict]:
-        """Search for a product on this site. Returns {name, url, price, site, ...}
-        
+        """Search for a product on this site.
+
+        Returns ``{name, url, price, site, ...}`` or ``None``.
         Default implementation returns None (no search support).
         """
         return None

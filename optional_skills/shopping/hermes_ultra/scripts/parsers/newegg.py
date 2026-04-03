@@ -1,16 +1,12 @@
-"""Newegg parser — handles newegg.com product pages.
-
-Extracts price from JSON-LD Product schema, price-current class, and script data.
-"""
+"""Newegg parser — selectors loaded from ``selectors.yaml``."""
 
 import logging
 import re
 from typing import List
 
-from tools.price_tracker.parsers.base import BaseSiteParser, ProductData
-from tools.price_tracker.parsers.price_utils import (
-    parse_price, extract_text, extract_json_ld, extract_meta,
-)
+from .base import BaseSiteParser, ProductData
+from .price_utils import parse_price, extract_text, extract_json_ld, extract_meta
+from .selector_loader import get_selectors, get_site_config
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +14,18 @@ logger = logging.getLogger(__name__)
 class NeweggParser(BaseSiteParser):
     """Parser for newegg.com product pages."""
 
+    def __init__(self) -> None:
+        cfg = get_site_config("newegg")
+        self._domains: List[str] = cfg.get("domains", [])
+
     def get_site_name(self) -> str:
         return "Newegg"
 
     def get_domains(self) -> List[str]:
-        return ["newegg.com", "www.newegg.com"]
+        return [d for d in self._domains] + [f"www.{d}" for d in self._domains]
 
     def can_handle(self, url: str) -> bool:
-        return "newegg.com" in url.lower()
+        return any(d in url.lower() for d in self._domains)
 
     def parse(self, html: str, url: str = "") -> ProductData:
         data = ProductData()
@@ -55,35 +55,22 @@ class NeweggParser(BaseSiteParser):
 
         # --- HTML fallbacks ---
         if not data.name:
-            data.name = extract_text(html, [
-                r'class="product-title"[^>]*>(.*?)</h1>',
-                r'<h1[^>]*>\s*(.*?)\s*</h1>',
-                r'<title>(.*?)(?:\s*[-|])',
-            ])
+            data.name = extract_text(html, get_selectors("newegg", "name"))
 
         if not data.price:
-            price_text = extract_text(html, [
-                r'class="price-current"[^>]*>\s*<strong>([\d,]+)</strong>\s*<sup>\.(\d+)</sup>',
-                r'class="price-current"[^>]*>(.*?)</li>',
-                r'"price":\s*"?\$([\d,.]+)"?',
-            ])
+            price_text = extract_text(html, get_selectors("newegg", "price"))
             if price_text:
-                # Handle the strong + sup pattern: "1,299" + "99"
-                match = re.search(r'([\d,]+)\.(\d+)', price_text.replace(' ', ''))
+                match = re.search(r"([\d,]+)\.(\\d+)", price_text.replace(" ", ""))
                 if match:
                     data.price = parse_price(match.group(0), "USD")
                 else:
                     data.price = parse_price(price_text, "USD")
 
-        # Original / list price
         if not data.original_price:
-            orig_text = extract_text(html, [
-                r'class="price-was[^"]*"[^>]*>\s*\$([\d,.]+)',
-            ])
+            orig_text = extract_text(html, get_selectors("newegg", "original_price"))
             if orig_text:
                 data.original_price = parse_price(orig_text, "USD")
 
-        # Stock
         if data.stock_status == "unknown":
             html_lower = html.lower()
             if "out of stock" in html_lower or "currently unavailable" in html_lower:

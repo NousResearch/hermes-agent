@@ -1,0 +1,294 @@
+# Hermes Ultra — Externalized Selectors
+# ======================================
+# All CSS/regex patterns used by site parsers live here.
+# When a site changes its HTML structure, update the patterns below —
+# no Python code changes needed.
+#
+# Pattern types:
+#   - regex: Python re.search patterns (applied with re.DOTALL | re.IGNORECASE)
+#   - json_path: Keys to look for inside JSON-LD Product blocks
+#
+# The order of patterns within each list matters — first match wins.
+
+_version: 2
+
+# ---------------------------------------------------------------------------
+# Amazon (Global)
+# ---------------------------------------------------------------------------
+amazon:
+  domains:
+    - "amazon.com"
+    - "amazon.co.uk"
+    - "amazon.de"
+    - "amazon.fr"
+    - "amazon.it"
+    - "amazon.es"
+    - "amazon.com.tr"
+
+  domain_names:
+    "amazon.com": "Amazon US"
+    "amazon.co.uk": "Amazon UK"
+    "amazon.de": "Amazon Deutschland"
+    "amazon.fr": "Amazon France"
+    "amazon.it": "Amazon Italia"
+    "amazon.es": "Amazon España"
+    "amazon.com.tr": "Amazon Türkiye"
+
+  name:
+    - 'id="productTitle"[^>]*>\s*(.*?)\s*</span>'
+    - 'id="title"[^>]*>\s*<span[^>]*>\s*(.*?)\s*</span>'
+    - '<title>(.*?)(?:\s*:\s*Amazon|\s*-\s*Amazon)'
+
+  price_whole_fraction: 'class="a-price-whole">([\d.,]+)</span>.*?class="a-price-fraction">([\d]+)'
+
+  price:
+    - 'class="a-price-whole"[^>]*>([\d.,]+)'
+    - 'class="a-price aok-align-center"[^>]*>.*?<span[^>]*>([\d.,]+\s*(?:TL|€|£|\$))'
+    - 'id="priceblock_ourprice"[^>]*>(.*?)</span>'
+    - 'id="priceblock_dealprice"[^>]*>(.*?)</span>'
+    - 'id="priceblock_saleprice"[^>]*>(.*?)</span>'
+    - 'class="a-price"[^>]*>.*?<span class="a-offscreen">([\d.,]+\s*(?:TL|€|£|\$))'
+    - '<span class="a-offscreen">([\d.,]+\s*(?:TL|€|£|\$))</span>'
+    - 'id="corePrice_feature_div"[^>]*>.*?<span class="a-offscreen">([\d.,]+\s*(?:TL|€|£|\$))'
+    - 'id="corePriceDisplay_desktop_feature_div"[^>]*>.*?<span class="a-offscreen">([\d.,]+\s*(?:TL|€|£|\$))'
+    - 'data-a-color="price"[^>]*>\s*<span[^>]*>([\d.,]+\s*(?:TL|€|£|\$))'
+
+  price_json_fallback: '"priceAmount"\s*:\s*"?([\d.]+)"?'
+  price_data_attr: 'data-price="([^"]+)"'
+
+  original_price:
+    - 'class="a-text-price"[^>]*>.*?<span[^>]*>([\d.,]+\s*(?:TL|€|£|\$))'
+    - 'class="a-text-price"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - 'class="a-price a-text-price"[^>]*>.*?<span class="a-offscreen">([\d.,]+\s*(?:TL|€|£|\$))'
+    - "priceBlockStrikePriceString[\"']:\\s*[\"']([^\"']+)"
+    - "basisPrice[\"']:\\s*[\"']([^\"']+)"
+
+  stock:
+    - 'id="availability"[^>]*>\s*(.*?)\s*</(?:span|div)'
+
+  stock_keywords:
+    out_of_stock:
+      - "stokta yok"
+      - "tükendi"
+      - "mevcut değil"
+      - "currently unavailable"
+      - "out of stock"
+      - "nicht verfügbar"
+      - "nicht auf lager"
+      - "actuellement indisponible"
+      - "en rupture"
+      - "non disponibile"
+      - "esaurito"
+      - "no disponible"
+      - "agotado"
+    limited:
+      - "sadece"
+      - "son"
+      - "sınırlı"
+      - "only"
+      - "left in stock"
+      - "nur noch"
+    in_stock:
+      - "stokta"
+      - "mevcut"
+      - "kargoya"
+      - "in stock"
+      - "in den einkaufswagen"
+      - "ajouter au panier"
+      - "aggiungi al carrello"
+      - "añadir a la cesta"
+
+  seller:
+    - 'id="sellerProfileTriggerId"[^>]*>(.*?)</a>'
+    - 'id="merchant-info"[^>]*>.*?<a[^>]*>(.*?)</a>'
+    - '"merchantName"\s*:\s*"([^"]+)"'
+
+  image:
+    - 'id="landingImage"[^>]*src="([^"]+)"'
+    - '"hiRes"\s*:\s*"([^"]+)"'
+    - 'id="imgBlkFront"[^>]*src="([^"]+)"'
+
+  category: 'class="a-link-normal a-color-tertiary"[^>]*>\s*(.*?)\s*</a>'
+
+  rating: 'class="a-icon-alt"[^>]*>([\d,\.]+)\s*(?:üzerinden|out of|von|sur|su|de)'
+
+  review_count: 'id="acrCustomerReviewText"[^>]*>([\d.,]+)'
+
+  playwright_wait: ".a-price, #corePrice_feature_div, #corePriceDisplay_desktop_feature_div"
+
+# ---------------------------------------------------------------------------
+# eBay (Global)
+# ---------------------------------------------------------------------------
+ebay:
+  domains:
+    - "ebay.com"
+    - "ebay.co.uk"
+    - "ebay.de"
+    - "ebay.fr"
+
+  name:
+    - 'class="x-item-title__mainTitle"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - 'id="itemTitle"[^>]*>\s*(?:<span[^>]*>.*?</span>)?\s*(.*?)\s*</h1>'
+    - '<h1[^>]*class="[^"]*it-ttl[^"]*"[^>]*>(.*?)</h1>'
+
+  price:
+    - 'class="x-price-primary"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - 'id="prcIsum"[^>]*>(.*?)</span>'
+    - 'class="[^"]*notranslate[^"]*"[^>]*>([\d.,]+)'
+    - 'itemprop="price"[^>]*content="([^"]+)"'
+
+  bid_price:
+    - 'id="prcIsum_bidPrice"[^>]*>(.*?)</span>'
+    - 'class="x-price-primary"[^>]*>.*?<span[^>]*>(.*?)</span>'
+
+  seller:
+    - 'class="x-sellercard-atf__info__about-seller"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - 'class="[^"]*si-content[^"]*"[^>]*>\s*<a[^>]*>(.*?)</a>'
+    - 'class="mbg-nw"[^>]*>(.*?)</span>'
+
+  image:
+    - 'class="[^"]*ux-image-carousel-item[^"]*"[^>]*>\s*<img[^>]+src="([^"]+)"'
+    - 'id="icImg"[^>]*src="([^"]+)"'
+
+# ---------------------------------------------------------------------------
+# Best Buy
+# ---------------------------------------------------------------------------
+bestbuy:
+  domains:
+    - "bestbuy.com"
+
+  name:
+    - 'class="sku-title"[^>]*>\s*<h1[^>]*>(.*?)</h1>'
+    - '<h1[^>]*class="[^"]*heading[^"]*"[^>]*>(.*?)</h1>'
+    - '<title>(.*?)(?:\s*[-|])'
+
+  price:
+    - 'class="priceView-hero-price[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - 'class="priceView-customer-price[^"]*"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - 'data-testid="customer-price"[^>]*>\s*<span[^>]*>(.*?)</span>'
+    - '"currentPrice":\s*([\d.]+)'
+
+  original_price:
+    - 'class="pricing-price__regular-price[^"]*"[^>]*>.*?<span[^>]*>(.*?)</span>'
+    - '"regularPrice":\s*([\d.]+)'
+
+# ---------------------------------------------------------------------------
+# Newegg
+# ---------------------------------------------------------------------------
+newegg:
+  domains:
+    - "newegg.com"
+
+  name:
+    - 'class="product-title"[^>]*>(.*?)</h1>'
+    - '<h1[^>]*>\s*(.*?)\s*</h1>'
+    - '<title>(.*?)(?:\s*[-|])'
+
+  price:
+    - 'class="price-current"[^>]*>\s*<strong>([\d,]+)</strong>\s*<sup>\.([\d]+)</sup>'
+    - 'class="price-current"[^>]*>(.*?)</li>'
+    - '"price":\s*"?\$([\d,.]+)"?'
+
+  original_price:
+    - 'class="price-was[^"]*"[^>]*>\s*\$([\d,.]+)'
+
+# ---------------------------------------------------------------------------
+# Walmart
+# ---------------------------------------------------------------------------
+walmart:
+  domains:
+    - "walmart.com"
+
+  name:
+    - '<h1[^>]*itemprop="name"[^>]*>(.*?)</h1>'
+    - '<h1[^>]*class="[^"]*prod-ProductTitle[^"]*"[^>]*>(.*?)</h1>'
+    - '<title>(.*?)(?:\s*[-|])'
+
+  price:
+    - 'itemprop="price"[^>]*content="([^"]+)"'
+    - 'class="[^"]*price-group[^"]*"[^>]*>\s*\$([\d,.]+)'
+    - '"currentPrice":\s*([\d.]+)'
+    - '"price":\s*([\d.]+)'
+
+  original_price:
+    - '"wasPrice":\s*([\d.]+)'
+    - 'class="[^"]*price-old[^"]*"[^>]*>\s*\$([\d,.]+)'
+
+# ---------------------------------------------------------------------------
+# Idealo
+# ---------------------------------------------------------------------------
+idealo:
+  domains:
+    - "idealo.de"
+    - "idealo.co.uk"
+    - "idealo.fr"
+    - "idealo.it"
+    - "idealo.es"
+
+  name:
+    - '<h1[^>]*>\s*(.*?)\s*</h1>'
+    - 'class="[^"]*productName[^"]*"[^>]*>(.*?)</'
+
+  price:
+    - 'class="[^"]*productOffers-listItemOfferPrice[^"]*"[^>]*>(.*?)</'
+    - 'class="[^"]*offerList-item-priceMin[^"]*"[^>]*>(.*?)</'
+
+# ---------------------------------------------------------------------------
+# PriceSpy / PriceRunner
+# ---------------------------------------------------------------------------
+pricespy:
+  domains:
+    - "pricespy.com"
+    - "pricespy.co.uk"
+    - "prisjakt.nu"
+    - "pricerunner.com"
+    - "pricerunner.se"
+    - "pricerunner.dk"
+
+  name:
+    - '<h1[^>]*>(.*?)</h1>'
+
+  price:
+    - 'class="[^"]*price[^"]*"[^>]*>([\d.,\s]+)'
+
+# ---------------------------------------------------------------------------
+# CamelCamelCamel
+# ---------------------------------------------------------------------------
+camel:
+  domains:
+    - "camelcamelcamel.com"
+
+  name:
+    - '<h1[^>]*class="[^"]*product_title[^"]*"[^>]*>(.*?)</h1>'
+    - '<title>(.*?)(?:\s*\||\s*-)'
+
+  price:
+    - 'id="[^"]*lowest_price[^"]*"[^>]*>(.*?)</'
+    - 'class="[^"]*product_pricetag[^"]*"[^>]*>(.*?)</'
+
+  image:
+    - 'class="[^"]*product_image[^"]*"[^>]*src="([^"]+)"'
+
+# ---------------------------------------------------------------------------
+# Generic (Fallback) — common patterns found across most e-commerce sites
+# ---------------------------------------------------------------------------
+generic:
+  name:
+    - 'itemprop="name"[^>]*>\s*(.*?)\s*</(?:h1|span|div)'
+
+  price:
+    - 'class="[^"]*price[^"]*"[^>]*>\s*([^<]+)'
+    - 'class="[^"]*Price[^"]*"[^>]*>\s*([^<]+)'
+    - 'data-price="([^"]+)"'
+
+  microdata_price:
+    - 'itemprop="price"[^>]*content="([^"]+)"'
+    - 'itemprop="price"[^>]*>\s*([^<]+)'
+    - 'itemprop="lowPrice"[^>]*content="([^"]+)"'
+
+  og_meta:
+    title: "og:title"
+    image: "og:image"
+    price: "product:price:amount"
+    currency: "product:price:currency"
+    availability: "product:availability"

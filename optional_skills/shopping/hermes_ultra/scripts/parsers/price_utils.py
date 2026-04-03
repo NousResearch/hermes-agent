@@ -4,8 +4,9 @@ Handles US/UK (1,299.00) and European (1 299,00 or 1.299,00) formats.
 Detects currency from URL domain, HTML content, or explicit currency symbols.
 """
 
+import json
 import re
-from typing import Optional, Tuple
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,8 @@ def detect_currency(url: str = "", html: str = "", default: str = "USD") -> str:
 def parse_price(text: str, currency: str = "auto") -> Optional[float]:
     """Parse a price string to float, auto-detecting format.
 
-    Supports:
+    Supports::
+
         European:  1.299,00 €   → 1299.0
         US/UK:     $1,299.00    → 1299.0
         Space:     1 299,00 €   → 1299.0
@@ -64,27 +66,22 @@ def parse_price(text: str, currency: str = "auto") -> Optional[float]:
         return None
 
     # Strip currency symbols, whitespace, and common prefixes
-    cleaned = re.sub(r'[^\d.,\s]', '', text.strip())
-    # Remove leading/trailing spaces
+    cleaned = re.sub(r"[^\d.,\s]", "", text.strip())
     cleaned = cleaned.strip()
     if not cleaned:
         return None
 
-    # Determine the locale format
     if currency in ("EUR", "SEK", "DKK"):
-        # European: dot=thousands, comma=decimal
         return _parse_european_price(cleaned)
     elif currency in ("USD", "GBP"):
-        # US/UK: comma=thousands, dot=decimal
         return _parse_english_price(cleaned)
     else:
-        # Auto-detect: heuristic based on the text
         return _parse_auto_price(cleaned)
 
 
 def _parse_european_price(text: str) -> Optional[float]:
     """Parse European price: 1.299,00 → 1299.0"""
-    text = text.replace(" ", "")  # Remove spaces (e.g., 1 299,00)
+    text = text.replace(" ", "")
     text = text.replace(".", "").replace(",", ".")
     try:
         return float(text)
@@ -109,35 +106,25 @@ def _parse_auto_price(text: str) -> Optional[float]:
     has_comma = "," in text
 
     if has_dot and has_comma:
-        # Both present: check order
         if text.rfind(".") < text.rfind(","):
-            # 1.299,00 → European
             return _parse_european_price(text)
         else:
-            # 1,299.00 → English
             return _parse_english_price(text)
 
     if has_comma:
-        # Single comma: check position from end
         after_comma = len(text) - text.rfind(",") - 1
         if after_comma <= 2:
-            # 499,90 → European decimal
             return _parse_european_price(text)
         else:
-            # 1,299 → English thousands
             return _parse_english_price(text)
 
     if has_dot:
-        # Single dot: check position from end
         after_dot = len(text) - text.rfind(".") - 1
         if after_dot <= 2:
-            # 499.90 → English decimal
             return _parse_english_price(text)
         else:
-            # 1.299 → European thousands
             return _parse_european_price(text)
 
-    # No separators at all
     try:
         return float(text)
     except ValueError:
@@ -148,24 +135,24 @@ def _parse_auto_price(text: str) -> Optional[float]:
 # HTML helpers
 # ---------------------------------------------------------------------------
 
-def extract_text(html: str, patterns: list) -> str:
+def extract_text(html: str, patterns: List[str]) -> str:
     """Try multiple regex patterns and return the first match, stripped of tags."""
     for pattern in patterns:
         match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
         if match:
-            text = re.sub(r'<[^>]+>', '', match.group(1)).strip()
+            text = re.sub(r"<[^>]+>", "", match.group(1)).strip()
             if text:
                 return text
     return ""
 
 
-def extract_json_ld(html: str) -> list:
+def extract_json_ld(html: str) -> List[dict]:
     """Extract all JSON-LD blocks from HTML."""
-    import json
-    blocks = []
+    blocks: List[dict] = []
     for match in re.finditer(
         r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-        html, re.DOTALL | re.IGNORECASE
+        html,
+        re.DOTALL | re.IGNORECASE,
     ):
         try:
             data = json.loads(match.group(1).strip())
@@ -179,15 +166,16 @@ def extract_json_ld(html: str) -> list:
 
 
 def extract_meta(html: str, property_name: str) -> str:
-    """Extract content from a <meta> tag by property or name."""
+    """Extract content from a ``<meta>`` tag by property or name."""
     match = re.search(
         rf'<meta[^>]*(?:property|name)=["\'](?:og:)?{re.escape(property_name)}["\'][^>]*content=["\']([^"\']*)["\']',
-        html, re.IGNORECASE
+        html,
+        re.IGNORECASE,
     )
     if not match:
-        # Try reversed attribute order
         match = re.search(
             rf'<meta[^>]*content=["\']([^"\']*)["\'][^>]*(?:property|name)=["\'](?:og:)?{re.escape(property_name)}["\']',
-            html, re.IGNORECASE
+            html,
+            re.IGNORECASE,
         )
     return match.group(1).strip() if match else ""

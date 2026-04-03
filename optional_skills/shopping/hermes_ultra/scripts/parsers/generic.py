@@ -4,18 +4,16 @@ Uses JSON-LD (Schema.org Product), Open Graph meta tags, and microdata
 to extract product information from *any* modern e-commerce site.
 
 This is the fallback parser tried when no site-specific parser matches.
-Supports ~70% of modern e-commerce sites out of the box.
+Selectors for HTML fallbacks are loaded from ``selectors.yaml``.
 """
 
-import json
 import logging
 import re
 from typing import List, Optional
 
-from tools.price_tracker.parsers.base import BaseSiteParser, ProductData
-from tools.price_tracker.parsers.price_utils import (
-    detect_currency, parse_price, extract_json_ld, extract_meta, extract_text,
-)
+from .base import BaseSiteParser, ProductData
+from .price_utils import detect_currency, parse_price, extract_json_ld, extract_meta, extract_text
+from .selector_loader import get_selectors
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +44,6 @@ class GenericParser(BaseSiteParser):
         data.name = extract_meta(html, "title") or extract_meta(html, "og:title")
         data.image_url = extract_meta(html, "image") or extract_meta(html, "og:image")
 
-        # OG product price
         price_str = extract_meta(html, "product:price:amount") or extract_meta(html, "og:price:amount")
         if price_str:
             data.price = parse_price(price_str, currency)
@@ -67,41 +64,29 @@ class GenericParser(BaseSiteParser):
 
         # --- Try Schema.org microdata ---
         if not data.price:
-            price_text = extract_text(html, [
-                r'itemprop="price"[^>]*content="([^"]+)"',
-                r'itemprop="price"[^>]*>\s*([^<]+)',
-                r'itemprop="lowPrice"[^>]*content="([^"]+)"',
-            ])
+            price_text = extract_text(html, get_selectors("generic", "microdata_price"))
             if price_text:
                 data.price = parse_price(price_text, currency)
 
         if not data.name:
-            data.name = extract_text(html, [
-                r'itemprop="name"[^>]*>\s*(.*?)\s*</(?:h1|span|div)',
-            ])
+            data.name = extract_text(html, get_selectors("generic", "name"))
 
         # --- Fallback: <title> tag ---
         if not data.name:
-            title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL | re.IGNORECASE)
+            title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.DOTALL | re.IGNORECASE)
             if title_match:
-                title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
-                # Remove common suffixes
-                for sep in [' | ', ' - ', ' – ', ' — ', ' :: ']:
+                title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
+                for sep in [" | ", " - ", " – ", " — ", " :: "]:
                     if sep in title:
                         title = title.split(sep)[0].strip()
                 data.name = title
 
         # --- Fallback: price from common patterns ---
         if not data.price:
-            price_text = extract_text(html, [
-                r'class="[^"]*price[^"]*"[^>]*>\s*([^<]+)',
-                r'class="[^"]*Price[^"]*"[^>]*>\s*([^<]+)',
-                r'data-price="([^"]+)"',
-            ])
+            price_text = extract_text(html, get_selectors("generic", "price"))
             if price_text:
                 data.price = parse_price(price_text, currency)
 
-        # Stock status fallback
         if data.stock_status == "unknown" and data.price:
             data.stock_status = "in_stock"
 
@@ -110,10 +95,8 @@ class GenericParser(BaseSiteParser):
     def _parse_json_ld(self, html: str, currency: str) -> Optional[ProductData]:
         """Extract product data from JSON-LD blocks."""
         blocks = extract_json_ld(html)
-
         for block in blocks:
             if isinstance(block, dict):
-                # Handle @graph arrays
                 if "@graph" in block:
                     for item in block["@graph"]:
                         result = self._extract_from_ld_product(item, currency)
@@ -130,7 +113,6 @@ class GenericParser(BaseSiteParser):
         item_type = item.get("@type", "")
         if isinstance(item_type, list):
             item_type = " ".join(item_type)
-
         if "Product" not in item_type:
             return None
 
@@ -141,7 +123,6 @@ class GenericParser(BaseSiteParser):
         if isinstance(data.image_url, list):
             data.image_url = data.image_url[0] if data.image_url else ""
 
-        # Rating
         agg_rating = item.get("aggregateRating", {})
         if agg_rating:
             try:
@@ -150,27 +131,23 @@ class GenericParser(BaseSiteParser):
             except (ValueError, TypeError):
                 pass
 
-        # Category
         cat = item.get("category", "")
         if isinstance(cat, list):
             data.category = " > ".join(cat)
         elif isinstance(cat, str):
             data.category = cat
 
-        # Brand as seller fallback
         brand = item.get("brand", {})
         if isinstance(brand, dict):
             data.seller = brand.get("name", "")
         elif isinstance(brand, str):
             data.seller = brand
 
-        # Offers
         offers = item.get("offers", item.get("offer", {}))
         if isinstance(offers, list):
             offers = offers[0] if offers else {}
 
         if isinstance(offers, dict):
-            # Price
             price_val = offers.get("price", offers.get("lowPrice", ""))
             if price_val:
                 try:
@@ -178,12 +155,10 @@ class GenericParser(BaseSiteParser):
                 except (ValueError, TypeError):
                     data.price = parse_price(str(price_val), currency)
 
-            # Currency from offers
             offer_currency = offers.get("priceCurrency", "")
             if offer_currency:
                 data.currency = offer_currency.upper()
 
-            # Availability
             availability = offers.get("availability", "")
             if isinstance(availability, str):
                 avail_lower = availability.lower()
@@ -194,7 +169,6 @@ class GenericParser(BaseSiteParser):
                 elif "limited" in avail_lower or "preorder" in avail_lower:
                     data.stock_status = "limited"
 
-            # Seller from offers
             seller_obj = offers.get("seller", {})
             if isinstance(seller_obj, dict) and seller_obj.get("name"):
                 data.seller = seller_obj["name"]

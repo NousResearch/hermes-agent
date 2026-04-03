@@ -1,7 +1,7 @@
 """SQLite database for product tracking, price history, and alerts.
 
 Thread-safe via check_same_thread=False. Database stored at
-``~/.hermes/price_tracker.db`` (or HERMES_HOME override).
+``~/.hermes/skills/shopping/hermes_ultra.db`` (or HERMES_HOME override).
 """
 
 import json
@@ -67,21 +67,25 @@ class Alert:
 # ---------------------------------------------------------------------------
 
 def _get_db_path() -> str:
-    """Return the database file path, respecting HERMES_HOME."""
+    """Return the database file path.
+
+    Uses ``~/.hermes/skills/shopping/hermes_ultra.db`` by default.
+    Override with ``HERMES_HOME`` environment variable.
+    """
     hermes_home = os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    return os.path.join(hermes_home, "price_tracker.db")
+    return os.path.join(hermes_home, "skills", "shopping", "hermes_ultra.db")
 
 
 class PriceTrackerDB:
     """Thread-safe SQLite store for price tracking data."""
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None) -> None:
         self.db_path = db_path or _get_db_path()
         self._lock = threading.Lock()
         self._ensure_directory()
         self._init_db()
 
-    def _ensure_directory(self):
+    def _ensure_directory(self) -> None:
         dirpath = os.path.dirname(self.db_path)
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
@@ -93,7 +97,7 @@ class PriceTrackerDB:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def _init_db(self):
+    def _init_db(self) -> None:
         with self._lock:
             conn = self._get_conn()
             try:
@@ -262,7 +266,7 @@ class PriceTrackerDB:
         with self._lock:
             conn = self._get_conn()
             try:
-                updates = {
+                updates: Dict[str, Any] = {
                     "current_price": price,
                     "last_checked": now,
                     "stock_status": stock_status,
@@ -279,7 +283,6 @@ class PriceTrackerDB:
                 conn.execute(
                     f"UPDATE products SET {set_clause} WHERE id = ?", values,
                 )
-
                 conn.execute(
                     """INSERT INTO price_history
                        (product_id, price, original_price, stock_status, seller, timestamp)
@@ -380,40 +383,26 @@ class PriceTrackerDB:
     @staticmethod
     def _row_to_product(row: sqlite3.Row) -> Product:
         return Product(
-            id=row["id"],
-            url=row["url"],
-            name=row["name"],
-            site=row["site"],
-            target_price=row["target_price"],
-            current_price=row["current_price"],
-            original_price=row["original_price"],
-            last_checked=row["last_checked"],
-            image_url=row["image_url"],
-            category=row["category"],
-            seller=row["seller"],
-            stock_status=row["stock_status"],
+            id=row["id"], url=row["url"], name=row["name"], site=row["site"],
+            target_price=row["target_price"], current_price=row["current_price"],
+            original_price=row["original_price"], last_checked=row["last_checked"],
+            image_url=row["image_url"], category=row["category"],
+            seller=row["seller"], stock_status=row["stock_status"],
             created_at=row["created_at"],
         )
 
     @staticmethod
     def _row_to_price_record(row: sqlite3.Row) -> PriceRecord:
         return PriceRecord(
-            id=row["id"],
-            product_id=row["product_id"],
-            price=row["price"],
-            original_price=row["original_price"],
-            stock_status=row["stock_status"],
-            seller=row["seller"],
-            timestamp=row["timestamp"],
+            id=row["id"], product_id=row["product_id"], price=row["price"],
+            original_price=row["original_price"], stock_status=row["stock_status"],
+            seller=row["seller"], timestamp=row["timestamp"],
         )
 
     @staticmethod
     def _row_to_alert(row: sqlite3.Row) -> Alert:
         return Alert(
-            id=row["id"],
-            product_id=row["product_id"],
-            alert_type=row["alert_type"],
-            threshold=row["threshold"],
-            active=bool(row["active"]),
-            created_at=row["created_at"],
+            id=row["id"], product_id=row["product_id"],
+            alert_type=row["alert_type"], threshold=row["threshold"],
+            active=bool(row["active"]), created_at=row["created_at"],
         )

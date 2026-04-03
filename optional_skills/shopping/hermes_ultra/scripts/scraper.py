@@ -37,7 +37,7 @@ def _random_ua() -> str:
     return random.choice(_USER_AGENTS)
 
 
-def _human_delay(min_s: float = 1.5, max_s: float = 5.0):
+def _human_delay(min_s: float = 1.5, max_s: float = 5.0) -> None:
     """Sleep for a random duration to mimic human behavior."""
     time.sleep(random.uniform(min_s, max_s))
 
@@ -64,7 +64,7 @@ class ScrapeResult:
 def _check_playwright_available() -> bool:
     """Return True if Playwright and chromium are installed."""
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright  # noqa: F401
         return True
     except ImportError:
         return False
@@ -89,37 +89,33 @@ def _scrape_with_playwright(url: str) -> ScrapeResult:
             context = browser.new_context(
                 user_agent=_random_ua(),
                 viewport={"width": random.randint(1280, 1920), "height": random.randint(800, 1080)},
-                locale="tr-TR",
-                timezone_id="Europe/Istanbul",
+                locale="en-US",
+                timezone_id="America/New_York",
                 java_script_enabled=True,
             )
 
             # Anti-detection: override navigator.webdriver
             context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
                 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
                 window.chrome = { runtime: {} };
             """)
 
             page = context.new_page()
-
-            # Random delay before navigation
             _human_delay(0.5, 1.5)
 
-            # Amazon has too many trackers for networkidle, use domcontentloaded + specific wait
             response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-            # If it's Amazon, explicitly wait for price elements to render
             if "amazon." in url:
                 try:
-                    # Wait for either standard price class or new core price divs
-                    page.wait_for_selector(".a-price, #corePrice_feature_div, #corePriceDisplay_desktop_feature_div", timeout=5000)
+                    page.wait_for_selector(
+                        ".a-price, #corePrice_feature_div, #corePriceDisplay_desktop_feature_div",
+                        timeout=5000,
+                    )
                 except Exception:
-                    # Don't fail if price is genuinely missing (e.g. out of stock)
-                    logger.debug("Amazon price selectors not found, continuing anyway.")
+                    logger.debug("Amazon price selectors not found, continuing.")
 
-            # Simulate human scrolling
             for _ in range(random.randint(1, 2)):
                 page.evaluate(f"window.scrollBy(0, {random.randint(200, 500)})")
                 _human_delay(0.3, 1.0)
@@ -127,7 +123,6 @@ def _scrape_with_playwright(url: str) -> ScrapeResult:
             result.html = page.content()
             result.status_code = response.status if response else 0
             result.success = True
-
             browser.close()
 
     except Exception as e:
@@ -150,7 +145,7 @@ def _scrape_with_httpx(url: str) -> ScrapeResult:
     headers = {
         "User-Agent": _random_ua(),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
@@ -191,7 +186,7 @@ class StealthScraper:
     Prefers Playwright for JS-heavy sites; falls back to httpx.
     """
 
-    def __init__(self, prefer_playwright: bool = True):
+    def __init__(self, prefer_playwright: bool = True) -> None:
         self._use_playwright = prefer_playwright and _check_playwright_available()
         if self._use_playwright:
             logger.info("StealthScraper: Playwright mode active")
@@ -206,11 +201,9 @@ class StealthScraper:
         """Scrape a URL and return the raw HTML."""
         if self._use_playwright:
             result = _scrape_with_playwright(url)
-            # Fall back to httpx if Playwright fails
             if not result.success:
                 logger.info("Playwright failed, falling back to httpx for %s", url)
                 result = _scrape_with_httpx(url)
         else:
             result = _scrape_with_httpx(url)
-
         return result

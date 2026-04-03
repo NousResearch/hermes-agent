@@ -1,17 +1,15 @@
 """Price comparison site parsers — Idealo, PriceSpy, CamelCamelCamel.
 
-These sites aggregate prices from multiple sellers. The parsers extract
-the lowest available price and seller information.
+Selectors loaded from ``selectors.yaml``.
 """
 
 import logging
 import re
 from typing import List
 
-from tools.price_tracker.parsers.base import BaseSiteParser, ProductData
-from tools.price_tracker.parsers.price_utils import (
-    detect_currency, parse_price, extract_text, extract_json_ld, extract_meta,
-)
+from .base import BaseSiteParser, ProductData
+from .price_utils import detect_currency, parse_price, extract_text, extract_json_ld, extract_meta
+from .selector_loader import get_selectors, get_site_config
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +17,15 @@ logger = logging.getLogger(__name__)
 class IdealoParser(BaseSiteParser):
     """Parser for idealo.de price comparison pages."""
 
+    def __init__(self) -> None:
+        cfg = get_site_config("idealo")
+        self._domains: List[str] = cfg.get("domains", [])
+
     def get_site_name(self) -> str:
         return "Idealo"
 
     def get_domains(self) -> List[str]:
-        return ["idealo.de", "www.idealo.de", "idealo.co.uk", "www.idealo.co.uk",
-                "idealo.fr", "www.idealo.fr", "idealo.it", "www.idealo.it",
-                "idealo.es", "www.idealo.es"]
+        return [d for d in self._domains] + [f"www.{d}" for d in self._domains]
 
     def can_handle(self, url: str) -> bool:
         return "idealo." in url.lower()
@@ -35,7 +35,6 @@ class IdealoParser(BaseSiteParser):
         currency = detect_currency(url, html)
         data.currency = currency
 
-        # Try JSON-LD first (Idealo uses it)
         for block in extract_json_ld(html):
             if isinstance(block, dict) and "Product" in str(block.get("@type", "")):
                 data.name = block.get("name", "")
@@ -54,25 +53,17 @@ class IdealoParser(BaseSiteParser):
                 if data.name:
                     break
 
-        # HTML fallbacks
         if not data.name:
-            data.name = extract_text(html, [
-                r'<h1[^>]*>\s*(.*?)\s*</h1>',
-                r'class="[^"]*productName[^"]*"[^>]*>(.*?)</',
-            ])
+            data.name = extract_text(html, get_selectors("idealo", "name"))
 
         if not data.price:
-            price_text = extract_text(html, [
-                r'class="[^"]*productOffers-listItemOfferPrice[^"]*"[^>]*>(.*?)</',
-                r'class="[^"]*offerList-item-priceMin[^"]*"[^>]*>(.*?)</',
-            ])
+            price_text = extract_text(html, get_selectors("idealo", "price"))
             if price_text:
                 data.price = parse_price(price_text, currency)
 
         data.seller = "Multiple Sellers (Idealo)"
         if data.price and data.stock_status == "unknown":
             data.stock_status = "in_stock"
-
         data.image_url = extract_meta(html, "image") or ""
         return data
 
@@ -80,16 +71,15 @@ class IdealoParser(BaseSiteParser):
 class PriceSpyParser(BaseSiteParser):
     """Parser for pricespy.com / prisjakt / pricerunner."""
 
+    def __init__(self) -> None:
+        cfg = get_site_config("pricespy")
+        self._domains: List[str] = cfg.get("domains", [])
+
     def get_site_name(self) -> str:
         return "PriceSpy"
 
     def get_domains(self) -> List[str]:
-        return ["pricespy.com", "www.pricespy.com",
-                "pricespy.co.uk", "www.pricespy.co.uk",
-                "prisjakt.nu", "www.prisjakt.nu",
-                "pricerunner.com", "www.pricerunner.com",
-                "pricerunner.se", "www.pricerunner.se",
-                "pricerunner.dk", "www.pricerunner.dk"]
+        return [d for d in self._domains] + [f"www.{d}" for d in self._domains]
 
     def can_handle(self, url: str) -> bool:
         url_lower = url.lower()
@@ -100,7 +90,6 @@ class PriceSpyParser(BaseSiteParser):
         currency = detect_currency(url, html)
         data.currency = currency
 
-        # JSON-LD extraction
         for block in extract_json_ld(html):
             if isinstance(block, dict) and "Product" in str(block.get("@type", "")):
                 data.name = block.get("name", "")
@@ -119,18 +108,15 @@ class PriceSpyParser(BaseSiteParser):
                     break
 
         if not data.name:
-            data.name = extract_text(html, [r'<h1[^>]*>(.*?)</h1>'])
+            data.name = extract_text(html, get_selectors("pricespy", "name"))
 
         if not data.price:
-            price_text = extract_text(html, [
-                r'class="[^"]*price[^"]*"[^>]*>([\d.,\s]+)',
-            ])
+            price_text = extract_text(html, get_selectors("pricespy", "price"))
             if price_text:
                 data.price = parse_price(price_text, currency)
 
         data.seller = "Multiple Sellers (PriceSpy)"
         data.image_url = extract_meta(html, "image") or ""
-
         if data.price:
             data.stock_status = "in_stock"
         return data
@@ -139,11 +125,15 @@ class PriceSpyParser(BaseSiteParser):
 class CamelParser(BaseSiteParser):
     """Parser for camelcamelcamel.com (Amazon price history)."""
 
+    def __init__(self) -> None:
+        cfg = get_site_config("camel")
+        self._domains: List[str] = cfg.get("domains", [])
+
     def get_site_name(self) -> str:
         return "CamelCamelCamel"
 
     def get_domains(self) -> List[str]:
-        return ["camelcamelcamel.com", "www.camelcamelcamel.com"]
+        return [d for d in self._domains] + [f"www.{d}" for d in self._domains]
 
     def can_handle(self, url: str) -> bool:
         return "camelcamelcamel.com" in url.lower()
@@ -152,24 +142,17 @@ class CamelParser(BaseSiteParser):
         data = ProductData()
         data.currency = "USD"
 
-        # Product name
-        data.name = extract_text(html, [
-            r'<h1[^>]*class="[^"]*product_title[^"]*"[^>]*>(.*?)</h1>',
-            r'<title>(.*?)(?:\s*\||\s*-)',
-        ])
+        data.name = extract_text(html, get_selectors("camel", "name"))
 
-        # Current Amazon price
-        price_text = extract_text(html, [
-            r'id="[^"]*lowest_price[^"]*"[^>]*>(.*?)</',
-            r'class="[^"]*product_pricetag[^"]*"[^>]*>(.*?)</',
-        ])
+        price_text = extract_text(html, get_selectors("camel", "price"))
         if price_text:
             data.price = parse_price(price_text, "USD")
 
-        # Image
-        img_match = re.search(r'class="[^"]*product_image[^"]*"[^>]*src="([^"]+)"', html)
-        if img_match:
-            data.image_url = img_match.group(1)
+        for pattern in get_selectors("camel", "image"):
+            img_match = re.search(pattern, html)
+            if img_match:
+                data.image_url = img_match.group(1)
+                break
 
         data.seller = "Amazon (via CamelCamelCamel)"
         if data.price:

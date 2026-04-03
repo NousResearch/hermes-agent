@@ -1,31 +1,30 @@
-"""Walmart parser — handles walmart.com product pages.
-
-Extracts price from JSON-LD Product schema and HTML fallbacks.
-"""
+"""Best Buy parser — selectors loaded from ``selectors.yaml``."""
 
 import logging
-import re
 from typing import List
 
-from tools.price_tracker.parsers.base import BaseSiteParser, ProductData
-from tools.price_tracker.parsers.price_utils import (
-    parse_price, extract_text, extract_json_ld, extract_meta,
-)
+from .base import BaseSiteParser, ProductData
+from .price_utils import parse_price, extract_text, extract_json_ld, extract_meta
+from .selector_loader import get_selectors, get_site_config
 
 logger = logging.getLogger(__name__)
 
 
-class WalmartParser(BaseSiteParser):
-    """Parser for walmart.com product pages."""
+class BestBuyParser(BaseSiteParser):
+    """Parser for bestbuy.com product pages."""
+
+    def __init__(self) -> None:
+        cfg = get_site_config("bestbuy")
+        self._domains: List[str] = cfg.get("domains", [])
 
     def get_site_name(self) -> str:
-        return "Walmart"
+        return "Best Buy"
 
     def get_domains(self) -> List[str]:
-        return ["walmart.com", "www.walmart.com"]
+        return [d for d in self._domains] + [f"www.{d}" for d in self._domains]
 
     def can_handle(self, url: str) -> bool:
-        return "walmart.com" in url.lower()
+        return any(d in url.lower() for d in self._domains)
 
     def parse(self, html: str, url: str = "") -> ProductData:
         data = ProductData()
@@ -39,7 +38,7 @@ class WalmartParser(BaseSiteParser):
                 if isinstance(offers, list):
                     offers = offers[0] if offers else {}
                 if isinstance(offers, dict):
-                    price_val = offers.get("price", offers.get("lowPrice", ""))
+                    price_val = offers.get("price", "")
                     if price_val:
                         try:
                             data.price = float(price_val)
@@ -55,41 +54,27 @@ class WalmartParser(BaseSiteParser):
 
         # --- HTML fallbacks ---
         if not data.name:
-            data.name = extract_text(html, [
-                r'<h1[^>]*itemprop="name"[^>]*>(.*?)</h1>',
-                r'<h1[^>]*class="[^"]*prod-ProductTitle[^"]*"[^>]*>(.*?)</h1>',
-                r'<title>(.*?)(?:\s*[-|])',
-            ])
+            data.name = extract_text(html, get_selectors("bestbuy", "name"))
 
         if not data.price:
-            price_text = extract_text(html, [
-                r'itemprop="price"[^>]*content="([^"]+)"',
-                r'class="[^"]*price-group[^"]*"[^>]*>\s*\$([\d,.]+)',
-                r'"currentPrice":\s*([\d.]+)',
-                r'"price":\s*([\d.]+)',
-            ])
+            price_text = extract_text(html, get_selectors("bestbuy", "price"))
             if price_text:
                 data.price = parse_price(price_text, "USD")
 
-        # Original price
         if not data.original_price:
-            orig_text = extract_text(html, [
-                r'"wasPrice":\s*([\d.]+)',
-                r'class="[^"]*price-old[^"]*"[^>]*>\s*\$([\d,.]+)',
-            ])
+            orig_text = extract_text(html, get_selectors("bestbuy", "original_price"))
             if orig_text:
                 data.original_price = parse_price(orig_text, "USD")
 
-        # Stock
         if data.stock_status == "unknown":
             html_lower = html.lower()
-            if "out of stock" in html_lower or "not available" in html_lower:
+            if "sold out" in html_lower or "coming soon" in html_lower:
                 data.stock_status = "out_of_stock"
             elif "add to cart" in html_lower:
                 data.stock_status = "in_stock"
             elif data.price:
                 data.stock_status = "in_stock"
 
-        data.seller = "Walmart"
+        data.seller = "Best Buy"
         data.image_url = extract_meta(html, "image") or ""
         return data

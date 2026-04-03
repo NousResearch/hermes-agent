@@ -6747,7 +6747,14 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and text.startswith("/")):
+                # Route to interrupt/queue unless it looks like a known slash command.
+                # Bare paths (/Users/..., /path/to/file:45) are NOT commands.
+                _is_slash_cmd = False
+                if text and text.startswith("/"):
+                    _fw = text.split()[0].lstrip("/").split(":")[0]
+                    from hermes_cli.commands import resolve_command as _resolve_cmd_fn
+                    _is_slash_cmd = bool(_resolve_cmd_fn(_fw))
+                if self._agent_running and not _is_slash_cmd:
                     if self.busy_input_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
@@ -7854,13 +7861,20 @@ class HermesCLI:
                             )
 
                     if not _file_drop and isinstance(user_input, str) and user_input.startswith("/"):
-                        _cprint(f"\n⚙️  {user_input}")
-                        if not self.process_command(user_input):
-                            self._should_exit = True
-                            # Schedule app exit
-                            if app.is_running:
-                                app.exit()
-                        continue
+                        # Only treat as a command if the first word is a known
+                        # slash command.  Bare paths like /Users/ironin/file.md
+                        # or /path/to/file.md:45-46 should pass through as
+                        # regular input, not trigger "Unknown command".
+                        _first_word = user_input.split()[0].lstrip("/").split(":")[0] if user_input.strip() else ""
+                        from hermes_cli.commands import resolve_command as _resolve_cmd_fn
+                        if _resolve_cmd_fn(_first_word):
+                            _cprint(f"\n⚙️  {user_input}")
+                            if not self.process_command(user_input):
+                                self._should_exit = True
+                                # Schedule app exit
+                                if app.is_running:
+                                    app.exit()
+                            continue
                     
                     # Expand paste references back to full content
                     import re as _re

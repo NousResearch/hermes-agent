@@ -2166,6 +2166,7 @@ class HermesCLI:
                 return False
             restored = self._session_db.get_messages_as_conversation(self.session_id)
             if restored:
+                restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
                 title_part = ""
@@ -2361,6 +2362,7 @@ class HermesCLI:
 
         restored = self._session_db.get_messages_as_conversation(self.session_id)
         if restored:
+            restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
             msg_count = len([m for m in restored if m.get("role") == "user"])
             title_part = ""

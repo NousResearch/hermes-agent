@@ -2585,6 +2585,8 @@ class AIAgent:
             return tc.get("id", "") or ""
         return getattr(tc, "id", "") or ""
 
+    _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs before every LLM call.
@@ -2593,6 +2595,19 @@ class AIAgent:
         is present — so orphans from session loading or manual message
         manipulation are always caught.
         """
+        # --- Role allowlist: drop messages with roles the API won't accept ---
+        filtered = []
+        for msg in messages:
+            role = msg.get("role")
+            if role not in AIAgent._VALID_API_ROLES:
+                logger.debug(
+                    "Pre-call sanitizer: dropping message with invalid role %r",
+                    role,
+                )
+                continue
+            filtered.append(msg)
+        messages = filtered
+
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":

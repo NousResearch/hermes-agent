@@ -446,16 +446,16 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
 
 class GatewayRunner:
-    # Class-level defaults so partial construction in tests doesn't
-    # blow up on attribute access.
-    _running_agents_ts: Dict[str, float] = {}
-
     """
     Main gateway controller.
 
     Manages the lifecycle of all platform adapters and routes
     messages to/from the agent.
     """
+
+    # Class-level defaults so partial construction in tests doesn't
+    # blow up on attribute access.
+    _running_agents_ts: Dict[str, float] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -5466,6 +5466,9 @@ class GatewayRunner:
                     _now = time.monotonic()
                     _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
                     if _remaining > 0:
+                        # Wait out the throttle interval, then loop back to
+                        # drain any additional queued messages before sending
+                        # a single batched edit.
                         await asyncio.sleep(_remaining)
                         continue
 

@@ -2682,6 +2682,20 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     if not status.stdout.strip():
         return None
 
+    # If the index has unmerged entries (e.g. from an interrupted merge/rebase),
+    # git stash will fail with "needs merge / could not write index".  Clear the
+    # conflict state with `git reset` so the stash can proceed.  Working-tree
+    # changes are preserved; only the index conflict markers are dropped.
+    unmerged = subprocess.run(
+        git_cmd + ["ls-files", "--unmerged"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if unmerged.stdout.strip():
+        print("→ Clearing unmerged index entries from a previous conflict...")
+        subprocess.run(git_cmd + ["reset"], cwd=cwd, capture_output=True)
+
     from datetime import datetime, timezone
 
     stash_name = datetime.now(timezone.utc).strftime("hermes-update-autostash-%Y%m%d-%H%M%S")

@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import json
 import logging
 import os
 import re
@@ -228,15 +229,37 @@ def get_all_skills_dirs() -> List[Path]:
 # ── Condition extraction ──────────────────────────────────────────────────
 
 
+def _coerce_mapping(value: Any) -> Dict[str, Any]:
+    """Best-effort conversion of frontmatter values into mappings.
+
+    Skill frontmatter occasionally arrives with nested metadata serialized as JSON
+    strings instead of YAML mappings. Treat malformed or unsupported values as an
+    empty mapping instead of crashing the prompt builder.
+    """
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+
+    raw = value.strip()
+    if not raw:
+        return {}
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        try:
+            parsed = yaml_load(raw)
+        except Exception:
+            return {}
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
-    metadata = frontmatter.get("metadata")
-    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
-    if not isinstance(metadata, dict):
-        metadata = {}
-    hermes = metadata.get("hermes") or {}
-    if not isinstance(hermes, dict):
-        hermes = {}
+    metadata = _coerce_mapping(frontmatter.get("metadata"))
+    hermes = _coerce_mapping(metadata.get("hermes"))
     return {
         "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
         "requires_toolsets": hermes.get("requires_toolsets", []),

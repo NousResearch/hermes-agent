@@ -151,6 +151,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
                cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status"), aliases=("ts",)),
+    CommandDef("diff", "Show git diff of changes in the current working directory", "Info",
+               cli_only=True, args_hint="[--stat]"),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose -> log",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),

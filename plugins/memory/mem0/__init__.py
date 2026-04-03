@@ -38,23 +38,31 @@ _BREAKER_COOLDOWN_SECS = 120
 # ---------------------------------------------------------------------------
 
 def _load_config() -> dict:
-    """Load config from $HERMES_HOME/mem0.json or env vars."""
+    """Load config from env vars, with $HERMES_HOME/mem0.json overrides.
+
+    Environment variables provide defaults; mem0.json (if present) overrides
+    individual keys.  This avoids a silent failure when the JSON file exists
+    but is missing fields like ``api_key`` that the user set in ``.env``.
+    """
     from hermes_constants import get_hermes_home
-    config_path = get_hermes_home() / "mem0.json"
 
-    if config_path.exists():
-        try:
-            return json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    return {
+    config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
     }
+
+    config_path = get_hermes_home() / "mem0.json"
+    if config_path.exists():
+        try:
+            file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            config.update({k: v for k, v in file_cfg.items() if v})
+        except Exception:
+            pass
+
+    return config
 
 
 # ---------------------------------------------------------------------------

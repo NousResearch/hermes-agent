@@ -450,8 +450,8 @@ class CredentialPool:
                                 refreshed["refresh_token"],
                                 refreshed["expires_at_ms"],
                             )
-                        except Exception:
-                            pass
+                        except Exception as wexc:
+                            logger.debug("Failed to write refreshed token to credentials file (retry path): %s", wexc)
                         return updated
                     except Exception as retry_exc:
                         logger.debug("Retry refresh also failed: %s", retry_exc)

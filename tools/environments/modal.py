@@ -186,7 +186,11 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
 
         cred_mounts = []
         try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                iter_skills_files,
+                iter_cache_files,
+            )
 
             for mount_entry in get_credential_file_mounts():
                 cred_mounts.append(
@@ -212,6 +216,20 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
                 )
             if skills_files:
                 logger.info("Modal: mounting %d skill files", len(skills_files))
+
+            # Mount host-side cache files (documents, images, audio,
+            # screenshots).  New files arriving mid-session are picked up
+            # by _sync_files() before each command execution.
+            cache_files = iter_cache_files()
+            for entry in cache_files:
+                cred_mounts.append(
+                    _modal.Mount.from_local_file(
+                        entry["host_path"],
+                        remote_path=entry["container_path"],
+                    )
+                )
+            if cache_files:
+                logger.info("Modal: mounting %d cache files", len(cache_files))
         except Exception as e:
             logger.debug("Modal: could not load credential file mounts: %s", e)
 
@@ -308,13 +326,19 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
         return True
 
     def _sync_files(self) -> None:
-        """Push credential files and skill files into the running sandbox.
+        """Push credential, skill, and cache files into the running sandbox.
 
         Runs before each command. Uses mtime+size caching so only changed
-        files are pushed (~13μs overhead in the no-op case).
+        files are pushed (~13μs overhead in the no-op case).  Cache files
+        are especially important here — new uploads/screenshots may appear
+        mid-session after sandbox creation.
         """
         try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                iter_skills_files,
+                iter_cache_files,
+            )
 
             for entry in get_credential_file_mounts():
                 if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
@@ -323,6 +347,10 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
             for entry in iter_skills_files():
                 if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
                     logger.debug("Modal: synced skill file %s", entry["container_path"])
+
+            for entry in iter_cache_files():
+                if self._push_file_to_sandbox(entry["host_path"], entry["container_path"]):
+                    logger.debug("Modal: synced cache file %s", entry["container_path"])
         except Exception as e:
             logger.debug("Modal: file sync failed: %s", e)
 

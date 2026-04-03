@@ -10,7 +10,9 @@ import pytest
 from tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
+    get_cache_directory_mounts,
     get_skills_directory_mount,
+    iter_cache_files,
     iter_skills_files,
     register_credential_file,
     register_credential_files,
@@ -358,3 +360,116 @@ class TestConfigPathTraversal:
         mounts = get_credential_file_mounts()
         assert len(mounts) == 1
         assert "oauth.json" in mounts[0]["container_path"]
+
+
+# ---------------------------------------------------------------------------
+# Cache directory mounts
+# ---------------------------------------------------------------------------
+
+class TestCacheDirectoryMounts:
+    """Tests for get_cache_directory_mounts() and iter_cache_files()."""
+
+    def test_returns_existing_cache_dirs(self, tmp_path, monkeypatch):
+        """Existing cache dirs are returned with correct container paths."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "cache" / "documents").mkdir(parents=True)
+        (hermes_home / "cache" / "audio").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        paths = {m["container_path"] for m in mounts}
+        assert "/root/.hermes/cache/documents" in paths
+        assert "/root/.hermes/cache/audio" in paths
+
+    def test_skips_nonexistent_dirs(self, tmp_path, monkeypatch):
+        """Dirs that don't exist on disk are not returned."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        # Create only one cache dir
+        (hermes_home / "cache" / "documents").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        assert len(mounts) == 1
+        assert mounts[0]["container_path"] == "/root/.hermes/cache/documents"
+
+    def test_legacy_dir_names_resolved(self, tmp_path, monkeypatch):
+        """Old-style dir names (e.g. document_cache) are resolved correctly."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        # Use legacy dir name — get_hermes_dir prefers old if it exists
+        (hermes_home / "document_cache").mkdir()
+        (hermes_home / "image_cache").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        host_paths = {m["host_path"] for m in mounts}
+        assert str(hermes_home / "document_cache") in host_paths
+        assert str(hermes_home / "image_cache") in host_paths
+        # Container paths always use the new layout
+        container_paths = {m["container_path"] for m in mounts}
+        assert "/root/.hermes/cache/documents" in container_paths
+        assert "/root/.hermes/cache/images" in container_paths
+
+    def test_empty_hermes_home(self, tmp_path, monkeypatch):
+        """No cache dirs → empty list."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert get_cache_directory_mounts() == []
+
+
+class TestIterCacheFiles:
+    """Tests for iter_cache_files()."""
+
+    def test_enumerates_files(self, tmp_path, monkeypatch):
+        """Regular files in cache dirs are returned."""
+        hermes_home = tmp_path / ".hermes"
+        doc_dir = hermes_home / "cache" / "documents"
+        doc_dir.mkdir(parents=True)
+        (doc_dir / "upload.zip").write_bytes(b"PK\x03\x04")
+        (doc_dir / "report.pdf").write_bytes(b"%PDF-1.4")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        entries = iter_cache_files()
+        names = {Path(e["container_path"]).name for e in entries}
+        assert "upload.zip" in names
+        assert "report.pdf" in names
+
+    def test_skips_symlinks(self, tmp_path, monkeypatch):
+        """Symlinks inside cache dirs are skipped."""
+        hermes_home = tmp_path / ".hermes"
+        doc_dir = hermes_home / "cache" / "documents"
+        doc_dir.mkdir(parents=True)
+        real_file = doc_dir / "real.txt"
+        real_file.write_text("content")
+        (doc_dir / "link.txt").symlink_to(real_file)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        entries = iter_cache_files()
+        names = [Path(e["container_path"]).name for e in entries]
+        assert "real.txt" in names
+        assert "link.txt" not in names
+
+    def test_nested_files(self, tmp_path, monkeypatch):
+        """Files in subdirectories are included with correct relative paths."""
+        hermes_home = tmp_path / ".hermes"
+        ss_dir = hermes_home / "cache" / "screenshots"
+        sub = ss_dir / "session_abc"
+        sub.mkdir(parents=True)
+        (sub / "screen1.png").write_bytes(b"PNG")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        entries = iter_cache_files()
+        assert len(entries) == 1
+        assert entries[0]["container_path"] == "/root/.hermes/cache/screenshots/session_abc/screen1.png"
+
+    def test_empty_cache(self, tmp_path, monkeypatch):
+        """No cache dirs → empty list."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert iter_cache_files() == []

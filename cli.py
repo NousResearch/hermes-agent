@@ -7281,6 +7281,20 @@ class HermesCLI:
             """Alt+Enter inserts a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
 
+        @kb.add('escape', 'escape')
+        def handle_double_escape(event):
+            """Double ESC: clear the input buffer.
+
+            Press ESC twice quickly to discard the current draft.
+            Single ESC is the prefix for Alt key sequences (escape, enter etc.)
+            so the double-press avoids conflicting with those.
+            """
+            buf = event.app.current_buffer
+            if buf.text or cli_ref._attached_images:
+                buf.reset()
+                cli_ref._attached_images.clear()
+                event.app.invalidate()
+
         @kb.add('c-j')
         def handle_ctrl_enter(event):
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
@@ -7486,6 +7500,179 @@ class HermesCLI:
                 os.kill(0, _sig.SIGTSTP)
             run_in_terminal(_suspend)
 
+        @kb.add('c-g')
+        def handle_external_editor(event):
+            """Ctrl+G: open current input in $VISUAL / $EDITOR / VS Code.
+
+            Smart file detection:
+            - If the input contains a paste reference [Pasted text #N ... → path],
+              open that paste file directly so the user edits the full content.
+            - Otherwise, write the input to a temp file and open that.
+
+            The editor runs inside run_in_terminal() so the TUI is suspended
+            cleanly.  On close the buffer is updated with the file contents.
+            """
+            if cli_ref._agent_running or cli_ref._clarify_state or cli_ref._sudo_state:
+                return
+
+            buf = event.app.current_buffer
+            original_text = buf.text
+
+            from prompt_toolkit.application import run_in_terminal
+
+            def _run_editor():
+                import subprocess, shlex, re as _re
+
+                # Detect paste file reference in the input
+                _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+                paste_match = _paste_re.search(original_text)
+
+                if paste_match:
+                    edit_file = Path(paste_match.group(1))
+                    if not edit_file.exists():
+                        _cprint(f"  {_DIM}Paste file not found: {edit_file}{_RST}")
+                        return
+                    is_paste_file = True
+                else:
+                    edit_dir = _hermes_home / "editor"
+                    edit_dir.mkdir(parents=True, exist_ok=True)
+                    edit_file = edit_dir / "prompt.md"
+                    edit_file.write_text(original_text, encoding="utf-8")
+                    is_paste_file = False
+
+                # Resolve editor: $VISUAL > $EDITOR > code --wait > cursor --wait > vi
+                editor_cmd = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ""
+                if not editor_cmd:
+                    for candidate in ("code", "cursor"):
+                        if shutil.which(candidate):
+                            editor_cmd = f"{candidate} --wait"
+                            break
+                    else:
+                        editor_cmd = "vi"
+
+                try:
+                    _cprint(f"  {_DIM}📝 {editor_cmd} {edit_file}{_RST}")
+                    parts = shlex.split(editor_cmd)
+                    subprocess.run(parts + [str(edit_file)], check=False)
+                    new_text = edit_file.read_text(encoding="utf-8")
+
+                    if is_paste_file:
+                        # Rebuild the paste reference with updated line count
+                        line_count = new_text.count('\n') + 1
+                        ref = paste_match.group(0)
+                        # Replace old ref keeping the rest of the input intact
+                        updated_ref = _re.sub(
+                            r'\d+ lines',
+                            f'{line_count} lines',
+                            ref,
+                        )
+                        final_text = original_text.replace(ref, updated_ref)
+                    else:
+                        final_text = new_text
+
+                    # Update the buffer in the app thread
+                    def _update():
+                        buf.text = final_text
+                        buf.cursor_position = len(final_text)
+                        event.app.invalidate()
+
+                    event.app.loop.call_soon_threadsafe(_update)
+
+                    if new_text != (edit_file.read_text(encoding="utf-8") if is_paste_file else original_text):
+                        _cprint(f"  {_DIM}📝 Editor content loaded ({len(new_text)} chars){_RST}")
+                    else:
+                        _cprint(f"  {_DIM}📝 No changes from editor{_RST}")
+                except Exception as e:
+                    _cprint(f"  {_DIM}Editor error: {e}{_RST}")
+
+            run_in_terminal(_run_editor)
+
+        @kb.add('c-s')
+        def handle_stash(event):
+            """Ctrl+S: stash current input (text + images) or pop stash.
+
+            When the input area has text or attached images, stash them and
+            clear the input so the user can type a different message.  If the
+            input is empty *and* there's a stash, restore it immediately.
+            The stash is also auto-restored after the agent finishes responding
+            (see process_loop).
+            """
+            buf = event.app.current_buffer
+            text = buf.text
+            has_images = bool(cli_ref._attached_images)
+
+            if text or has_images:
+                # --- Stash current input ---
+                images_snapshot = list(cli_ref._attached_images)
+                cli_ref._stashed_input = (text, images_snapshot)
+                cli_ref._attached_images.clear()
+                buf.reset()
+                _cprint(f"  {_DIM}📌 Input stashed (Ctrl+S to pop, auto-restores after response){_RST}")
+                event.app.invalidate()
+            elif cli_ref._stashed_input:
+                # --- Pop stash into input ---
+                stashed_text, stashed_images = cli_ref._stashed_input
+                cli_ref._stashed_input = None
+                if stashed_images:
+                    cli_ref._attached_images.extend(stashed_images)
+                buf.text = stashed_text
+                buf.cursor_position = len(stashed_text)
+                _cprint(f"  {_DIM}📌 Stash restored{_RST}")
+                event.app.invalidate()
+
+        @kb.add('c-p')
+        def handle_peek(event):
+            """Ctrl+P: peek at collapsed paste content or current input inline.
+
+            If the input contains a [Pasted text #N ... → path] reference,
+            prints the first 20 lines of that file right in the terminal so
+            the user can verify the content without opening an editor (Ctrl+G).
+            If multiple paste references exist, peeks at the first one.
+            If there is no paste reference, prints the first 20 lines of the
+            current buffer text as a preview.
+            """
+            import re as _re
+            from prompt_toolkit.application import run_in_terminal
+
+            buf = event.app.current_buffer
+            text = buf.text
+
+            _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+            match = _paste_re.search(text)
+
+            def _peek():
+                _PEEK_LINES = 20
+                if match:
+                    p = Path(match.group(1))
+                    if not p.exists():
+                        _cprint(f"  {_DIM}Paste file not found: {p}{_RST}")
+                        return
+                    lines = p.read_text(encoding="utf-8").splitlines()
+                    total = len(lines)
+                    shown = lines[:_PEEK_LINES]
+                    _cprint(f"\n  {_DIM}📄 {p.name} — {total} lines{_RST}")
+                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
+                    for line in shown:
+                        _cprint(f"  {line}")
+                    if total > _PEEK_LINES:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines) — Ctrl+G to edit{_RST}")
+                    else:
+                        _cprint(f"  {_DIM}{'─' * 60} Ctrl+G to edit{_RST}")
+                elif text.strip():
+                    lines = text.splitlines()
+                    total = len(lines)
+                    shown = lines[:_PEEK_LINES]
+                    _cprint(f"\n  {_DIM}📝 Current input — {total} line{'s' if total != 1 else ''}{_RST}")
+                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
+                    for line in shown:
+                        _cprint(f"  {line}")
+                    if total > _PEEK_LINES:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines){_RST}")
+                else:
+                    _cprint(f"  {_DIM}(input is empty){_RST}")
+
+            run_in_terminal(_peek)
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
@@ -7571,7 +7758,7 @@ class HermesCLI:
             """
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
-            # so the 5-line collapse threshold and display are consistent.
+            # so the line-count threshold and display are consistent cross-platform.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             if self._try_attach_clipboard_image():
                 event.app.invalidate()

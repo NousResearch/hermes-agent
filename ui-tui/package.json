@@ -1,0 +1,23 @@
+{
+  "name": "hermes-tui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --watch src/main.tsx",
+    "start": "tsx src/main.tsx",
+    "build": "tsc",
+    "test": "echo 'no tests yet'"
+  },
+  "dependencies": {
+    "ink": "^6.8.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

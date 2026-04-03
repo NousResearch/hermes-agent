@@ -2915,7 +2915,15 @@ class HermesCLI:
         Skipped when stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
         """
         import sys, os
-        if not sys.stdout.isatty():
+        # Use the real stdout (sys.__stdout__) to bypass prompt_toolkit's
+        # patch_stdout StdoutProxy — OSC escape sequences sent through the
+        # proxy are buffered / eaten and never reach the terminal emulator.
+        # Fall back to fd 1 if __stdout__ is unavailable.
+        real_out = getattr(sys, "__stdout__", None) or sys.stdout
+        try:
+            if not real_out.isatty():
+                return
+        except Exception:
             return
         if os.environ.get("TERM", "") == "dumb":
             return
@@ -2933,8 +2941,12 @@ class HermesCLI:
 
         # OSC 1: tab/icon name (iTerm2 uses this as the tab label, no process name appended)
         # OSC 2: window title (title bar)
-        sys.stdout.write(f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07")
-        sys.stdout.flush()
+        seq = f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07"
+        try:
+            os.write(real_out.fileno(), seq.encode())
+        except Exception:
+            real_out.write(seq)
+            real_out.flush()
         self._terminal_title_session = session_title
 
     def _update_terminal_title(self, thinking: bool = False) -> None:

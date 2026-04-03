@@ -31,4 +31,7 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
-exec hermes "$@"
+# Drop privileges: chown the data dir so the hermes user can write to it,
+# then exec as hermes (gosu does a clean exec, not su, so signals work correctly).
+chown -R hermes:hermes "$HERMES_HOME"
+exec gosu hermes hermes "$@"

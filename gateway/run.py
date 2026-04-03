@@ -5849,7 +5849,12 @@ class GatewayRunner:
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
-            from tools.approval import register_gateway_notify, unregister_gateway_notify
+            from tools.approval import (
+                register_gateway_notify,
+                reset_current_session_key,
+                set_current_session_key,
+                unregister_gateway_notify,
+            )
 
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
@@ -5905,11 +5910,13 @@ class GatewayRunner:
                     logger.error("Failed to send approval request: %s", _e)
 
             _approval_session_key = session_key or ""
+            _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

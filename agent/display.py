@@ -191,6 +191,15 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "clarify": "question", "skill_manage": "name",
     }
 
+    # delegate_task: show goal (single) or individual task goals (batch)
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if tasks and isinstance(tasks, list):
+            goals = [_oneline(t.get("goal", "?"))[:40] for t in tasks if isinstance(t, dict)]
+            return f"{len(tasks)} tasks: " + " | ".join(goals) if goals else f"{len(tasks)} parallel tasks"
+        goal = args.get("goal", "")
+        return _oneline(goal) if goal else None
+
     if tool_name == "process":
         action = args.get("action", "")
         sid = args.get("session_id", "")
@@ -1019,7 +1028,9 @@ def get_cute_tool_message(
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
+            goals = [_oneline(t.get("goal", "?"))[:30] for t in tasks if isinstance(t, dict)]
+            detail = " | ".join(goals) if goals else "parallel"
+            return _wrap(f"┊ 🔀 delegate  {len(tasks)}x: {_trunc(detail, 35)}  {dur}")
         return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -332,3 +334,78 @@ class PersistentMemoryStore:
             remaining = max(0, limit - len(header))
             body = top[:remaining]
         return f"{separator}\n{header_name}\n{separator}\n{body}"
+
+    def export_snapshot(self) -> Dict[str, Any]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM memory_entries ORDER BY created_at ASC, updated_at ASC"
+            ).fetchall()
+        entries = [self._row_to_dict(r) for r in rows]
+        return {
+            "format": "hermes-memory-snapshot-v1",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "entry_count": len(entries),
+            "entries": entries,
+        }
+
+    def export_snapshot_to_file(self, output_path: Path | str) -> Path:
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(self.export_snapshot(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return output
+
+    def import_snapshot(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        if snapshot.get("format") != "hermes-memory-snapshot-v1":
+            return {"success": False, "error": "Unsupported snapshot format."}
+        imported = 0
+        updated = 0
+        with self._connect() as conn:
+            for entry in snapshot.get("entries", []):
+                existing = conn.execute("SELECT updated_at FROM memory_entries WHERE id = ?", (entry["id"],)).fetchone()
+                payload = (
+                    entry["id"], entry["target"], entry["kind"], entry["content"], entry["status"],
+                    entry.get("scope", "global"), entry.get("scope_value"), entry.get("source", "manual"),
+                    float(entry.get("confidence", 1.0)), float(entry.get("importance", 0.5)),
+                    float(entry.get("created_at", time.time())), float(entry.get("updated_at", time.time())),
+                    entry.get("last_used_at"), int(entry.get("use_count", 0)), entry.get("supersedes_id"),
+                    entry.get("fingerprint") or self._fingerprint(entry["target"], entry["content"]),
+                )
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO memory_entries(
+                            id, target, kind, content, status, scope, scope_value, source,
+                            confidence, importance, created_at, updated_at, last_used_at,
+                            use_count, supersedes_id, fingerprint
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        payload,
+                    )
+                    imported += 1
+                elif float(entry.get("updated_at", 0)) > float(existing["updated_at"] or 0):
+                    conn.execute(
+                        """
+                        UPDATE memory_entries
+                        SET target = ?, kind = ?, content = ?, status = ?, scope = ?, scope_value = ?,
+                            source = ?, confidence = ?, importance = ?, created_at = ?, updated_at = ?,
+                            last_used_at = ?, use_count = ?, supersedes_id = ?, fingerprint = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            entry["target"], entry["kind"], entry["content"], entry["status"],
+                            entry.get("scope", "global"), entry.get("scope_value"), entry.get("source", "manual"),
+                            float(entry.get("confidence", 1.0)), float(entry.get("importance", 0.5)),
+                            float(entry.get("created_at", time.time())), float(entry.get("updated_at", time.time())),
+                            entry.get("last_used_at"), int(entry.get("use_count", 0)), entry.get("supersedes_id"),
+                            entry.get("fingerprint") or self._fingerprint(entry["target"], entry["content"]), entry["id"],
+                        ),
+                    )
+                    updated += 1
+            self._export_markdown_locked(conn, "memory")
+            self._export_markdown_locked(conn, "user")
+            conn.commit()
+        return {"success": True, "imported": imported, "updated": updated, "entry_count": snapshot.get("entry_count", 0)}
+
+    def import_snapshot_from_file(self, input_path: Path | str) -> Dict[str, Any]:
+        payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        return self.import_snapshot(payload)

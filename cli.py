@@ -5016,11 +5016,18 @@ class HermesCLI:
             return  # mcp_servers unchanged (some other section was edited)
 
         self._config_mcp_servers = new_mcp
-        # Notify user and reload
+        # Notify user and reload.  Run in a separate thread with a hard
+        # timeout so a hung MCP server cannot block the process_loop
+        # indefinitely (which would freeze the entire TUI).
         print()
         print("🔄 MCP server config changed — reloading connections...")
-        with self._busy_command(self._slow_command_status("/reload-mcp")):
-            self._reload_mcp()
+        _reload_thread = threading.Thread(
+            target=self._reload_mcp, daemon=True
+        )
+        _reload_thread.start()
+        _reload_thread.join(timeout=30)
+        if _reload_thread.is_alive():
+            print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

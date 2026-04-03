@@ -126,6 +126,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
+    CommandDef("keys", "Show keyboard shortcuts", "Info",
+               cli_only=True, aliases=("shortcuts",)),
     CommandDef("usage", "Show token usage for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),

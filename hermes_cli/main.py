@@ -2942,15 +2942,15 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
 
 def _should_skip_upstream_prompt() -> bool:
     """Check if user previously declined to add upstream."""
-    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-    return (hermes_home / SKIP_UPSTREAM_PROMPT_FILE).exists()
+    from hermes_constants import get_hermes_home
+    return (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).exists()
 
 
 def _mark_skip_upstream_prompt():
     """Create marker file to skip future upstream prompts."""
     try:
-        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
-        (hermes_home / SKIP_UPSTREAM_PROMPT_FILE).touch()
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).touch()
     except Exception:
         pass
 
@@ -3210,12 +3210,13 @@ def cmd_update(args):
             cwd=PROJECT_ROOT, check=False, capture_output=True
         )
 
-    # Detect if we're updating from a fork (before any branch logic)
-    git_cmd_base = ["git"]
+    # Build git command once — reused for fork detection and the update itself.
+    git_cmd = ["git"]
     if sys.platform == "win32":
-        git_cmd_base = ["git", "-c", "windows.appendAtomically=false"]
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    origin_url = _get_origin_url(git_cmd_base, PROJECT_ROOT)
+    # Detect if we're updating from a fork (before any branch logic)
+    origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
 
     if is_fork:
@@ -3230,9 +3231,6 @@ def cmd_update(args):
 
     # Fetch and pull
     try:
-        git_cmd = ["git"]
-        if sys.platform == "win32":
-            git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(

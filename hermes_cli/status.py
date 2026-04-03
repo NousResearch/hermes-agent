@@ -295,8 +295,23 @@ def show_status(args):
             is_active = result.stdout.strip() == "active"
         except subprocess.TimeoutExpired:
             is_active = False
+
+        # Fallback: check if hermes gateway is running as a process (Docker/Kubernetes/PID 1)
+        manager = "systemd (user)"
+        if not is_active:
+            try:
+                pgrep = subprocess.run(
+                    ["pgrep", "-f", "hermes.*gateway"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if pgrep.returncode == 0:
+                    is_active = True
+                    manager = "direct process (non-systemd)"
+            except Exception:
+                pass
+
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print("  Manager:      systemd (user)")
+        print(f"  Manager:      {manager}")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label

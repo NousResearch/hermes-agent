@@ -33,3 +33,13 @@ export interface Usage {
   output: number
   total: number
 }
+
+export interface SudoReq {
+  requestId: string
+}
+
+export interface SecretReq {
+  envVar: string
+  prompt: string
+  requestId: string
+}

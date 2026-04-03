@@ -7380,17 +7380,19 @@ class AIAgent:
                     # compress history and retry, not abort immediately.
                     status_code = getattr(api_error, "status_code", None)
 
-                    # ── Anthropic long-context tier gate ──────────────────
+                    # ── Anthropic Sonnet long-context tier gate ───────────
                     # Anthropic returns HTTP 429 "Extra usage is required for
                     # long context requests" when a Claude Max (or similar)
                     # subscription doesn't include the 1M-context tier.  This
                     # is NOT a transient rate limit — retrying or switching
                     # credentials won't help.  Reduce context to 200k (the
                     # standard tier) and compress.
+                    # Only applies to Sonnet — Opus 1M is general access.
                     _is_long_context_tier_error = (
                         status_code == 429
                         and "extra usage" in error_msg
                         and "long context" in error_msg
+                        and "sonnet" in self.model.lower()
                     )
                     if _is_long_context_tier_error:
                         _reduced_ctx = 200000

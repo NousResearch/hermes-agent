@@ -174,14 +174,18 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        if (key not in _HERMES_PROVIDER_ENV_BLOCKLIST
+                or _is_passthrough(key)
+                or value.startswith("hermes-proxy://")):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
+        elif (key not in _HERMES_PROVIDER_ENV_BLOCKLIST
+              or _is_passthrough(key)
+              or value.startswith("hermes-proxy://")):
             sanitized[key] = value
 
     return sanitized

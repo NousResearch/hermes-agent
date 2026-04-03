@@ -183,6 +183,26 @@ class TestTerminalIntegration:
         assert blocked_var in result
         assert result[blocked_var] == "secret_value"
 
+    def test_proxy_placeholder_passes_through_blocklist(self):
+        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        # A normally-blocked var whose value is a hermes-proxy:// placeholder
+        # should pass through so the cred-proxy daemon can substitute it.
+        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        env = {blocked_var: "hermes-proxy://my_token", "PATH": "/usr/bin"}
+        result = _sanitize_subprocess_env(env)
+        assert blocked_var in result
+        assert result[blocked_var] == "hermes-proxy://my_token"
+
+    def test_proxy_placeholder_not_real_secret_still_blocked(self):
+        from tools.environments.local import _sanitize_subprocess_env, _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        # A real secret value (not a placeholder) on a blocked key stays blocked.
+        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        env = {blocked_var: "sk-realtoken123", "PATH": "/usr/bin"}
+        result = _sanitize_subprocess_env(env)
+        assert blocked_var not in result
+
     def test_make_run_env_passthrough(self, monkeypatch):
         from tools.environments.local import _make_run_env, _HERMES_PROVIDER_ENV_BLOCKLIST
 

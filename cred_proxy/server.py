@@ -47,8 +47,9 @@ async def run_proxy(port: int, unix_socket=None, on_started=None) -> None:
 
     from mitmproxy import options
     from mitmproxy.tools.dump import DumpMaster
+    from hermes_constants import get_hermes_home
 
-    _confdir = str(Path.home() / ".hermes" / "state" / "cred-proxy-ca")
+    _confdir = str(get_hermes_home() / "state" / "cred-proxy-ca")
     Path(_confdir).mkdir(parents=True, exist_ok=True)
 
     store = CredStore()

@@ -14,7 +14,9 @@ import socket
 import sys
 from pathlib import Path
 
-_STATE_DIR = Path.home() / ".hermes" / "state"
+from hermes_constants import get_hermes_home
+
+_STATE_DIR = get_hermes_home() / "state"
 _PID_FILE = _STATE_DIR / "cred-proxy.pid"
 _PORT_FILE = _STATE_DIR / "cred-proxy.port"
 _SOCK_PATH = _STATE_DIR / "cred-proxy.sock"  # kept for status() compatibility

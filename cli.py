@@ -3722,6 +3722,7 @@ class HermesCLI:
         from hermes_cli.models import (
             curated_models_for_provider, list_available_providers,
             normalize_provider, _PROVIDER_LABELS,
+            get_pricing_for_provider, format_model_pricing_table,
         )
         from hermes_cli.auth import resolve_provider as _resolve_provider
 
@@ -3755,7 +3756,13 @@ class HermesCLI:
                 marker = " ← active" if is_active else ""
                 print(f"    [{p['id']}]{marker}")
                 curated = curated_models_for_provider(p["id"])
-                if curated:
+                # Fetch pricing for providers that support it (openrouter, nous)
+                pricing_map = get_pricing_for_provider(p["id"]) if p["id"] in ("openrouter", "nous") else {}
+                if curated and pricing_map:
+                    cur_model = self.model if is_active else ""
+                    for line in format_model_pricing_table(curated, pricing_map, current_model=cur_model):
+                        print(line)
+                elif curated:
                     for mid, desc in curated:
                         current_marker = " ← current" if (is_active and mid == self.model) else ""
                         print(f"      {mid}{current_marker}")

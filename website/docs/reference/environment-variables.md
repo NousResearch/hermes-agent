@@ -159,6 +159,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `DISCORD_REQUIRE_MENTION` | Require an @mention before responding in server channels |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where mention is not required |
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
+| `DISCORD_READ_ALLOWED_GUILDS` | Comma-separated Discord guild IDs whose channels/threads are readable via the Discord read tools |
+| `DISCORD_READ_ALLOWED_CHANNELS` | Comma-separated Discord channel or thread IDs readable via the Discord read tools |
+| `DISCORD_READ_INCLUDE_DMS` | Include already-known Discord DM channels in the Discord read tools (`true`/`false`) |
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |

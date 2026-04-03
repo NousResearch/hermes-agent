@@ -797,6 +797,27 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "DISCORD_READ_ALLOWED_GUILDS": {
+        "description": "Comma-separated Discord guild IDs whose readable channels may be listed and read",
+        "prompt": "Readable Discord guild IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "DISCORD_READ_ALLOWED_CHANNELS": {
+        "description": "Comma-separated Discord channel or thread IDs allowed for read-only history and search",
+        "prompt": "Readable Discord channel IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "DISCORD_READ_INCLUDE_DMS": {
+        "description": "Allow Discord read tools to include DM channels already known to Hermes",
+        "prompt": "Include Discord DMs in read tools? (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "

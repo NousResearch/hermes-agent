@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from gateway.channel_directory import (
@@ -10,6 +11,7 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _build_from_sessions,
+    _build_discord,
     DIRECTORY_PATH,
 )
 
@@ -119,6 +121,23 @@ class TestResolveChannelName:
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
 
+    def test_discord_thread_name_resolves_with_parent_path(self, tmp_path):
+        platforms = {
+            "discord": [
+                {
+                    "id": "210",
+                    "name": "ServerA / #deploys / incident-7",
+                    "qualified_name": "ServerA / #deploys / incident-7",
+                    "guild": "ServerA",
+                    "parent_name": "deploys",
+                    "type": "thread",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("discord", "ServerA/#deploys/incident-7") == "210"
+            assert resolve_channel_name("discord", "deploys/incident-7") == "210"
+
 
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
@@ -212,6 +231,30 @@ class TestBuildFromSessions:
         assert "Coaching Chat" in names
         assert "Coaching Chat / topic 17585" in names
         assert "Coaching Chat / topic 17587" in names
+
+
+class TestBuildDiscord:
+    def test_builds_threads_with_parent_context(self):
+        thread = SimpleNamespace(
+            id=210,
+            name="incident-7",
+            parent=SimpleNamespace(id=201, name="deploys"),
+        )
+        guild = SimpleNamespace(
+            name="Ops",
+            text_channels=[SimpleNamespace(id=201, name="deploys", threads=[thread])],
+            threads=[thread],
+        )
+        adapter = SimpleNamespace(_client=SimpleNamespace(guilds=[guild]))
+
+        with patch.dict("sys.modules", {"discord": SimpleNamespace()}):
+            entries = _build_discord(adapter)
+
+        by_id = {entry["id"]: entry for entry in entries}
+        assert by_id["201"]["qualified_name"] == "Ops / #deploys"
+        assert by_id["210"]["name"] == "Ops / #deploys / incident-7"
+        assert by_id["210"]["type"] == "thread"
+        assert by_id["210"]["parent_name"] == "deploys"
 
 
 class TestFormatDirectoryForDisplay:

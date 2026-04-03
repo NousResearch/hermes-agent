@@ -17,6 +17,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
 | **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. |
+| **Read-only Discord tools** | Optional Discord read tools can list scoped channels, read recent history, and search a bounded recent message window in allowlisted channels or the current session target. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
@@ -78,6 +79,24 @@ With `group_sessions_per_user: false`:
 
 - the whole room shares one running-agent slot for that channel/thread
 - follow-up messages from different people can interrupt or queue behind each other
+
+## Read-only Discord Tools
+
+Hermes can optionally expose three read-only Discord tools:
+
+- `discord_list_channels`
+- `discord_read_history`
+- `discord_search_messages`
+
+They are intentionally limited:
+
+- they use Discord HTTP API v10 in read-only mode
+- they only work for explicitly allowlisted guilds/channels, plus the current Discord session target
+- DM access is opt-in with `DISCORD_READ_INCLUDE_DMS`
+- message search is bounded to a recent message window, not the full server history
+- they do not grant moderation, role management, or unrestricted member listing
+
+This keeps the feature useful without turning the bot into a broad server crawler.
 
 This guide walks you through the full setup process — from creating your bot on Discord's Developer Portal to sending your first message.
 
@@ -253,6 +272,11 @@ DISCORD_ALLOWED_USERS=284102345871466496
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # DISCORD_FREE_RESPONSE_CHANNELS=1234567890,9876543210
+
+# Optional: read-only Discord tools scope
+# DISCORD_READ_ALLOWED_GUILDS=123456789012345678
+# DISCORD_READ_ALLOWED_CHANNELS=234567890123456789,345678901234567890
+# DISCORD_READ_INCLUDE_DMS=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -260,11 +284,18 @@ Optional behavior settings in `~/.hermes/config.yaml`:
 ```yaml
 discord:
   require_mention: true
+  read:
+    allowed_guilds:
+      - "123456789012345678"
+    allowed_channels:
+      - "234567890123456789"
+    include_dms: false
 
 group_sessions_per_user: true
 ```
 
 - `discord.require_mention: true` keeps Hermes quiet in normal server traffic unless mentioned
+- `discord.read.*` scopes the optional read-only Discord tools to specific guilds/channels and known DMs
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
 
 ### Start the Gateway
@@ -338,6 +369,12 @@ For the full setup and operational guide, see:
 
 **Fix**: Re-invite the bot with the correct permissions using the URL from Step 5, or manually adjust the bot's role permissions in Server Settings → Roles.
 
+### Discord read tools say a channel is not accessible
+
+**Cause**: The channel, thread, or guild is outside the configured read scope.
+
+**Fix**: Add the relevant ID to `DISCORD_READ_ALLOWED_GUILDS` or `DISCORD_READ_ALLOWED_CHANNELS`, or set it in `discord.read` inside `~/.hermes/config.yaml`. The current Discord session target is auto-allowed, but nothing else is.
+
 ### Bot is offline
 
 **Cause**: The Hermes gateway isn't running, or the token is incorrect.
@@ -369,6 +406,5 @@ Always set `DISCORD_ALLOWED_USERS` to restrict who can interact with the bot. Wi
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 
 

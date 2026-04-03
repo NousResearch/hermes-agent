@@ -2,7 +2,7 @@
 Channel directory -- cached map of reachable channels/contacts per platform.
 
 Built on gateway startup, refreshed periodically (every 5 min), and saved to
-~/.hermes/channel_directory.json.  The send_message tool reads this file for
+{HERMES_HOME}/channel_directory.json. The send_message tool reads this file for
 action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
@@ -16,6 +16,14 @@ from hermes_cli.config import get_hermes_home
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+
+
+def _normalize_query(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("\\", "/")
+    while "  " in normalized:
+        normalized = normalized.replace("  ", " ")
+    normalized = normalized.replace(" /", "/").replace("/ ", "/")
+    return normalized.lstrip("#")
 
 
 def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
@@ -82,7 +90,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """Enumerate all text channels the Discord bot can see."""
+    """Enumerate all text channels and active threads the Discord bot can see."""
     channels = []
     client = getattr(adapter, "_client", None)
     if not client:
@@ -93,20 +101,77 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     except ImportError:
         return channels
 
+    seen_ids = set()
     for guild in client.guilds:
         for ch in guild.text_channels:
+            channel_id = str(ch.id)
+            if channel_id in seen_ids:
+                continue
+            seen_ids.add(channel_id)
             channels.append({
-                "id": str(ch.id),
+                "id": channel_id,
                 "name": ch.name,
+                "qualified_name": f"{guild.name} / #{ch.name}",
                 "guild": guild.name,
                 "type": "channel",
             })
-        # Also include DM-capable users we've interacted with is not
-        # feasible via guild enumeration; those come from sessions.
+        for thread in _iter_discord_threads(guild):
+            thread_id = str(getattr(thread, "id", ""))
+            if not thread_id or thread_id in seen_ids:
+                continue
+            seen_ids.add(thread_id)
+            parent = getattr(thread, "parent", None)
+            parent_id = str(getattr(parent, "id", "")) or None
+            parent_name = getattr(parent, "name", None)
+            name = _discord_thread_name(thread, guild.name)
+            channels.append({
+                "id": thread_id,
+                "name": name,
+                "qualified_name": name,
+                "guild": guild.name,
+                "parent_id": parent_id,
+                "parent_name": parent_name,
+                "type": "thread",
+            })
+        # Also include DM-capable users we've interacted with; those come from sessions.
 
     # Merge any DMs from session history
     channels.extend(_build_from_sessions("discord"))
     return channels
+
+
+def _iter_discord_threads(guild) -> List[Any]:
+    """Collect active thread objects from a discord.py guild object."""
+    threads = []
+    seen_ids = set()
+
+    for candidate in list(getattr(guild, "threads", []) or []):
+        thread_id = getattr(candidate, "id", None)
+        if thread_id is None or thread_id in seen_ids:
+            continue
+        seen_ids.add(thread_id)
+        threads.append(candidate)
+
+    for channel in list(getattr(guild, "text_channels", []) or []):
+        for candidate in list(getattr(channel, "threads", []) or []):
+            thread_id = getattr(candidate, "id", None)
+            if thread_id is None or thread_id in seen_ids:
+                continue
+            seen_ids.add(thread_id)
+            threads.append(candidate)
+
+    return threads
+
+
+def _discord_thread_name(thread, guild_name: Optional[str]) -> str:
+    thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
+    parent = getattr(thread, "parent", None)
+    parent_name = getattr(parent, "name", None)
+    if guild_name and parent_name:
+        return f"{guild_name} / #{parent_name} / {thread_name}"
+    if parent_name:
+        return f"{parent_name} / {thread_name}"
+    return thread_name
 
 
 def _build_slack(adapter) -> List[Dict[str, str]]:
@@ -188,23 +253,46 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     if not channels:
         return None
 
-    query = name.lstrip("#").lower()
+    query = _normalize_query(name)
 
-    # 1. Exact name match
-    for ch in channels:
-        if ch["name"].lower() == query:
-            return ch["id"]
+    def _aliases(channel: Dict[str, Any]) -> set[str]:
+        aliases = {
+            _normalize_query(channel.get("name", "")),
+            _normalize_query(channel.get("qualified_name") or channel.get("name", "")),
+        }
 
-    # 2. Guild-qualified match for Discord ("GuildName/channel")
-    if "/" in query:
-        guild_part, ch_part = query.rsplit("/", 1)
-        for ch in channels:
-            guild = ch.get("guild", "").lower()
-            if guild == guild_part and ch["name"].lower() == ch_part:
-                return ch["id"]
+        raw_name = channel.get("name", "")
+        guild = channel.get("guild", "")
+        parent_name = channel.get("parent_name", "")
+        channel_type = channel.get("type")
 
-    # 3. Partial prefix match (only if unambiguous)
-    matches = [ch for ch in channels if ch["name"].lower().startswith(query)]
+        if channel_type == "channel" and raw_name:
+            aliases.add(_normalize_query(f"#{raw_name}"))
+            if guild:
+                aliases.add(_normalize_query(f"{guild}/{raw_name}"))
+                aliases.add(_normalize_query(f"{guild}/#{raw_name}"))
+        if channel_type == "thread" and raw_name:
+            if guild and parent_name:
+                thread_name = raw_name.split("/")[-1].strip()
+                aliases.add(_normalize_query(f"{guild}/{parent_name}/{thread_name}"))
+                aliases.add(_normalize_query(f"{guild}/#{parent_name}/{thread_name}"))
+                aliases.add(_normalize_query(f"{parent_name}/{thread_name}"))
+                aliases.add(_normalize_query(f"#{parent_name}/{thread_name}"))
+
+        return {alias for alias in aliases if alias}
+
+    # 1. Exact alias match
+    exact_matches = [ch for ch in channels if query in _aliases(ch)]
+    if len(exact_matches) == 1:
+        return exact_matches[0]["id"]
+    if len(exact_matches) > 1:
+        return None
+
+    # 2. Partial prefix match (only if unambiguous)
+    matches = [
+        ch for ch in channels
+        if any(alias.startswith(query) for alias in _aliases(ch))
+    ]
     if len(matches) == 1:
         return matches[0]["id"]
 

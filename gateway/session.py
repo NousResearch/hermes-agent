@@ -277,10 +277,11 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Discord. "
-            "You do NOT have access to Discord-specific APIs — you cannot search "
-            "channel history, pin messages, manage roles, or list server members. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "You do NOT have unrestricted Discord API access — you cannot manage "
+            "roles, pin messages, or browse the whole server. If Discord read tools "
+            "are available, use them only for the explicitly scoped channels or the "
+            "current Discord session target. Otherwise, explain that you can only "
+            "read messages sent directly to you and respond."
         )
 
     # Connected platforms

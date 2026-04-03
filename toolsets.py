@@ -60,6 +60,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Discord read-only access (gated on Discord bot config)
+    "discord_list_channels", "discord_read_history", "discord_search_messages",
     # Honcho memory tools (gated on honcho being active via check_fn)
     "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -133,6 +135,12 @@ TOOLSETS = {
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
+        "includes": []
+    },
+
+    "discord_read": {
+        "description": "Read-only Discord channel listing, recent history, and bounded message search",
+        "tools": ["discord_list_channels", "discord_read_history", "discord_search_messages"],
         "includes": []
     },
     
@@ -277,6 +285,8 @@ TOOLSETS = {
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
+            # Read-only Discord access (gated on Discord bot config)
+            "discord_list_channels", "discord_read_history", "discord_search_messages",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
             # Honcho memory tools (gated on honcho being active via check_fn)

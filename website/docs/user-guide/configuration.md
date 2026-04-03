@@ -1365,6 +1365,27 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
 
+## Discord Read Scope
+
+If you want Hermes to use the read-only Discord tools for bounded channel listing, recent history, and recent-message search, scope them explicitly:
+
+```yaml
+discord:
+  read:
+    allowed_guilds:
+      - "123456789012345678"
+    allowed_channels:
+      - "234567890123456789"
+      - "345678901234567890"
+    include_dms: false
+```
+
+- `allowed_guilds` grants read-only access to readable text channels and active threads in those guilds.
+- `allowed_channels` grants read-only access to specific channels or threads; if you allow a parent text channel, active child threads are included.
+- `include_dms: true` lets the read tools surface Discord DM channels Hermes already knows about from prior sessions.
+- Even without these allowlists, the current Discord session target is allowed automatically so the agent can inspect the conversation it is already in.
+- Search is intentionally bounded to a recent message window; it is not a full-server index.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

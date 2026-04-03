@@ -197,7 +197,8 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Discord" in prompt
-        assert "cannot search" in prompt.lower() or "do not have access" in prompt.lower()
+        assert "unrestricted discord api access" in prompt.lower()
+        assert "current discord session target" in prompt.lower()
 
     def test_slack_prompt_includes_platform_notes(self):
         config = GatewayConfig(

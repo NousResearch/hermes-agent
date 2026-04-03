@@ -197,6 +197,33 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_bridges_discord_read_scope_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  read:\n"
+            "    allowed_guilds:\n"
+            "      - 100\n"
+            "    allowed_channels:\n"
+            "      - 200\n"
+            "      - 210\n"
+            "    include_dms: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_READ_ALLOWED_GUILDS", raising=False)
+        monkeypatch.delenv("DISCORD_READ_ALLOWED_CHANNELS", raising=False)
+        monkeypatch.delenv("DISCORD_READ_INCLUDE_DMS", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("DISCORD_READ_ALLOWED_GUILDS") == "100"
+        assert os.getenv("DISCORD_READ_ALLOWED_CHANNELS") == "200,210"
+        assert os.getenv("DISCORD_READ_INCLUDE_DMS") == "true"
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

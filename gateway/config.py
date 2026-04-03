@@ -543,6 +543,21 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+                read_cfg = discord_cfg.get("read")
+                if isinstance(read_cfg, dict):
+                    allowed_guilds = read_cfg.get("allowed_guilds")
+                    if allowed_guilds is not None and not os.getenv("DISCORD_READ_ALLOWED_GUILDS"):
+                        if isinstance(allowed_guilds, list):
+                            allowed_guilds = ",".join(str(v) for v in allowed_guilds)
+                        os.environ["DISCORD_READ_ALLOWED_GUILDS"] = str(allowed_guilds)
+                    allowed_channels = read_cfg.get("allowed_channels")
+                    if allowed_channels is not None and not os.getenv("DISCORD_READ_ALLOWED_CHANNELS"):
+                        if isinstance(allowed_channels, list):
+                            allowed_channels = ",".join(str(v) for v in allowed_channels)
+                        os.environ["DISCORD_READ_ALLOWED_CHANNELS"] = str(allowed_channels)
+                    include_dms = read_cfg.get("include_dms")
+                    if include_dms is not None and not os.getenv("DISCORD_READ_INCLUDE_DMS"):
+                        os.environ["DISCORD_READ_INCLUDE_DMS"] = str(include_dms).lower()
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -899,5 +914,4 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
 

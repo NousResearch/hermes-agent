@@ -31,6 +31,7 @@ class TestHermesApiServerToolset:
             "vision_analyze", "image_generate",
             "execute_code", "delegate_task",
             "todo", "memory", "session_search", "cronjob",
+            "discord_list_channels", "discord_read_history", "discord_search_messages",
         ]
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"

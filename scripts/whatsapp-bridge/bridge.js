@@ -62,6 +62,33 @@ function formatOutgoingMessage(message) {
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
 }
 
+function normalizeWhatsAppId(value) {
+  if (!value) return '';
+  return String(value).replace(':', '@');
+}
+
+function getMessageContent(msg) {
+  const content = msg?.message || {};
+  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
+  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
+  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
+  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
+  if (content.buttonsMessage) return content.buttonsMessage;
+  if (content.listMessage) return content.listMessage;
+  return content;
+}
+
+function getContextInfo(messageContent) {
+  if (!messageContent || typeof messageContent !== 'object') return {};
+  for (const value of Object.values(messageContent)) {
+    if (value && typeof value === 'object' && value.contextInfo) {
+      return value.contextInfo;
+    }
+  }
+  return {};
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
@@ -157,6 +184,11 @@ async function startSocket() {
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
 
+    const botIds = Array.from(new Set([
+      normalizeWhatsAppId(sock.user?.id),
+      normalizeWhatsAppId(sock.user?.lid),
+    ].filter(Boolean)));
+
     for (const msg of messages) {
       if (!msg.message) continue;
 
@@ -200,23 +232,28 @@ async function startSocket() {
         continue;
       }
 
+      const messageContent = getMessageContent(msg);
+      const contextInfo = getContextInfo(messageContent);
+      const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
+      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
+
       // Extract message body
       let body = '';
       let hasMedia = false;
       let mediaType = '';
       const mediaUrls = [];
 
-      if (msg.message.conversation) {
-        body = msg.message.conversation;
-      } else if (msg.message.extendedTextMessage?.text) {
-        body = msg.message.extendedTextMessage.text;
-      } else if (msg.message.imageMessage) {
-        body = msg.message.imageMessage.caption || '';
+      if (messageContent.conversation) {
+        body = messageContent.conversation;
+      } else if (messageContent.extendedTextMessage?.text) {
+        body = messageContent.extendedTextMessage.text;
+      } else if (messageContent.imageMessage) {
+        body = messageContent.imageMessage.caption || '';
         hasMedia = true;
         mediaType = 'image';
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
+          const mime = messageContent.imageMessage.mimetype || 'image/jpeg';
           const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
           const ext = extMap[mime] || '.jpg';
           mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
@@ -226,13 +263,13 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download image:', err.message);
         }
-      } else if (msg.message.videoMessage) {
-        body = msg.message.videoMessage.caption || '';
+      } else if (messageContent.videoMessage) {
+        body = messageContent.videoMessage.caption || '';
         hasMedia = true;
         mediaType = 'video';
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = msg.message.videoMessage.mimetype || 'video/mp4';
+          const mime = messageContent.videoMessage.mimetype || 'video/mp4';
           const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
           const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
@@ -241,11 +278,11 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download video:', err.message);
         }
-      } else if (msg.message.audioMessage || msg.message.pttMessage) {
+      } else if (messageContent.audioMessage || messageContent.pttMessage) {
         hasMedia = true;
-        mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
+        mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
         try {
-          const audioMsg = msg.message.pttMessage || msg.message.audioMessage;
+          const audioMsg = messageContent.pttMessage || messageContent.audioMessage;
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
           const mime = audioMsg.mimetype || 'audio/ogg';
           const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
@@ -256,11 +293,11 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download audio:', err.message);
         }
-      } else if (msg.message.documentMessage) {
-        body = msg.message.documentMessage.caption || '';
+      } else if (messageContent.documentMessage) {
+        body = messageContent.documentMessage.caption || '';
         hasMedia = true;
         mediaType = 'document';
-        const fileName = msg.message.documentMessage.fileName || 'document';
+        const fileName = messageContent.documentMessage.fileName || 'document';
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
@@ -309,6 +346,9 @@ async function startSocket() {
         hasMedia,
         mediaType,
         mediaUrls,
+        mentionedIds,
+        quotedParticipant,
+        botIds,
         timestamp: msg.messageTimestamp,
       };
 

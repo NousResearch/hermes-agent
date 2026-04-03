@@ -191,6 +191,60 @@ class TestHistoryDisplay:
         assert "A" * 250 in output
         assert "A" * 250 + "..." not in output
 
+    def test_history_shows_recent_sessions_when_current_chat_is_empty(self, capsys):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "current",
+                "title": "Current",
+                "preview": "Current preview",
+                "last_active": 0,
+            },
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli.show_history()
+        output = capsys.readouterr().out
+
+        assert "No messages in the current chat yet" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "20260401_201329_d85961" in output
+        assert "/resume" in output
+        assert "Current preview" not in output
+
+    def test_resume_without_target_lists_recent_sessions(self, capsys):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "current",
+                "title": "Current",
+                "preview": "Current preview",
+                "last_active": 0,
+            },
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli._handle_resume_command("/resume")
+        output = capsys.readouterr().out
+
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "Use /resume <session id or title> to continue" in output
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

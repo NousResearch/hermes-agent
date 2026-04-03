@@ -200,6 +200,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="opencode-go",
         name="OpenCode Go",
         auth_type="api_key",
+        # OpenCode Go mixes API surfaces by model:
+        # - GLM / Kimi use OpenAI-compatible chat completions under /v1
+        # - MiniMax models use Anthropic Messages under /v1/messages
+        # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
@@ -1375,6 +1379,89 @@ def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
     if not isinstance(key, str) or not key.strip():
         return False
     return not _is_expiring(state.get("agent_key_expires_at"), min_ttl_seconds)
+
+
+def resolve_nous_access_token(
+    *,
+    timeout_seconds: float = 15.0,
+    insecure: Optional[bool] = None,
+    ca_bundle: Optional[str] = None,
+    refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> str:
+    """Resolve a refresh-aware Nous Portal access token for managed tool gateways."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "nous")
+
+        if not state:
+            raise AuthError(
+                "Hermes is not logged into Nous Portal.",
+                provider="nous",
+                relogin_required=True,
+            )
+
+        portal_base_url = (
+            _optional_base_url(state.get("portal_base_url"))
+            or os.getenv("HERMES_PORTAL_BASE_URL")
+            or os.getenv("NOUS_PORTAL_BASE_URL")
+            or DEFAULT_NOUS_PORTAL_URL
+        ).rstrip("/")
+        client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
+        verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
+
+        access_token = state.get("access_token")
+        refresh_token = state.get("refresh_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise AuthError(
+                "No access token found for Nous Portal login.",
+                provider="nous",
+                relogin_required=True,
+            )
+
+        if not _is_expiring(state.get("expires_at"), refresh_skew_seconds):
+            return access_token
+
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise AuthError(
+                "Session expired and no refresh token is available.",
+                provider="nous",
+                relogin_required=True,
+            )
+
+        timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
+        with httpx.Client(
+            timeout=timeout,
+            headers={"Accept": "application/json"},
+            verify=verify,
+        ) as client:
+            refreshed = _refresh_access_token(
+                client=client,
+                portal_base_url=portal_base_url,
+                client_id=client_id,
+                refresh_token=refresh_token,
+            )
+
+        now = datetime.now(timezone.utc)
+        access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
+        state["access_token"] = refreshed["access_token"]
+        state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
+        state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
+        state["scope"] = refreshed.get("scope") or state.get("scope")
+        state["obtained_at"] = now.isoformat()
+        state["expires_in"] = access_ttl
+        state["expires_at"] = datetime.fromtimestamp(
+            now.timestamp() + access_ttl,
+            tz=timezone.utc,
+        ).isoformat()
+        state["portal_base_url"] = portal_base_url
+        state["client_id"] = client_id
+        state["tls"] = {
+            "insecure": verify is False,
+            "ca_bundle": verify if isinstance(verify, str) else None,
+        }
+        _save_provider_state(auth_store, "nous", state)
+        _save_auth_store(auth_store)
+        return state["access_token"]
 
 
 def refresh_nous_oauth_pure(

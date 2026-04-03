@@ -738,71 +738,58 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
+        # Seed new DM thread sessions with parent DM session history.
+        # When a bot reply creates a Slack thread and the user responds in it,
+        # the thread gets a new session (keyed by thread_ts).  Without seeding,
+        # the thread session starts with zero context — the user's original
+        # question and the bot's answer are invisible.  Fix: copy the parent
+        # DM session's transcript into the new thread session so context carries
+        # over while still keeping threads isolated from each other.
+        if (
+            source.chat_type == "dm"
+            and source.thread_id
+            and entry.created_at == entry.updated_at  # brand-new session
+            and not was_auto_reset
+        ):
+            parent_source = SessionSource(
+                platform=source.platform,
+                chat_id=source.chat_id,
+                chat_type="dm",
+                user_id=source.user_id,
+                # no thread_id — this is the parent DM session
+            )
+            parent_key = self._generate_session_key(parent_source)
+            with self._lock:
+                parent_entry = self._entries.get(parent_key)
+            if parent_entry and parent_entry.session_id != entry.session_id:
+                try:
+                    parent_history = self.load_transcript(parent_entry.session_id)
+                    if parent_history:
+                        self.rewrite_transcript(entry.session_id, parent_history)
+                        logger.info(
+                            "[Session] Seeded DM thread session %s with %d messages from parent %s",
+                            entry.session_id, len(parent_history), parent_entry.session_id,
+                        )
+                except Exception as e:
+                    logger.warning("[Session] Failed to seed thread session: %s", e)
+
         return entry
 
     def update_session(
         self,
         session_key: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
         last_prompt_tokens: int = None,
-        model: str = None,
-        estimated_cost_usd: Optional[float] = None,
-        cost_status: Optional[str] = None,
-        cost_source: Optional[str] = None,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
     ) -> None:
-        """Update a session's metadata after an interaction."""
-        db_session_id = None
-
+        """Update lightweight session metadata after an interaction."""
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
-                # Direct assignment — the gateway receives cumulative totals
-                # from the cached agent, not per-call deltas.
-                entry.input_tokens = input_tokens
-                entry.output_tokens = output_tokens
-                entry.cache_read_tokens = cache_read_tokens
-                entry.cache_write_tokens = cache_write_tokens
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
-                if estimated_cost_usd is not None:
-                    entry.estimated_cost_usd = estimated_cost_usd
-                if cost_status:
-                    entry.cost_status = cost_status
-                entry.total_tokens = (
-                    entry.input_tokens
-                    + entry.output_tokens
-                    + entry.cache_read_tokens
-                    + entry.cache_write_tokens
-                )
                 self._save()
-                db_session_id = entry.session_id
-
-        if self._db and db_session_id:
-            try:
-                self._db.set_token_counts(
-                    db_session_id,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                    estimated_cost_usd=estimated_cost_usd,
-                    cost_status=cost_status,
-                    cost_source=cost_source,
-                    billing_provider=provider,
-                    billing_base_url=base_url,
-                    model=model,
-                    absolute=True,
-                )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

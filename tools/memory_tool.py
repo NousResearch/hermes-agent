@@ -18,13 +18,17 @@ import tools.persistent_memory_store as pm
 
 logger = logging.getLogger(__name__)
 
-
+# Where memory files live — resolved dynamically so profile overrides
+# (HERMES_HOME env var changes) are always respected. The old module-level
+# constant was cached at import time and could go stale if a profile switch
+# happened after the first import.
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
 
-# Backward-compatible alias for callers/tests that still reference MEMORY_DIR.
+# Backward-compatible alias — some callers/tests still reference MEMORY_DIR
+# directly, but new code should prefer get_memory_dir().
 MEMORY_DIR = get_memory_dir()
 ENTRY_DELIMITER = "\n§\n"
 
@@ -128,6 +132,7 @@ class MemoryStore:
                 backend.add_entry(target, entry, kind=self._entry_kind(target, entry), source="migration")
 
     def load_from_disk(self):
+        """Load entries from the SQLite store, bootstrapping legacy markdown if needed."""
         memory_dir = self._memory_dir()
         memory_dir.mkdir(parents=True, exist_ok=True)
         self._backend = pm.PersistentMemoryStore(

@@ -349,13 +349,6 @@ class SessionDB:
 
         self._conn.commit()
 
-    def close(self):
-        """Close the database connection."""
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
-
     # =========================================================================
     # Session lifecycle
     # =========================================================================
@@ -1009,8 +1002,9 @@ class SessionDB:
         Strategy:
         - Preserve properly paired quoted phrases (``"exact phrase"``)
         - Strip unmatched FTS5-special characters that would cause errors
-        - Wrap unquoted hyphenated terms in quotes so FTS5 matches them
-          as exact phrases instead of splitting on the hyphen
+        - Wrap unquoted hyphenated and dotted terms in quotes so FTS5
+          matches them as exact phrases instead of splitting on the
+          hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
         """
         # Step 1: Extract balanced double-quoted phrases and protect them
         # from further processing via numbered placeholders.
@@ -1035,11 +1029,13 @@ class SessionDB:
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
 
-        # Step 5: Wrap unquoted hyphenated terms (e.g. ``chat-send``) in
-        # double quotes.  FTS5's tokenizer splits on hyphens, turning
-        # ``chat-send`` into ``chat AND send``.  Quoting preserves the
-        # intended phrase match.
-        sanitized = re.sub(r"\b(\w+(?:-\w+)+)\b", r'"\1"', sanitized)
+        # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
+        # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
+        # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
+        # Quoting preserves phrase semantics.  A single pass avoids the
+        # double-quoting bug that would occur if dotted and hyphenated
+        # patterns were applied sequentially (e.g. ``my-app.config``).
+        sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):

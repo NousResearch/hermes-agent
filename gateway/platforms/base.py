@@ -235,6 +235,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -1046,6 +1047,13 @@ class BasePlatformAdapter(ABC):
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
         
+        # Mark session as active BEFORE spawning background task to close
+        # the race window where a second message arriving before the task
+        # starts would also pass the _active_sessions check and spawn a
+        # duplicate task.  (grammY sequentialize / aiogram EventIsolation
+        # pattern — set the guard synchronously, not inside the task.)
+        self._active_sessions[session_key] = asyncio.Event()
+
         # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
         try:
@@ -1092,8 +1100,10 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
-        # Create interrupt event for this session
-        interrupt_event = asyncio.Event()
+        # Reuse the interrupt event set by handle_message() (which marks
+        # the session active before spawning this task to prevent races).
+        # Fall back to a new Event only if the entry was removed externally.
+        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
@@ -1106,9 +1116,12 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # Send response if any
+            # Send response if any.  A None/empty response is normal when
+            # streaming already delivered the text (already_sent=True) or
+            # when the message was queued behind an active agent.  Log at
+            # DEBUG to avoid noisy warnings for expected behavior.
             if not response:
-                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)

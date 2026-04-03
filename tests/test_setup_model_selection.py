@@ -22,6 +22,8 @@ def mock_provider_registry():
         "kimi-coding": FakePConfig("Kimi Coding", ["KIMI_API_KEY"], "KIMI_BASE_URL", "https://api.kimi.example"),
         "minimax": FakePConfig("MiniMax", ["MINIMAX_API_KEY"], "MINIMAX_BASE_URL", "https://api.minimax.example"),
         "minimax-cn": FakePConfig("MiniMax CN", ["MINIMAX_API_KEY"], "MINIMAX_CN_BASE_URL", "https://api.minimax-cn.example"),
+        "opencode-zen": FakePConfig("OpenCode Zen", ["OPENCODE_ZEN_API_KEY"], "OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1"),
+        "opencode-go": FakePConfig("OpenCode Go", ["OPENCODE_GO_API_KEY"], "OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
     }
 
 
@@ -34,6 +36,8 @@ class TestSetupProviderModelSelection:
         ("kimi-coding", ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"]),
         ("minimax", ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
         ("minimax-cn", ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"]),
+        ("opencode-zen", ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash"]),
+        ("opencode-go", ["glm-5", "kimi-k2.5", "minimax-m2.5", "minimax-m2.7"]),
     ])
     @patch("hermes_cli.models.fetch_api_models", return_value=[])
     @patch("hermes_cli.config.get_env_value", return_value="fake-key")
@@ -122,3 +126,30 @@ class TestSetupProviderModelSelection:
             )
 
         assert config["model"]["default"] == "my-custom-model"
+
+    @patch("hermes_cli.models.fetch_api_models", return_value=["opencode-go/kimi-k2.5", "opencode-go/minimax-m2.7"])
+    @patch("hermes_cli.config.get_env_value", return_value="fake-key")
+    def test_opencode_live_models_are_normalized_for_selection(
+        self, mock_env, mock_fetch, mock_provider_registry
+    ):
+        from hermes_cli.setup import _setup_provider_model_selection
+
+        captured_choices = {}
+
+        def fake_prompt_choice(label, choices, default):
+            captured_choices["choices"] = choices
+            return len(choices) - 1
+
+        with patch("hermes_cli.auth.PROVIDER_REGISTRY", mock_provider_registry):
+            _setup_provider_model_selection(
+                config={"model": {}},
+                provider_id="opencode-go",
+                current_model="opencode-go/kimi-k2.5",
+                prompt_choice=fake_prompt_choice,
+                prompt_fn=lambda _: None,
+            )
+
+        offered = captured_choices["choices"]
+        assert "kimi-k2.5" in offered
+        assert "minimax-m2.7" in offered
+        assert all("opencode-go/" not in choice for choice in offered)

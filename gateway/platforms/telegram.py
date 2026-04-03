@@ -2101,6 +2101,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     if not chat_topic:
                         chat_topic = created_name
 
+        elif chat_type == "group" and thread_id_str:
+            # Group/supergroup forum topic skill binding via config.extra['group_topics']
+            group_topics_config: list = self.config.extra.get("group_topics", [])
+            for chat_entry in group_topics_config:
+                if str(chat_entry.get("chat_id", "")) == str(chat.id):
+                    for topic in chat_entry.get("topics", []):
+                        tid = topic.get("thread_id")
+                        if tid is not None and str(tid) == thread_id_str:
+                            chat_topic = topic.get("name")
+                            topic_skill = topic.get("skill")
+                            break
+                    break
+
         # Build source
         source = self.build_source(
             chat_id=str(chat.id),

@@ -3261,9 +3261,10 @@ class HermesCLI:
         self._resumed = True
         self._pending_title = None
 
-        # Load conversation history
+        # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
-        self.conversation_history = restored or []
+        restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
+        self.conversation_history = restored
 
         # Re-open the target session so it's not marked as ended
         try:

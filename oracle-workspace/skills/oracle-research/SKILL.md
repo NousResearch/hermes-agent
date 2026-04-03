@@ -69,10 +69,21 @@ curl http://oracle-mirofish:5001/api/simulation/entities/<graph_id>
 
 ### Phase 0: Pre-Research Intelligence
 Before ANY research:
-1. Search Vault for existing intelligence on the topic
+1. Search ORACLE vault ONLY — use terminal tool to search `/oracle-vault/`:
+```bash
+# Search prior research reports
+grep -rl "<topic keywords>" /oracle-vault/research/ 2>/dev/null | head -5
+
+# Search prior findings
+grep -rl "<topic keywords>" /oracle-vault/findings/ 2>/dev/null | head -10
+
+# Check prior decisions on this domain
+grep -rl "<domain keywords>" /oracle-vault/decisions/ 2>/dev/null | head -5
+```
 2. Check ST decisions: `review_decisions(tag="oracle")`
-3. If recent research exists (< 7 days), offer it to the user
+3. If recent research exists in `/oracle-vault/research/` (< 7 days old), read it and offer to the user instead of re-researching
 4. Send Telegram: "Starting ORACLE research on: {topic}"
+5. NEVER search Vault MCP general folders, Graphiti, or other locations for prior ORACLE work — `/oracle-vault/` is the SOLE source of truth
 
 ### Phase 1: Query Decomposition
 Break the query into 2-6 research dimensions using these templates:
@@ -162,24 +173,73 @@ KNOWLEDGE GAPS:
 ```
 
 ### Phase 6: Delivery + Archival
+
 **Deliver:**
 1. Send condensed report to Telegram (executive summary + key findings + actions)
 2. Send: `Research complete — /follow {id} <question> for follow-up`
 
-**Archive to Vault (MANDATORY — every research run must persist its full trace):**
-3. Write full report to Vault: `vault_submit_knowledge` with content=full report markdown, tags=["oracle:research", "oracle:{template_type}"], title="ORACLE: {topic}"
-4. Write research metadata to Vault: `vault_record_decision` with decision=conclusion, rationale=executive summary, tags=["oracle:decision"]
-5. Record in ST decision journal: `record_decision(tag="oracle", decision=conclusion, expected_outcome=prediction)`
+**Archive to ORACLE Vault (MANDATORY — `/oracle-vault/` is the SOLE storage location):**
 
-**Archive to Graphiti (persistent knowledge graph):**
-6. Store full report as episode: `add_memory(group_id="oracle_research", name="Research: {topic}", episode_body=full_report)`
-7. Store each key finding as separate episode: `add_memory(group_id="oracle_findings", name="Finding: {finding_title}")` — this builds a searchable knowledge base across all research runs
+All ORACLE research data is stored at `/oracle-vault/` (mounted from `/opt/second-brain/vault/oracle/`). This is the ONE place. Not scattered. Not in Graphiti. Not in Vault MCP general folders. HERE.
+
+3. **Write full report** — use terminal tool:
+```bash
+# Save the complete report as a markdown file
+cat > /oracle-vault/research/YYYY-MM-DD-{id}-{topic-slug}.md << 'REPORT'
+{full report content}
+REPORT
+```
+
+4. **Write each key finding** — one file per finding for cross-research searchability:
+```bash
+cat > /oracle-vault/findings/YYYY-MM-DD-{topic-slug}-finding-{n}.md << 'FINDING'
+---
+research_id: {id}
+topic: {topic}
+confidence: {score}
+sources: [{source list}]
+date: {YYYY-MM-DD}
+---
+{finding text with evidence}
+FINDING
+```
+
+5. **Write decision record** — for outcome tracking and calibration:
+```bash
+cat > /oracle-vault/decisions/YYYY-MM-DD-{id}-decision.md << 'DECISION'
+---
+research_id: {id}
+topic: {topic}
+conclusion: {one-line verdict}
+confidence: {overall %}
+predicted_outcome: {what we expect to happen}
+actual_outcome: (to be filled when revisiting)
+date: {YYYY-MM-DD}
+---
+{executive summary + recommended actions}
+DECISION
+```
+
+6. **Record in ST decision journal**: `record_decision(tag="oracle")` — for structured reasoning persistence
+
+7. **Store in Graphiti**: `add_memory(group_id="oracle_research")` — for entity/fact graph intelligence
 
 **Cleanup:**
 8. Remove temp files: `/tmp/oracle_dim_*.txt`, `/tmp/oracle-report-*.md`
-9. Log completion: research_id, duration, dimensions, findings count, confidence
 
-**Why this matters**: Every research run adds to ORACLE's collective intelligence. Future research on similar topics will find prior findings in Vault search (Phase 0) and Graphiti search, compounding intelligence over time. No data is ever lost.
+**Storage architecture — two stores, zero overlap:**
+
+| Store | Purpose | Contains | Searched In |
+|---|---|---|---|
+| `/oracle-vault/` (files) | Research LIBRARY | Reports, findings, decisions (human-readable) | Phase 0: "have we researched this?" |
+| Graphiti (graph DB) | Research BRAIN | Entities, relationships, facts (machine-queryable) | Phase 2: building simulation knowledge graphs |
+
+- `/oracle-vault/research/` — complete reports, browsable by date
+- `/oracle-vault/findings/` — individual findings, searchable across ALL research runs
+- `/oracle-vault/decisions/` — conclusions with predicted outcomes, for calibration
+- Graphiti `oracle_research` group — entity/fact graph for semantic intelligence
+
+**Rule: Prior work search (Phase 0) uses `/oracle-vault/` ONLY. Graphiti is for graph intelligence during simulation, NOT for finding prior reports.**
 
 ## Depth Calibration
 

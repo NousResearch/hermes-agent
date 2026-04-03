@@ -22,6 +22,8 @@ services:
       - ./docker/SOUL.md:/opt/data/SOUL.md:ro
       # Mount ORACLE skills
       - ./oracle-workspace/skills:/opt/data/skills/oracle:ro
+      # Mount ORACLE vault — dedicated research store (read-write)
+      - /opt/second-brain/vault/oracle:/oracle-vault
     working_dir: /opt/oracle-workspace
     ports:
       - "18205:8443"

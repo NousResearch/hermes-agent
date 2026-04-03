@@ -221,6 +221,7 @@ class TestHandleResumeCommand:
 
         runner._async_flush_memories.assert_called_once_with(
             "current_session_001",
-            _session_key_for_event(event),
+            session_key=_session_key_for_event(event),
+            cached_agent=None,
         )
         db.close()

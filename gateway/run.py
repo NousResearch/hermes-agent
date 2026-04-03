@@ -717,9 +717,67 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
+    def _load_session_end_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Load transcript history for provider on_session_end hooks."""
+        if not session_id:
+            return []
+        session_store = getattr(self, "session_store", None)
+        if session_store is None or not hasattr(session_store, "load_transcript"):
+            return []
+        try:
+            history = session_store.load_transcript(session_id)
+        except Exception as e:
+            logger.debug("Failed loading transcript for session-end hook %s: %s", session_id, e)
+            return []
+
+        if not isinstance(history, list):
+            return []
+
+        messages: List[Dict[str, Any]] = []
+        for message in history:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if not role or "content" not in message:
+                continue
+            messages.append({
+                "role": role,
+                "content": message.get("content"),
+            })
+        return messages
+
+    def _shutdown_agent_memory_provider(self, agent: Any, session_id: str) -> None:
+        """Run provider session-end hooks with transcript-backed messages."""
+        if not agent or not hasattr(agent, "shutdown_memory_provider"):
+            return
+        try:
+            messages = self._load_session_end_messages(session_id)
+            agent.shutdown_memory_provider(messages)
+        except Exception as e:
+            logger.debug("Memory provider shutdown failed for session %s: %s", session_id, e)
+
+    def _pop_cached_agent(self, session_key: Optional[str]) -> Any:
+        """Remove and return the cached agent for a session, if any."""
+        if not session_key:
+            return None
+        _lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache is None:
+            return None
+        if _lock:
+            with _lock:
+                cached = _cache.pop(session_key, None)
+        else:
+            cached = _cache.pop(session_key, None)
+        if not cached:
+            return None
+        return cached[0]
+
     async def _async_flush_memories(
         self,
         old_session_id: str,
+        session_key: Optional[str] = None,
+        cached_agent: Any = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
@@ -728,6 +786,14 @@ class GatewayRunner:
             self._flush_memories_for_session,
             old_session_id,
         )
+        agent = cached_agent or self._pop_cached_agent(session_key)
+        if agent is not None:
+            await loop.run_in_executor(
+                None,
+                self._shutdown_agent_memory_provider,
+                agent,
+                old_session_id,
+            )
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -1268,15 +1334,12 @@ class GatewayRunner:
                         entry.session_id, key,
                     )
                     try:
-                        await self._async_flush_memories(entry.session_id, key)
-                        # Shut down memory provider on the cached agent
-                        cached_agent = self._running_agents.get(key)
-                        if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
-                            try:
-                                if hasattr(cached_agent, 'shutdown_memory_provider'):
-                                    cached_agent.shutdown_memory_provider()
-                            except Exception:
-                                pass
+                        cached_agent = self._pop_cached_agent(key)
+                        await self._async_flush_memories(
+                            entry.session_id,
+                            session_key=key,
+                            cached_agent=cached_agent,
+                        )
                         # Mark as flushed and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -1401,6 +1464,8 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
+        session_store = getattr(self, "session_store", None)
+        session_entries = getattr(session_store, "_entries", {}) if session_store is not None else {}
 
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
@@ -1412,8 +1477,37 @@ class GatewayRunner:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
             # Shut down memory provider at actual session boundary
             try:
-                if hasattr(agent, 'shutdown_memory_provider'):
-                    agent.shutdown_memory_provider()
+                entry = session_entries.get(session_key) if isinstance(session_entries, dict) else None
+                session_id = entry.session_id if entry else getattr(agent, "session_id", "")
+                self._shutdown_agent_memory_provider(agent, session_id)
+            except Exception:
+                pass
+
+        _seen_agents = {
+            id(agent)
+            for agent in self._running_agents.values()
+            if agent is not _AGENT_PENDING_SENTINEL
+        }
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        cached_items = []
+        if _cache is not None:
+            if _cache_lock:
+                with _cache_lock:
+                    cached_items = list(_cache.items())
+                    _cache.clear()
+            else:
+                cached_items = list(_cache.items())
+                _cache.clear()
+
+        for session_key, cached in cached_items:
+            agent = cached[0] if cached else None
+            if agent is None or id(agent) in _seen_agents:
+                continue
+            try:
+                entry = session_entries.get(session_key) if isinstance(session_entries, dict) else None
+                session_id = entry.session_id if entry else getattr(agent, "session_id", "")
+                self._shutdown_agent_memory_provider(agent, session_id)
             except Exception:
                 pass
 
@@ -3021,17 +3115,24 @@ class GatewayRunner:
         
         # Flush memories in the background (fire-and-forget) so the user
         # gets the "Session reset!" response immediately.
+        cached_agent = None
         try:
             old_entry = self.session_store._entries.get(session_key)
             if old_entry:
+                cached_agent = self._pop_cached_agent(session_key)
                 _flush_task = asyncio.create_task(
-                    self._async_flush_memories(old_entry.session_id, session_key)
+                    self._async_flush_memories(
+                        old_entry.session_id,
+                        session_key=session_key,
+                        cached_agent=cached_agent,
+                    )
                 )
                 self._background_tasks.add(_flush_task)
                 _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
-        self._evict_cached_agent(session_key)
+        if cached_agent is None:
+            self._evict_cached_agent(session_key)
         
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
@@ -4553,14 +4654,22 @@ class GatewayRunner:
             return f"📌 Already on session **{name}**."
 
         # Flush memories for current session before switching
+        cached_agent = None
         try:
+            cached_agent = self._pop_cached_agent(session_key)
             _flush_task = asyncio.create_task(
-                self._async_flush_memories(current_entry.session_id, session_key)
+                self._async_flush_memories(
+                    current_entry.session_id,
+                    session_key=session_key,
+                    cached_agent=cached_agent,
+                )
             )
             self._background_tasks.add(_flush_task)
             _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
+        if cached_agent is None:
+            self._evict_cached_agent(session_key)
 
         # Clear any running agent for this session key
         if session_key in self._running_agents:

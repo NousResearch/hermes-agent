@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -105,3 +106,42 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner._pending_messages == {}
     assert runner._pending_approvals == {}
     assert runner._shutdown_event.is_set() is True
+
+
+def test_gateway_stop_shuts_down_cached_agents_with_transcript():
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    runner._running = True
+    runner._shutdown_event = asyncio.Event()
+    runner._exit_reason = None
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._background_tasks = set()
+    runner._shutdown_all_gateway_honcho = lambda: None
+    runner._running_agents = {}
+    runner.session_store = MagicMock()
+    runner.session_store._entries = {
+        "agent:main:telegram:dm:123456": MagicMock(session_id="sid_cached")
+    }
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "remember this preference"},
+        {"role": "assistant", "content": "saved"},
+    ]
+    runner._agent_cache_lock = threading.Lock()
+    cached_agent = MagicMock()
+    runner._agent_cache = {
+        "agent:main:telegram:dm:123456": (cached_agent, "sig-1")
+    }
+
+    adapter = StubAdapter()
+    adapter.disconnect = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        asyncio.run(runner.stop())
+
+    cached_agent.shutdown_memory_provider.assert_called_once_with([
+        {"role": "user", "content": "remember this preference"},
+        {"role": "assistant", "content": "saved"},
+    ])
+    assert runner._agent_cache == {}

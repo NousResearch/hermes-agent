@@ -1,0 +1,9 @@
+name: cyber_memory
+version: 0.1.0
+description: "Cyber Memory — local vector + graph memory via a single-binary MCP server."
+pip_dependencies:
+  - mcp>=1.2.0,<2
+external_dependencies:
+  - name: cyber-memory
+    install: "curl -fsSL https://raw.githubusercontent.com/RamboRogers/cyber-memory/master/install.sh | sh"
+    check: "cyber-memory -version"

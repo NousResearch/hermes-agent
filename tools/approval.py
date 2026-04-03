@@ -813,12 +813,14 @@ def check_all_command_guards(command: str, env_type: str,
 
             # User approved — persist based on scope (same logic as CLI)
             for key, _, is_tirith in warnings:
-                if choice in ("once", "session") or (choice == "always" and is_tirith):
+                if choice == "session" or (choice == "always" and is_tirith):
                     approve_session(session_key, key)
                 elif choice == "always":
                     approve_session(session_key, key)
                     approve_permanent(key)
                     save_permanent_allowlist(_permanent_approved)
+                # choice == "once": no persistence — command allowed this
+                # single time only, matching the CLI's behavior.
 
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}

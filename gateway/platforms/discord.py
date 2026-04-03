@@ -502,19 +502,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._set_fatal_error('discord_token_lock', message, retryable=False)
                 return False
 
-            # Set up intents -- members intent needed for username-to-ID resolution
-            intents = Intents.default()
-            intents.message_content = True
-            intents.dm_messages = True
-            intents.guild_messages = True
-            intents.members = True
-            intents.voice_states = True
-
-            # Create bot
-            self._client = commands.Bot(
-                command_prefix="!",  # Not really used, we handle raw messages
-                intents=intents,
-            )
 
             # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
@@ -524,6 +511,25 @@ class DiscordAdapter(BasePlatformAdapter):
                     if uid.strip()
                 }
 
+            # Set up intents.
+            # Message Content is required for normal text replies.
+            # Server Members is only needed when the allowlist contains usernames
+            # that must be resolved to numeric IDs. Requesting privileged intents
+            # that aren't enabled in the Discord Developer Portal can prevent the
+            # bot from coming online at all, so avoid requesting members intent
+            # unless it is actually necessary.
+            intents = Intents.default()
+            intents.message_content = True
+            intents.dm_messages = True
+            intents.guild_messages = True
+            intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
+            intents.voice_states = True
+
+            # Create bot
+            self._client = commands.Bot(
+                command_prefix="!",  # Not really used, we handle raw messages
+                intents=intents,
+            )
             adapter_self = self  # capture for closure
 
             # Register event handlers
@@ -648,9 +654,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            try:
+                from gateway.status import release_scoped_lock
+                if getattr(self, '_token_lock_identity', None):
+                    release_scoped_lock('discord-bot-token', self._token_lock_identity)
+                    self._token_lock_identity = None
+            except Exception:
+                pass
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            try:
+                from gateway.status import release_scoped_lock
+                if getattr(self, '_token_lock_identity', None):
+                    release_scoped_lock('discord-bot-token', self._token_lock_identity)
+                    self._token_lock_identity = None
+            except Exception:
+                pass
             return False
 
     async def disconnect(self) -> None:

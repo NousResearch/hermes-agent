@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import shlex
 import shutil
 import sys
 import json
@@ -22,8 +23,10 @@ import atexit
 import tempfile
 import time
 import uuid
+import re
 import textwrap
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -66,6 +69,13 @@ from agent.usage_pricing import (
 from hermes_cli.banner import _format_context_length
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+MAX_CLI_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class AttachedFile:
+    path: Path
+    display_name: str
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -1341,6 +1351,7 @@ class HermesCLI:
         self._command_running = False
         self._command_status = ""
         self._attached_images: list[Path] = []
+        self._attached_files: list[AttachedFile] = []
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
@@ -2768,6 +2779,187 @@ class HermesCLI:
             return f"{prefix}\n\n{user_text}" if user_text else prefix
         return user_text or "What do you see in this image?"
 
+    def _stage_attachment_path(self, source_path: Path) -> Path:
+        """Copy a local attachment into a Hermes-managed cache path."""
+        from agent.attachment_cache import cache_document_from_path, cache_image_from_path
+
+        ext = source_path.suffix.lower()
+        if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"}:
+            staged = cache_image_from_path(source_path, ext=ext or ".png")
+        else:
+            staged = cache_document_from_path(source_path, filename=source_path.name)
+        return Path(staged)
+
+    def _split_attachment_arg_text(self, arg_text: str) -> list[str]:
+        """Split `/attach` arguments without mangling Windows backslashes."""
+        arg_text = (arg_text or "").strip()
+        if not arg_text:
+            return []
+        if sys.platform != "win32":
+            return shlex.split(arg_text)
+        if '"' not in arg_text and "'" not in arg_text:
+            drive_prefixes = re.findall(r"(?:[A-Za-z]:\\|\\\\)", arg_text)
+            if len(drive_prefixes) == 1:
+                return [arg_text]
+        token_pattern = re.compile(r'''\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))''')
+        parts = []
+        pos = 0
+        while pos < len(arg_text):
+            match = token_pattern.match(arg_text, pos)
+            if not match:
+                snippet = arg_text[pos : pos + 40]
+                raise ValueError(f"could not parse attachment path near {snippet!r}")
+            token = next(group for group in match.groups() if group is not None)
+            if token:
+                parts.append(token)
+            pos = match.end()
+        return parts
+
+    def _active_terminal_backend(self) -> str:
+        return str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+
+    def _attach_local_paths(self, source_paths: list[Path], *, announce_errors: bool = True) -> int:
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico"}
+        inline_file_exts = {".md", ".txt", ".csv", ".tsv"}
+        backend = self._active_terminal_backend()
+        attached = 0
+        for path in source_paths:
+            ext = path.suffix.lower()
+            try:
+                file_size = path.stat().st_size
+            except OSError as e:
+                if announce_errors:
+                    _cprint(f"  Failed to inspect {path}: {e}")
+                continue
+            if file_size > MAX_CLI_ATTACHMENT_BYTES:
+                if announce_errors:
+                    size_mb = MAX_CLI_ATTACHMENT_BYTES // (1024 * 1024)
+                    _cprint(f"  Attachment too large for CLI staging ({size_mb}MB max): {path}")
+                continue
+            if ext not in image_exts and backend != "local" and ext not in inline_file_exts:
+                if announce_errors:
+                    _cprint(
+                        f"  Cannot attach {path.name} on the {backend} backend: "
+                        "only text files that Hermes can inline are supported outside local mode."
+                    )
+                continue
+            try:
+                staged_path = self._stage_attachment_path(path)
+            except Exception as e:
+                if announce_errors:
+                    _cprint(f"  Failed to attach {path}: {e}")
+                continue
+            if ext in image_exts:
+                self._attached_images.append(staged_path)
+            else:
+                self._attached_files.append(AttachedFile(path=staged_path, display_name=path.name))
+            attached += 1
+        return attached
+
+    def _maybe_attach_pasted_paths(self, pasted_text: str) -> bool:
+        pasted_text = (pasted_text or "").strip()
+        if not pasted_text:
+            return False
+        try:
+            raw_paths = self._split_attachment_arg_text(pasted_text)
+        except ValueError:
+            return False
+        if not raw_paths:
+            return False
+        source_paths = []
+        for raw_path in raw_paths:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            if not path.exists() or not path.is_file():
+                return False
+            source_paths.append(path)
+        attached = self._attach_local_paths(source_paths, announce_errors=False)
+        if attached:
+            total = len(self._attached_images) + len(self._attached_files)
+            _cprint(f"  📎 Attached {attached} file{'s' if attached != 1 else ''} ({total} pending)")
+        return attached > 0
+
+    def _handle_attach_command(self, command: str):
+        """Handle /attach — stage local files for the next user message."""
+        parts = command.split(maxsplit=1)
+        if len(parts) == 1 or not parts[1].strip():
+            if not self._attached_images and not self._attached_files:
+                _cprint("  No pending attachments. Usage: /attach <path> [more paths...]")
+                return
+            _cprint("  Pending attachments:")
+            for path in self._attached_images:
+                _cprint(f"    • {path}")
+            for attachment in self._attached_files:
+                _cprint(f"    • {attachment.display_name} ({attachment.path})")
+            return
+        arg_text = parts[1].strip()
+        if arg_text.lower() == "clear":
+            self._attached_images.clear()
+            self._attached_files.clear()
+            _cprint("  Pending attachments cleared.")
+            return
+        try:
+            raw_paths = self._split_attachment_arg_text(arg_text)
+        except ValueError as e:
+            _cprint(f"  Invalid attachment path syntax: {e}")
+            return
+        source_paths = []
+        for raw_path in raw_paths:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            if not path.exists():
+                _cprint(f"  Missing attachment: {path}")
+                continue
+            if not path.is_file():
+                _cprint(f"  Not a file: {path}")
+                continue
+            source_paths.append(path)
+        attached = self._attach_local_paths(source_paths)
+        total = len(self._attached_images) + len(self._attached_files)
+        if attached:
+            _cprint(f"  📎 Attached {attached} file{'s' if attached != 1 else ''} ({total} pending)")
+        elif total:
+            _cprint(f"  No new attachments added ({total} already pending).")
+        else:
+            _cprint("  No attachments added.")
+
+    def _preprocess_file_attachments(self, text: str, files: list[AttachedFile | Path]) -> str:
+        from agent.attachment_cache import build_text_attachment_injection_from_path
+        user_text = text if isinstance(text, str) and text else ""
+        backend = self._active_terminal_backend()
+        enriched_parts = []
+        for attachment in files or []:
+            if isinstance(attachment, AttachedFile):
+                file_path = attachment.path
+                display_name = attachment.display_name
+            else:
+                file_path = Path(attachment)
+                display_name = file_path.name
+            if not file_path.exists():
+                continue
+            injection = build_text_attachment_injection_from_path(file_path, display_name=display_name)
+            if injection:
+                enriched_parts.append(injection)
+                continue
+            if backend == "local":
+                enriched_parts.append(
+                    f"[The user attached a file named '{display_name}'. "
+                    f"It is stored locally at: {file_path}. "
+                    "This file type is not automatically expanded into prompt text in CLI mode.]"
+                )
+            else:
+                enriched_parts.append(
+                    f"[The user attached a file named '{display_name}', but the active "
+                    f"{backend} backend cannot access Hermes host cache paths directly. "
+                    "This file type was not expanded into prompt text.]"
+                )
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            return f"{prefix}\n\n{user_text}" if user_text else prefix
+        return user_text
+
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
         try:
@@ -2853,7 +3045,8 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
+        _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}")
+        _cprint(f"  {_DIM}Attach file: /attach <path> (drag-drop paths also work){_RST}\n")
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -4042,6 +4235,8 @@ class HermesCLI:
             self._show_insights(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
+        elif canonical == "attach":
+            self._handle_attach_command(cmd_original)
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
@@ -5880,7 +6075,7 @@ class HermesCLI:
                 pass
 
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list = None, files: list = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -5895,6 +6090,7 @@ class HermesCLI:
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
+            files: Optional list of Path objects for attached local files
             
         Returns:
             The agent's response, or None on error
@@ -5950,6 +6146,11 @@ class HermesCLI:
                     message = _ctx_result.message
             except Exception as e:
                 logging.debug("@ context reference expansion failed: %s", e)
+
+        if files:
+            message = self._preprocess_file_attachments(
+                message if isinstance(message, str) else "", files
+            )
 
         # Sanitize surrogate characters that can arrive via clipboard paste from
         # rich-text editors (Google Docs, Word, etc.).  Lone surrogates are invalid
@@ -6592,6 +6793,7 @@ class HermesCLI:
 
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
+        self._attached_files: list[AttachedFile] = []
         self._image_counter = 0
 
         # Voice mode state (protected by _voice_lock for cross-thread access)
@@ -6694,18 +6896,21 @@ class HermesCLI:
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
-            if text or has_images:
-                # Snapshot and clear attached images
+            has_files = bool(self._attached_files)
+            if text or has_images or has_files:
+                # Snapshot and clear pending attachments
                 images = list(self._attached_images)
+                files = list(self._attached_files)
                 self._attached_images.clear()
+                self._attached_files.clear()
                 event.app.invalidate()
-                # Bundle text + images as a tuple when images are present
-                payload = (text, images) if images else text
+                # Bundle text + attachments as a tuple when present
+                payload = (text, images, files) if (images or files) else text
                 if self._agent_running and not (text and text.startswith("/")):
                     if self.busy_input_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
-                        preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                        preview = text if text else f"[{len(images) + len(files)} attachment{'s' if (len(images) + len(files)) != 1 else ''} attached]"
                         _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
                     else:
                         self._interrupt_queue.put(payload)
@@ -6894,9 +7099,10 @@ class HermesCLI:
             else:
                 # If there's text or images, clear them (like bash).
                 # If everything is already empty, exit.
-                if event.app.current_buffer.text or self._attached_images:
+                if event.app.current_buffer.text or self._attached_images or self._attached_files:
                     event.app.current_buffer.reset()
                     self._attached_images.clear()
+                    self._attached_files.clear()
                     event.app.invalidate()
                 else:
                     self._should_exit = True
@@ -6999,20 +7205,13 @@ class HermesCLI:
 
         @kb.add(Keys.BracketedPaste, eager=True)
         def handle_paste(event):
-            """Handle terminal paste — detect clipboard images.
-
-            When the terminal supports bracketed paste, Ctrl+V / Cmd+V
-            triggers this with the pasted text.  We also check the
-            clipboard for an image on every paste event.
-
-            Large pastes (5+ lines) are collapsed to a file reference
-            placeholder while preserving any existing user text in the
-            buffer.
-            """
+            """Handle terminal paste — detect clipboard images or file paths."""
             pasted_text = event.data or ""
-            if self._try_attach_clipboard_image():
+            attached_clipboard_image = self._try_attach_clipboard_image()
+            attached_pasted_paths = self._maybe_attach_pasted_paths(pasted_text)
+            if attached_clipboard_image or attached_pasted_paths:
                 event.app.invalidate()
-            if pasted_text:
+            if pasted_text and not attached_pasted_paths:
                 line_count = pasted_text.count('\n')
                 buf = event.current_buffer
                 if line_count >= 5 and not buf.text.strip().startswith('/'):
@@ -7483,18 +7682,20 @@ class HermesCLI:
         cli_ref = self
 
         def _get_image_bar():
-            if not cli_ref._attached_images:
+            if not cli_ref._attached_images and not cli_ref._attached_files:
                 return []
-            base = cli_ref._image_counter - len(cli_ref._attached_images) + 1
-            badges = " ".join(
-                f"[📎 Image #{base + i}]"
-                for i in range(len(cli_ref._attached_images))
-            )
-            return [("class:image-badge", f" {badges} ")]
+            badges = []
+            if cli_ref._attached_images:
+                n = len(cli_ref._attached_images)
+                badges.append(f"[📎 {n} image{'s' if n != 1 else ''}]")
+            if cli_ref._attached_files:
+                n = len(cli_ref._attached_files)
+                badges.append(f"[📄 {n} file{'s' if n != 1 else ''}]")
+            return [("class:image-badge", f" {' '.join(badges)} ")]
 
         image_bar = Window(
             content=FormattedTextControl(_get_image_bar),
-            height=Condition(lambda: bool(cli_ref._attached_images)),
+            height=Condition(lambda: bool(cli_ref._attached_images or cli_ref._attached_files)),
         )
 
         # Persistent voice mode status bar (visible only when voice mode is on)
@@ -7660,29 +7861,16 @@ class HermesCLI:
                     if not user_input:
                         continue
 
-                    # Unpack image payload: (text, [Path, ...]) or plain str
+                    # Unpack attachment payload or plain text
                     submit_images = []
+                    submit_files = []
                     if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
-                    
-                    # Check for commands — but detect dragged/pasted file paths first.
-                    # See _detect_file_drop() for details.
-                    _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
-                    if _file_drop:
-                        _drop_path = _file_drop["path"]
-                        _remainder = _file_drop["remainder"]
-                        if _file_drop["is_image"]:
-                            submit_images.append(_drop_path)
-                            user_input = _remainder or f"[User attached image: {_drop_path.name}]"
-                            _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                        if len(user_input) == 2:
+                            user_input, submit_images = user_input
                         else:
-                            _cprint(f"  📄 Detected file: {_drop_path.name}")
-                            user_input = (
-                                f"[User attached file: {_drop_path}]"
-                                + (f"\n{_remainder}" if _remainder else "")
-                            )
+                            user_input, submit_images, submit_files = user_input
 
-                    if not _file_drop and isinstance(user_input, str) and user_input.startswith("/"):
+                    if isinstance(user_input, str) and user_input.startswith("/"):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
@@ -7736,17 +7924,23 @@ class HermesCLI:
                             ChatConsole().print(_user_bar)
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
-                    # Show image attachment count
-                    if submit_images:
-                        n = len(submit_images)
-                        _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+                    # Show attachment count
+                    if submit_images or submit_files:
+                        attachment_parts = []
+                        if submit_images:
+                            n = len(submit_images)
+                            attachment_parts.append(f"{n} image{'s' if n > 1 else ''}")
+                        if submit_files:
+                            n = len(submit_files)
+                            attachment_parts.append(f"{n} file{'s' if n > 1 else ''}")
+                        _cprint(f"  {_DIM}📎 {' + '.join(attachment_parts)} attached{_RST}")
 
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(user_input, images=submit_images or None, files=submit_files or None)
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

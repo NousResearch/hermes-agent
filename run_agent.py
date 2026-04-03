@@ -4797,7 +4797,10 @@ class AIAgent:
             from tools.vision_tools import vision_analyze_tool
 
             result_json = asyncio.run(
-                vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt)
+                asyncio.wait_for(
+                    vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt),
+                    timeout=45.0
+                )
             )
             result = json.loads(result_json) if isinstance(result_json, str) else {}
             description = (result.get("analysis") or "").strip()
@@ -4807,8 +4810,8 @@ class AIAgent:
             if cleanup_path and cleanup_path.exists():
                 try:
                     cleanup_path.unlink()
-                except OSError:
-                    pass
+                except OSError as _err:
+                    logger.warning("Could not unlink vision temp file %s: %s", cleanup_path, _err)
 
         if not description:
             description = "Image analysis failed."

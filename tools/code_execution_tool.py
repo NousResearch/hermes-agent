@@ -51,7 +51,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
-DEFAULT_TIMEOUT = 300        # 5 minutes
+DEFAULT_TIMEOUT = 30         # 30 seconds
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
@@ -300,16 +300,15 @@ def _rpc_server_loop(
                 # their status prints don't leak into the CLI spinner.
                 try:
                     _real_stdout, _real_stderr = sys.stdout, sys.stderr
-                    devnull = open(os.devnull, "w")
-                    try:
-                        sys.stdout = devnull
-                        sys.stderr = devnull
-                        result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
-                        )
-                    finally:
-                        sys.stdout, sys.stderr = _real_stdout, _real_stderr
-                        devnull.close()
+                    with open(os.devnull, "w") as devnull:
+                        try:
+                            sys.stdout = devnull
+                            sys.stderr = devnull
+                            result = handle_function_call(
+                                tool_name, tool_args, task_id=task_id
+                            )
+                        finally:
+                            sys.stdout, sys.stderr = _real_stdout, _real_stderr
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = json.dumps({"error": str(exc)})
@@ -530,8 +529,8 @@ def execute_code(
                     while tail_collected > tail_bytes and tail_buf:
                         oldest = tail_buf.popleft()
                         tail_collected -= len(oldest)
-            except (ValueError, OSError):
-                pass
+            except (ValueError, OSError) as e:
+                logger.warning("Error draining pipe: %s", e)
             # Transfer final tail to output list
             tail_chunks.extend(tail_buf)
 
@@ -560,7 +559,10 @@ def execute_code(
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
-            time.sleep(0.2)
+            try:
+                proc.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                pass
 
         # Wait for readers to finish draining
         stdout_reader.join(timeout=3)
@@ -653,8 +655,8 @@ def execute_code(
         shutil.rmtree(tmpdir, ignore_errors=True)
         try:
             os.unlink(sock_path)
-        except OSError:
-            pass  # already cleaned up or never created
+        except OSError as e:
+            logger.warning("Could not unlink RPC socket %s: %s", sock_path, e)
 
 
 def _kill_process_group(proc, escalate: bool = False):

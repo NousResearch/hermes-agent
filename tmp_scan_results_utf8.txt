@@ -1,0 +1,749 @@
+﻿[Silent Failure] agent\anthropic_adapter.py:648: empty except block (pass)
+[Silent Failure] agent\anthropic_adapter.py:134: empty except block (pass)
+[Async/Subprocess] agent\anthropic_adapter.py:571: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] agent\anthropic_adapter.py:125: subprocess call found, verify error handling and timeout.
+[Silent Failure] agent\auxiliary_client.py:695: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:798: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:1208: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:1379: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:1399: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:550: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:1476: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:1610: empty except block (pass)
+[Silent Failure] agent\auxiliary_client.py:1425: empty except block (pass)
+[Async/Subprocess] agent\context_references.py:132: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] agent\context_references.py:290: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] agent\context_references.py:451: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] agent\copilot_acp_client.py:223: subprocess call found, verify error handling and timeout.
+[Silent Failure] agent\copilot_acp_client.py:184: empty except block (pass)
+[Silent Failure] agent\credential_pool.py:820: empty except block (pass)
+[Silent Failure] agent\display.py:118: empty except block (pass)
+[Silent Failure] agent\display.py:602: empty except block (pass)
+[Silent Failure] agent\display.py:595: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:223: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:294: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:688: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:236: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:260: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:274: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:283: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:292: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:485: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:272: empty except block (pass)
+[Silent Failure] agent\model_metadata.py:643: empty except block (pass)
+[Silent Failure] agent\prompt_builder.py:801: empty except block (pass)
+[Silent Failure] agent\skill_commands.py:208: empty except block (pass)
+'core' directory not found.
+[Silent Failure] tools\approval.py:652: empty except block (pass)
+[Silent Failure] tools\browser_camofox.py:568: empty except block (pass)
+[Silent Failure] tools\browser_camofox.py:79: empty except block (pass)
+[Silent Failure] tools\browser_camofox.py:485: empty except block (pass)
+[Silent Failure] tools\browser_tool.py:119: empty except block (pass)
+[Silent Failure] tools\browser_tool.py:1756: empty except block (pass)
+[Async/Subprocess] tools\browser_tool.py:935: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\browser_tool.py:965: empty except block (pass)
+[Silent Failure] tools\checkpoint_manager.py:172: empty except block (pass)
+[Async/Subprocess] tools\checkpoint_manager.py:107: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\code_execution_tool.py:468: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\code_execution_tool.py:656: empty except block (pass)
+[Silent Failure] tools\code_execution_tool.py:533: empty except block (pass)
+[Resource Leak] tools\code_execution_tool.py:303: open() called outside of 'with' block (assigned to variable)
+[Silent Failure] tools\delegate_tool.py:685: empty except block (pass)
+[Silent Failure] tools\delegate_tool.py:572: empty except block (pass)
+[Silent Failure] tools\file_operations.py:1026: empty except block (pass)
+[Silent Failure] tools\file_operations.py:1126: empty except block (pass)
+[Silent Failure] tools\file_tools.py:48: empty except block (pass)
+[Silent Failure] tools\file_tools.py:313: empty except block (pass)
+[Silent Failure] tools\file_tools.py:342: empty except block (pass)
+[Silent Failure] tools\file_tools.py:408: empty except block (pass)
+[Async/Subprocess] tools\homeassistant_tool.py:212: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\managed_tool_gateway.py:47: empty except block (pass)
+[Silent Failure] tools\mcp_oauth.py:108: empty except block (pass)
+[Silent Failure] tools\mcp_oauth.py:116: empty except block (pass)
+[Silent Failure] tools\mcp_tool.py:1115: empty except block (pass)
+[Async/Subprocess] tools\mcp_tool.py:1013: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\mcp_tool.py:1032: empty except block (pass)
+[Resource Leak] tools\memory_tool.py:136: open() called outside of 'with' block (assigned to variable)
+[Silent Failure] tools\memory_tool.py:420: empty except block (pass)
+[Async/Subprocess] tools\process_registry.py:204: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\process_registry.py:757: empty except block (pass)
+[Resource Leak] tools\rl_training_tool.py:336: open() called outside of 'with' block (assigned to variable)
+[Resource Leak] tools\rl_training_tool.py:359: open() called outside of 'with' block (assigned to variable)
+[Resource Leak] tools\rl_training_tool.py:400: open() called outside of 'with' block (assigned to variable)
+[Async/Subprocess] tools\rl_training_tool.py:338: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\rl_training_tool.py:361: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\rl_training_tool.py:402: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\rl_training_tool.py:500: empty except block (pass)
+[Async/Subprocess] tools\rl_training_tool.py:1171: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\send_message_tool.py:190: empty except block (pass)
+[Silent Failure] tools\skills_hub.py:1183: empty except block (pass)
+[Silent Failure] tools\skills_hub.py:2304: empty except block (pass)
+[Silent Failure] tools\skills_hub.py:2541: empty except block (pass)
+[Async/Subprocess] tools\skills_hub.py:193: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\skills_sync.py:150: empty except block (pass)
+[Silent Failure] tools\skills_sync.py:105: empty except block (pass)
+[Silent Failure] tools\skills_tool.py:867: empty except block (pass)
+[Silent Failure] tools\skill_manager_tool.py:624: empty except block (pass)
+[Silent Failure] tools\terminal_tool.py:701: empty except block (pass)
+[Silent Failure] tools\terminal_tool.py:865: empty except block (pass)
+[Silent Failure] tools\terminal_tool.py:731: empty except block (pass)
+[Silent Failure] tools\terminal_tool.py:787: empty except block (pass)
+[Async/Subprocess] tools\terminal_tool.py:1266: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\terminal_tool.py:621: empty except block (pass)
+[Async/Subprocess] tools\terminal_tool.py:1272: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\tirith_security.py:165: empty except block (pass)
+[Silent Failure] tools\tirith_security.py:173: empty except block (pass)
+[Async/Subprocess] tools\tirith_security.py:233: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\tirith_security.py:620: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\transcription_tools.py:107: empty except block (pass)
+[Async/Subprocess] tools\transcription_tools.py:327: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\transcription_tools.py:362: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\tts_tool.py:332: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\tts_tool.py:545: empty except block (pass)
+[Silent Failure] tools\tts_tool.py:551: empty except block (pass)
+[Silent Failure] tools\tts_tool.py:557: empty except block (pass)
+[Async/Subprocess] tools\tts_tool.py:140: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\tts_tool.py:344: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\tts_tool.py:817: empty except block (pass)
+[Silent Failure] tools\tts_tool.py:753: empty except block (pass)
+[Async/Subprocess] tools\tts_tool.py:465: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\tts_tool.py:462: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\vision_tools.py:64: empty except block (pass)
+[Silent Failure] tools\vision_tools.py:56: empty except block (pass)
+[Silent Failure] tools\vision_tools.py:402: empty except block (pass)
+[Silent Failure] tools\voice_mode.py:83: empty except block (pass)
+[Silent Failure] tools\voice_mode.py:637: empty except block (pass)
+[Silent Failure] tools\voice_mode.py:631: empty except block (pass)
+[Silent Failure] tools\voice_mode.py:678: empty except block (pass)
+[Silent Failure] tools\voice_mode.py:429: empty except block (pass)
+[Silent Failure] tools\voice_mode.py:807: empty except block (pass)
+[Async/Subprocess] tools\voice_mode.py:697: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\voice_mode.py:362: empty except block (pass)
+[Silent Failure] tools\web_tools.py:375: empty except block (pass)
+[Silent Failure] tools\web_tools.py:381: empty except block (pass)
+[Silent Failure] tools\environments\base.py:57: empty except block (pass)
+[Silent Failure] tools\environments\daytona.py:124: empty except block (pass)
+[Silent Failure] tools\environments\daytona.py:216: empty except block (pass)
+[Silent Failure] tools\environments\daytona.py:227: empty except block (pass)
+[Async/Subprocess] tools\environments\docker.py:142: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\docker.py:366: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\docker.py:448: empty except block (pass)
+[Async/Subprocess] tools\environments\docker.py:388: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\docker.py:398: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\docker.py:461: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\docker.py:471: empty except block (pass)
+[Silent Failure] tools\environments\docker.py:478: empty except block (pass)
+[Async/Subprocess] tools\environments\docker.py:517: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\docker.py:528: empty except block (pass)
+[Async/Subprocess] tools\environments\docker.py:406: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\docker.py:524: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\local.py:48: empty except block (pass)
+[Silent Failure] tools\environments\local.py:59: empty except block (pass)
+[Async/Subprocess] tools\environments\local.py:343: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\local.py:371: empty except block (pass)
+[Async/Subprocess] tools\environments\local.py:408: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\local.py:367: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\local.py:436: empty except block (pass)
+[Silent Failure] tools\environments\local.py:426: empty except block (pass)
+[Silent Failure] tools\environments\local.py:441: empty except block (pass)
+[Silent Failure] tools\environments\managed_modal.py:276: empty except block (pass)
+[Silent Failure] tools\environments\modal.py:34: empty except block (pass)
+[Silent Failure] tools\environments\modal.py:412: empty except block (pass)
+[Silent Failure] tools\environments\modal_common.py:104: empty except block (pass)
+[Silent Failure] tools\environments\modal_common.py:119: empty except block (pass)
+[Silent Failure] tools\environments\persistent_shell.py:115: empty except block (pass)
+[Silent Failure] tools\environments\persistent_shell.py:156: empty except block (pass)
+[Async/Subprocess] tools\environments\singularity.py:54: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\singularity.py:83: empty except block (pass)
+[Async/Subprocess] tools\environments\singularity.py:176: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\singularity.py:288: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\singularity.py:327: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\singularity.py:337: empty except block (pass)
+[Silent Failure] tools\environments\singularity.py:344: empty except block (pass)
+[Async/Subprocess] tools\environments\singularity.py:378: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\ssh.py:102: empty except block (pass)
+[Async/Subprocess] tools\environments\ssh.py:174: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\ssh.py:216: empty except block (pass)
+[Silent Failure] tools\environments\ssh.py:224: empty except block (pass)
+[Async/Subprocess] tools\environments\ssh.py:248: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:85: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:97: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:201: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:215: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:223: subprocess call found, verify error handling and timeout.
+[Silent Failure] tools\environments\ssh.py:260: empty except block (pass)
+[Silent Failure] tools\environments\ssh.py:267: empty except block (pass)
+[Silent Failure] tools\environments\ssh.py:302: empty except block (pass)
+[Silent Failure] tools\environments\ssh.py:306: empty except block (pass)
+[Async/Subprocess] tools\environments\ssh.py:130: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:132: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:144: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:149: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:187: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] tools\environments\ssh.py:301: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\channel_directory.py:123: empty except block (pass)
+[Silent Failure] gateway\config.py:899: empty except block (pass)
+[Silent Failure] gateway\config.py:906: empty except block (pass)
+[Silent Failure] gateway\config.py:347: empty except block (pass)
+[Silent Failure] gateway\config.py:359: empty except block (pass)
+[Silent Failure] gateway\config.py:824: empty except block (pass)
+[Silent Failure] gateway\config.py:840: empty except block (pass)
+[Silent Failure] gateway\pairing.py:53: empty except block (pass)
+[Silent Failure] gateway\run.py:56: empty except block (pass)
+[Silent Failure] gateway\run.py:196: empty except block (pass)
+[Silent Failure] gateway\run.py:345: empty except block (pass)
+[Silent Failure] gateway\run.py:405: empty except block (pass)
+[Silent Failure] gateway\run.py:6218: empty except block (pass)
+[Silent Failure] gateway\run.py:6314: empty except block (pass)
+[Async/Subprocess] gateway\run.py:6339: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\run.py:484: empty except block (pass)
+[Silent Failure] gateway\run.py:854: empty except block (pass)
+[Silent Failure] gateway\run.py:876: empty except block (pass)
+[Silent Failure] gateway\run.py:895: empty except block (pass)
+[Silent Failure] gateway\run.py:944: empty except block (pass)
+[Silent Failure] gateway\run.py:965: empty except block (pass)
+[Silent Failure] gateway\run.py:979: empty except block (pass)
+[Silent Failure] gateway\run.py:996: empty except block (pass)
+[Silent Failure] gateway\run.py:1001: empty except block (pass)
+[Silent Failure] gateway\run.py:1143: empty except block (pass)
+[Silent Failure] gateway\run.py:1404: empty except block (pass)
+[Silent Failure] gateway\run.py:2070: empty except block (pass)
+[Silent Failure] gateway\run.py:2876: empty except block (pass)
+[Silent Failure] gateway\run.py:2885: empty except block (pass)
+[Silent Failure] gateway\run.py:3082: empty except block (pass)
+[Silent Failure] gateway\run.py:3110: empty except block (pass)
+[Silent Failure] gateway\run.py:3158: empty except block (pass)
+[Silent Failure] gateway\run.py:3564: empty except block (pass)
+[Silent Failure] gateway\run.py:3783: empty except block (pass)
+[Silent Failure] gateway\run.py:5288: empty except block (pass)
+[Silent Failure] gateway\run.py:6269: empty except block (pass)
+[Silent Failure] gateway\run.py:638: empty except block (pass)
+[Silent Failure] gateway\run.py:709: empty except block (pass)
+[Silent Failure] gateway\run.py:816: empty except block (pass)
+[Silent Failure] gateway\run.py:922: empty except block (pass)
+[Silent Failure] gateway\run.py:1375: empty except block (pass)
+[Silent Failure] gateway\run.py:2271: empty except block (pass)
+[Silent Failure] gateway\run.py:2606: empty except block (pass)
+[Silent Failure] gateway\run.py:4388: empty except block (pass)
+[Silent Failure] gateway\run.py:4638: empty except block (pass)
+[Silent Failure] gateway\run.py:5539: empty except block (pass)
+[Silent Failure] gateway\run.py:6162: empty except block (pass)
+[Silent Failure] gateway\run.py:6197: empty except block (pass)
+[Silent Failure] gateway\run.py:1120: empty except block (pass)
+[Silent Failure] gateway\run.py:1130: empty except block (pass)
+[Silent Failure] gateway\run.py:2792: empty except block (pass)
+[Silent Failure] gateway\run.py:3689: empty except block (pass)
+[Silent Failure] gateway\run.py:3982: empty except block (pass)
+[Silent Failure] gateway\run.py:4125: empty except block (pass)
+[Silent Failure] gateway\run.py:4131: empty except block (pass)
+[Silent Failure] gateway\run.py:4142: empty except block (pass)
+[Async/Subprocess] gateway\run.py:4798: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] gateway\run.py:4806: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\run.py:5875: empty except block (pass)
+[Silent Failure] gateway\run.py:6186: empty except block (pass)
+[Silent Failure] gateway\run.py:2246: empty except block (pass)
+[Silent Failure] gateway\run.py:2269: empty except block (pass)
+[Silent Failure] gateway\run.py:3954: empty except block (pass)
+[Silent Failure] gateway\run.py:3964: empty except block (pass)
+[Silent Failure] gateway\run.py:6069: empty except block (pass)
+[Silent Failure] gateway\run.py:1325: empty except block (pass)
+[Silent Failure] gateway\run.py:2122: empty except block (pass)
+[Silent Failure] gateway\run.py:2504: empty except block (pass)
+[Silent Failure] gateway\run.py:2809: empty except block (pass)
+[Silent Failure] gateway\run.py:2872: empty except block (pass)
+[Async/Subprocess] gateway\run.py:5905: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\run.py:6056: empty except block (pass)
+[Silent Failure] gateway\run.py:1236: empty except block (pass)
+[Silent Failure] gateway\run.py:5454: empty except block (pass)
+[Async/Subprocess] gateway\run.py:1948: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\run.py:2224: empty except block (pass)
+[Silent Failure] gateway\session.py:653: empty except block (pass)
+[Silent Failure] gateway\status.py:233: empty except block (pass)
+[Silent Failure] gateway\status.py:329: empty except block (pass)
+[Silent Failure] gateway\status.py:296: empty except block (pass)
+[Silent Failure] gateway\status.py:311: empty except block (pass)
+[Silent Failure] gateway\status.py:347: empty except block (pass)
+[Silent Failure] gateway\status.py:291: empty except block (pass)
+[Silent Failure] gateway\stream_consumer.py:154: empty except block (pass)
+[Silent Failure] gateway\platforms\api_server.py:948: empty except block (pass)
+[Silent Failure] gateway\platforms\api_server.py:155: empty except block (pass)
+[Silent Failure] gateway\platforms\api_server.py:693: empty except block (pass)
+[Silent Failure] gateway\platforms\api_server.py:1305: empty except block (pass)
+[Silent Failure] gateway\platforms\api_server.py:717: empty except block (pass)
+[Silent Failure] gateway\platforms\api_server.py:723: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:462: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:472: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:488: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:888: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:139: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:298: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:1322: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:1329: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:898: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:1289: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:1315: empty except block (pass)
+[Silent Failure] gateway\platforms\base.py:1163: empty except block (pass)
+[Silent Failure] gateway\platforms\dingtalk.py:160: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:144: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:338: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:663: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1174: empty except block (pass)
+[Async/Subprocess] gateway\platforms\discord.py:387: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\platforms\discord.py:404: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1055: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1212: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1367: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1379: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:2275: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1062: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:1166: empty except block (pass)
+[Silent Failure] gateway\platforms\discord.py:2175: empty except block (pass)
+[Silent Failure] gateway\platforms\email.py:311: empty except block (pass)
+[Silent Failure] gateway\platforms\email.py:395: empty except block (pass)
+[Silent Failure] gateway\platforms\feishu.py:1145: empty except block (pass)
+[Silent Failure] gateway\platforms\feishu.py:1677: empty except block (pass)
+[Silent Failure] gateway\platforms\homeassistant.py:203: empty except block (pass)
+[Silent Failure] gateway\platforms\matrix.py:1208: empty except block (pass)
+[Silent Failure] gateway\platforms\matrix.py:308: empty except block (pass)
+[Silent Failure] gateway\platforms\matrix.py:452: empty except block (pass)
+[Silent Failure] gateway\platforms\matrix.py:1153: empty except block (pass)
+[Silent Failure] gateway\platforms\mattermost.py:239: empty except block (pass)
+[Silent Failure] gateway\platforms\signal.py:254: empty except block (pass)
+[Silent Failure] gateway\platforms\signal.py:261: empty except block (pass)
+[Silent Failure] gateway\platforms\signal.py:389: empty except block (pass)
+[Silent Failure] gateway\platforms\signal.py:765: empty except block (pass)
+[Silent Failure] gateway\platforms\signal.py:777: empty except block (pass)
+[Silent Failure] gateway\platforms\slack.py:203: empty except block (pass)
+[Silent Failure] gateway\platforms\slack.py:836: empty except block (pass)
+[Silent Failure] gateway\platforms\telegram.py:177: empty except block (pass)
+[Silent Failure] gateway\platforms\telegram.py:223: empty except block (pass)
+[Silent Failure] gateway\platforms\telegram.py:270: empty except block (pass)
+[Silent Failure] gateway\platforms\telegram.py:668: empty except block (pass)
+[Silent Failure] gateway\platforms\telegram.py:900: empty except block (pass)
+[Silent Failure] gateway\platforms\webhook.py:129: empty except block (pass)
+[Async/Subprocess] gateway\platforms\webhook.py:542: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\platforms\wecom.py:362: empty except block (pass)
+[Silent Failure] gateway\platforms\wecom.py:224: empty except block (pass)
+[Silent Failure] gateway\platforms\wecom.py:232: empty except block (pass)
+[Silent Failure] gateway\platforms\whatsapp.py:65: empty except block (pass)
+[Async/Subprocess] gateway\platforms\whatsapp.py:91: subprocess call found, verify error handling and timeout.
+[Resource Leak] gateway\platforms\whatsapp.py:245: open() called outside of 'with' block (assigned to variable)
+[Silent Failure] gateway\platforms\whatsapp.py:624: empty except block (pass)
+[Async/Subprocess] gateway\platforms\whatsapp.py:39: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] gateway\platforms\whatsapp.py:56: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\platforms\whatsapp.py:233: empty except block (pass)
+[Async/Subprocess] gateway\platforms\whatsapp.py:255: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\platforms\whatsapp.py:360: empty except block (pass)
+[Silent Failure] gateway\platforms\whatsapp.py:414: empty except block (pass)
+[Async/Subprocess] gateway\platforms\whatsapp.py:61: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] gateway\platforms\whatsapp.py:193: subprocess call found, verify error handling and timeout.
+[Silent Failure] gateway\platforms\whatsapp.py:349: empty except block (pass)
+[Silent Failure] gateway\platforms\whatsapp.py:53: empty except block (pass)
+[Async/Subprocess] gateway\platforms\whatsapp.py:49: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\auth.py:602: empty except block (pass)
+[Silent Failure] hermes_cli\auth.py:2191: empty except block (pass)
+[Silent Failure] hermes_cli\auth.py:2265: empty except block (pass)
+[Silent Failure] hermes_cli\auth.py:333: empty except block (pass)
+[Silent Failure] hermes_cli\auth.py:597: empty except block (pass)
+[Silent Failure] hermes_cli\auth.py:989: empty except block (pass)
+[Async/Subprocess] hermes_cli\auth.py:279: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\auth.py:538: empty except block (pass)
+[Silent Failure] hermes_cli\banner.py:157: empty except block (pass)
+[Silent Failure] hermes_cli\banner.py:167: empty except block (pass)
+[Silent Failure] hermes_cli\banner.py:187: empty except block (pass)
+[Silent Failure] hermes_cli\banner.py:426: empty except block (pass)
+[Silent Failure] hermes_cli\banner.py:441: empty except block (pass)
+[Async/Subprocess] hermes_cli\banner.py:162: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\banner.py:172: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\callbacks.py:157: empty except block (pass)
+[Silent Failure] hermes_cli\callbacks.py:207: empty except block (pass)
+[Silent Failure] hermes_cli\callbacks.py:162: empty except block (pass)
+[Silent Failure] hermes_cli\callbacks.py:212: empty except block (pass)
+[Silent Failure] hermes_cli\checklist.py:112: empty except block (pass)
+[Silent Failure] hermes_cli\checklist.py:63: empty except block (pass)
+[Silent Failure] hermes_cli\checklist.py:90: empty except block (pass)
+[Silent Failure] hermes_cli\clipboard.py:80: empty except block (pass)
+[Silent Failure] hermes_cli\clipboard.py:221: empty except block (pass)
+[Silent Failure] hermes_cli\clipboard.py:283: empty except block (pass)
+[Silent Failure] hermes_cli\clipboard.py:325: empty except block (pass)
+[Silent Failure] hermes_cli\clipboard.py:327: empty except block (pass)
+[Async/Subprocess] hermes_cli\clipboard.py:62: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:74: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:104: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:167: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:183: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:212: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:230: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:292: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:320: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:336: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:251: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\clipboard.py:351: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\commands.py:439: empty except block (pass)
+[Silent Failure] hermes_cli\commands.py:469: empty except block (pass)
+[Silent Failure] hermes_cli\config.py:161: empty except block (pass)
+[Silent Failure] hermes_cli\config.py:170: empty except block (pass)
+[Silent Failure] hermes_cli\config.py:1227: empty except block (pass)
+[Async/Subprocess] hermes_cli\config.py:2035: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\config.py:1281: empty except block (pass)
+[Silent Failure] hermes_cli\config.py:1804: empty except block (pass)
+[Silent Failure] hermes_cli\config.py:1739: empty except block (pass)
+[Silent Failure] hermes_cli\config.py:1793: empty except block (pass)
+[Async/Subprocess] hermes_cli\copilot_auth.py:135: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\curses_ui.py:74: empty except block (pass)
+[Silent Failure] hermes_cli\curses_ui.py:100: empty except block (pass)
+[Silent Failure] hermes_cli\curses_ui.py:114: empty except block (pass)
+[Silent Failure] hermes_cli\doctor.py:782: empty except block (pass)
+[Silent Failure] hermes_cli\doctor.py:509: empty except block (pass)
+[Async/Subprocess] hermes_cli\doctor.py:410: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\doctor.py:433: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\doctor.py:487: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\doctor.py:780: empty except block (pass)
+[Silent Failure] hermes_cli\gateway.py:85: empty except block (pass)
+[Silent Failure] hermes_cli\gateway.py:151: empty except block (pass)
+[Async/Subprocess] hermes_cli\gateway.py:599: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:691: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:692: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:718: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:719: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:726: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:735: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:744: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:754: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:778: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:783: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:936: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:937: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:959: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:971: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1006: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1062: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1120: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\gateway.py:103: empty except block (pass)
+[Async/Subprocess] hermes_cli\gateway.py:360: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:645: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:823: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:988: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:989: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:995: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:44: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:65: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:680: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1000: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1001: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1088: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1605: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1613: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\gateway.py:1622: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\gateway.py:1953: empty except block (pass)
+[Silent Failure] hermes_cli\gateway.py:61: empty except block (pass)
+[Silent Failure] hermes_cli\gateway.py:1959: empty except block (pass)
+[Silent Failure] hermes_cli\gateway.py:1982: empty except block (pass)
+[Silent Failure] hermes_cli\gateway.py:1989: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:231: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:478: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:518: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:544: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:612: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:619: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:822: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:1045: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:1261: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:1715: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:1962: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:2343: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:2518: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:2667: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:2675: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2689: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2706: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2751: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2759: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2914: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:109: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:220: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:245: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:269: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:770: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:818: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2819: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:2860: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:2904: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2969: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2986: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3006: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3037: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:3157: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:3204: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:3213: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:2551: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:2643: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2795: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2925: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3024: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3067: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:3290: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:365: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:375: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:431: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:1820: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:2645: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:2694: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3055: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3078: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3130: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3144: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3285: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:3303: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:3317: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:346: empty except block (pass)
+[Silent Failure] hermes_cli\main.py:388: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:3132: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3298: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3339: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:417: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:3312: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:3332: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:3366: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:3564: empty except block (pass)
+[Async/Subprocess] hermes_cli\main.py:3385: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\main.py:3389: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\main.py:3402: empty except block (pass)
+[Silent Failure] hermes_cli\mcp_config.py:366: empty except block (pass)
+[Async/Subprocess] hermes_cli\memory_setup.py:170: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\memory_setup.py:50: empty except block (pass)
+[Async/Subprocess] hermes_cli\memory_setup.py:194: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\memory_setup.py:69: empty except block (pass)
+[Silent Failure] hermes_cli\models.py:422: empty except block (pass)
+[Silent Failure] hermes_cli\models.py:367: empty except block (pass)
+[Silent Failure] hermes_cli\models.py:514: empty except block (pass)
+[Silent Failure] hermes_cli\models.py:619: empty except block (pass)
+[Silent Failure] hermes_cli\models.py:632: empty except block (pass)
+[Silent Failure] hermes_cli\model_switch.py:138: empty except block (pass)
+[Async/Subprocess] hermes_cli\plugins_cmd.py:330: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\plugins_cmd.py:226: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\plugins_cmd.py:487: empty except block (pass)
+[Silent Failure] hermes_cli\plugins_cmd.py:541: empty except block (pass)
+[Silent Failure] hermes_cli\profiles.py:192: empty except block (pass)
+[Silent Failure] hermes_cli\profiles.py:553: empty except block (pass)
+[Silent Failure] hermes_cli\profiles.py:706: empty except block (pass)
+[Silent Failure] hermes_cli\profiles.py:944: empty except block (pass)
+[Async/Subprocess] hermes_cli\profiles.py:178: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\profiles.py:236: empty except block (pass)
+[Async/Subprocess] hermes_cli\profiles.py:442: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\profiles.py:633: empty except block (pass)
+[Silent Failure] hermes_cli\profiles.py:831: empty except block (pass)
+[Silent Failure] hermes_cli\profiles.py:189: empty except block (pass)
+[Async/Subprocess] hermes_cli\profiles.py:575: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\profiles.py:579: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\profiles.py:584: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\profiles.py:593: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\runtime_provider.py:58: empty except block (pass)
+[Silent Failure] hermes_cli\runtime_provider.py:245: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:858: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:866: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:874: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:1692: empty except block (pass)
+[Async/Subprocess] hermes_cli\setup.py:1161: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\setup.py:1747: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:1754: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:212: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:1766: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:2454: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:451: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:1778: empty except block (pass)
+[Silent Failure] hermes_cli\setup.py:467: empty except block (pass)
+[Async/Subprocess] hermes_cli\setup.py:1142: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1144: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1146: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:2112: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:2118: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1611: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1464: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1477: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1526: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\setup.py:1532: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\skills_config.py:98: empty except block (pass)
+[Silent Failure] hermes_cli\skills_hub.py:442: empty except block (pass)
+[Silent Failure] hermes_cli\skills_hub.py:659: empty except block (pass)
+[Silent Failure] hermes_cli\skills_hub.py:737: empty except block (pass)
+[Silent Failure] hermes_cli\skills_hub.py:1064: empty except block (pass)
+[Silent Failure] hermes_cli\skills_hub.py:1070: empty except block (pass)
+[Silent Failure] hermes_cli\skills_hub.py:1095: empty except block (pass)
+[Silent Failure] hermes_cli\status.py:417: empty except block (pass)
+[Async/Subprocess] hermes_cli\status.py:316: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\status.py:331: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\tools_config.py:123: empty except block (pass)
+[Silent Failure] hermes_cli\tools_config.py:725: empty except block (pass)
+[Async/Subprocess] hermes_cli\tools_config.py:380: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\tools_config.py:397: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_cli\tools_config.py:690: empty except block (pass)
+[Silent Failure] hermes_cli\tools_config.py:706: empty except block (pass)
+[Async/Subprocess] hermes_cli\tools_config.py:424: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\tools_config.py:429: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\uninstall.py:144: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\uninstall.py:151: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] hermes_cli\uninstall.py:161: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] batch_runner.py:1274: subprocess call found, verify error handling and timeout.
+[Silent Failure] batch_runner.py:284: empty except block (pass)
+[Async/Subprocess] batch_runner.py:263: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] batch_runner.py:270: subprocess call found, verify error handling and timeout.
+[Silent Failure] cli.py:460: empty except block (pass)
+[Silent Failure] cli.py:468: empty except block (pass)
+[Silent Failure] cli.py:479: empty except block (pass)
+[Silent Failure] cli.py:522: empty except block (pass)
+[Silent Failure] cli.py:526: empty except block (pass)
+[Silent Failure] cli.py:531: empty except block (pass)
+[Silent Failure] cli.py:539: empty except block (pass)
+[Silent Failure] cli.py:548: empty except block (pass)
+[Silent Failure] cli.py:570: empty except block (pass)
+[Async/Subprocess] cli.py:8031: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:564: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:622: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:704: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:720: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:729: subprocess call found, verify error handling and timeout.
+[Silent Failure] cli.py:1081: empty except block (pass)
+[Silent Failure] cli.py:2390: empty except block (pass)
+[Silent Failure] cli.py:2790: empty except block (pass)
+[Silent Failure] cli.py:3208: empty except block (pass)
+[Silent Failure] cli.py:3223: empty except block (pass)
+[Silent Failure] cli.py:5118: empty except block (pass)
+[Silent Failure] cli.py:5184: empty except block (pass)
+[Silent Failure] cli.py:5208: empty except block (pass)
+[Silent Failure] cli.py:5439: empty except block (pass)
+[Silent Failure] cli.py:5485: empty except block (pass)
+[Silent Failure] cli.py:6315: empty except block (pass)
+[Silent Failure] cli.py:6378: empty except block (pass)
+[Silent Failure] cli.py:6467: empty except block (pass)
+[Silent Failure] cli.py:6572: empty except block (pass)
+[Silent Failure] cli.py:7740: empty except block (pass)
+[Silent Failure] cli.py:7766: empty except block (pass)
+[Async/Subprocess] cli.py:7888: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:769: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:780: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:786: subprocess call found, verify error handling and timeout.
+[Silent Failure] cli.py:1612: empty except block (pass)
+[Silent Failure] cli.py:1634: empty except block (pass)
+[Silent Failure] cli.py:1664: empty except block (pass)
+[Silent Failure] cli.py:2191: empty except block (pass)
+[Silent Failure] cli.py:3126: empty except block (pass)
+[Silent Failure] cli.py:3133: empty except block (pass)
+[Async/Subprocess] cli.py:4466: subprocess call found, verify error handling and timeout.
+[Silent Failure] cli.py:4495: empty except block (pass)
+[Silent Failure] cli.py:4504: empty except block (pass)
+[Silent Failure] cli.py:4516: empty except block (pass)
+[Silent Failure] cli.py:5254: empty except block (pass)
+[Silent Failure] cli.py:5272: empty except block (pass)
+[Silent Failure] cli.py:5299: empty except block (pass)
+[Silent Failure] cli.py:5819: empty except block (pass)
+[Silent Failure] cli.py:5826: empty except block (pass)
+[Silent Failure] cli.py:6075: empty except block (pass)
+[Silent Failure] cli.py:7787: empty except block (pass)
+[Async/Subprocess] cli.py:791: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] cli.py:2737: subprocess call found, verify error handling and timeout.
+[Silent Failure] cli.py:3154: empty except block (pass)
+[Silent Failure] cli.py:3170: empty except block (pass)
+[Silent Failure] cli.py:3236: empty except block (pass)
+[Silent Failure] cli.py:5057: empty except block (pass)
+[Silent Failure] cli.py:5372: empty except block (pass)
+[Silent Failure] cli.py:5476: empty except block (pass)
+[Silent Failure] cli.py:5951: empty except block (pass)
+[Silent Failure] cli.py:5953: empty except block (pass)
+[Silent Failure] cli.py:6112: empty except block (pass)
+[Silent Failure] cli.py:6241: empty except block (pass)
+[Silent Failure] cli.py:6270: empty except block (pass)
+[Silent Failure] cli.py:7763: empty except block (pass)
+[Async/Subprocess] cli.py:7765: subprocess call found, verify error handling and timeout.
+[Silent Failure] cli.py:7774: empty except block (pass)
+[Silent Failure] cli.py:7780: empty except block (pass)
+[Silent Failure] cli.py:7814: empty except block (pass)
+[Silent Failure] cli.py:4581: empty except block (pass)
+[Silent Failure] cli.py:6926: empty except block (pass)
+[Silent Failure] cli.py:4607: empty except block (pass)
+[Silent Failure] cli.py:6666: empty except block (pass)
+[Silent Failure] cli.py:6052: empty except block (pass)
+[Async/Subprocess] cli.py:4060: subprocess call found, verify error handling and timeout.
+[Silent Failure] hermes_state.py:235: empty except block (pass)
+[Silent Failure] hermes_state.py:341: empty except block (pass)
+[Silent Failure] hermes_state.py:248: empty except block (pass)
+[Silent Failure] hermes_state.py:270: empty except block (pass)
+[Silent Failure] hermes_state.py:277: empty except block (pass)
+[Silent Failure] hermes_state.py:287: empty except block (pass)
+[Silent Failure] hermes_state.py:947: empty except block (pass)
+[Silent Failure] hermes_state.py:975: empty except block (pass)
+[Silent Failure] hermes_state.py:311: empty except block (pass)
+[Silent Failure] hermes_state.py:330: empty except block (pass)
+[Silent Failure] hermes_state.py:986: empty except block (pass)
+[Silent Failure] hermes_state.py:991: empty except block (pass)
+[Silent Failure] hermes_state.py:191: empty except block (pass)
+[Silent Failure] hermes_time.py:60: empty except block (pass)
+[Async/Subprocess] mcp_serve.py:866: subprocess call found, verify error handling and timeout.
+[Silent Failure] mini_swe_runner.py:365: empty except block (pass)
+[Silent Failure] model_tools.py:397: empty except block (pass)
+[Silent Failure] model_tools.py:407: empty except block (pass)
+[Silent Failure] model_tools.py:429: empty except block (pass)
+[Async/Subprocess] rl_cli.py:228: subprocess call found, verify error handling and timeout.
+[Async/Subprocess] rl_cli.py:403: subprocess call found, verify error handling and timeout.
+[Silent Failure] run_agent.py:141: empty except block (pass)
+[Silent Failure] run_agent.py:399: empty except block (pass)
+[Silent Failure] run_agent.py:1106: empty except block (pass)
+[Silent Failure] run_agent.py:1286: empty except block (pass)
+[Silent Failure] run_agent.py:1321: empty except block (pass)
+[Silent Failure] run_agent.py:3772: empty except block (pass)
+[Silent Failure] run_agent.py:5546: empty except block (pass)
+[Silent Failure] run_agent.py:1023: empty except block (pass)
+[Silent Failure] run_agent.py:2354: empty except block (pass)
+[Silent Failure] run_agent.py:2358: empty except block (pass)
+[Silent Failure] run_agent.py:2516: empty except block (pass)
+[Silent Failure] run_agent.py:3811: empty except block (pass)
+[Silent Failure] run_agent.py:3972: empty except block (pass)
+[Silent Failure] run_agent.py:3987: empty except block (pass)
+[Async/Subprocess] run_agent.py:4799: subprocess call found, verify error handling and timeout.
+[Silent Failure] run_agent.py:5480: empty except block (pass)
+[Silent Failure] run_agent.py:6421: empty except block (pass)
+[Silent Failure] run_agent.py:6635: empty except block (pass)
+[Silent Failure] run_agent.py:8522: empty except block (pass)
+[Silent Failure] run_agent.py:8534: empty except block (pass)
+[Silent Failure] run_agent.py:2272: empty except block (pass)
+[Silent Failure] run_agent.py:3421: empty except block (pass)
+[Silent Failure] run_agent.py:3425: empty except block (pass)
+[Silent Failure] run_agent.py:3539: empty except block (pass)
+[Silent Failure] run_agent.py:3677: empty except block (pass)
+[Silent Failure] run_agent.py:3940: empty except block (pass)
+[Silent Failure] run_agent.py:3962: empty except block (pass)
+[Silent Failure] run_agent.py:4040: empty except block (pass)
+[Silent Failure] run_agent.py:4446: empty except block (pass)
+[Silent Failure] run_agent.py:4452: empty except block (pass)
+[Silent Failure] run_agent.py:4472: empty except block (pass)
+[Silent Failure] run_agent.py:4702: empty except block (pass)
+[Silent Failure] run_agent.py:4810: empty except block (pass)
+[Silent Failure] run_agent.py:5053: empty except block (pass)
+[Silent Failure] run_agent.py:5201: empty except block (pass)
+[Silent Failure] run_agent.py:5690: empty except block (pass)
+[Silent Failure] run_agent.py:5702: empty except block (pass)
+[Silent Failure] run_agent.py:5914: empty except block (pass)
+[Silent Failure] run_agent.py:5926: empty except block (pass)
+[Silent Failure] run_agent.py:6495: empty except block (pass)
+[Silent Failure] run_agent.py:1057: empty except block (pass)
+[Silent Failure] run_agent.py:3546: empty except block (pass)
+[Silent Failure] run_agent.py:1081: empty except block (pass)
+[Silent Failure] run_agent.py:1730: empty except block (pass)
+[Silent Failure] run_agent.py:1747: empty except block (pass)
+[Silent Failure] run_agent.py:1993: empty except block (pass)
+[Silent Failure] run_agent.py:5617: empty except block (pass)
+[Silent Failure] run_agent.py:7834: empty except block (pass)
+[Silent Failure] run_agent.py:8095: empty except block (pass)
+[Silent Failure] run_agent.py:1052: empty except block (pass)
+[Silent Failure] run_agent.py:4132: empty except block (pass)
+[Silent Failure] run_agent.py:7217: empty except block (pass)
+[Silent Failure] run_agent.py:1157: empty except block (pass)
+[Silent Failure] run_agent.py:4368: empty except block (pass)
+[Silent Failure] run_agent.py:7723: empty except block (pass)
+[Silent Failure] run_agent.py:3597: empty except block (pass)
+[Silent Failure] toolsets.py:439: empty except block (pass)
+[Silent Failure] toolsets.py:512: empty except block (pass)
+[Async/Subprocess] trajectory_compressor.py:994: subprocess call found, verify error handling and timeout.
+[Silent Failure] trajectory_compressor.py:1478: empty except block (pass)
+[Silent Failure] utils.py:76: empty except block (pass)
+[Silent Failure] utils.py:124: empty except block (pass)

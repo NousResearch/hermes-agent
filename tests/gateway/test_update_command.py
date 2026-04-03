@@ -34,6 +34,7 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._restart_resume_inflight = {}
     return runner
 
 

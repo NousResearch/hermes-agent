@@ -78,8 +78,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write
+from utils import atomic_yaml_write, atomic_json_write
 _hermes_home = get_hermes_home()
+
+
+def _restart_resume_pending_path() -> Path:
+    """Path to restart auto-resume checkpoint file (under current Hermes home)."""
+    return _hermes_home / ".restart_resume_pending.json"
+
+
+def _restart_resume_claimed_path() -> Path:
+    """Path to claimed restart auto-resume checkpoint while replay is in progress."""
+    return _hermes_home / ".restart_resume_pending.claimed.json"
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -456,6 +466,9 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
+
+    # Prevent replaying very old interrupted messages after long downtime.
+    _RESTART_RESUME_MAX_AGE_SECONDS = 60 * 60  # 1 hour
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -489,6 +502,10 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+
+        # In-flight user payloads used for restart auto-resume.
+        # Key: session_key, Value: {source: SessionSource.to_dict(), message_text: str, captured_at: iso_ts}
+        self._restart_resume_inflight: Dict[str, Dict[str, Any]] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -836,6 +853,218 @@ class GatewayRunner:
         self._exit_cleanly = True
         self._exit_reason = reason
         self._shutdown_event.set()
+
+    def _mark_restart_resume_inflight(self, session_key: str, source: SessionSource, message_text: str) -> None:
+        """Track an in-flight user message so gateway restarts can auto-resume it."""
+        try:
+            text = (message_text or "").strip()
+            if not text:
+                return
+
+            # Slash commands are control signals, not resumable user payload.
+            # Skip them here so commands like /status don't overwrite a real
+            # in-flight task captured for the same session.
+            if text.startswith("/"):
+                return
+
+            inflight = getattr(self, "_restart_resume_inflight", None)
+            if not isinstance(inflight, dict):
+                inflight = {}
+                self._restart_resume_inflight = inflight
+
+            inflight[session_key] = {
+                "session_key": session_key,
+                "source": source.to_dict(),
+                "message_text": text,
+                "captured_at": datetime.now().isoformat(),
+            }
+        except Exception as e:
+            logger.debug("Failed to mark restart-resume inflight state: %s", e)
+
+    def _clear_restart_resume_inflight(
+        self,
+        session_key: str,
+        expected_message_text: Optional[str] = None,
+    ) -> None:
+        """Clear in-flight restart-resume state for a session key.
+
+        If ``expected_message_text`` is provided, only clear when the currently
+        tracked payload matches that text. This avoids an older turn clearing a
+        newer queued/interruption message for the same session key.
+        """
+        inflight = getattr(self, "_restart_resume_inflight", None)
+        if not isinstance(inflight, dict):
+            return
+
+        current = inflight.get(session_key)
+        if current is None:
+            return
+
+        if expected_message_text is not None:
+            current_text = str(current.get("message_text", "")).strip()
+            expected_text = str(expected_message_text).strip()
+            if current_text != expected_text:
+                return
+
+        inflight.pop(session_key, None)
+
+    def _persist_restart_resume_pending(self) -> None:
+        """Persist any in-flight work so the next gateway startup can auto-resume."""
+        try:
+            entries: List[Dict[str, Any]] = []
+            inflight = getattr(self, "_restart_resume_inflight", None)
+            if not isinstance(inflight, dict):
+                return
+
+            for key, payload in list(inflight.items()):
+                if not isinstance(payload, dict):
+                    continue
+                text = str(payload.get("message_text", "")).strip()
+                source_dict = payload.get("source")
+                if not text or text.startswith("/"):
+                    continue
+                if not isinstance(source_dict, dict):
+                    continue
+                entries.append({
+                    "session_key": key,
+                    "source": source_dict,
+                    "message_text": text,
+                    "captured_at": payload.get("captured_at") or datetime.now().isoformat(),
+                })
+
+            pending_path = _restart_resume_pending_path()
+            if entries:
+                atomic_json_write(
+                    pending_path,
+                    {
+                        "version": 1,
+                        "created_at": datetime.now().isoformat(),
+                        "entries": entries,
+                    },
+                )
+                logger.info(
+                    "Captured %d in-flight message(s) for restart auto-resume",
+                    len(entries),
+                )
+            else:
+                pending_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning("Failed to persist restart auto-resume state: %s", e)
+
+    def _schedule_restart_auto_resume(self) -> None:
+        """Schedule replay of interrupted work captured before restart."""
+        existing_task = getattr(self, "_restart_resume_task", None)
+        if existing_task and not existing_task.done():
+            return
+
+        try:
+            self._restart_resume_task = asyncio.create_task(self._run_restart_auto_resume())
+        except RuntimeError:
+            logger.debug("Skipping restart auto-resume: no running event loop")
+
+    @staticmethod
+    def _is_restart_resume_entry_fresh(entry: Dict[str, Any], max_age_seconds: int) -> bool:
+        """Return True when a restart-resume entry is recent enough to replay."""
+        if max_age_seconds <= 0:
+            return True
+
+        captured_at = str(entry.get("captured_at", "")).strip()
+        if not captured_at:
+            # Backward compatibility with old marker format (no timestamp).
+            return True
+
+        try:
+            dt = datetime.fromisoformat(captured_at)
+            now = datetime.now(dt.tzinfo) if dt.tzinfo is not None else datetime.now()
+            age_seconds = (now - dt).total_seconds()
+            return age_seconds <= max_age_seconds
+        except Exception:
+            # If timestamp parsing fails, fail-open so we don't silently lose work.
+            return True
+
+    async def _run_restart_auto_resume(self) -> None:
+        """Replay messages captured before restart as synthetic events."""
+        await asyncio.sleep(1.0)
+
+        pending_path = _restart_resume_pending_path()
+        claimed_path = _restart_resume_claimed_path()
+        if not pending_path.exists() and not claimed_path.exists():
+            return
+
+        resumed_count = 0
+        skipped_count = 0
+        max_age_seconds = int(getattr(self, "_RESTART_RESUME_MAX_AGE_SECONDS", 3600) or 3600)
+        try:
+            if pending_path.exists():
+                try:
+                    pending_path.replace(claimed_path)
+                except FileNotFoundError:
+                    if not claimed_path.exists():
+                        return
+            elif not claimed_path.exists():
+                return
+
+            pending = json.loads(claimed_path.read_text(encoding="utf-8"))
+            entries = pending.get("entries", []) if isinstance(pending, dict) else []
+            if not isinstance(entries, list) or not entries:
+                claimed_path.unlink(missing_ok=True)
+                return
+
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+
+                if not self._is_restart_resume_entry_fresh(entry, max_age_seconds=max_age_seconds):
+                    skipped_count += 1
+                    continue
+
+                source_dict = entry.get("source")
+                message_text = str(entry.get("message_text", "")).strip()
+                if not isinstance(source_dict, dict) or not message_text:
+                    continue
+
+                try:
+                    source = SessionSource.from_dict(source_dict)
+                except Exception:
+                    continue
+
+                adapter = self.adapters.get(source.platform)
+                if not adapter:
+                    continue
+
+                send_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                try:
+                    await adapter.send(
+                        source.chat_id,
+                        "🔁 Resuming the task that got interrupted by restart…",
+                        metadata=send_meta,
+                    )
+                except Exception:
+                    pass
+
+                synthetic_event = MessageEvent(
+                    text=message_text,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=f"restart-resume-{uuid.uuid4().hex}",
+                )
+
+                try:
+                    response = await self._handle_message(synthetic_event)
+                    if response:
+                        await adapter.send(source.chat_id, response, metadata=send_meta)
+                    resumed_count += 1
+                except Exception as e:
+                    logger.warning("Restart auto-resume failed for %s: %s", source.chat_id, e)
+        except Exception as e:
+            logger.warning("Failed to load restart auto-resume state: %s", e)
+        finally:
+            claimed_path.unlink(missing_ok=True)
+
+        if resumed_count:
+            logger.info("Auto-resumed %d interrupted message(s) after restart", resumed_count)
+        if skipped_count:
+            logger.info("Skipped %d stale restart-resume message(s) older than %ss", skipped_count, max_age_seconds)
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -1192,6 +1421,10 @@ class GatewayRunner:
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
+
+        # If the previous gateway instance was interrupted mid-turn, replay the
+        # last in-flight user message(s) automatically.
+        self._schedule_restart_auto_resume()
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
@@ -1401,6 +1634,9 @@ class GatewayRunner:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
         self._running = False
+
+        # Persist in-flight messages before teardown so restart can auto-resume.
+        self._persist_restart_resume_pending()
 
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
@@ -1754,6 +1990,11 @@ class GatewayRunner:
             del self._running_agents[_quick_key]
             self._running_agents_ts.pop(_quick_key, None)
 
+        _resume_original_text = event.text
+
+        # Track this inbound payload as in-flight so restarts can auto-resume it.
+        self._mark_restart_resume_inflight(_quick_key, source, _resume_original_text)
+
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
@@ -2091,6 +2332,13 @@ class GatewayRunner:
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
             self._running_agents_ts.pop(_quick_key, None)
+
+            # Any completed turn should clear its restart-resume inflight marker.
+            # Match against the original inbound text (before alias/skill rewrites).
+            self._clear_restart_resume_inflight(
+                _quick_key,
+                expected_message_text=_resume_original_text,
+            )
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""

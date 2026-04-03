@@ -215,7 +215,8 @@ check_python() {
     # First check if a suitable Python is already available
     if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        # Quote PYTHON_PATH to handle spaces in paths (e.g., macOS uv: ~/Library/Application Support/uv/python/...)
+        PYTHON_FOUND_VERSION=$("$PYTHON_PATH" --version 2>/dev/null)
         log_success "Python found: $PYTHON_FOUND_VERSION"
         return 0
     fi
@@ -224,7 +225,8 @@ check_python() {
     log_info "Python $PYTHON_VERSION not found, installing via uv..."
     if $UV_CMD python install "$PYTHON_VERSION"; then
         PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
-        PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+        # Quote PYTHON_PATH to handle spaces in paths (e.g., macOS uv: ~/Library/Application Support/uv/python/...)
+        PYTHON_FOUND_VERSION=$("$PYTHON_PATH" --version 2>/dev/null)
         log_success "Python installed: $PYTHON_FOUND_VERSION"
     else
         log_error "Failed to install Python $PYTHON_VERSION"

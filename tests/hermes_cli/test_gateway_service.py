@@ -171,10 +171,12 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_install()
 
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
         assert calls[:2] == [
-            ["launchctl", "unload", str(plist_path)],
-            ["launchctl", "load", str(plist_path)],
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
@@ -183,10 +185,12 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
 
         calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
-            if cmd == ["launchctl", "start", label] and calls.count(cmd) == 1:
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -196,9 +200,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
-            ["launchctl", "start", label],
-            ["launchctl", "load", str(plist_path)],
-            ["launchctl", "start", label],
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
         ]
 
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):

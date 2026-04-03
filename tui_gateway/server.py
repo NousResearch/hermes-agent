@@ -159,7 +159,7 @@ def _(req_id, params: dict) -> dict:
             status_callback=lambda text: _emit("status.update", sid, {"text": text}),
             clarify_callback=_make_clarify_cb(sid),
         )
-        _sessions[sid] = {"agent": agent, "session_key": session_key}
+        _sessions[sid] = {"agent": agent, "session_key": session_key, "history": []}
     except Exception as e:
         return _err(req_id, 5000, f"agent init failed: {e}")
 
@@ -180,16 +180,21 @@ def _(req_id, params: dict) -> dict:
         return _err(req_id, 4001, "session not found")
 
     agent = session["agent"]
+    history = session["history"]
     _emit("message.start", sid)
 
     def run():
         try:
             result = agent.run_conversation(
                 text,
+                conversation_history=list(history),
                 stream_callback=lambda delta: _emit("message.delta", sid, {"text": delta}),
             )
 
             if isinstance(result, dict):
+                returned_msgs = result.get("messages")
+                if isinstance(returned_msgs, list):
+                    session["history"] = returned_msgs
                 final = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
                 _emit("message.complete", sid, {
@@ -248,8 +253,7 @@ def _(req_id, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     if not session:
         return _err(req_id, 4001, "session not found")
-    history = getattr(session["agent"], "conversation_history", [])
-    return _ok(req_id, {"count": len(history)})
+    return _ok(req_id, {"count": len(session.get("history", []))})
 
 
 @method("session.undo")
@@ -257,7 +261,7 @@ def _(req_id, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     if not session:
         return _err(req_id, 4001, "session not found")
-    history = getattr(session["agent"], "conversation_history", [])
+    history = session.get("history", [])
     removed = 0
     while history and history[-1].get("role") in ("assistant", "tool"):
         history.pop(); removed += 1

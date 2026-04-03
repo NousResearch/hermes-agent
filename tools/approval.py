@@ -588,3 +588,7 @@ def check_all_command_guards(command: str, env_type: str,
             save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}
+
+
+# Load permanent allowlist from config on module import
+load_permanent_allowlist()

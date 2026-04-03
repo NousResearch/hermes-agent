@@ -227,16 +227,19 @@ class TestIncomingDocumentHandling:
         adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_unsupported_type_skipped(self, adapter):
-        """An unsupported file type (.zip) should be skipped silently."""
+    async def test_zip_document_cached(self, adapter):
+        """A .zip file should be cached as a supported document."""
         msg = make_message([
             make_attachment(filename="archive.zip", content_type="application/zip")
         ])
-        await adapter._handle_message(msg)
+
+        with _mock_aiohttp_download(b"PK\x03\x04test"):
+            await adapter._handle_message(msg)
 
         event = adapter.handle_message.call_args[0][0]
-        assert event.media_urls == []
-        assert event.message_type == MessageType.TEXT
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/zip"]
+        assert event.message_type == MessageType.DOCUMENT
 
     @pytest.mark.asyncio
     async def test_download_error_handled(self, adapter):

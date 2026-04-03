@@ -1107,6 +1107,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """
     sys.path.insert(0, str(PROJECT_ROOT))
     
+    # Prevent multiple concurrent gateway instances (protects Feishu WebSocket)
+    # Multiple processes share lark_oapi global state → only last one receives events
+    if not replace and os.environ.get("HERMES_GATEWAY_REPLACING") != "1":
+        existing_pids = find_gateway_pids()
+        if existing_pids:
+            print(f"⚠️  Gateway already running (PIDs: {existing_pids}). Aborting.")
+            print(f"   To replace it, run: hermes gateway run --replace")
+            sys.exit(1)
+    
     from gateway.run import start_gateway
     
     print("┌─────────────────────────────────────────────────────────┐")

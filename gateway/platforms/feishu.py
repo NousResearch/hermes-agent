@@ -1477,13 +1477,35 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_message_event(self, data: Any) -> None:
         """Normalize Feishu inbound events into MessageEvent."""
         if self._loop is None:
-            logger.warning("[Feishu] Dropping inbound message before adapter loop is ready")
+            # WebSocket callback fires before the main loop is ready.
+            # Queue the event and retry after a short delay.
+            if not hasattr(self, "_pending_events"):
+                self._pending_events = []
+            self._pending_events.append(data)
+            threading.Thread(target=self._drain_pending_events, daemon=True).start()
             return
         future = asyncio.run_coroutine_threadsafe(
             self._handle_message_event_data(data),
             self._loop,
         )
         future.add_done_callback(self._log_background_failure)
+
+    def _drain_pending_events(self) -> None:
+        """Wait for the main loop, then replay queued events."""
+        import time
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            loop = getattr(self, "_loop", None)
+            if loop:
+                for ev in getattr(self, "_pending_events", []):
+                    asyncio.run_coroutine_threadsafe(
+                        self._handle_message_event_data(ev), loop
+                    )
+                self._pending_events = []
+                return
+            time.sleep(0.3)
+        logger.error("[Feishu] Loop never ready — dropped %d queued messages", len(getattr(self, "_pending_events", [])))
+        self._pending_events = []
 
     async def _handle_message_event_data(self, data: Any) -> None:
         """Shared inbound message handling for websocket and webhook transports."""

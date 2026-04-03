@@ -667,12 +667,13 @@ class GatewayRunner:
             # what's already saved and avoid overwriting newer entries.
             _current_memory = ""
             try:
-                from tools.memory_tool import MEMORY_DIR
+                from tools.memory_tool import get_memory_dir
+                _mem_dir = get_memory_dir()
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
                     ("USER.md", "USER PROFILE (who the user is)"),
                 ]:
-                    fpath = MEMORY_DIR / fname
+                    fpath = _mem_dir / fname
                     if fpath.exists():
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:

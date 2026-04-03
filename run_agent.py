@@ -5272,6 +5272,18 @@ class AIAgent:
         if assistant_message.tool_calls:
             tool_calls = []
             for tool_call in assistant_message.tool_calls:
+                # Validate tool call before persisting to prevent session poisoning.
+                # Malformed tool calls (empty name, invalid arguments) can cause
+                # repeated 400 errors when replayed to strict providers.
+                if not self._is_valid_tool_call(tool_call):
+                    fn = getattr(tool_call, "function", None)
+                    fn_name = getattr(fn, "name", "<empty>") if fn else "<missing>"
+                    fn_args = getattr(fn, "arguments", "<empty>") if fn else "<missing>"
+                    logging.warning(
+                        f"Skipping malformed tool call: name={fn_name!r}, "
+                        f"arguments={fn_args[:100] if isinstance(fn_args, str) else fn_args!r}"
+                    )
+                    continue
                 raw_id = getattr(tool_call, "id", None)
                 call_id = getattr(tool_call, "call_id", None)
                 if not isinstance(call_id, str) or not call_id.strip():
@@ -5321,13 +5333,58 @@ class AIAgent:
         return msg
 
     @staticmethod
+    def _is_valid_tool_call(tool_call) -> bool:
+        """Validate a tool call before persisting to session history.
+
+        Malformed tool calls (empty function name, invalid arguments) can poison
+        a session and cause repeated 400 errors when replayed to strict providers.
+        This validation prevents such tool calls from being persisted.
+
+        Returns True if the tool call is valid, False otherwise.
+        """
+        fn = getattr(tool_call, "function", None)
+        if fn is None:
+            return False
+
+        # Validate function name - must be a non-empty string
+        fn_name = getattr(fn, "name", None)
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            return False
+
+        # Validate function arguments - must be valid JSON object string
+        fn_args = getattr(fn, "arguments", None)
+        if fn_args is None:
+            # Some providers may return None for empty args - allow this
+            return True
+        if not isinstance(fn_args, str):
+            return False
+        if not fn_args.strip():
+            # Empty string is invalid - should be "{}" at minimum
+            return False
+
+        # Verify arguments parse as valid JSON object
+        try:
+            parsed = json.loads(fn_args)
+            # Arguments must be a dict/object, not a list or primitive
+            if not isinstance(parsed, dict):
+                return False
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+        return True
+
+    @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
-        """Strip Codex Responses API fields from tool_calls for strict providers.
+        """Strip Codex Responses API fields and filter malformed tool_calls.
 
         Providers like Mistral strictly validate the Chat Completions schema
         and reject unknown fields (call_id, response_item_id) with 422.
         These fields are preserved in the internal message history — this
         method only modifies the outgoing API copy.
+
+        Additionally filters out malformed tool calls (empty function name,
+        invalid arguments) that could cause 400 errors when replayed.
+        This provides a second layer of defense against session poisoning.
 
         Creates new tool_call dicts rather than mutating in-place, so the
         original messages list retains call_id/response_item_id for Codex
@@ -5338,11 +5395,36 @@ class AIAgent:
         if not isinstance(tool_calls, list):
             return api_msg
         _STRIP_KEYS = {"call_id", "response_item_id"}
-        api_msg["tool_calls"] = [
-            {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
-            if isinstance(tc, dict) else tc
-            for tc in tool_calls
-        ]
+        sanitized = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {})
+            if not isinstance(fn, dict):
+                continue
+            # Skip malformed tool calls: empty name or invalid arguments
+            fn_name = fn.get("name", "")
+            if not isinstance(fn_name, str) or not fn_name.strip():
+                logging.warning(f"Filtering malformed tool call with empty name from API payload")
+                continue
+            fn_args = fn.get("arguments", "{}")
+            if isinstance(fn_args, str) and fn_args.strip():
+                try:
+                    parsed = json.loads(fn_args)
+                    if not isinstance(parsed, dict):
+                        logging.warning(f"Filtering tool call with non-object arguments: {fn_name}")
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    logging.warning(f"Filtering tool call with invalid JSON arguments: {fn_name}")
+                    continue
+            elif fn_args is not None and fn_args != "":
+                # Empty string or non-string (but not None) is invalid
+                if fn_args == "":
+                    logging.warning(f"Filtering tool call with empty arguments string: {fn_name}")
+                    continue
+            # Tool call is valid - strip extra keys and add to result
+            sanitized.append({k: v for k, v in tc.items() if k not in _STRIP_KEYS})
+        api_msg["tool_calls"] = sanitized
         return api_msg
 
     def flush_memories(self, messages: list = None, min_turns: int = None):

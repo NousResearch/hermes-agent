@@ -22,13 +22,14 @@ Usage:
 import argparse
 import base64
 import json
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+from hermes_constants import display_hermes_home, get_hermes_home
+
+HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 
 SCOPES = [
@@ -41,6 +42,28 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents.readonly",
 ]
+
+
+def _load_token_payload() -> dict:
+    try:
+        return json.loads(TOKEN_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _normalize_scope_values(values) -> set[str]:
+    if not values:
+        return set()
+    if isinstance(values, str):
+        values = values.split()
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _missing_scopes() -> list[str]:
+    granted = _normalize_scope_values(_load_token_payload().get("scopes") or _load_token_payload().get("scope"))
+    if not granted:
+        return []
+    return sorted(scope for scope in SCOPES if scope not in granted)
 
 
 def get_credentials():
@@ -59,6 +82,20 @@ def get_credentials():
         TOKEN_PATH.write_text(creds.to_json())
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)
+        sys.exit(1)
+
+    missing_scopes = _missing_scopes()
+    if missing_scopes:
+        print(
+            "Token is valid but missing Google Workspace scopes required by this skill.",
+            file=sys.stderr,
+        )
+        for scope in missing_scopes:
+            print(f"  - {scope}", file=sys.stderr)
+        print(
+            f"Re-run setup.py from the active Hermes profile ({display_hermes_home()}) to restore full access.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return creds
 

@@ -312,7 +312,7 @@ class TestCmdUpdateLaunchdRestart:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
-        assert "Gateway restarted via launchd" in captured
+        assert "Restarting gateway service" in captured
         assert "Restart it with: hermes gateway run" not in captured
         mock_launchd_restart.assert_called_once_with()
 

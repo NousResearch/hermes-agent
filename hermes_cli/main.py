@@ -3380,7 +3380,6 @@ def cmd_update(args):
                     print("→ Restarting gateway service...")
                     try:
                         launchd_restart()
-                        print("✓ Gateway restarted via launchd.")
                     except subprocess.CalledProcessError as e:
                         stderr = (getattr(e, "stderr", "") or "").strip()
                         print(f"⚠ Gateway restart failed: {stderr}")

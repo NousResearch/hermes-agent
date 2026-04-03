@@ -276,7 +276,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
-
+            "terminal_title": True,   # Set tab/window title via OSC sequences (disable for tmux/screen or if job name is appended by your terminal profile)
             "skin": "default",
         },
         "clarify": {

@@ -73,6 +73,9 @@ function getMessageContent(msg) {
   if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
   if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
   if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
+  if (content.buttonsMessage) return content.buttonsMessage;
+  if (content.listMessage) return content.listMessage;
   return content;
 }
 
@@ -181,6 +184,11 @@ async function startSocket() {
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
 
+    const botIds = Array.from(new Set([
+      normalizeWhatsAppId(sock.user?.id),
+      normalizeWhatsAppId(sock.user?.lid),
+    ].filter(Boolean)));
+
     for (const msg of messages) {
       if (!msg.message) continue;
 
@@ -228,10 +236,6 @@ async function startSocket() {
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
       const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
-      const botIds = Array.from(new Set([
-        normalizeWhatsAppId(sock.user?.id),
-        normalizeWhatsAppId(sock.user?.lid),
-      ].filter(Boolean)));
 
       // Extract message body
       let body = '';

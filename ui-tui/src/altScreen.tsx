@@ -1,5 +1,5 @@
-import { useEffect, type PropsWithChildren } from 'react'
 import { Box, useStdout } from 'ink'
+import { type PropsWithChildren, useEffect } from 'react'
 
 const ENTER = '\x1b[?1049h\x1b[2J\x1b[H'
 const LEAVE = '\x1b[?1049l'
@@ -22,7 +22,7 @@ export function AltScreen({ children }: PropsWithChildren) {
   }, [])
 
   return (
-    <Box flexDirection="column" height={rows} width={cols} overflow="hidden">
+    <Box flexDirection="column" height={rows} overflow="hidden" width={cols}>
       {children}
     </Box>
   )

@@ -7024,6 +7024,20 @@ class HermesCLI:
                 _cprint(f"  {_DIM}📬 Queued: \"{preview}\"{_RST}")
             event.app.invalidate()
 
+        @kb.add('escape', 'escape')
+        def handle_double_escape(event):
+            """Double ESC: clear the input buffer.
+
+            Press ESC twice quickly to discard the current draft.
+            Single ESC is the prefix for Alt key sequences (escape, enter etc.)
+            so the double-press avoids conflicting with those.
+            """
+            buf = event.app.current_buffer
+            if buf.text or cli_ref._attached_images:
+                buf.reset()
+                cli_ref._attached_images.clear()
+                event.app.invalidate()
+
         @kb.add('c-j')
         def handle_ctrl_enter(event):
             """Ctrl+J (Ctrl+Enter in most terminals): insert a newline for multi-line input."""
@@ -7387,6 +7401,59 @@ class HermesCLI:
                 _cprint(f"  {_DIM}📌 Stash restored{_RST}")
                 event.app.invalidate()
 
+        @kb.add('c-p')
+        def handle_peek(event):
+            """Ctrl+P: peek at collapsed paste content or current input inline.
+
+            If the input contains a [Pasted text #N ... → path] reference,
+            prints the first 20 lines of that file right in the terminal so
+            the user can verify the content without opening an editor (Ctrl+G).
+            If multiple paste references exist, peeks at the first one.
+            If there is no paste reference, prints the first 20 lines of the
+            current buffer text as a preview.
+            """
+            import re as _re
+            from prompt_toolkit.application import run_in_terminal
+
+            buf = event.app.current_buffer
+            text = buf.text
+
+            _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+            match = _paste_re.search(text)
+
+            def _peek():
+                _PEEK_LINES = 20
+                if match:
+                    p = Path(match.group(1))
+                    if not p.exists():
+                        _cprint(f"  {_DIM}Paste file not found: {p}{_RST}")
+                        return
+                    lines = p.read_text(encoding="utf-8").splitlines()
+                    total = len(lines)
+                    shown = lines[:_PEEK_LINES]
+                    _cprint(f"\n  {_DIM}📄 {p.name} — {total} lines{_RST}")
+                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
+                    for line in shown:
+                        _cprint(f"  {line}")
+                    if total > _PEEK_LINES:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines) — Ctrl+G to edit{_RST}")
+                    else:
+                        _cprint(f"  {_DIM}{'─' * 60} Ctrl+G to edit{_RST}")
+                elif text.strip():
+                    lines = text.splitlines()
+                    total = len(lines)
+                    shown = lines[:_PEEK_LINES]
+                    _cprint(f"\n  {_DIM}📝 Current input — {total} line{'s' if total != 1 else ''}{_RST}")
+                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
+                    for line in shown:
+                        _cprint(f"  {line}")
+                    if total > _PEEK_LINES:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines){_RST}")
+                else:
+                    _cprint(f"  {_DIM}(input is empty){_RST}")
+
+            run_in_terminal(_peek)
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
@@ -7472,7 +7539,7 @@ class HermesCLI:
             """
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
-            # so the 5-line collapse threshold and display are consistent.
+            # so the line-count threshold and display are consistent cross-platform.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             if self._try_attach_clipboard_image():
                 event.app.invalidate()

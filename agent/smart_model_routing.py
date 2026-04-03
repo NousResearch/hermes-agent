@@ -43,9 +43,65 @@ _COMPLEX_KEYWORDS = {
     "cron",
     "docker",
     "kubernetes",
+    # Finance analysis keywords (route to strong model)
+    "technical",
+    "technicals",
+    "fundamental",
+    "fundamentals",
+    "valuation",
+    "earnings",
+    "quarterly",
+    "financials",
+    "fii",
+    "dii",
+    "institutional",
+    "flows",
+    "sector",
+    "sectoral",
+    "correlation",
+    "rsi",
+    "macd",
+    "sma",
+    "ema",
+    "bollinger",
+    "portfolio",
+    "allocation",
 }
 
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
+
+import logging as _logging
+_routing_logger = _logging.getLogger(__name__)
+
+
+def _try_classifier_override(
+    text: str,
+    cheap_model: Dict[str, Any],
+    conversation_depth: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """Ask the learned classifier if a message that static heuristics rejected is actually simple.
+
+    Returns a cheap route dict if the classifier is confident, else None.
+    Silently returns None if the classifier is unavailable.
+    """
+    try:
+        from agent.routing_classifier import get_routing_classifier
+        from agent.routing_features import extract_features
+    except ImportError:
+        return None
+
+    classifier = get_routing_classifier()
+    if classifier is None:
+        return None
+
+    features = extract_features(text, conversation_depth)
+    if classifier.should_route_cheap(features):
+        route = dict(cheap_model)
+        route["routing_reason"] = "classifier"
+        _routing_logger.debug("Classifier override: routing to cheap model")
+        return route
+
+    return None
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
@@ -84,21 +140,27 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     max_chars = _coerce_int(cfg.get("max_simple_chars"), 160)
     max_words = _coerce_int(cfg.get("max_simple_words"), 28)
 
-    if len(text) > max_chars:
-        return None
-    if len(text.split()) > max_words:
-        return None
-    if text.count("\n") > 1:
-        return None
-    if "```" in text or "`" in text:
-        return None
-    if _URL_RE.search(text):
-        return None
+    # Static heuristic checks — if any fail, give the classifier a chance
+    static_rejected = False
 
-    lowered = text.lower()
-    words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
-    if words & _COMPLEX_KEYWORDS:
-        return None
+    if len(text) > max_chars:
+        static_rejected = True
+    elif len(text.split()) > max_words:
+        static_rejected = True
+    elif text.count("\n") > 1:
+        static_rejected = True
+    elif "```" in text or "`" in text:
+        static_rejected = True
+    elif _URL_RE.search(text):
+        static_rejected = True
+    else:
+        lowered = text.lower()
+        words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
+        if words & _COMPLEX_KEYWORDS:
+            static_rejected = True
+
+    if static_rejected:
+        return _try_classifier_override(text, cheap_model, conversation_depth=0)
 
     route = dict(cheap_model)
     route["provider"] = provider

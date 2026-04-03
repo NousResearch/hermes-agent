@@ -639,6 +639,7 @@ class TestSilentDelivery:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "Results here", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
@@ -649,6 +650,7 @@ class TestSilentDelivery:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
@@ -661,6 +663,7 @@ class TestSilentDelivery:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
@@ -671,6 +674,7 @@ class TestSilentDelivery:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
@@ -682,6 +686,7 @@ class TestSilentDelivery:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
@@ -692,6 +697,7 @@ class TestSilentDelivery:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
              patch("cron.scheduler.save_job_output") as save_mock, \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             save_mock.return_value = "/tmp/out.md"
@@ -784,6 +790,7 @@ class TestTickAdvanceBeforeRun:
              patch("cron.scheduler.advance_next_run", side_effect=fake_advance) as adv_mock, \
              patch("cron.scheduler.run_job", side_effect=fake_run_job), \
              patch("cron.scheduler.save_job_output", return_value=tmp_path / "out.md"), \
+             patch("cron.scheduler.collect_output_stats_and_check_anomalies"), \
              patch("cron.scheduler.mark_job_run"), \
              patch("cron.scheduler._deliver_result"):
             from cron.scheduler import tick

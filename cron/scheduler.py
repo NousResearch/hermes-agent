@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, collect_output_stats_and_check_anomalies
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -567,6 +567,14 @@ def tick(verbose: bool = True) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                # Collect stats and check for anomalies (non-blocking)
+                collect_output_stats_and_check_anomalies(
+                    job_id=job["id"],
+                    job_name=job.get("name", job["id"]),
+                    output_text=output,
+                    output_path=str(output_file),
+                )
+
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
@@ -588,6 +596,15 @@ def tick(verbose: bool = True) -> int:
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+
+        # Resolve any pending market predictions after all jobs complete
+        if executed > 0:
+            try:
+                from cron.prediction_resolver import resolve_pending_predictions
+                from hermes_state import SessionDB
+                resolve_pending_predictions(SessionDB())
+            except Exception as resolve_err:
+                logger.debug("Prediction resolution failed: %s", resolve_err)
 
         return executed
     finally:

@@ -744,3 +744,78 @@ def save_job_output(job_id: str, output: str):
         raise
     
     return output_file
+
+
+_MARKET_SKILLS = {
+    "india-market-research", "daily-market-briefing",
+    "india-economy-monitor", "india-news-aggregator",
+}
+
+
+def collect_output_stats_and_check_anomalies(
+    job_id: str,
+    job_name: str,
+    output_text: str,
+    output_path: str,
+) -> None:
+    """Compute stats for a cron output and check for anomalies.
+
+    Called after save_job_output. Logs stats to state.db and alerts
+    if anomalies are detected. Uses market-specific extraction and
+    thresholds for finance skill jobs. Failures are logged but never propagated.
+    """
+    try:
+        from cron.anomaly_detector import (
+            compute_output_stats, compute_market_output_stats,
+            CronAnomalyDetector, MarketAnomalyDetector,
+        )
+        from cron.anomaly_alerter import alert
+        from hermes_state import SessionDB
+
+        # Detect if this is a market-skill job
+        job = get_job(job_id)
+        job_skills = set(job.get("skills", [])) if job else set()
+        is_market_job = bool(job_skills & _MARKET_SKILLS)
+
+        if is_market_job:
+            stats = compute_market_output_stats(output_text)
+        else:
+            stats = compute_output_stats(output_text)
+
+        db = SessionDB()
+        db.log_cron_output_stats(
+            job_id=job_id,
+            output_path=output_path,
+            char_count=stats.get("char_count"),
+            line_count=stats.get("line_count"),
+            word_count=stats.get("word_count"),
+            entity_count=stats.get("entity_count"),
+            numeric_values=stats.get("numeric_values"),
+        )
+
+        if is_market_job:
+            detector = MarketAnomalyDetector(db)
+        else:
+            detector = CronAnomalyDetector(db)
+        anomalies = detector.check(job_id, stats)
+
+        if anomalies:
+            alert(
+                job_id=job_id,
+                job_name=job_name,
+                anomalies=anomalies,
+                output_path=output_path,
+            )
+
+        # Extract predictions from market briefing outputs
+        if is_market_job and "daily-market-briefing" in job_skills:
+            try:
+                from cron.prediction_extractor import extract_predictions
+                predictions = extract_predictions(output_text, job_id, job_name)
+                for pred in predictions:
+                    db.log_prediction(**pred)
+            except Exception as pe:
+                logger.debug("Prediction extraction failed for job %s: %s", job_id, pe)
+
+    except Exception as e:
+        logger.debug("Stats collection/anomaly check failed for job %s: %s", job_id, e)

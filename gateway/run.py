@@ -791,7 +791,25 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
-        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        result = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+
+        # Log routing decision for ML training data collection (best-effort)
+        try:
+            from agent.routing_features import extract_features
+            features = extract_features(user_message)
+            self._session_db.log_routing_decision(
+                routed_model=result.get("model") or "",
+                message_text=user_message[:500],
+                routing_reason=result.get("label") or "primary",
+                message_char_count=int(features["char_count"]),
+                message_word_count=int(features["word_count"]),
+                has_code_block=features["has_code_block"] > 0,
+                has_url=features["has_url"] > 0,
+            )
+        except Exception:
+            pass  # Never disrupt the gateway
+
+        return result
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.

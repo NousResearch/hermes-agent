@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -89,6 +89,64 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS routing_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    message_text TEXT NOT NULL,
+    message_char_count INTEGER,
+    message_word_count INTEGER,
+    has_code_block INTEGER,
+    has_url INTEGER,
+    complex_keyword_hit TEXT,
+    conversation_depth INTEGER,
+    routed_model TEXT NOT NULL,
+    routing_reason TEXT,
+    quality_score REAL,
+    response_latency_ms INTEGER,
+    response_cost_usd REAL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_routing_decisions_session ON routing_decisions(session_id);
+CREATE INDEX IF NOT EXISTS idx_routing_decisions_created ON routing_decisions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_routing_decisions_model ON routing_decisions(routed_model);
+
+CREATE TABLE IF NOT EXISTS cron_output_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    output_path TEXT NOT NULL,
+    char_count INTEGER,
+    line_count INTEGER,
+    word_count INTEGER,
+    entity_count INTEGER,
+    numeric_values TEXT,
+    sentiment_score REAL,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cron_output_stats_job ON cron_output_stats(job_id);
+CREATE INDEX IF NOT EXISTS idx_cron_output_stats_created ON cron_output_stats(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    prediction_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    predicted_value TEXT NOT NULL,
+    predicted_at REAL NOT NULL,
+    resolution_target_at REAL,
+    actual_value TEXT,
+    resolved_at REAL,
+    correct INTEGER,
+    confidence REAL,
+    source_output_path TEXT,
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_predictions_job ON predictions(job_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_unresolved ON predictions(resolved_at) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_predictions_type ON predictions(prediction_type, subject);
 """
 
 FTS_SQL = """
@@ -330,6 +388,69 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add routing_decisions and cron_output_stats tables for ML pipeline
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS routing_decisions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT,
+                        message_text TEXT NOT NULL,
+                        message_char_count INTEGER,
+                        message_word_count INTEGER,
+                        has_code_block INTEGER,
+                        has_url INTEGER,
+                        complex_keyword_hit TEXT,
+                        conversation_depth INTEGER,
+                        routed_model TEXT NOT NULL,
+                        routing_reason TEXT,
+                        quality_score REAL,
+                        response_latency_ms INTEGER,
+                        response_cost_usd REAL,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_routing_decisions_session ON routing_decisions(session_id);
+                    CREATE INDEX IF NOT EXISTS idx_routing_decisions_created ON routing_decisions(created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_routing_decisions_model ON routing_decisions(routed_model);
+
+                    CREATE TABLE IF NOT EXISTS cron_output_stats (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        output_path TEXT NOT NULL,
+                        char_count INTEGER,
+                        line_count INTEGER,
+                        word_count INTEGER,
+                        entity_count INTEGER,
+                        numeric_values TEXT,
+                        sentiment_score REAL,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_cron_output_stats_job ON cron_output_stats(job_id);
+                    CREATE INDEX IF NOT EXISTS idx_cron_output_stats_created ON cron_output_stats(created_at DESC);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                # v8: add predictions table for market forecast tracking
+                cursor.executescript("""
+                    CREATE TABLE IF NOT EXISTS predictions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL,
+                        prediction_type TEXT NOT NULL,
+                        subject TEXT NOT NULL,
+                        predicted_value TEXT NOT NULL,
+                        predicted_at REAL NOT NULL,
+                        resolution_target_at REAL,
+                        actual_value TEXT,
+                        resolved_at REAL,
+                        correct INTEGER,
+                        confidence REAL,
+                        source_output_path TEXT,
+                        created_at REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_predictions_job ON predictions(job_id);
+                    CREATE INDEX IF NOT EXISTS idx_predictions_unresolved ON predictions(resolved_at) WHERE resolved_at IS NULL;
+                    CREATE INDEX IF NOT EXISTS idx_predictions_type ON predictions(prediction_type, subject);
+                """)
+                cursor.execute("UPDATE schema_version SET version = 8")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1046,6 +1167,278 @@ class SessionDB:
             sanitized = sanitized.replace(f"\x00Q{i}\x00", quoted)
 
         return sanitized.strip()
+
+    # =========================================================================
+    # ML Pipeline Data Collection
+    # =========================================================================
+
+    def log_routing_decision(
+        self,
+        routed_model: str,
+        message_text: str,
+        routing_reason: str = None,
+        session_id: str = None,
+        message_char_count: int = None,
+        message_word_count: int = None,
+        has_code_block: bool = False,
+        has_url: bool = False,
+        complex_keyword_hit: str = None,
+        conversation_depth: int = None,
+        response_latency_ms: int = None,
+        response_cost_usd: float = None,
+    ) -> int:
+        """Log a model routing decision for ML training data collection.
+
+        Returns the row ID of the inserted record.
+        """
+        result_holder = []
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO routing_decisions
+                   (session_id, message_text, message_char_count, message_word_count,
+                    has_code_block, has_url, complex_keyword_hit, conversation_depth,
+                    routed_model, routing_reason, response_latency_ms,
+                    response_cost_usd, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    message_text,
+                    message_char_count,
+                    message_word_count,
+                    1 if has_code_block else 0,
+                    1 if has_url else 0,
+                    complex_keyword_hit,
+                    conversation_depth,
+                    routed_model,
+                    routing_reason,
+                    response_latency_ms,
+                    response_cost_usd,
+                    time.time(),
+                ),
+            )
+            result_holder.append(cursor.lastrowid)
+
+        self._execute_write(_do)
+        return result_holder[0] if result_holder else 0
+
+    def update_routing_quality_score(
+        self,
+        routing_id: int,
+        quality_score: float,
+    ) -> None:
+        """Backfill the quality score for a routing decision."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE routing_decisions SET quality_score = ? WHERE id = ?",
+                (quality_score, routing_id),
+            )
+        self._execute_write(_do)
+
+    def get_routing_decisions(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        model_filter: str = None,
+        scored_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve routing decisions for ML training.
+
+        Args:
+            limit: Max rows to return.
+            offset: Skip this many rows.
+            model_filter: Filter by routed_model.
+            scored_only: Only return rows with a quality_score.
+        """
+        with self._lock:
+            clauses = []
+            params = []
+            if model_filter:
+                clauses.append("routed_model = ?")
+                params.append(model_filter)
+            if scored_only:
+                clauses.append("quality_score IS NOT NULL")
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.extend([limit, offset])
+            rows = self._conn.execute(
+                f"SELECT * FROM routing_decisions {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def log_cron_output_stats(
+        self,
+        job_id: str,
+        output_path: str,
+        char_count: int = None,
+        line_count: int = None,
+        word_count: int = None,
+        entity_count: int = None,
+        numeric_values: Dict[str, Any] = None,
+        sentiment_score: float = None,
+    ) -> int:
+        """Log statistical summary of a cron job output for anomaly detection.
+
+        Returns the row ID of the inserted record.
+        """
+        result_holder = []
+        numeric_json = json.dumps(numeric_values) if numeric_values else None
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO cron_output_stats
+                   (job_id, output_path, char_count, line_count, word_count,
+                    entity_count, numeric_values, sentiment_score, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    job_id,
+                    output_path,
+                    char_count,
+                    line_count,
+                    word_count,
+                    entity_count,
+                    numeric_json,
+                    sentiment_score,
+                    time.time(),
+                ),
+            )
+            result_holder.append(cursor.lastrowid)
+
+        self._execute_write(_do)
+        return result_holder[0] if result_holder else 0
+
+    def get_cron_output_stats(
+        self,
+        job_id: str,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve recent output stats for a cron job (for anomaly detection baseline)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM cron_output_stats WHERE job_id = ? ORDER BY created_at DESC LIMIT ?",
+                (job_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # =========================================================================
+    # Prediction Tracking
+    # =========================================================================
+
+    def log_prediction(
+        self,
+        job_id: str,
+        prediction_type: str,
+        subject: str,
+        predicted_value: str,
+        predicted_at: float = None,
+        resolution_target_at: float = None,
+        confidence: float = None,
+        source_output_path: str = None,
+    ) -> int:
+        """Log a prediction extracted from a cron job output.
+
+        Returns the row ID of the inserted record.
+        """
+        result_holder = []
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO predictions
+                   (job_id, prediction_type, subject, predicted_value,
+                    predicted_at, resolution_target_at, confidence,
+                    source_output_path, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    job_id,
+                    prediction_type,
+                    subject,
+                    predicted_value,
+                    predicted_at or now,
+                    resolution_target_at,
+                    confidence,
+                    source_output_path,
+                    now,
+                ),
+            )
+            result_holder.append(cursor.lastrowid)
+
+        self._execute_write(_do)
+        return result_holder[0] if result_holder else 0
+
+    def get_unresolved_predictions(
+        self,
+        before_timestamp: float = None,
+    ) -> List[Dict[str, Any]]:
+        """Get predictions that haven't been resolved yet."""
+        with self._lock:
+            if before_timestamp:
+                rows = self._conn.execute(
+                    "SELECT * FROM predictions WHERE resolved_at IS NULL "
+                    "AND (resolution_target_at IS NULL OR resolution_target_at <= ?) "
+                    "ORDER BY predicted_at",
+                    (before_timestamp,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM predictions WHERE resolved_at IS NULL ORDER BY predicted_at",
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def resolve_prediction(
+        self,
+        prediction_id: int,
+        actual_value: str,
+        correct: bool,
+    ) -> None:
+        """Mark a prediction as resolved with its actual outcome."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE predictions SET actual_value = ?, resolved_at = ?, correct = ? WHERE id = ?",
+                (actual_value, time.time(), 1 if correct else 0, prediction_id),
+            )
+        self._execute_write(_do)
+
+    def get_prediction_accuracy(
+        self,
+        subject: str = None,
+        prediction_type: str = None,
+        window_days: int = 30,
+    ) -> Dict[str, Any]:
+        """Get prediction accuracy stats over a time window.
+
+        Returns dict with total, correct, accuracy, by_type breakdown.
+        """
+        with self._lock:
+            cutoff = time.time() - (window_days * 86400)
+            clauses = ["resolved_at IS NOT NULL", "created_at >= ?"]
+            params: list = [cutoff]
+
+            if subject:
+                clauses.append("subject = ?")
+                params.append(subject)
+            if prediction_type:
+                clauses.append("prediction_type = ?")
+                params.append(prediction_type)
+
+            where = " AND ".join(clauses)
+
+            row = self._conn.execute(
+                f"SELECT COUNT(*) as total, SUM(correct) as correct_count "
+                f"FROM predictions WHERE {where}",
+                params,
+            ).fetchone()
+
+            total = row[0] if row else 0
+            correct_count = row[1] if row and row[1] else 0
+            accuracy = correct_count / total if total > 0 else None
+
+            return {
+                "total": total,
+                "correct": correct_count,
+                "accuracy": accuracy,
+                "window_days": window_days,
+            }
 
     def search_messages(
         self,

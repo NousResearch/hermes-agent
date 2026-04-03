@@ -768,6 +768,93 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
+def skill_search(query: str, top_k: int = 5, task_id: str = None) -> str:
+    """
+    Search for skills by semantic similarity using embeddings.
+
+    Falls back to keyword matching if embeddings are unavailable (no API key
+    or openai package not installed). Use this when you need to find the most
+    relevant skills for a task description.
+
+    Args:
+        query: Natural language description of what you're looking for
+        top_k: Maximum number of results to return (default 5)
+        task_id: Optional task identifier
+
+    Returns:
+        JSON string with ranked skill matches and similarity scores
+    """
+    try:
+        all_skills = _find_all_skills()
+        if not all_skills:
+            return json.dumps({"success": True, "matches": [], "method": "none"}, ensure_ascii=False)
+
+        # Try embedding-based search first
+        try:
+            from agent.skill_embeddings import get_skill_embedding_store
+            store = get_skill_embedding_store()
+
+            # Build skill_texts dict from discovered skills
+            skill_texts = {}
+            for skill in all_skills:
+                name = skill["name"]
+                desc = skill.get("description", "")
+                skill_texts[name] = f"{name}: {desc}"
+
+            matches = store.find_matching_skills(query, skill_texts, top_k=top_k)
+            if matches:
+                results = []
+                for name, score in matches:
+                    skill_meta = next((s for s in all_skills if s["name"] == name), {})
+                    results.append({
+                        "name": name,
+                        "description": skill_meta.get("description", ""),
+                        "category": skill_meta.get("category", ""),
+                        "similarity": round(score, 3),
+                    })
+                return json.dumps({
+                    "success": True,
+                    "matches": results,
+                    "method": "embedding",
+                    "query": query,
+                }, ensure_ascii=False)
+        except Exception as emb_err:
+            logger.debug("Embedding search unavailable, falling back to keyword: %s", emb_err)
+
+        # Fallback: keyword matching
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        scored = []
+        for skill in all_skills:
+            name = skill["name"].lower()
+            desc = (skill.get("description") or "").lower()
+            combined = f"{name} {desc}"
+            score = sum(1 for w in query_words if w in combined)
+            if score > 0 or any(w in name for w in query_words):
+                scored.append((skill, score + (2 if any(w in name for w in query_words) else 0)))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        results = [
+            {
+                "name": s["name"],
+                "description": s.get("description", ""),
+                "category": s.get("category", ""),
+                "relevance": score,
+            }
+            for s, score in scored[:top_k]
+        ]
+
+        return json.dumps({
+            "success": True,
+            "matches": results,
+            "method": "keyword",
+            "query": query,
+        }, ensure_ascii=False)
+
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+
+
 def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -1357,4 +1444,33 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+)
+
+SKILL_SEARCH_SCHEMA = {
+    "name": "skill_search",
+    "description": "Search for relevant skills by semantic similarity. Use when you need to find the best skills for a task. Returns ranked matches with similarity scores.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural language description of what you're looking for (e.g., 'analyze Indian stock market data')",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Maximum number of results (default 5)",
+            },
+        },
+        "required": ["query"],
+    },
+}
+registry.register(
+    name="skill_search",
+    toolset="skills",
+    schema=SKILL_SEARCH_SCHEMA,
+    handler=lambda args, **kw: skill_search(
+        args.get("query", ""), top_k=args.get("top_k", 5), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="🔍",
 )

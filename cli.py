@@ -2027,7 +2027,7 @@ class HermesCLI:
         """Resolve model/runtime overrides for a single user turn."""
         from agent.smart_model_routing import resolve_turn_route
 
-        return resolve_turn_route(
+        result = resolve_turn_route(
             user_message,
             self._smart_model_routing,
             {
@@ -2041,6 +2041,36 @@ class HermesCLI:
                 "credential_pool": getattr(self, "_credential_pool", None),
             },
         )
+
+        # Log routing decision for ML training data collection
+        try:
+            self._log_routing_decision(user_message, result)
+        except AttributeError:
+            pass  # Called on a mock/SimpleNamespace in tests
+
+        return result
+
+    def _log_routing_decision(self, user_message: str, route: dict) -> None:
+        """Log a routing decision to state.db for ML pipeline (best-effort)."""
+        try:
+            from hermes_state import SessionDB
+            from agent.routing_features import extract_features
+
+            features = extract_features(user_message)
+            db = SessionDB()
+            db.log_routing_decision(
+                routed_model=route.get("model") or "",
+                message_text=user_message[:500],
+                routing_reason=route.get("label") or "primary",
+                session_id=getattr(self, "session_id", None),
+                message_char_count=int(features["char_count"]),
+                message_word_count=int(features["word_count"]),
+                has_code_block=features["has_code_block"] > 0,
+                has_url=features["has_url"] > 0,
+                conversation_depth=len(getattr(self, "conversation_history", [])),
+            )
+        except Exception:
+            pass  # Never disrupt the main chat flow
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None) -> bool:
         """

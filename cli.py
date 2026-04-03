@@ -1807,6 +1807,7 @@ class HermesCLI:
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._followup_queue: list = []  # mirror of _pending_input for display (Alt+Enter queued messages)
+        self._cancelled_followups: set = set()  # texts recalled via Alt+Up, skipped in process_loop
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._clarify_state = None
@@ -8368,6 +8369,42 @@ class HermesCLI:
             """Ctrl+J (Ctrl+Enter in most terminals): insert a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
 
+        @kb.add('escape', 'up')
+        def handle_recall_followup(event):
+            """Alt+Up: recall the most recently queued follow-up back into the input.
+
+            Pops the last item from _followup_queue (LIFO — most recent first) and
+            appends its text to the current input, separated by '\\n---\\n'.
+            If multiple follow-ups are queued, repeated Alt+Up recalls them one by one.
+            The recalled item is added to _cancelled_followups so process_loop skips it.
+            """
+            if not cli_ref._followup_queue:
+                return
+
+            buf = event.app.current_buffer
+
+            # Pop the most recently queued item (last = most recent)
+            payload = cli_ref._followup_queue.pop()
+            recalled_text = payload[0] if isinstance(payload, tuple) else payload
+
+            # Mark as cancelled so process_loop skips it when dequeued
+            cli_ref._cancelled_followups.add(recalled_text)
+
+            # Append to current buffer with separator
+            current = buf.text
+            if current.strip():
+                buf.text = current.rstrip() + '\n---\n' + recalled_text
+            else:
+                buf.text = recalled_text
+            buf.cursor_position = len(buf.text)
+
+            remaining = len(cli_ref._followup_queue)
+            if remaining:
+                _cprint(f"  {_DIM}📬 Recalled follow-up ({remaining} still queued){_RST}")
+            else:
+                _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
+            event.app.invalidate()
+
         @kb.add('tab', eager=True)
         def handle_tab(event):
             """Tab: accept completion, auto-suggestion, or start completions.
@@ -9435,6 +9472,11 @@ class HermesCLI:
                         if self._followup_queue:
                             self._followup_queue.pop(0)
                             app.invalidate()
+                        # Skip items recalled via Alt+Up
+                        _input_text = user_input[0] if isinstance(user_input, tuple) else user_input
+                        if _input_text in self._cancelled_followups:
+                            self._cancelled_followups.discard(_input_text)
+                            continue
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:

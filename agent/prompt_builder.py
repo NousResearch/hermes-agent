@@ -285,6 +285,15 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "matrix": (
+        "You are connected via Matrix, a decentralized encrypted messaging protocol. "
+        "You have Matrix-specific tools available: matrix_send_reaction (react with emoji), "
+        "matrix_redact_message (delete messages), matrix_create_room (create new rooms), "
+        "matrix_invite_user (invite users to rooms), matrix_fetch_history (read room history), "
+        "and matrix_set_presence (set your online status). "
+        "Messages support full HTML formatting via org.matrix.custom.html. "
+        "Use markdown naturally — it will be converted to proper HTML."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

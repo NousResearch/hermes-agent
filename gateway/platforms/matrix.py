@@ -123,6 +123,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # Each entry: (room, event, timestamp)
         self._pending_megolm: list = []
 
+        # Thinking / agentic collapsible fields
+        self._thinking_enabled: bool = config.extra.get(
+            "thinking_fields_enabled",
+            os.getenv("MATRIX_THINKING_FIELDS_ENABLED", "true").lower()
+            in ("true", "1", "yes"),
+        )
+        self._thinking_manager: Optional[Any] = None  # Lazy init after connect
+
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
@@ -294,12 +302,26 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
+
+        # Inject adapter reference for Matrix tools
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(self)
+        except ImportError:
+            pass
+
         self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
         """Disconnect from Matrix."""
         self._closing = True
+
+        if self._thinking_manager:
+            try:
+                await self._thinking_manager.abort_all("Gateway restarting")
+            except Exception as exc:
+                logger.debug("Matrix: could not abort active introspection fields on disconnect: %s", exc)
 
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -319,6 +341,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.info("Matrix: exported Megolm keys for next restart")
             except Exception as exc:
                 logger.debug("Matrix: could not export keys on disconnect: %s", exc)
+
+        # Clear adapter reference for Matrix tools
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(None)
+        except ImportError:
+            pass
 
         if self._client:
             await self._client.close()
@@ -483,6 +512,168 @@ class MatrixAdapter(BasePlatformAdapter):
         if isinstance(resp, nio.RoomSendResponse):
             return SendResult(success=True, message_id=resp.event_id)
         return SendResult(success=False, error=getattr(resp, "message", str(resp)))
+
+    # ------------------------------------------------------------------
+    # Thinking fields — collapsible <details> blocks for agentic tasks
+    # ------------------------------------------------------------------
+
+    def _get_thinking_manager(self):
+        """Lazy-init the ThinkingManager (requires connected client)."""
+        if self._thinking_manager is None and self._client:
+            from gateway.platforms.matrix_thinking import ThinkingManager
+
+            self._thinking_manager = ThinkingManager(self)
+        return self._thinking_manager
+
+    async def start_thinking(
+        self,
+        room_id: str,
+        task_id: str,
+        initial_summary: str = "Processing request...",
+        model_label: str = "",
+        initial_content_md: str = "",
+    ) -> Optional[str]:
+        """Start a collapsible thinking field. Returns event_id or None."""
+        if not self._thinking_enabled or not self._client:
+            return None
+        mgr = self._get_thinking_manager()
+        if not mgr:
+            return None
+        return await mgr.start(
+            room_id,
+            task_id,
+            initial_summary,
+            field_kind="thinking",
+            model_label=model_label,
+            initial_content_md=initial_content_md,
+        )
+
+    async def update_thinking(
+        self,
+        task_id: str,
+        step_info: str,
+        content_md: str = "",
+        model_label: Optional[str] = None,
+        append_line: bool = True,
+    ) -> None:
+        """Live-update thinking field (buffered + lossless)."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.update(
+            task_id,
+            step_info,
+            content_md,
+            field_kind="thinking",
+            model_label=model_label,
+            append_line=append_line,
+        )
+
+    async def finalize_thinking(
+        self,
+        task_id: str,
+        final_summary: str = "Task complete",
+        collapse: bool = True,
+        model_label: Optional[str] = None,
+    ) -> None:
+        """Finalize and optionally collapse thinking field."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.finalize(
+            task_id,
+            final_summary,
+            collapse,
+            field_kind="thinking",
+            model_label=model_label,
+        )
+
+    async def abort_thinking(
+        self,
+        task_id: str,
+        reason: str = "Aborted",
+        model_label: Optional[str] = None,
+    ) -> None:
+        """Abort a thinking session on error/timeout."""
+        if not self._thinking_manager:
+            return
+        await self._thinking_manager.abort(
+            task_id,
+            reason,
+            field_kind="thinking",
+            model_label=model_label,
+        )
+
+    async def start_tool_activity(
+        self,
+        room_id: str,
+        task_id: str,
+        initial_summary: str = "Tool activity",
+        model_label: str = "",
+        initial_content_md: str = "",
+    ) -> Optional[str]:
+        if not self._thinking_enabled or not self._client:
+            return None
+        mgr = self._get_thinking_manager()
+        if not mgr:
+            return None
+        return await mgr.start(
+            room_id,
+            task_id,
+            initial_summary,
+            field_kind="tools",
+            model_label=model_label,
+            initial_content_md=initial_content_md,
+        )
+
+    async def update_tool_activity(
+        self,
+        task_id: str,
+        step_info: str,
+        content_md: str = "",
+        model_label: Optional[str] = None,
+        append_line: bool = True,
+    ) -> None:
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.update(
+            task_id,
+            step_info,
+            content_md,
+            field_kind="tools",
+            model_label=model_label,
+            append_line=append_line,
+        )
+
+    async def finalize_tool_activity(
+        self,
+        task_id: str,
+        final_summary: str = "Tool activity complete",
+        collapse: bool = True,
+        model_label: Optional[str] = None,
+    ) -> None:
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.finalize(
+            task_id,
+            final_summary,
+            collapse,
+            field_kind="tools",
+            model_label=model_label,
+        )
+
+    async def abort_tool_activity(
+        self,
+        task_id: str,
+        reason: str = "Tool activity aborted",
+        model_label: Optional[str] = None,
+    ) -> None:
+        if not self._thinking_manager:
+            return
+        await self._thinking_manager.abort(
+            task_id,
+            reason,
+            field_kind="tools",
+            model_label=model_label,
+        )
 
     async def send_image(
         self,

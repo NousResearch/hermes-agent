@@ -21,12 +21,16 @@ from typing import Any
 HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
 
 PROVIDER_ORDER = [
-    "openrouter",
-    "nous",
+    "ollama-cloud",
+    "ollama-local",
     "openai-codex",
+    "openrouter",
+    "anthropic",
+    "google",
+    "xai",
+    "nous",
     "copilot",
     "copilot-acp",
-    "anthropic",
     "zai",
     "kimi-coding",
     "minimax",

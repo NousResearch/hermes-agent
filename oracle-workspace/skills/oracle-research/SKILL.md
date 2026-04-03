@@ -96,7 +96,7 @@ For each dimension:
 4. Call MiroFish graph build
 5. Poll until complete
 6. Read extracted entities
-7. Search the web for supporting evidence on this dimension
+7. Search the web for supporting evidence — ALWAYS include current year in queries (e.g., "topic 2026"). Reject sources > 12 months old unless no newer data exists (flag as historical).
 8. Add key findings to Graphiti: `add_memory(group_id="oracle_{id}")`
 
 Send Telegram: `[2/6] Simulation + evidence complete for {n} dimensions`
@@ -178,7 +178,15 @@ KNOWLEDGE GAPS:
 ## The 5 Research Laws (ALWAYS enforce)
 
 1. **Triangulate Everything** — 3+ independent sources minimum per finding
-2. **Recency Wins** — Prefer < 3 month old sources. Flag > 6 months as historical
+2. **Recency Wins** — CRITICAL ENFORCEMENT:
+   - The current date is ALWAYS checked. Today's year must be used in ALL search queries.
+   - ALWAYS append the current year to EVERY web search query (e.g., "AI customer service 2026")
+   - Sources < 3 months old = CURRENT (cite as primary evidence)
+   - Sources 3-6 months old = RECENT (acceptable, note the date)
+   - Sources 6-12 months old = AGING (flag as "as of {date}" in findings)
+   - Sources > 12 months old = HISTORICAL (must explicitly label "[Historical — {year}]" and cross-reference with newer data)
+   - NEVER present year-old data as current intelligence without flagging
+   - If no current-year sources exist for a finding, state: "No 2026 data available — based on {year} historical data, pending verification"
 3. **Follow the Money** — Trace revenue, funding, pricing, incentives
 4. **Name the Counterargument** — Every thesis gets a counter-thesis via ST `devils_advocate`
 5. **Source Hierarchy** — Primary > expert analysis > aggregated > opinion > social

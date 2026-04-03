@@ -258,8 +258,11 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
     username = (run_as_user or os.getenv("SUDO_USER") or os.getenv("USER") or os.getenv("LOGNAME") or getpass.getuser()).strip()
     if not username:
         raise ValueError("Could not determine which user the gateway service should run as")
+    if username == "root" and not run_as_user:
+        raise ValueError("Refusing to install the gateway system service as root; pass --run-as-user root to override (e.g. in LXC containers)")
     if username == "root":
-        raise ValueError("Refusing to install the gateway system service as root; pass --run-as USER")
+        print_warning("Installing gateway service to run as root.")
+        print_info("  This is fine for LXC/container environments but not recommended on bare-metal hosts.")
 
     try:
         user_info = pwd.getpwnam(username)
@@ -321,9 +324,9 @@ def install_linux_gateway_from_setup(force: bool = False) -> tuple[str | None, b
             while True:
                 run_as_user = prompt("  Run the system gateway service as which user?", default="")
                 run_as_user = (run_as_user or "").strip()
-                if run_as_user and run_as_user != "root":
+                if run_as_user:
                     break
-                print_error("  Enter a non-root username.")
+                print_error("  Enter a username.")
 
         systemd_install(force=force, system=True, run_as_user=run_as_user)
         return scope, True

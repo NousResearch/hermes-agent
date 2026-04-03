@@ -263,6 +263,26 @@ class TestSaveRouting:
             mgr._cache[sess.key] = sess
         return sess
 
+    def test_sync_turn_uses_get_or_create(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        manager = MagicMock()
+        session = MagicMock()
+        manager.get_or_create.return_value = session
+        provider._manager = manager
+        provider._session_key = "cli:test"
+        provider._cron_skipped = False
+        provider._sync_thread = None
+
+        provider.sync_turn("hello user", "hello assistant")
+        provider._sync_thread.join(timeout=2)
+
+        manager.get_or_create.assert_called_once_with("cli:test")
+        session.add_message.assert_any_call("user", "hello user")
+        session.add_message.assert_any_call("assistant", "hello assistant")
+        manager._flush_session.assert_called_once_with(session)
+
     def test_turn_flushes_immediately(self):
         mgr = _make_manager(write_frequency="turn")
         sess = self._make_session_with_message(mgr)

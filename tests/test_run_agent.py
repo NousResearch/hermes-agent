@@ -1301,6 +1301,81 @@ class TestConcurrentToolExecution:
         assert "ok" in result
 
 
+class TestMemoryProviderSequentialDispatch:
+    """Memory provider tools must be routed in the sequential dispatch path.
+
+    The concurrent path (_invoke_tool) checks memory_manager.has_tool(), but
+    single tool calls always use the sequential path.  Without routing, memory
+    provider tools like fact_store fall through to registry.dispatch() which
+    returns "Unknown tool".
+
+    Regression test for #4708.
+    """
+
+    def test_sequential_routes_memory_provider_tool(self, agent):
+        """Single fact_store call should route through memory_manager, not registry."""
+        mock_mgr = MagicMock()
+        mock_mgr.has_tool.return_value = True
+        mock_mgr.handle_tool_call.return_value = '{"fact_id": 1, "status": "added"}'
+        agent._memory_manager = mock_mgr
+        agent.valid_tool_names.add("fact_store")
+
+        tc = _mock_tool_call(
+            name="fact_store",
+            arguments='{"action": "add", "content": "test fact"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_mgr.has_tool.assert_called_with("fact_store")
+        mock_mgr.handle_tool_call.assert_called_once_with(
+            "fact_store", {"action": "add", "content": "test fact"}
+        )
+        # Result should be appended to messages
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert "added" in tool_msgs[0]["content"]
+
+    def test_sequential_memory_write_bridge(self, agent):
+        """Built-in memory writes in sequential path should notify memory_manager."""
+        mock_mgr = MagicMock()
+        agent._memory_manager = mock_mgr
+        agent.valid_tool_names.add("memory")
+
+        tc = _mock_tool_call(
+            name="memory",
+            arguments='{"action": "add", "target": "user", "content": "likes dark mode"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("tools.memory_tool.memory_tool", return_value='{"success": true}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_mgr.on_memory_write.assert_called_once_with("add", "user", "likes dark mode")
+
+    def test_sequential_no_memory_manager_falls_through(self, agent):
+        """When memory_manager is None, unknown tools should fall through normally."""
+        agent._memory_manager = None
+        agent.valid_tool_names.add("fact_store")
+
+        tc = _mock_tool_call(
+            name="fact_store",
+            arguments='{"action": "list"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value='{"error": "Unknown tool: fact_store"}') as mock_hfc:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+            mock_hfc.assert_called_once()
+
+
 class TestPathsOverlap:
     """Unit tests for the _paths_overlap helper."""
 

@@ -349,13 +349,6 @@ class SessionDB:
 
         self._conn.commit()
 
-    def close(self):
-        """Close the database connection."""
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
-
     # =========================================================================
     # Session lifecycle
     # =========================================================================

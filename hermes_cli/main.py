@@ -3984,6 +3984,18 @@ For more help on a command:
         help="Resume a session by name, or the most recent if no name given"
     )
     parser.add_argument(
+        "-m", "--model",
+        default=None,
+        metavar="MODEL",
+        help="Model to use for this session (e.g. anthropic/claude-sonnet-4-6)"
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        metavar="PROVIDER",
+        help="Inference provider (e.g. anthropic, openrouter)"
+    )
+    parser.add_argument(
         "--worktree", "-w",
         action="store_true",
         default=False,
@@ -5375,10 +5387,11 @@ For more help on a command:
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
         args.query = None
-        args.model = None
-        args.provider = None
-        args.toolsets = None
-        args.verbose = False
+        # model and provider already set from root parser — don't stomp them
+        if not hasattr(args, "toolsets"):
+            args.toolsets = None
+        if not hasattr(args, "verbose"):
+            args.verbose = False
         if not hasattr(args, "worktree"):
             args.worktree = False
         cmd_chat(args)
@@ -5387,10 +5400,11 @@ For more help on a command:
     # Default to chat if no command specified
     if args.command is None:
         args.query = None
-        args.model = None
-        args.provider = None
-        args.toolsets = None
-        args.verbose = False
+        # model and provider already set from root parser — don't stomp them
+        if not hasattr(args, "toolsets"):
+            args.toolsets = None
+        if not hasattr(args, "verbose"):
+            args.verbose = False
         args.resume = None
         args.continue_last = None
         if not hasattr(args, "worktree"):

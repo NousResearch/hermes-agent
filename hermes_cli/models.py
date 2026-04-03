@@ -51,6 +51,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("arcee-ai/trinity-large-preview:free", "free"),
+    ("arcee-ai/trinity-large-thinking",  ""),
     ("openai/gpt-5.4-pro",              ""),
     ("openai/gpt-5.4-nano",             ""),
 ]
@@ -82,6 +83,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3-super-120b-a12b:free",
         "arcee-ai/trinity-large-preview:free",
+        "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],

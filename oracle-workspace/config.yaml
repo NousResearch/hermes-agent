@@ -1,0 +1,46 @@
+# ORACLE Hermes Agent — Configuration
+# THE MAIN INTELLIGENCE: Claude Opus 4.6 with maximum extended thinking
+# 1M context window, 128K output tokens, adaptive thinking at max effort
+
+# Model: Claude Opus 4.6 — the most capable model available
+model:
+  default: "claude-opus-4-20250514"
+  provider: "anthropic"
+
+# Reasoning: Maximum thinking enabled
+reasoning:
+  enabled: true
+  effort: "xhigh"
+
+# Agent configuration — maximum capability
+agent:
+  max_turns: 90
+
+# Terminal backend
+terminal:
+  backend: "local"
+  cwd: "/opt/oracle-workspace"
+  timeout: 120
+
+# Compression (for long research sessions with 1M context)
+compression:
+  enabled: true
+  threshold: 0.90
+
+# Gateway platforms
+gateway:
+  platforms:
+    telegram:
+      enabled: true
+
+# Display
+display:
+  skin: "default"
+  tool_progress_command: true
+
+# Timezone
+timezone: "Asia/Kolkata"
+
+# Security
+security:
+  redact_secrets: true

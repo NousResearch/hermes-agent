@@ -1,0 +1,51 @@
+services:
+  hermes-oracle:
+    container_name: oracle-hermes
+    image: oracle-hermes:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - oracle-workspace/.env
+    environment:
+      - HERMES_HOME=/opt/data
+      - HERMES_QUIET=1
+      - HERMES_INFERENCE_PROVIDER=anthropic
+    volumes:
+      - hermes_data:/opt/data
+      # Mount ORACLE workspace as working directory
+      - ./oracle-workspace:/opt/oracle-workspace:ro
+      # Override config and env after entrypoint bootstrap
+      - ./oracle-workspace/config.yaml:/opt/data/config.yaml:ro
+      - ./oracle-workspace/.env:/opt/data/.env:ro
+      - ./docker/SOUL.md:/opt/data/SOUL.md:ro
+    working_dir: /opt/oracle-workspace
+    ports:
+      - "18205:8443"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.oracle-hermes.rule=Host(`oracle.arjtech.in`)"
+      - "traefik.http.routers.oracle-hermes.entrypoints=websecure"
+      - "traefik.http.routers.oracle-hermes.tls.certresolver=letsencrypt"
+      - "traefik.http.services.oracle-hermes.loadbalancer.server.port=8443"
+    # Start gateway directly (no systemd in Docker)
+    command: ["gateway", "run"]
+    networks:
+      - oracle-network
+      - mcp-global-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+volumes:
+  hermes_data:
+    driver: local
+
+networks:
+  oracle-network:
+    external: true
+    name: graphiti_oracle-internal
+  mcp-global-network:
+    external: true

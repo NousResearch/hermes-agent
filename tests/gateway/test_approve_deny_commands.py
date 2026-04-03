@@ -591,7 +591,16 @@ class TestBlockingApprovalE2E:
         ]
         for t in threads:
             t.start()
-        time.sleep(0.3)
+
+        # Wait for both threads to register pending approvals instead of
+        # relying on a fixed sleep.  The approval module stores entries in
+        # _gateway_queues[session_key] — poll until we see 2 entries.
+        from tools.approval import _gateway_queues
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if len(_gateway_queues.get(session_key, [])) >= 2:
+                break
+            time.sleep(0.05)
 
         # Approve first, deny second
         resolve_gateway_approval(session_key, "once")   # oldest

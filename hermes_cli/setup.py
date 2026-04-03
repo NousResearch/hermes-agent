@@ -695,6 +695,8 @@ def _print_setup_summary(config: dict, hermes_home):
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
     ):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+    elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
+        tool_status.append(("Text-to-Speech (MiniMax)", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -1180,6 +1182,7 @@ def _setup_tts_provider(config: dict):
         "edge": "Edge TTS",
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
+        "minimax": "MiniMax TTS",
         "neutts": "NeuTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
@@ -1199,10 +1202,11 @@ def _setup_tts_provider(config: dict):
             "Edge TTS (free, cloud-based, no setup needed)",
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
+            "MiniMax TTS (high quality with voice cloning, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "minimax", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1264,6 +1268,18 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
                 print_success("OpenAI TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "minimax":
+        existing = get_env_value("MINIMAX_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("MiniMax API key for TTS", password=True)
+            if api_key:
+                save_env_value("MINIMAX_API_KEY", api_key)
+                print_success("MiniMax TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"

@@ -1327,6 +1327,7 @@ class HermesCLI:
         self._interrupt_queue = queue.Queue()
         self._should_exit = False
         self._last_ctrl_c_time = 0
+        self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -1576,6 +1577,11 @@ class HermesCLI:
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
                     ]
+
+            # Append stash indicator when something is stashed
+            if self._stashed_input:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", "📌 stashed"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -7053,6 +7059,39 @@ class HermesCLI:
 
             run_in_terminal(_run_editor)
 
+        @kb.add('c-s')
+        def handle_stash(event):
+            """Ctrl+S: stash current input (text + images) or pop stash.
+
+            When the input area has text or attached images, stash them and
+            clear the input so the user can type a different message.  If the
+            input is empty *and* there's a stash, restore it immediately.
+            The stash is also auto-restored after the agent finishes responding
+            (see process_loop).
+            """
+            buf = event.app.current_buffer
+            text = buf.text
+            has_images = bool(cli_ref._attached_images)
+
+            if text or has_images:
+                # --- Stash current input ---
+                images_snapshot = list(cli_ref._attached_images)
+                cli_ref._stashed_input = (text, images_snapshot)
+                cli_ref._attached_images.clear()
+                buf.reset()
+                _cprint(f"  {_DIM}📌 Input stashed (Ctrl+S to pop, auto-restores after response){_RST}")
+                event.app.invalidate()
+            elif cli_ref._stashed_input:
+                # --- Pop stash into input ---
+                stashed_text, stashed_images = cli_ref._stashed_input
+                cli_ref._stashed_input = None
+                if stashed_images:
+                    cli_ref._attached_images.extend(stashed_images)
+                buf.text = stashed_text
+                buf.cursor_position = len(stashed_text)
+                _cprint(f"  {_DIM}📌 Stash restored{_RST}")
+                event.app.invalidate()
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
@@ -7330,7 +7369,12 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                stash_hint = " · 📌 stashed" if cli_ref._stashed_input else ""
+                return f"type a message + Enter to interrupt, Ctrl+C to cancel{stash_hint}"
+            if cli_ref._stashed_input:
+                stashed_text = cli_ref._stashed_input[0]
+                preview = stashed_text[:40] + ("..." if len(stashed_text) > 40 else "")
+                return f"📌 stashed: \"{preview}\" — Ctrl+S to pop"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -7877,6 +7921,20 @@ class HermesCLI:
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
+
+                        # Auto-restore stashed input after agent finishes
+                        if self._stashed_input:
+                            stashed_text, stashed_images = self._stashed_input
+                            self._stashed_input = None
+                            if stashed_images:
+                                self._attached_images.extend(stashed_images)
+                            try:
+                                buf = app.layout.current_buffer
+                                buf.text = stashed_text
+                                buf.cursor_position = len(stashed_text)
+                                _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
+                            except Exception:
+                                pass
 
                         app.invalidate()  # Refresh status line
 

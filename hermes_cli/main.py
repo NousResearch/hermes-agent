@@ -1088,10 +1088,13 @@ def _model_flow_openrouter(config, current_model=""):
         print("API key saved.")
         print()
 
-    from hermes_cli.models import model_ids
+    from hermes_cli.models import model_ids, get_pricing_for_provider
     openrouter_models = model_ids()
 
-    selected = _prompt_model_selection(openrouter_models, current_model=current_model)
+    # Fetch live pricing (non-blocking — returns empty dict on failure)
+    pricing = get_pricing_for_provider("openrouter")
+
+    selected = _prompt_model_selection(openrouter_models, current_model=current_model, pricing=pricing)
     if selected:
         _save_model_choice(selected)
 
@@ -1158,7 +1161,7 @@ def _model_flow_nous(config, current_model="", args=None):
     # Already logged in — use curated model list (same as OpenRouter defaults).
     # The live /models endpoint returns hundreds of models; the curated list
     # shows only agentic models users recognize from OpenRouter.
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.models import _PROVIDER_MODELS, get_pricing_for_provider
     model_ids = _PROVIDER_MODELS.get("nous", [])
     if not model_ids:
         print("No curated models available for Nous Portal.")
@@ -1188,7 +1191,10 @@ def _model_flow_nous(config, current_model="", args=None):
         print(f"Could not verify credentials: {msg}")
         return
 
-    selected = _prompt_model_selection(model_ids, current_model=current_model)
+    # Fetch live pricing (non-blocking — returns empty dict on failure)
+    pricing = get_pricing_for_provider("nous")
+
+    selected = _prompt_model_selection(model_ids, current_model=current_model, pricing=pricing)
     if selected:
         _save_model_choice(selected)
         # Reactivate Nous as the provider and update config

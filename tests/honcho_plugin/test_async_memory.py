@@ -263,6 +263,14 @@ class TestSaveRouting:
             mgr._cache[sess.key] = sess
         return sess
 
+    def _wait_for_thread(self, thread, timeout=2.0):
+        import time
+
+        deadline = time.time() + timeout
+        while thread.is_alive() and time.time() < deadline:
+            thread.join(timeout=0.05)
+        assert not thread.is_alive(), "background sync thread did not finish in time"
+
     def test_sync_turn_prefers_session_id(self):
         from plugins.memory.honcho import HonchoMemoryProvider
 
@@ -276,7 +284,7 @@ class TestSaveRouting:
         provider._sync_thread = None
 
         provider.sync_turn("hello user", "hello assistant", session_id="cli:live")
-        provider._sync_thread.join(timeout=2)
+        self._wait_for_thread(provider._sync_thread)
 
         manager.get_or_create.assert_called_once_with("cli:live")
         session.add_message.assert_any_call("user", "hello user")
@@ -296,7 +304,7 @@ class TestSaveRouting:
         provider._sync_thread = None
 
         provider.sync_turn("hello user", "hello assistant")
-        provider._sync_thread.join(timeout=2)
+        self._wait_for_thread(provider._sync_thread)
 
         manager.get_or_create.assert_called_once_with("cli:cached")
         session.add_message.assert_any_call("user", "hello user")

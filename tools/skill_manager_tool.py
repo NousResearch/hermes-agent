@@ -40,6 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,37 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# Note: Assumes single-process execution. No file locking needed.
+def _log_patch(
+    skill_name: str,
+    action: str,
+    file_path: str = None,
+    old_text: str = None,
+    new_text: str = None,
+) -> None:
+    """Append a patch/edit record to the skill's patch_history.jsonl for auditability."""
+    skill_info = _find_skill(skill_name)
+    if not skill_info:
+        return
+    history_file = skill_info["path"] / "patch_history.jsonl"
+    record = {
+        "schema_version": 1,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "skill": skill_name,
+        "action": action,
+        "file": file_path or "SKILL.md",
+    }
+    if old_text is not None:
+        record["old_text_preview"] = old_text[:200]
+    if new_text is not None:
+        record["new_text_preview"] = new_text[:200]
+    try:
+        with open(history_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("Failed to log patch history for %s", skill_name, exc_info=True)
+
+
 def _validate_file_path(file_path: str) -> Optional[str]:
     """
     Validate a file path for write_file/remove_file.
@@ -359,6 +391,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
+    _log_patch(name, "edit", old_text=original_content, new_text=content)
     return {
         "success": True,
         "message": f"Skill '{name}' updated.",
@@ -446,6 +479,7 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
+    _log_patch(name, "patch", file_path, old_string, new_string)
     return {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",

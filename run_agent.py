@@ -8029,33 +8029,29 @@ class AIAgent:
                                 force=True,
                             )
 
-                    # Server disconnect heuristic (v0.7.0) — disconnects on
-                    # large sessions are often context/payload limit without
-                    # proper HTTP error. Treat as context-length error to
-                    # trigger compression and break the death spiral. (#2153)
+                    # Server disconnects on large sessions are often caused by
+                    # the request exceeding the provider's context/payload limit
+                    # without a proper HTTP error response.  Treat these as
+                    # context-length errors to trigger compression rather than
+                    # burning through retries that will all fail the same way.
+                    # This breaks the death spiral: disconnect → no token data
+                    # → no compression → bigger session → more disconnects.
+                    # (#2153)
                     if not is_context_length_error and not status_code:
-                        error_type = type(e).__name__
                         _is_server_disconnect = (
                             'server disconnected' in error_msg
                             or 'peer closed connection' in error_msg
-                            or error_type in (
-                                'ReadError', 'RemoteProtocolError',
-                                'ServerDisconnectedError')
+                            or error_type in ('ReadError', 'RemoteProtocolError', 'ServerDisconnectedError')
                         )
                         if _is_server_disconnect:
-                            ctx_len = getattr(getattr(
-                                self, 'context_compressor', None),
-                                'context_length', 200000)
-                            _is_large = (approx_tokens > ctx_len * 0.6
-                                         or len(api_messages) > 200)
+                            ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
+                            _is_large = approx_tokens > ctx_len * 0.6 or len(api_messages) > 200
                             if _is_large:
                                 is_context_length_error = True
                                 self._vprint(
-                                    f"{self.log_prefix}⚠️  Server disconnected "
-                                    f"with large session (~{approx_tokens:,} "
-                                    f"tokens, {len(api_messages)} msgs) — "
-                                    f"treating as context-length error, "
-                                    f"attempting compression.",
+                                    f"{self.log_prefix}⚠️  Server disconnected with large session "
+                                    f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
+                                    f"treating as context-length error, attempting compression.",
                                     force=True,
                                 )
 
@@ -8683,9 +8679,12 @@ class AIAgent:
                     # threshold (default 50%) leaves ample headroom; if tool
                     # results push past it, the next API call will report the
                     # real total and trigger compression then.
-                    # Stale token counter fallback (v0.7.0) — after API
-                    # disconnects, last_prompt_tokens can be 0, causing
-                    # should_compress(0) to never fire → death spiral. (#2153)
+                    #
+                    # If last_prompt_tokens is 0 (stale after API disconnect
+                    # or provider returned no usage data), fall back to rough
+                    # estimate to avoid missing compression.  Without this,
+                    # a session can grow unbounded after disconnects because
+                    # should_compress(0) never fires.  (#2153)
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
                         _real_tokens = (
@@ -8693,7 +8692,6 @@ class AIAgent:
                             + _compressor.last_completion_tokens
                         )
                     else:
-                        from agent.model_metadata import estimate_messages_tokens_rough
                         _real_tokens = estimate_messages_tokens_rough(messages)
 
                     # ── Context pressure warnings (user-facing only) ──────────

@@ -61,12 +61,7 @@ def check_delegate_requirements() -> bool:
     return True
 
 
-def _build_child_system_prompt(
-    goal: str,
-    context: Optional[str] = None,
-    *,
-    workspace_path: Optional[str] = None,
-) -> str:
+def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
         "You are a focused subagent working on a specific delegated task.",
@@ -75,12 +70,6 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
-    if workspace_path and str(workspace_path).strip():
-        parts.append(
-            "\nWORKSPACE PATH:\n"
-            f"{workspace_path}\n"
-            "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
-        )
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -88,37 +77,10 @@ def _build_child_system_prompt(
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
         "- Any issues encountered\n\n"
-        "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
-        "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
     return "\n".join(parts)
-
-
-def _resolve_workspace_hint(parent_agent) -> Optional[str]:
-    """Best-effort local workspace hint for child prompts.
-
-    We only inject a path when we have a concrete absolute directory. This avoids
-    teaching subagents a fake container path while still helping them avoid
-    guessing `/workspace/...` for local repo tasks.
-    """
-    candidates = [
-        os.getenv("TERMINAL_CWD"),
-        getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
-        getattr(parent_agent, "terminal_cwd", None),
-        getattr(parent_agent, "cwd", None),
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            text = os.path.abspath(os.path.expanduser(str(candidate)))
-        except Exception:
-            continue
-        if os.path.isabs(text) and os.path.isdir(text):
-            return text
-    return None
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -156,15 +118,11 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     _BATCH_SIZE = 5
     _batch: List[str] = []
 
-    def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent_progress"
-
-        # "_thinking" / reasoning events
-        if event_type in ("_thinking", "reasoning.available"):
-            text = preview or tool_name or ""
+    def _callback(tool_name: str, preview: str = None):
+        # Special "_thinking" event: model produced text content (reasoning)
+        if tool_name == "_thinking":
             if spinner:
-                short = (text[:55] + "...") if len(text) > 55 else text
+                short = (preview[:55] + "...") if preview and len(preview) > 55 else (preview or "")
                 try:
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
@@ -172,15 +130,11 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             # Don't relay thinking to gateway (too noisy for chat)
             return
 
-        # tool.completed — no display needed here (spinner shows on started)
-        if event_type == "tool.completed":
-            return
-
-        # tool.started — display and batch for parent relay
+        # Regular tool call event
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name or "")
+            emoji = get_tool_emoji(tool_name)
             line = f" {prefix}├─ {emoji} {tool_name}"
             if short:
                 line += f"  \"{short}\""
@@ -190,7 +144,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _batch.append(tool_name or "")
+            _batch.append(tool_name)
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
                 try:
@@ -241,9 +195,6 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
-    override_acp_command: Optional[str] = None,
-    override_acp_args: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -258,33 +209,16 @@ def _build_child_agent(
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
-    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
-    if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
-        import model_tools
-        parent_toolsets = {
-            ts for name in parent_agent.valid_tool_names
-            if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
-    else:
-        parent_toolsets = set(DEFAULT_TOOLSETS)
-
+    parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", None) or DEFAULT_TOOLSETS)
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+    elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
+        child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
-    workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+    child_prompt = _build_child_system_prompt(goal, context)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -298,26 +232,14 @@ def _build_child_agent(
     # total iterations across parent + subagents can exceed the parent's
     # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
-    child_thinking_cb = None
-    if child_progress_cb:
-        def _child_thinking(text: str) -> None:
-            if not text:
-                return
-            try:
-                child_progress_cb("_thinking", text)
-            except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
-
-        child_thinking_cb = _child_thinking
-
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
-    effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
-    effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
+    effective_acp_command = getattr(parent_agent, "acp_command", None)
+    effective_acp_args = list(getattr(parent_agent, "acp_args", []) or [])
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -339,9 +261,7 @@ def _build_child_agent(
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
-        thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, '_session_db', None),
-        parent_session_id=getattr(parent_agent, 'session_id', None),
         providers_allowed=parent_agent.providers_allowed,
         providers_ignored=parent_agent.providers_ignored,
         providers_order=parent_agent.providers_order,
@@ -349,15 +269,8 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
-    child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
-
-    # Share a credential pool with the child when possible so subagents can
-    # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
-    if child_pool is not None:
-        child._credential_pool = child_pool
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
@@ -393,18 +306,6 @@ def _run_single_child(
     import model_tools
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
-
-    child_pool = getattr(child, '_credential_pool', None)
-    leased_cred_id = None
-    if child_pool is not None:
-        leased_cred_id = child_pool.acquire_lease()
-        if leased_cred_id is not None:
-            try:
-                leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, '_swap_credential'):
-                    child._swap_credential(leased_entry)
-            except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -531,12 +432,6 @@ def _run_single_child(
         }
 
     finally:
-        if child_pool is not None and leased_cred_id is not None:
-            try:
-                child_pool.release_lease(leased_cred_id)
-            except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
-
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
@@ -544,8 +439,6 @@ def _run_single_child(
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
-
-        # Remove child from active tracking
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
@@ -614,12 +507,10 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
-model: Optional[str] = None,
+    model: Optional[str] = None,
     provider: Optional[str] = None,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
-    acp_command: Optional[str] = None,
-    acp_args: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -644,7 +535,7 @@ model: Optional[str] = None,
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
-        return tool_error("delegate_task requires a parent agent context.")
+        return json.dumps({"error": "delegate_task requires a parent agent context."})
 
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
@@ -694,7 +585,7 @@ model: Optional[str] = None,
                                                 override_model=call_model,
                                                 override_provider=call_provider)
     except ValueError as exc:
-        return tool_error(str(exc))
+        return json.dumps({"error": str(exc)})
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
@@ -702,15 +593,15 @@ model: Optional[str] = None,
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
-        return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
+        return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
 
     if not task_list:
-        return tool_error("No tasks provided.")
+        return json.dumps({"error": "No tasks provided."})
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
-            return tool_error(f"Task {i} is missing a 'goal'.")
+            return json.dumps({"error": f"Task {i} is missing a 'goal'."})
 
     # Hook into CLI subagent panel if available
     _panel_registry = getattr(parent_agent, '_cli_subagent_registry', None)
@@ -763,11 +654,9 @@ model: Optional[str] = None,
                 task_index=i, goal=task_goal, context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
-override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
                 override_api_key=task_creds.get("api_key"),
                 override_api_mode=task_creds["api_mode"],
-                override_acp_command=t.get("acp_command") or acp_command,
-                override_acp_args=t.get("acp_args") or acp_args,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -896,38 +785,6 @@ override_provider=task_creds["provider"], override_base_url=task_creds["base_url
     }, ensure_ascii=False)
 
 
-def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
-    """Resolve a credential pool for the child agent.
-
-    Rules:
-    1. Same provider as the parent -> share the parent's pool so cooldown state
-       and rotation stay synchronized.
-    2. Different provider -> try to load that provider's own pool.
-    3. No pool available -> return None and let the child keep the inherited
-       fixed credential behavior.
-    """
-    if not effective_provider:
-        return getattr(parent_agent, "_credential_pool", None)
-
-    parent_provider = getattr(parent_agent, "provider", None) or ""
-    parent_pool = getattr(parent_agent, "_credential_pool", None)
-    if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
-
-    try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
-            return pool
-    except Exception as exc:
-        logger.debug(
-            "Could not load credential pool for child provider '%s': %s",
-            effective_provider,
-            exc,
-        )
-    return None
-
-
 def _resolve_delegation_credentials(cfg: dict, parent_agent,
                                     override_model: Optional[str] = None,
                                     override_provider: Optional[str] = None) -> dict:
@@ -1004,7 +861,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent,
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            f"Set the appropriate environment variable or run 'hermes login'."
         )
 
     return {
@@ -1112,16 +969,7 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Toolsets for this specific task. Use 'web' for network access, 'terminal' for shell.",
-                        },
-                        "acp_command": {
-                            "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
-                        },
-                        "acp_args": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "Toolsets for this specific task",
                         },
                         "model": {
                             "type": "string",
@@ -1149,7 +997,7 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
-"model": {
+            "model": {
                 "type": "string",
                 "description": (
                     "Model to use for all subagents in this call "
@@ -1157,23 +1005,6 @@ DELEGATE_TASK_SCHEMA = {
                     "Overrides delegation.model config and skill frontmatter. "
                     "Use cheap/fast models for research or summarisation tasks; "
                     "use capable models for complex reasoning or code generation."
-                ),
-            },
-            "acp_command": {
-                "type": "string",
-                "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
-                ),
-            },
-            "acp_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
             "provider": {
@@ -1208,7 +1039,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry
 
 registry.register(
     name="delegate_task",
@@ -1220,12 +1051,10 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
-model=args.get("model"),
+        model=args.get("model"),
         provider=args.get("provider"),
         skill=args.get("skill"),
         skills=args.get("skills"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

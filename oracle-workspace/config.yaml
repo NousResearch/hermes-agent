@@ -1,26 +1,34 @@
 # ORACLE Hermes Agent — Configuration
 # THE MAIN INTELLIGENCE: Claude Opus 4.6 with maximum extended thinking
 # 1M context window, 128K output tokens, adaptive thinking at max effort
+#
+# THINKING ARCHITECTURE:
+#   Main agent (Opus xhigh): Decomposition, Validation, Reasoning, Synthesis
+#   Delegated tasks (Sonnet): Web research, MiroFish calls, data collection
+#   This split gives maximum intelligence where it matters (analytical phases)
+#   and maximum speed where volume matters (research delegation)
 
-# Model: Claude Opus 4.6 — the most capable model available
+# Model: Claude Opus 4.6 — orchestrator brain
 model:
-  default: "claude-opus-4-20250514"
+  default: "claude-opus-4-6"
   provider: "anthropic"
 
-# Reasoning: Maximum thinking enabled
-reasoning:
-  enabled: true
-  effort: "xhigh"
-
-# Agent configuration — maximum capability
+# Agent: maximum thinking for analytical phases
 agent:
   max_turns: 90
+  reasoning_effort: xhigh
+
+# Delegation: Sonnet 4.6 with standard thinking for research data collection
+# Main agent (Opus xhigh): decompose, validate, reason, synthesize
+# Subagents (Sonnet standard): web search, MiroFish calls, data gathering
+delegation:
+  model: "claude-sonnet-4-6"
 
 # Terminal backend
 terminal:
   backend: "local"
   cwd: "/opt/oracle-workspace"
-  timeout: 120
+  timeout: 300
 
 # Compression (for long research sessions with 1M context)
 compression:

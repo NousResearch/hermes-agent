@@ -20,6 +20,8 @@ services:
       - ./oracle-workspace/config.yaml:/opt/data/config.yaml:ro
       - ./oracle-workspace/.env:/opt/data/.env:ro
       - ./docker/SOUL.md:/opt/data/SOUL.md:ro
+      # Mount ORACLE skills
+      - ./oracle-workspace/skills:/opt/data/skills/oracle:ro
     working_dir: /opt/oracle-workspace
     ports:
       - "18205:8443"

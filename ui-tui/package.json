@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx --watch src/main.tsx",
-    "start": "tsx src/main.tsx",
+    "dev": "tsx --watch src/entry.tsx",
+    "start": "tsx src/entry.tsx",
     "build": "tsc",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",

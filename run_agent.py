@@ -6500,12 +6500,13 @@ class AIAgent:
                 # the previous turn so the Anthropic cache prefix matches.
                 self._cached_system_prompt = stored_prompt
             else:
-                # First turn of a new session — build from scratch.
-                self._cached_system_prompt = self._build_system_prompt(system_message)
                 # Plugin hook: on_session_start
                 # Fired once when a brand-new session is created (not on
                 # continuation).  Plugins can use this to initialise
                 # session-scoped state (e.g. warm a memory cache).
+                # Runs BEFORE _build_system_prompt so plugins that write
+                # context files (AGENTS.md, CLAUDE.md, etc.) are visible
+                # to the system prompt builder on the first session.
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     _invoke_hook(
@@ -6516,6 +6517,9 @@ class AIAgent:
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
+
+                # First turn of a new session — build from scratch.
+                self._cached_system_prompt = self._build_system_prompt(system_message)
 
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:

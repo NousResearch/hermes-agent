@@ -147,6 +147,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Group Forum Topics: map of chat_id:thread_id -> topic config dict
+        self._group_topics_config: List[Dict[str, Any]] = self.config.extra.get("group_topics", [])
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -2069,6 +2071,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+
+    def _get_group_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Look up group forum topic config by chat_id and thread_id.
+
+        Reads from config.extra['group_topics'] — a list of dicts:
+        [
+            {
+                "chat_id": -100XXXXXXXXXX,
+                "topics": [
+                    {"thread_id": 42, "name": "Deep Research", "skill": "deep-research"},
+                    {"thread_id": 19, "name": "General"}
+                ]
+            }
+        ]
+
+        Returns the topic config dict if found, or None.
+        """
+        if not thread_id or not self._group_topics_config:
+            return None
+
+        thread_id_int = int(thread_id)
+
+        for chat_entry in self._group_topics_config:
+            if str(chat_entry.get("chat_id")) == chat_id:
+                for t in chat_entry.get("topics", []):
+                    if t.get("thread_id") == thread_id_int:
+                        return t
+        return None
+
+    def _reload_group_topics_from_config(self) -> None:
+        """Re-read group_topics from config.yaml (hot-reload without restart)."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+
+            group_topics = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+                .get("group_topics", [])
+            )
+            if group_topics:
+                self._group_topics_config = group_topics
+        except Exception as e:
+            logger.debug("[%s] Failed to reload group_topics from config: %s", self.name, e)
+
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""
         chat = message.chat
@@ -2101,19 +2155,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     if not chat_topic:
                         chat_topic = created_name
 
+        # Resolve GROUP forum topic name and skill binding
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
-            group_topics_config: list = self.config.extra.get("group_topics", [])
-            for chat_entry in group_topics_config:
-                if str(chat_entry.get("chat_id", "")) == str(chat.id):
-                    for topic in chat_entry.get("topics", []):
-                        tid = topic.get("thread_id")
-                        if tid is not None and str(tid) == thread_id_str:
-                            chat_topic = topic.get("name")
-                            topic_skill = topic.get("skill")
-                            break
-                    break
-
+            group_topic_info = self._get_group_topic_info(str(chat.id), thread_id_str)
+            if group_topic_info:
+                chat_topic = group_topic_info.get("name")
+                topic_skill = group_topic_info.get("skill")
+            else:
+                # Hot-reload config in case topics were added after startup
+                self._reload_group_topics_from_config()
+                group_topic_info = self._get_group_topic_info(str(chat.id), thread_id_str)
+                if group_topic_info:
+                    chat_topic = group_topic_info.get("name")
+                    topic_skill = group_topic_info.get("skill")
         # Build source
         source = self.build_source(
             chat_id=str(chat.id),

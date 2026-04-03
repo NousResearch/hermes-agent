@@ -1071,7 +1071,7 @@ def _model_flow_openrouter(config, current_model=""):
     from hermes_cli.auth import _prompt_model_selection, _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, save_env_value
 
-    api_key = get_env_value("OPENROUTER_API_KEY")
+    api_key=get_env_value("OPENROUTER_API_KEY")
     if not api_key:
         print("No OpenRouter API key configured.")
         print("Get one at: https://openrouter.ai/keys")
@@ -1087,6 +1087,58 @@ def _model_flow_openrouter(config, current_model=""):
         save_env_value("OPENROUTER_API_KEY", key)
         print("API key saved.")
         print()
+    else:
+        print(f"  OpenRouter credentials: {api_key[:12]}... \u2713")
+        fallback_key = get_env_value("OPENROUTER_FALLBACK_API_KEY") or ""
+        if fallback_key:
+            print(f"  Fallback key: {fallback_key[:12]}... \u2713")
+        print()
+        print("    1. Use existing credentials")
+        print("    2. Enter new API key")
+        print("    3. Set fallback API key")
+        print("    4. Cancel")
+        print()
+        try:
+            choice = input("  Choice [1/2/3/4]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            choice = "1"
+
+        if choice == "2":
+            print()
+            print("Get a new key at: https://openrouter.ai/keys")
+            print()
+            try:
+                key = input("New OpenRouter API key (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not key:
+                print("Cancelled.")
+                return
+            save_env_value("OPENROUTER_API_KEY", key)
+            api_key = key
+            print("API key updated.")
+            print()
+        elif choice == "3":
+            print()
+            print("Set a fallback API key for provider failover.")
+            print("This key is used when the primary key is rate-limited or unavailable.")
+            print()
+            try:
+                key = input("Fallback OpenRouter API key (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not key:
+                print("Cancelled.")
+                return
+            save_env_value("OPENROUTER_FALLBACK_API_KEY", key)
+            print("Fallback API key saved.")
+            print()
+        elif choice == "4":
+            print("No change.")
+            return
+        # choice == "1" or default: use existing, proceed to model selection
 
     from hermes_cli.models import model_ids
     openrouter_models = model_ids()

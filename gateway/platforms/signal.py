@@ -215,6 +215,10 @@ class SignalAdapter(BasePlatformAdapter):
         """Signal quote replies need author/text metadata in the send payload."""
         return True
 
+    def should_send_text_after_auto_tts(self, event: MessageEvent) -> bool:
+        """Signal voice-note replies should not duplicate the same content as text."""
+        return False
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

@@ -568,6 +568,15 @@ class BasePlatformAdapter(ABC):
         """Whether reply delivery needs author/text metadata in addition to reply_to."""
         return False
 
+    def should_send_text_after_auto_tts(self, event: MessageEvent) -> bool:
+        """Whether a successful auto-TTS voice reply should still be followed by text.
+
+        Most platforms keep the historical Hermes behavior of sending both
+        audio and text. Platforms can override this for a more native voice-note
+        experience.
+        """
+        return True
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1244,6 +1253,7 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
+                auto_tts_sent = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         tts_result = await self.play_tts(
@@ -1253,6 +1263,7 @@ class BasePlatformAdapter(ABC):
                             metadata=delivery_metadata,
                         )
                         _record_delivery(tts_result)
+                        auto_tts_sent = bool(tts_result and getattr(tts_result, "success", False))
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -1260,7 +1271,9 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content:
+                if text_content and not (
+                    auto_tts_sent and not self.should_send_text_after_auto_tts(event)
+                ):
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,

@@ -1,12 +1,13 @@
 """Tests for BasePlatformAdapter topic-aware session handling."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource, build_session_key
 
 
@@ -52,6 +53,7 @@ class DummySignalAdapter(DummyTelegramAdapter):
     def __init__(self):
         super().__init__()
         self.platform = Platform.SIGNAL
+        self.voices = []
 
     def get_default_reply_target(self, event: MessageEvent):
         return None
@@ -59,8 +61,23 @@ class DummySignalAdapter(DummyTelegramAdapter):
     def requires_reply_context_metadata(self) -> bool:
         return True
 
+    def should_send_text_after_auto_tts(self, event: MessageEvent) -> bool:
+        return False
 
-def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageEvent:
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, metadata=None, **kwargs) -> SendResult:
+        self.voices.append(
+            {
+                "chat_id": chat_id,
+                "audio_path": audio_path,
+                "caption": caption,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="voice-1")
+
+
+def _make_event(chat_id: str, thread_id: str, message_id: str = "1", message_type: MessageType = MessageType.TEXT) -> MessageEvent:
     return MessageEvent(
         text="hello",
         source=SessionSource(
@@ -71,6 +88,7 @@ def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageE
             user_id="+15550001111",
         ),
         message_id=message_id,
+        message_type=message_type,
     )
 
 
@@ -212,6 +230,43 @@ class TestBasePlatformTopicSessions:
                     "reply_to_author": "+15550001111",
                     "reply_to_text": "hello",
                 },
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_signal_voice_input_sends_only_voice_reply(self, monkeypatch, tmp_path):
+        adapter = DummySignalAdapter()
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "spoken reply"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_bytes(b"fake-voice")
+
+        monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+        monkeypatch.setattr(
+            "tools.tts_tool.text_to_speech_tool",
+            lambda text: json.dumps({"success": True, "file_path": str(tts_path)}),
+        )
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585", message_type=MessageType.VOICE)
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent == []
+        assert adapter.voices == [
+            {
+                "chat_id": "-1001",
+                "audio_path": str(tts_path),
+                "caption": None,
+                "reply_to": None,
+                "metadata": {"thread_id": "17585"},
             }
         ]
 

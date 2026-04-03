@@ -2143,8 +2143,18 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None."""
+def _prompt_model_selection(
+    model_ids: List[str],
+    current_model: str = "",
+    pricing: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Optional[str]:
+    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+
+    If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
+    price indicator is shown next to each model in aligned columns.
+    """
+    from hermes_cli.models import _format_price_per_mtok
+
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
     if current_model and current_model in model_ids:
@@ -2153,14 +2163,43 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
         if mid not in ordered:
             ordered.append(mid)
 
-    # Build display labels with marker on current
+    # Column-aligned labels when pricing is available
+    has_pricing = bool(pricing and any(pricing.get(m) for m in ordered))
+    name_col = max((len(m) for m in ordered), default=0) + 2 if has_pricing else 0
+
+    # Pre-compute formatted prices and dynamic column width
+    _price_cache: dict[str, tuple[str, str]] = {}
+    price_col = 3  # minimum width
+    if has_pricing:
+        for mid in ordered:
+            p = pricing.get(mid)  # type: ignore[union-attr]
+            if p:
+                inp = _format_price_per_mtok(p.get("prompt", ""))
+                out = _format_price_per_mtok(p.get("completion", ""))
+            else:
+                inp, out = "", ""
+            _price_cache[mid] = (inp, out)
+            price_col = max(price_col, len(inp), len(out))
+
     def _label(mid):
+        if has_pricing:
+            inp, out = _price_cache.get(mid, ("", ""))
+            price_part = f" {inp:>{price_col}}  {out:>{price_col}}"
+            base = f"{mid:<{name_col}}{price_part}"
+        else:
+            base = mid
         if mid == current_model:
-            return f"{mid}  ← currently in use"
-        return mid
+            base += "  ← currently in use"
+        return base
 
     # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
+
+    # Build a pricing header hint for the menu title
+    menu_title = "Select default model:"
+    if has_pricing:
+        # Align the header with the model column
+        menu_title += f"\n  {'':>{name_col}}  {'In':>{price_col}}  {'Out':>{price_col}}  /Mtok"
 
     # Try arrow-key menu first, fall back to number input
     try:
@@ -2176,7 +2215,7 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
             clear_screen=False,
-            title="Select default model:",
+            title=menu_title,
         )
         idx = menu.show()
         if idx is None:
@@ -2192,12 +2231,13 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
         pass
 
     # Fallback: numbered list
-    print("Select default model:")
+    print(menu_title)
+    num_width = len(str(len(ordered) + 2))
     for i, mid in enumerate(ordered, 1):
-        print(f"  {i}. {_label(mid)}")
+        print(f"  {i:>{num_width}}. {_label(mid)}")
     n = len(ordered)
-    print(f"  {n + 1}. Enter custom model name")
-    print(f"  {n + 2}. Skip (keep current)")
+    print(f"  {n + 1:>{num_width}}. Enter custom model name")
+    print(f"  {n + 2:>{num_width}}. Skip (keep current)")
     print()
 
     while True:

@@ -327,6 +327,187 @@ def menu_labels() -> list[str]:
     return labels
 
 
+# ---------------------------------------------------------------------------
+# Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
+# ---------------------------------------------------------------------------
+
+# Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
+_pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
+
+
+def _format_price_per_mtok(per_token_str: str) -> str:
+    """Convert a per-token price string to a human-friendly $/Mtok string.
+
+    Always uses 2 decimal places so that prices align vertically when
+    right-justified in a column (the decimal point stays in the same position).
+
+    Examples:
+        "0.000003"   → "$3.00"      (per million tokens)
+        "0.00003"    → "$30.00"
+        "0.00000015" → "$0.15"
+        "0.0000001"  → "$0.10"
+        "0.00018"    → "$180.00"
+        "0"          → "free"
+    """
+    try:
+        val = float(per_token_str)
+    except (TypeError, ValueError):
+        return "?"
+    if val == 0:
+        return "free"
+    per_m = val * 1_000_000
+    return f"${per_m:.2f}"
+
+
+def format_pricing_label(pricing: dict[str, str] | None) -> str:
+    """Build a compact pricing label like '$3/$15' (input/output per Mtok).
+
+    Returns empty string when pricing is unavailable.
+    """
+    if not pricing:
+        return ""
+    prompt_price = pricing.get("prompt", "")
+    completion_price = pricing.get("completion", "")
+    if not prompt_price and not completion_price:
+        return ""
+    inp = _format_price_per_mtok(prompt_price)
+    out = _format_price_per_mtok(completion_price)
+    if inp == "free" and out == "free":
+        return "free"
+    if inp == out:
+        return f"{inp}/Mtok"
+    return f"in {inp} · out {out}/Mtok"
+
+
+def format_model_pricing_table(
+    models: list[tuple[str, str]],
+    pricing_map: dict[str, dict[str, str]],
+    current_model: str = "",
+    indent: str = "      ",
+) -> list[str]:
+    """Build a column-aligned model+pricing table for terminal display.
+
+    Returns a list of pre-formatted lines ready to print.
+    *models* is ``[(model_id, description), ...]``.
+    """
+    if not models:
+        return []
+
+    # Build rows: (model_id, input_price, output_price, is_current)
+    rows: list[tuple[str, str, str, bool]] = []
+    for mid, _desc in models:
+        is_cur = mid == current_model
+        p = pricing_map.get(mid)
+        if p:
+            inp = _format_price_per_mtok(p.get("prompt", ""))
+            out = _format_price_per_mtok(p.get("completion", ""))
+        else:
+            inp, out = "", ""
+        rows.append((mid, inp, out, is_cur))
+
+    name_col = max(len(r[0]) for r in rows) + 2
+    # Compute price column widths from the actual data so decimals align
+    price_col = max(
+        max((len(r[1]) for r in rows if r[1]), default=4),
+        max((len(r[2]) for r in rows if r[2]), default=4),
+        3,  # minimum: "In" / "Out" header
+    )
+    lines: list[str] = []
+
+    # Header
+    lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  /Mtok")
+    lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}")
+
+    for mid, inp, out, is_cur in rows:
+        marker = "  ← current" if is_cur else ""
+        lines.append(f"{indent}{mid:<{name_col}} {inp:>{price_col}}  {out:>{price_col}}{marker}")
+
+    return lines
+
+
+def fetch_models_with_pricing(
+    api_key: str | None = None,
+    base_url: str = "https://openrouter.ai/api",
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion}}`` pricing.
+
+    Results are cached per *base_url* so repeated calls are free.
+    Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
+    """
+    cache_key = (base_url or "").rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    url = cache_key.rstrip("/") + "/v1/models"
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        mid = item.get("id")
+        pricing = item.get("pricing")
+        if mid and isinstance(pricing, dict):
+            result[mid] = {
+                "prompt": str(pricing.get("prompt", "")),
+                "completion": str(pricing.get("completion", "")),
+            }
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
+def _resolve_openrouter_api_key() -> str:
+    """Best-effort OpenRouter API key for pricing fetch."""
+    return os.getenv("OPENROUTER_API_KEY", "").strip()
+
+
+def _resolve_nous_pricing_credentials() -> tuple[str, str]:
+    """Return ``(api_key, base_url)`` for Nous Portal pricing, or empty strings."""
+    try:
+        from hermes_cli.auth import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials()
+        if creds:
+            return (creds.get("api_key", ""), creds.get("base_url", ""))
+    except Exception:
+        pass
+    return ("", "")
+
+
+def get_pricing_for_provider(provider: str) -> dict[str, dict[str, str]]:
+    """Return live pricing for providers that support it (openrouter, nous)."""
+    normalized = normalize_provider(provider)
+    if normalized == "openrouter":
+        return fetch_models_with_pricing(
+            api_key=_resolve_openrouter_api_key(),
+            base_url="https://openrouter.ai/api",
+        )
+    if normalized == "nous":
+        api_key, base_url = _resolve_nous_pricing_credentials()
+        if base_url:
+            # Nous base_url typically looks like https://inference-api.nousresearch.com/v1
+            # We need the part before /v1 for our fetch function
+            stripped = base_url.rstrip("/")
+            if stripped.endswith("/v1"):
+                stripped = stripped[:-3]
+            return fetch_models_with_pricing(
+                api_key=api_key,
+                base_url=stripped,
+            )
+    return {}
+
+
 # All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
     set(_PROVIDER_LABELS.keys())

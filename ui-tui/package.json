@@ -7,7 +7,10 @@
     "dev": "tsx --watch src/main.tsx",
     "start": "tsx src/main.tsx",
     "build": "tsc",
-    "test": "echo 'no tests yet'"
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}'",
+    "fix": "npm run lint:fix && npm run fmt"
   },
   "dependencies": {
     "ink": "^6.8.0",
@@ -15,8 +18,18 @@
     "react": "^19.2.4"
   },
   "devDependencies": {
+    "@eslint/js": "^9",
     "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "@typescript-eslint/parser": "^8",
+    "eslint": "^9",
+    "eslint-plugin-perfectionist": "^5",
+    "eslint-plugin-react": "^7",
+    "eslint-plugin-react-hooks": "^7",
+    "eslint-plugin-unused-imports": "^4",
+    "globals": "^16",
+    "prettier": "^3",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

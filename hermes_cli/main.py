@@ -117,8 +117,10 @@ def _apply_profile_override() -> None:
     if profile_name is None:
         try:
             from hermes_cli.profiles import apply_profile_home_isolation as _isolate_home
-            import os as _os
-            _default_home = Path.home() / ".hermes"
+            # Use HERMES_HOME if set (e.g. Docker: /opt/data), otherwise
+            # fall back to the default ~/.hermes.  Path.home() / ".hermes"
+            # would be wrong when HERMES_HOME points elsewhere.  (#4426)
+            _default_home = Path(os.environ["HERMES_HOME"]) if "HERMES_HOME" in os.environ else Path.home() / ".hermes"
             _isolate_home(_default_home)
         except Exception:
             pass  # HOME isolation must never block startup

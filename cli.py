@@ -9557,9 +9557,15 @@ class HermesCLI:
         
         @kb.add('c-d')
         def handle_ctrl_d(event):
-            """Handle Ctrl+D - exit."""
-            self._should_exit = True
-            event.app.exit()
+            """Ctrl+D: delete char under cursor (standard readline behaviour).
+            Only exit when the input is empty — same as bash/zsh.
+            """
+            buf = event.app.current_buffer
+            if buf.text:
+                buf.delete()
+            else:
+                self._should_exit = True
+                event.app.exit()
 
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state)

@@ -873,6 +873,11 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _launchd_domain() -> str:
+    import os
+    return f"gui/{os.getuid()}"
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -963,18 +968,19 @@ def launchd_plist_is_current() -> bool:
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
-    Unlike systemd, launchd picks up plist changes on the next ``launchctl stop``/
-    ``launchctl start`` cycle — no daemon-reload is needed.  We still unload/reload
-    to make launchd re-read the updated plist immediately.
+    Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
+    ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
+    bootstrap to make launchd re-read the updated plist immediately.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-    # Unload/reload so launchd picks up the new definition
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+    label = get_launchd_label()
+    # Bootout/bootstrap so launchd picks up the new definition
+    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False)
+    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -996,7 +1002,7 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
     
     print()
     print("✓ Service installed and loaded!")
@@ -1008,7 +1014,8 @@ def launchd_install(force: bool = False):
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+    label = get_launchd_label()
+    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False)
     
     if plist_path.exists():
         plist_path.unlink()
@@ -1025,25 +1032,25 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True)
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", label], check=True)
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True)
     print("✓ Service started")
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "stop", label], check=True)
+    subprocess.run(["launchctl", "kill", "SIGTERM", f"{_launchd_domain()}/{label}"], check=True)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):

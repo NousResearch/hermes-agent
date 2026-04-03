@@ -93,7 +93,47 @@ def clear_env_passthrough() -> None:
     _allowed_env_vars.clear()
 
 
+def register_proxy_credentials() -> None:
+    """Register credential proxy env var names in the passthrough allowlist.
+
+    Reads the ``credential_proxy.proxy_credentials`` list from config.yaml
+    and registers those variable names so their ``hermes-proxy://`` placeholder
+    values survive :func:`_sanitize_subprocess_env`.
+
+    Called during proxy startup.  Failures are logged and swallowed so they
+    never prevent Hermes from starting.
+    """
+    try:
+        from proxy.config import get_proxy_credentials_list
+        cred_vars = get_proxy_credentials_list()
+        if cred_vars:
+            register_env_passthrough(cred_vars)
+            logger.info("proxy credentials registered for passthrough: %s", cred_vars)
+    except Exception as e:
+        logger.warning("could not register proxy credentials: %s", e)
+
+
 def reset_config_cache() -> None:
     """Force re-read of config on next access (for testing)."""
     global _config_passthrough
     _config_passthrough = None
+
+
+def register_proxy_credentials() -> None:
+    """Register credential proxy env vars in the passthrough allowlist.
+
+    Reads ``credential_proxy.proxy_credentials`` from config.yaml and
+    registers those var names so ``_sanitize_subprocess_env()`` does not
+    strip ``hermes-proxy://`` placeholder values.  Called during proxy
+    daemon startup.  See #4429 / #4656.
+    """
+    try:
+        from proxy.config import get_proxy_credentials_list
+    except ImportError:
+        logger.debug("proxy.config not available, skipping proxy credential registration")
+        return
+
+    creds = get_proxy_credentials_list()
+    if creds:
+        register_env_passthrough(creds)
+        logger.info("proxy credentials registered for passthrough: %s", creds)

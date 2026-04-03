@@ -287,6 +287,19 @@ def _make_run_env(env: dict) -> dict:
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
         run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+
+    # Inject http_proxy pointing at the credential proxy Unix socket when
+    # the socket file exists.  Only HTTP for Phase 1 (no https_proxy yet).
+    try:
+        from proxy.config import get_proxy_socket_path
+        sock_path = get_proxy_socket_path()
+        if sock_path.exists():
+            proxy_url = f"http+unix://{sock_path}"
+            run_env.setdefault("http_proxy", proxy_url)
+            run_env.setdefault("HTTP_PROXY", proxy_url)
+    except Exception:
+        pass  # Proxy not available — don't block Hermes startup
+
     return run_env
 
 

@@ -661,6 +661,12 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
+def cmd_cred_proxy(args):
+    """Credential proxy management commands."""
+    from hermes_cli.cred_proxy import cred_proxy_command
+    cred_proxy_command(args)
+
+
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
     _require_tty("whatsapp")
@@ -3436,7 +3442,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     or a known top-level subcommand.
     """
     _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
+        "chat", "model", "gateway", "cred-proxy", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
         "profile",
@@ -3995,7 +4001,28 @@ For more help on a command:
     gateway_setup = gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
     gateway_parser.set_defaults(func=cmd_gateway)
-    
+
+    # =========================================================================
+    # cred-proxy command
+    # =========================================================================
+    cred_proxy_parser = subparsers.add_parser(
+        "cred-proxy",
+        help="Credential proxy management",
+        description="Manage the credential proxy daemon (store/rotate secrets for tool subprocesses)",
+    )
+    cred_proxy_subparsers = cred_proxy_parser.add_subparsers(dest="cred_proxy_command")
+
+    # cred-proxy start
+    cred_proxy_subparsers.add_parser("start", help="Start credential proxy daemon")
+
+    # cred-proxy stop
+    cred_proxy_subparsers.add_parser("stop", help="Stop credential proxy daemon")
+
+    # cred-proxy status
+    cred_proxy_subparsers.add_parser("status", help="Show credential proxy status")
+
+    cred_proxy_parser.set_defaults(func=cmd_cred_proxy)
+
     # =========================================================================
     # setup command
     # =========================================================================

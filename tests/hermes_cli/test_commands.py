@@ -587,3 +587,44 @@ class TestTelegramMenuCommands:
             assert 1 <= len(name) <= _TG_NAME_LIMIT, (
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
+
+    def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
+        """Skills disabled for telegram should not appear in the menu."""
+        from unittest.mock import patch, MagicMock
+
+        # Set up a config with a telegram-specific disabled list
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - my-disabled-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # Mock get_skill_commands to return two skills
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/my-disabled-skill": {
+                "name": "my-disabled-skill",
+                "description": "Should be hidden",
+                "skill_md_path": f"{fake_skills_dir}/my-disabled-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-disabled-skill",
+            },
+            "/my-enabled-skill": {
+                "name": "my-enabled-skill",
+                "description": "Should be visible",
+                "skill_md_path": f"{fake_skills_dir}/my-enabled-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-enabled-skill",
+            },
+        }
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            (tmp_path / "skills").mkdir(exist_ok=True)
+            menu, hidden = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        assert "my_enabled_skill" in menu_names
+        assert "my_disabled_skill" not in menu_names

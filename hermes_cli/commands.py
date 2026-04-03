@@ -414,6 +414,8 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
 
     Skills are the only tier that gets trimmed when the cap is hit.
     User-installed hub skills are excluded — accessible via /skills.
+    Skills disabled for the ``"telegram"`` platform (via ``hermes skills
+    config``) are excluded from the menu entirely.
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
@@ -444,6 +446,17 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     reserved_names.update(n for n, _ in plugin_entries)
     all_commands.extend(plugin_entries)
 
+    # Load per-platform disabled skills so they don't consume menu slots.
+    # get_skill_commands() already filters the *global* disabled list, but
+    # per-platform overrides (skills.platform_disabled.telegram) were never
+    # applied here — that's what this block fixes.
+    _platform_disabled: set[str] = set()
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        _platform_disabled = get_disabled_skill_names(platform="telegram")
+    except Exception:
+        pass
+
     # Remaining slots go to built-in skill commands (not hub-installed).
     skill_entries: list[tuple[str, str]] = []
     try:
@@ -458,6 +471,10 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
             if not skill_path.startswith(_skills_dir):
                 continue
             if skill_path.startswith(_hub_dir):
+                continue
+            # Skip skills disabled for telegram
+            skill_name = info.get("name", "")
+            if skill_name in _platform_disabled:
                 continue
             name = cmd_key.lstrip("/").replace("-", "_")
             desc = info.get("description", "")

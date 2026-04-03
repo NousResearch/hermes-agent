@@ -118,12 +118,17 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
-def get_disabled_skill_names() -> Set[str]:
+def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Read disabled skill names from config.yaml.
 
-    Resolves platform from ``HERMES_PLATFORM`` env var, falls back to
-    the global disabled list.  Reads the config file directly (no CLI
-    config imports) to stay lightweight.
+    Args:
+        platform: Explicit platform name (e.g. ``"telegram"``).  When
+            *None*, resolves from ``HERMES_PLATFORM`` or
+            ``HERMES_SESSION_PLATFORM`` env vars.  Falls back to the
+            global disabled list when no platform is determined.
+
+    Reads the config file directly (no CLI config imports) to stay
+    lightweight.
     """
     config_path = get_hermes_home() / "config.yaml"
     if not config_path.exists():
@@ -140,7 +145,11 @@ def get_disabled_skill_names() -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
-    resolved_platform = os.getenv("HERMES_PLATFORM")
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or os.getenv("HERMES_SESSION_PLATFORM")
+    )
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform

@@ -142,6 +142,109 @@ class TestIsSkillDisabled:
 
 
 # ---------------------------------------------------------------------------
+# get_disabled_skill_names — explicit platform param & env var fallback
+# ---------------------------------------------------------------------------
+
+class TestGetDisabledSkillNames:
+    """Tests for agent.skill_utils.get_disabled_skill_names."""
+
+    def test_explicit_platform_param(self, tmp_path, monkeypatch):
+        """Explicit platform= parameter should resolve per-platform list."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  disabled:\n"
+            "    - global-skill\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - tg-only-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        from agent.skill_utils import get_disabled_skill_names
+        result = get_disabled_skill_names(platform="telegram")
+        assert result == {"tg-only-skill"}
+
+    def test_session_platform_env_var(self, tmp_path, monkeypatch):
+        """HERMES_SESSION_PLATFORM should be used when HERMES_PLATFORM is unset."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  disabled:\n"
+            "    - global-skill\n"
+            "  platform_disabled:\n"
+            "    discord:\n"
+            "      - discord-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+
+        from agent.skill_utils import get_disabled_skill_names
+        result = get_disabled_skill_names()
+        assert result == {"discord-skill"}
+
+    def test_hermes_platform_takes_precedence(self, tmp_path, monkeypatch):
+        """HERMES_PLATFORM should win over HERMES_SESSION_PLATFORM."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - tg-skill\n"
+            "    discord:\n"
+            "      - discord-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+
+        from agent.skill_utils import get_disabled_skill_names
+        result = get_disabled_skill_names()
+        assert result == {"tg-skill"}
+
+    def test_explicit_param_overrides_env_vars(self, tmp_path, monkeypatch):
+        """Explicit platform= param should override all env vars."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - tg-skill\n"
+            "    slack:\n"
+            "      - slack-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+
+        from agent.skill_utils import get_disabled_skill_names
+        result = get_disabled_skill_names(platform="slack")
+        assert result == {"slack-skill"}
+
+    def test_no_platform_returns_global(self, tmp_path, monkeypatch):
+        """No platform env vars or param should return global list."""
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "skills:\n"
+            "  disabled:\n"
+            "    - global-skill\n"
+            "  platform_disabled:\n"
+            "    telegram:\n"
+            "      - tg-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+        from agent.skill_utils import get_disabled_skill_names
+        result = get_disabled_skill_names()
+        assert result == {"global-skill"}
+
+
+# ---------------------------------------------------------------------------
 # _find_all_skills — disabled filtering
 # ---------------------------------------------------------------------------
 

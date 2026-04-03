@@ -423,12 +423,26 @@ def _normalize_approval_mode(mode) -> str:
     YAML 1.1 treats bare words like `off` as booleans, so a config entry like
     `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
     intended string mode instead of falling back to manual approvals.
+
+    Unknown string values (e.g. 'auto') are rejected with a warning rather than
+    being silently accepted and causing unpredictable approval behaviour.
     """
+    _VALID_MODES = ("manual", "smart", "off")
     if isinstance(mode, bool):
         return "off" if mode is False else "manual"
     if isinstance(mode, str):
         normalized = mode.strip().lower()
-        return normalized or "manual"
+        if not normalized:
+            return "manual"
+        if normalized in _VALID_MODES:
+            return normalized
+        logger.warning(
+            "Unknown approvals.mode %r — defaulting to 'smart'. "
+            "Valid values: %s",
+            mode,
+            ", ".join(_VALID_MODES),
+        )
+        return "smart"
     return "manual"
 
 

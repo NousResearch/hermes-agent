@@ -2243,6 +2243,37 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
 
+        # Auto-apply topic personality on new sessions (e.g., "marvin", "helpful")
+        # Mirrors the /personality command behavior but driven by topic config.
+        if _is_new_session and getattr(event, "topic_personality", None):
+            _personality_name = event.topic_personality
+            try:
+                import yaml as _pers_yaml
+                with open(_config_path, encoding="utf-8") as _pf:
+                    _pers_cfg = _pers_yaml.safe_load(_pf) or {}
+                _personalities = _pers_cfg.get("agent", {}).get("personalities", {})
+                if _personality_name in _personalities:
+                    _pers_val = _personalities[_personality_name]
+                    if isinstance(_pers_val, dict):
+                        _pers_prompt = _pers_val.get("system_prompt", "")
+                    else:
+                        _pers_prompt = str(_pers_val)
+                    self._ephemeral_system_prompt = _pers_prompt
+                    logger.info(
+                        "[Gateway] Applied topic personality '%s' for session %s (thread %s)",
+                        _personality_name, session_key, getattr(event.source, "thread_id", None),
+                    )
+                else:
+                    logger.warning(
+                        "[Gateway] Topic personality '%s' not found in config",
+                        _personality_name,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[Gateway] Failed to apply topic personality '%s': %s",
+                    _personality_name, e,
+                )
+
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         

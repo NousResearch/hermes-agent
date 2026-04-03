@@ -342,6 +342,9 @@ class MessageEvent:
     
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
+
+    # Topic-bound personality to apply on new sessions (e.g., "marvin", "helpful")
+    topic_personality: Optional[str] = None
     
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)

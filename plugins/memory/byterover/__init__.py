@@ -32,7 +32,7 @@ from agent.memory_provider import MemoryProvider
 logger = logging.getLogger(__name__)
 
 # Timeouts
-_QUERY_TIMEOUT = 30   # brv query — should be fast
+_QUERY_TIMEOUT = 10   # brv query — should be fast
 _CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
 
 # Minimum lengths to filter noise
@@ -175,9 +175,6 @@ class ByteRoverMemoryProvider(MemoryProvider):
         self._cwd = ""
         self._session_id = ""
         self._turn_count = 0
-        self._prefetch_result = ""
-        self._prefetch_lock = threading.Lock()
-        self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
 
     @property
@@ -216,37 +213,26 @@ class ByteRoverMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
-        with self._prefetch_lock:
-            result = self._prefetch_result
-            self._prefetch_result = ""
-        if not result:
+        """Run brv query synchronously before the agent's first LLM call.
+
+        Blocks until the query completes (up to _QUERY_TIMEOUT seconds), ensuring
+        the result is available as context before the model is called.
+        """
+        if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
-        return f"## ByteRover Context\n{result}"
+        result = _run_brv(
+            ["query", "--", query.strip()[:5000]],
+            timeout=_QUERY_TIMEOUT, cwd=self._cwd,
+        )
+        if result["success"] and result.get("output"):
+            output = result["output"].strip()
+            if len(output) > _MIN_OUTPUT_LEN:
+                return f"## ByteRover Context\n{output}"
+        return ""
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if not query or len(query.strip()) < _MIN_QUERY_LEN:
-            return
-
-        def _run():
-            try:
-                result = _run_brv(
-                    ["query", "--", query.strip()[:5000]],
-                    timeout=_QUERY_TIMEOUT, cwd=self._cwd,
-                )
-                if result["success"] and result.get("output"):
-                    output = result["output"].strip()
-                    if len(output) > _MIN_OUTPUT_LEN:
-                        with self._prefetch_lock:
-                            self._prefetch_result = output
-            except Exception as e:
-                logger.debug("ByteRover prefetch failed: %s", e)
-
-        self._prefetch_thread = threading.Thread(
-            target=_run, daemon=True, name="brv-prefetch"
-        )
-        self._prefetch_thread.start()
+        """No-op: prefetch() now runs synchronously at turn start."""
+        pass
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Curate the conversation turn in background (non-blocking)."""
@@ -338,9 +324,8 @@ class ByteRoverMemoryProvider(MemoryProvider):
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
     def shutdown(self) -> None:
-        for t in (self._sync_thread, self._prefetch_thread):
-            if t and t.is_alive():
-                t.join(timeout=10.0)
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=10.0)
 
     # -- Tool implementations ------------------------------------------------
 

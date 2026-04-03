@@ -5508,13 +5508,16 @@ class HermesCLI:
         thread.start()
 
     @staticmethod
-    def _try_launch_chrome_debug(port: int, system: str) -> bool:
+    def _try_launch_chrome_debug(port: int, system: str,
+                                 user_data_dir: Optional[str] = None,
+                                 profile_dir: Optional[str] = None) -> bool:
         """Try to launch Chrome/Chromium with remote debugging enabled.
 
         Uses a dedicated user-data-dir so the debug instance doesn't conflict
         with an already-running Chrome using the default profile.
 
         Returns True if a launch command was executed (doesn't guarantee success).
+        NOTE: Chrome must not already be running on the same user_data_dir.
         """
         import subprocess as _sp
 
@@ -5539,6 +5542,11 @@ class HermesCLI:
         os.makedirs(data_dir, exist_ok=True)
 
         chrome = candidates[0]
+        cmd = [chrome, f"--remote-debugging-port={port}"]
+        if user_data_dir:
+            cmd.append(f"--user-data-dir={os.path.expanduser(user_data_dir)}")
+        if profile_dir:
+            cmd.append(f"--profile-directory={profile_dir}")
         try:
             _sp.Popen(
                 [
@@ -5550,7 +5558,7 @@ class HermesCLI:
                 ],
                 stdout=_sp.DEVNULL,
                 stderr=_sp.DEVNULL,
-                start_new_session=True,  # detach from terminal
+                start_new_session=True,
             )
             return True
         except Exception:
@@ -5604,9 +5612,34 @@ class HermesCLI:
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
-            # Optionally accept a custom CDP URL: /browser connect ws://host:port
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            # Subcommands:
+            #   /browser connect               — fresh Chrome on port 9222
+            #   /browser connect profile       — your default Chrome profile (with logins)
+            #   /browser connect profile N     — specific profile ('Default', 'Profile 1', etc.)
+            #   /browser connect ws://...      — custom CDP URL
+            connect_parts = cmd.strip().split(None, 3)  # ["/browser", "connect", arg1?, arg2?]
+            arg1 = connect_parts[2].strip() if len(connect_parts) > 2 else ""
+            arg2 = connect_parts[3].strip() if len(connect_parts) > 3 else ""
+
+            _user_data_dir = None
+            _profile_dir = None
+            cdp_url = _DEFAULT_CDP
+
+            if arg1.startswith(("ws://", "http://", "https://")):
+                cdp_url = arg1
+            elif arg1 == "profile":
+                # Use the real Chrome profile — requires Chrome to be closed first
+                sys_name = _plat.system()
+                if sys_name == "Darwin":
+                    _user_data_dir = os.path.expanduser(
+                        "~/Library/Application Support/Google/Chrome"
+                    )
+                elif sys_name == "Linux":
+                    _user_data_dir = os.path.expanduser("~/.config/google-chrome")
+                else:
+                    _user_data_dir = os.path.expanduser("~/AppData/Local/Google/Chrome/User Data")
+                # Profile subfolder: 'Default', 'Profile 1', etc.
+                _profile_dir = arg2 if arg2 else "Default"
 
             try:
                 from tools.browser_tool import cleanup_all_browsers
@@ -5615,6 +5648,10 @@ class HermesCLI:
                 pass
 
             print()
+            if _user_data_dir:
+                print(f"   Profile mode: {_user_data_dir}/{_profile_dir}")
+                print(f"   ⚠ Chrome must be fully quit (Cmd+Q) before connecting with your profile.")
+                print()
 
             _already_open = self._ensure_chrome_debug(_cdp_port, _user_data_dir)
 
@@ -5623,9 +5660,12 @@ class HermesCLI:
             elif cdp_url == _DEFAULT_CDP:
                 # Try to auto-launch Chrome with remote debugging
                 print("   Chrome isn't running with remote debugging — attempting to launch...")
-                _launched = self._try_launch_chrome_debug(_port, _plat.system())
+                _launched = self._try_launch_chrome_debug(
+                    _port, _plat.system(),
+                    user_data_dir=_user_data_dir,
+                    profile_dir=_profile_dir,
+                )
                 if _launched:
-                    # Wait for the port to come up
                     import time as _time
                     for _wait in range(10):
                         try:
@@ -5639,6 +5679,8 @@ class HermesCLI:
                             _time.sleep(0.5)
                     if _already_open:
                         print(f"   ✓ Chrome launched and listening on port {_port}")
+                        if _user_data_dir:
+                            print(f"   ✓ Using profile: {_profile_dir} (your logins are available)")
                     else:
                         print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
                         print("     Try again in a few seconds — the debug instance may still be starting")

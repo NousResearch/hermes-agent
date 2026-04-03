@@ -5,7 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 
 
 def get_sandbox_dir() -> Path:

@@ -78,7 +78,6 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 import yaml
-from hermes_cli.config import load_env, _ENV_VAR_NAME_RE
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -101,9 +100,26 @@ _PLATFORM_MAP = {
     "linux": "linux",
     "windows": "win32",
 }
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
 _REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
 _secret_capture_callback = None
+
+
+def load_env() -> Dict[str, str]:
+    """Load profile-scoped environment variables from HERMES_HOME/.env."""
+    env_path = get_hermes_home() / ".env"
+    env_vars: Dict[str, str] = {}
+    if not env_path.exists():
+        return env_vars
+
+    with env_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                env_vars[key.strip()] = value.strip().strip("\"'")
+    return env_vars
 
 
 class SkillReadinessStatus(str, Enum):

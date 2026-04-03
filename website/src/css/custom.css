@@ -67,6 +67,14 @@
   border-bottom: 1px solid rgba(255, 215, 0, 0.08);
 }
 
+/* backdrop-filter creates a stacking context that hides
+   .navbar-sidebar menu content (Docusaurus #6996). Remove it
+   while the mobile sidebar is open — both classes live on the
+   same <nav> element. */
+.navbar.navbar-sidebar--show {
+  backdrop-filter: none;
+}
+
 .navbar__title {
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -197,6 +205,46 @@ pre.prism-code.language-ascii code {
 [data-theme='dark'] .DocSearch-Button {
   background-color: #0f0f18;
   border: 1px solid rgba(255, 215, 0, 0.08);
+}
+
+/* ─── Mobile sidebar improvements ─────────────────────────────────────────── */
+
+/* Larger touch targets on mobile */
+@media (max-width: 996px) {
+  .menu__link {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.95rem;
+  }
+
+  .menu__list-item-collapsible > .menu__link {
+    font-weight: 600;
+    font-size: 1rem;
+    padding: 0.75rem 0.75rem;
+    border-bottom: 1px solid rgba(255, 215, 0, 0.06);
+  }
+
+  /* Category caret — more visible */
+  .menu__caret::before {
+    background-size: 1.5rem 1.5rem;
+  }
+
+  /* Indent subcategories clearly */
+  .menu__list .menu__list {
+    padding-left: 0.75rem;
+    border-left: 1px solid rgba(255, 215, 0, 0.06);
+    margin-left: 0.5rem;
+  }
+
+  /* Sidebar overlay — slightly more opaque for readability */
+  .navbar-sidebar__backdrop {
+    background-color: rgba(0, 0, 0, 0.6);
+  }
+
+  /* Sidebar width on mobile — use more of the screen */
+  .navbar-sidebar {
+    width: 85vw;
+    max-width: 360px;
+  }
 }
 
 /* Hero banner for docs landing if needed */

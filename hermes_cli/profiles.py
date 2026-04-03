@@ -27,7 +27,7 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -57,6 +57,34 @@ _CLONE_ALL_STRIP = [
     "gateway_state.json",
     "processes.json",
 ]
+
+# Directories/files to exclude when exporting the default (~/.hermes) profile.
+# The default profile contains infrastructure (repo checkout, worktrees, DBs,
+# caches, binaries) that named profiles don't have.  We exclude those so the
+# export is a portable, reasonable-size archive of actual profile data.
+_DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-export
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
+    "auth.lock", "active_profile", ".update_check",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+})
 
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
@@ -241,7 +269,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
         if isinstance(model_cfg, str):
             return model_cfg, None
         if isinstance(model_cfg, dict):
-            return model_cfg.get("model"), model_cfg.get("provider")
+            return model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider")
         return None, None
     except Exception:
         return None, None
@@ -685,11 +713,37 @@ def get_active_profile_name() -> str:
 # Export / Import
 # ---------------------------------------------------------------------------
 
+def _default_export_ignore(root_dir: Path):
+    """Return an *ignore* callable for :func:`shutil.copytree`.
+
+    At the root level it excludes everything in ``_DEFAULT_EXPORT_EXCLUDE_ROOT``.
+    At all levels it excludes ``__pycache__``, sockets, and temp files.
+    """
+
+    def _ignore(directory: str, contents: list) -> set:
+        ignored: set = set()
+        for entry in contents:
+            # Universal exclusions (any depth)
+            if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
+                ignored.add(entry)
+            # npm lockfiles can appear at root
+            elif entry in ("package.json", "package-lock.json"):
+                ignored.add(entry)
+        # Root-level exclusions
+        if Path(directory) == root_dir:
+            ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
+        return ignored
+
+    return _ignore
+
+
 def export_profile(name: str, output_path: str) -> Path:
     """Export a profile to a tar.gz archive.
 
     Returns the output file path.
     """
+    import tempfile
+
     validate_profile_name(name)
     profile_dir = get_profile_dir(name)
     if not profile_dir.is_dir():
@@ -698,8 +752,84 @@ def export_profile(name: str, output_path: str) -> Path:
     output = Path(output_path)
     # shutil.make_archive wants the base name without extension
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
-    result = shutil.make_archive(base, "gztar", str(profile_dir.parent), name)
-    return Path(result)
+
+    if name == "default":
+        # The default profile IS ~/.hermes itself — its parent is ~/ and its
+        # directory name is ".hermes", not "default".  We stage a clean copy
+        # under a temp dir so the archive contains ``default/...``.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            staged = Path(tmpdir) / "default"
+            shutil.copytree(
+                profile_dir,
+                staged,
+                ignore=_default_export_ignore(profile_dir),
+            )
+            result = shutil.make_archive(base, "gztar", tmpdir, "default")
+            return Path(result)
+
+    # Named profiles — stage a filtered copy to exclude credentials
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staged = Path(tmpdir) / name
+        _CREDENTIAL_FILES = {"auth.json", ".env"}
+        shutil.copytree(
+            profile_dir,
+            staged,
+            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+        )
+        result = shutil.make_archive(base, "gztar", tmpdir, name)
+        return Path(result)
+
+
+def _normalize_profile_archive_parts(member_name: str) -> List[str]:
+    """Return safe path parts for a profile archive member."""
+    normalized_name = member_name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(member_name)
+
+    if (
+        not normalized_name
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+    ):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+
+    parts = [part for part in posix_path.parts if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+    return parts
+
+
+def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
+    """Extract a profile archive without allowing path escapes or links."""
+    import tarfile
+
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            parts = _normalize_profile_archive_parts(member.name)
+            target = destination.joinpath(*parts)
+
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            if not member.isfile():
+                raise ValueError(
+                    f"Unsupported archive member type: {member.name}"
+                )
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            extracted = tf.extractfile(member)
+            if extracted is None:
+                raise ValueError(f"Cannot read archive member: {member.name}")
+
+            with extracted, open(target, "wb") as dst:
+                shutil.copyfileobj(extracted, dst)
+
+            try:
+                os.chmod(target, member.mode & 0o777)
+            except OSError:
+                pass
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
@@ -716,15 +846,33 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
     # Peek at the archive to find the top-level directory name
     with tarfile.open(archive, "r:gz") as tf:
-        top_dirs = {m.name.split("/")[0] for m in tf.getmembers() if "/" in m.name}
+        top_dirs = {
+            parts[0]
+            for member in tf.getmembers()
+            for parts in [_normalize_profile_archive_parts(member.name)]
+            if len(parts) > 1 or member.isdir()
+        }
         if not top_dirs:
-            top_dirs = {m.name for m in tf.getmembers() if m.isdir()}
+            top_dirs = {
+                _normalize_profile_archive_parts(member.name)[0]
+                for member in tf.getmembers()
+                if member.isdir()
+            }
 
     inferred_name = name or (top_dirs.pop() if len(top_dirs) == 1 else None)
     if not inferred_name:
         raise ValueError(
             "Cannot determine profile name from archive. "
             "Specify it explicitly: hermes profile import <archive> --name <name>"
+        )
+
+    # Archives exported from the default profile have "default/" as top-level
+    # dir.  Importing as "default" would target ~/.hermes itself — disallow
+    # that and guide the user toward a named profile.
+    if inferred_name == "default":
+        raise ValueError(
+            "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
+            "Specify a different name: hermes profile import <archive> --name <name>"
         )
 
     validate_profile_name(inferred_name)
@@ -735,7 +883,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
 
-    shutil.unpack_archive(str(archive), str(profiles_root))
+    _safe_extract_profile_archive(archive, profiles_root)
 
     # If the archive extracted under a different name, rename
     extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)

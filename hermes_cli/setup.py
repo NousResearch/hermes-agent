@@ -18,6 +18,14 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from hermes_cli.nous_subscription import (
+    apply_nous_provider_defaults,
+    get_nous_subscription_explainer_lines,
+    get_nous_subscription_features,
+)
+from tools.tool_backend_helpers import managed_nous_tools_enabled
+from hermes_constants import get_optional_skills_dir
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -52,6 +60,32 @@ def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
     config["model"] = model_cfg
 
 
+def _get_credential_pool_strategies(config: Dict[str, Any]) -> Dict[str, str]:
+    strategies = config.get("credential_pool_strategies")
+    return dict(strategies) if isinstance(strategies, dict) else {}
+
+
+def _set_credential_pool_strategy(config: Dict[str, Any], provider: str, strategy: str) -> None:
+    if not provider:
+        return
+    strategies = _get_credential_pool_strategies(config)
+    strategies[provider] = strategy
+    config["credential_pool_strategies"] = strategies
+
+
+def _supports_same_provider_pool_setup(provider: str) -> bool:
+    if not provider or provider == "custom":
+        return False
+    if provider == "openrouter":
+        return True
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    if not pconfig:
+        return False
+    return pconfig.auth_type in {"api_key", "oauth_device_code"}
+
+
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
@@ -80,6 +114,8 @@ _DEFAULT_PROVIDER_MODELS = {
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
+    "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
+    "opencode-go": ["glm-5", "kimi-k2.5", "minimax-m2.5", "minimax-m2.7"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -155,6 +191,8 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         fetch_api_models,
         fetch_github_model_catalog,
         normalize_copilot_model_id,
+        normalize_opencode_model_id,
+        opencode_model_api_mode,
     )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -208,6 +246,11 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 f"    Use \"Custom model\" if the model you expect isn't listed."
             )
 
+    if provider_id in {"opencode-zen", "opencode-go"}:
+        provider_models = [normalize_opencode_model_id(provider_id, mid) for mid in provider_models]
+        current_model = normalize_opencode_model_id(provider_id, current_model)
+        provider_models = list(dict.fromkeys(mid for mid in provider_models if mid))
+
     model_choices = list(provider_models)
     model_choices.append("Custom model")
     model_choices.append(f"Keep current ({current_model})")
@@ -225,6 +268,8 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 catalog=catalog,
                 api_key=api_key,
             ) or selected_model
+        elif provider_id in {"opencode-zen", "opencode-go"}:
+            selected_model = normalize_opencode_model_id(provider_id, selected_model)
         _set_default_model(config, selected_model)
     elif model_idx == len(provider_models):
         custom = prompt_fn("Enter model name")
@@ -235,6 +280,8 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                     catalog=catalog,
                     api_key=api_key,
                 ) or custom
+            elif provider_id in {"opencode-zen", "opencode-go"}:
+                selected_model = normalize_opencode_model_id(provider_id, custom)
             else:
                 selected_model = custom
             _set_default_model(config, selected_model)
@@ -266,6 +313,10 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
             catalog=catalog,
             api_key=api_key,
         )
+    elif provider_id in {"opencode-zen", "opencode-go"} and selected_model:
+        model_cfg = _model_config_dict(config)
+        model_cfg["api_mode"] = opencode_model_api_mode(provider_id, selected_model)
+        config["model"] = model_cfg
 
 
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
@@ -566,6 +617,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print_header("Tool Availability Summary")
 
     tool_status = []
+    subscription_features = get_nous_subscription_features(config)
 
     # Vision — use the same runtime resolver as the actual vision tools
     try:
@@ -587,40 +639,61 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
-    if get_env_value("EXA_API_KEY") or get_env_value("PARALLEL_API_KEY") or get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL") or get_env_value("TAVILY_API_KEY"):
-        tool_status.append(("Web Search & Extract", True, None))
+    if subscription_features.web.managed_by_nous:
+        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
+    elif subscription_features.web.available:
+        label = "Web Search & Extract"
+        if subscription_features.web.current_provider:
+            label = f"Web Search & Extract ({subscription_features.web.current_provider})"
+        tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY, or TAVILY_API_KEY"))
+        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
 
-    # Browser tools (local Chromium or Browserbase cloud)
-    import shutil
-
-    _ab_found = (
-        shutil.which("agent-browser")
-        or (
-            Path(__file__).parent.parent / "node_modules" / ".bin" / "agent-browser"
-        ).exists()
-    )
-    if get_env_value("BROWSERBASE_API_KEY"):
-        tool_status.append(("Browser Automation (Browserbase)", True, None))
-    elif _ab_found:
-        tool_status.append(("Browser Automation (local)", True, None))
+    # Browser tools (local Chromium, Camofox, Browserbase, or Browser Use)
+    browser_provider = subscription_features.browser.current_provider
+    if subscription_features.browser.managed_by_nous:
+        tool_status.append(("Browser Automation (Nous Browserbase)", True, None))
+    elif subscription_features.browser.available:
+        label = "Browser Automation"
+        if browser_provider:
+            label = f"Browser Automation ({browser_provider})"
+        tool_status.append((label, True, None))
     else:
+        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browserbase"
+        if browser_provider == "Browserbase":
+            missing_browser_hint = (
+                "npm install -g agent-browser and set "
+                "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
+            )
+        elif browser_provider == "Browser Use":
+            missing_browser_hint = (
+                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
+            )
+        elif browser_provider == "Camofox":
+            missing_browser_hint = "CAMOFOX_URL"
+        elif browser_provider == "Local browser":
+            missing_browser_hint = "npm install -g agent-browser"
         tool_status.append(
-            ("Browser Automation", False, "npm install -g agent-browser")
+            ("Browser Automation", False, missing_browser_hint)
         )
 
     # FAL (image generation)
-    if get_env_value("FAL_KEY"):
+    if subscription_features.image_gen.managed_by_nous:
+        tool_status.append(("Image Generation (Nous subscription)", True, None))
+    elif subscription_features.image_gen.available:
         tool_status.append(("Image Generation", True, None))
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
 
     # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
-    if tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
+    if subscription_features.tts.managed_by_nous:
+        tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
+    elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
         tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
-    elif tts_provider == "openai" and get_env_value("VOICE_TOOLS_OPENAI_KEY"):
+    elif tts_provider == "openai" and (
+        get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
+    ):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
     elif tts_provider == "neutts":
         try:
@@ -634,6 +707,16 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
     else:
         tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+
+    if subscription_features.modal.managed_by_nous:
+        tool_status.append(("Modal Execution (Nous subscription)", True, None))
+    elif config.get("terminal", {}).get("backend") == "modal":
+        if subscription_features.modal.direct_override:
+            tool_status.append(("Modal Execution (direct Modal)", True, None))
+        else:
+            tool_status.append(("Modal Execution", False, "run 'hermes setup terminal'"))
+    elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
+        tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
     # Tinker + WandB (RL training)
     if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
@@ -801,772 +884,129 @@ def _prompt_container_resources(config: dict):
 # =============================================================================
 
 
+
 def setup_model_provider(config: dict):
-    """Configure the inference provider and default model."""
-    from hermes_cli.auth import (
-        get_active_provider,
-        PROVIDER_REGISTRY,
-        fetch_nous_models,
-        resolve_nous_runtime_credentials,
-        _update_config_for_provider,
-        _login_openai_codex,
-        resolve_codex_runtime_credentials,
-        DEFAULT_CODEX_BASE_URL,
-        detect_external_credentials,
-        get_auth_status,
-        resolve_api_key_provider_credentials,
-    )
+    """Configure the inference provider and default model.
+
+    Delegates to ``cmd_model()`` (the same flow used by ``hermes model``)
+    for provider selection, credential prompting, and model picking.
+    This ensures a single code path for all provider setup — any new
+    provider added to ``hermes model`` is automatically available here.
+    """
+    from hermes_cli.config import load_config, save_config
 
     print_header("Inference Provider")
     print_info("Choose how to connect to your main chat model.")
     print()
 
-    existing_or = get_env_value("OPENROUTER_API_KEY")
-    active_oauth = get_active_provider()
-    existing_custom = get_env_value("OPENAI_BASE_URL")
-    copilot_status = get_auth_status("copilot")
-    copilot_acp_status = get_auth_status("copilot-acp")
-
-    model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
-    current_config_provider = str(model_cfg.get("provider") or "").strip().lower() or None
-    if current_config_provider == "auto":
-        current_config_provider = None
-    current_config_base_url = str(model_cfg.get("base_url") or "").strip()
-
-    # Detect credentials from other CLI tools
-    detected_creds = detect_external_credentials()
-    if detected_creds:
-        print_info("Detected existing credentials:")
-        for cred in detected_creds:
-            if cred["provider"] == "openai-codex":
-                print_success(f'  * {cred["label"]} -- select "OpenAI Codex" to use it')
-            else:
-                print_info(f"  * {cred['label']}")
+    # Delegate to the shared hermes model flow — handles provider picker,
+    # credential prompting, model selection, and config persistence.
+    from hermes_cli.main import select_provider_and_model
+    try:
+        select_provider_and_model()
+    except (SystemExit, KeyboardInterrupt):
         print()
+        print_info("Provider setup skipped.")
+    except Exception as exc:
+        logger.debug("select_provider_and_model error during setup: %s", exc)
+        print_warning(f"Provider setup encountered an error: {exc}")
+        print_info("You can try again later with: hermes model")
 
-    # Detect if any provider is already configured
-    has_any_provider = bool(
-        current_config_provider
-        or active_oauth
-        or existing_custom
-        or existing_or
-        or copilot_status.get("logged_in")
-        or copilot_acp_status.get("logged_in")
-    )
+    # Re-sync the wizard's config dict from what cmd_model saved to disk.
+    # This is critical: cmd_model writes to disk via its own load/save cycle,
+    # and the wizard's final save_config(config) must not overwrite those
+    # changes with stale values (#4172).
+    _refreshed = load_config()
+    config["model"] = _refreshed.get("model", config.get("model"))
+    if _refreshed.get("custom_providers"):
+        config["custom_providers"] = _refreshed["custom_providers"]
 
-    # Build "keep current" label
-    if current_config_provider == "custom":
-        custom_label = current_config_base_url or existing_custom
-        keep_label = (
-            f"Keep current (Custom: {custom_label})"
-            if custom_label
-            else "Keep current (Custom)"
-        )
-    elif current_config_provider == "openrouter":
-        keep_label = "Keep current (OpenRouter)"
-    elif current_config_provider and current_config_provider in PROVIDER_REGISTRY:
-        keep_label = f"Keep current ({PROVIDER_REGISTRY[current_config_provider].name})"
-    elif active_oauth and active_oauth in PROVIDER_REGISTRY:
-        keep_label = f"Keep current ({PROVIDER_REGISTRY[active_oauth].name})"
-    elif existing_custom:
-        keep_label = f"Keep current (Custom: {existing_custom})"
-    elif existing_or:
-        keep_label = "Keep current (OpenRouter)"
-    else:
-        keep_label = None  # No provider configured — don't show "Keep current"
+    # Derive the selected provider for downstream steps (vision setup).
+    selected_provider = None
+    _m = config.get("model")
+    if isinstance(_m, dict):
+        selected_provider = _m.get("provider")
 
-    provider_choices = [
-        "OpenRouter API key (100+ models, pay-per-use)",
-        "Login with Nous Portal (Nous Research subscription — OAuth)",
-        "Login with OpenAI Codex",
-        "Custom OpenAI-compatible endpoint (self-hosted / VLLM / etc.)",
-        "Z.AI / GLM (Zhipu AI models)",
-        "Kimi / Moonshot (Kimi coding models)",
-        "MiniMax (global endpoint)",
-        "MiniMax China (mainland China endpoint)",
-        "Kilo Code (Kilo Gateway API)",
-        "Anthropic (Claude models — API key or Claude Code subscription)",
-        "AI Gateway (Vercel — 200+ models, pay-per-use)",
-        "Alibaba Cloud / DashScope (Qwen models via Anthropic-compatible API)",
-        "OpenCode Zen (35+ curated models, pay-as-you-go)",
-        "OpenCode Go (open models, $10/month subscription)",
-        "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)",
-        "GitHub Copilot ACP (spawns `copilot --acp --stdio`)",
-        "Hugging Face Inference Providers (20+ open models)",
-    ]
-    if keep_label:
-        provider_choices.append(keep_label)
+    nous_subscription_selected = selected_provider == "nous"
 
-    # Default to "Keep current" if a provider exists, otherwise OpenRouter (most common)
-    default_provider = len(provider_choices) - 1 if has_any_provider else 0
-
-    if not has_any_provider:
-        print_warning("An inference provider is required for Hermes to work.")
-        print()
-
-    provider_idx = prompt_choice(
-        "Select your inference provider:", provider_choices, default_provider
-    )
-
-    # Track which provider was selected for model step
-    selected_provider = (
-        None  # "nous", "openai-codex", "openrouter", "custom", or None (keep)
-    )
-    selected_base_url = None  # deferred until after model selection
-    nous_models = []  # populated if Nous login succeeds
-
-    if provider_idx == 0:  # OpenRouter
-        selected_provider = "openrouter"
-        print()
-        print_header("OpenRouter API Key")
-        print_info("OpenRouter provides access to 100+ models from multiple providers.")
-        print_info("Get your API key at: https://openrouter.ai/keys")
-
-        if existing_or:
-            print_info(f"Current: {existing_or[:8]}... (configured)")
-            if prompt_yes_no("Update OpenRouter API key?", False):
-                api_key = prompt("  OpenRouter API key", password=True)
-                if api_key:
-                    save_env_value("OPENROUTER_API_KEY", api_key)
-                    print_success("OpenRouter API key updated")
-        else:
-            api_key = prompt("  OpenRouter API key", password=True)
-            if api_key:
-                save_env_value("OPENROUTER_API_KEY", api_key)
-                print_success("OpenRouter API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear any custom endpoint if switching to OpenRouter
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-
-        # Update config.yaml and deactivate any OAuth provider so the
-        # resolver doesn't keep returning the old provider (e.g. Codex).
+    # ── Same-provider fallback & rotation setup ──
+    if _supports_same_provider_pool_setup(selected_provider):
         try:
-            from hermes_cli.auth import deactivate_provider
+            from types import SimpleNamespace
+            from agent.credential_pool import load_pool
+            from hermes_cli.auth_commands import auth_add_command
 
-            deactivate_provider()
-        except Exception:
-            pass
-        import yaml
-
-        config_path = (
-            Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "config.yaml"
-        )
-        try:
-            disk_cfg = {}
-            if config_path.exists():
-                disk_cfg = yaml.safe_load(config_path.read_text()) or {}
-            model_section = disk_cfg.get("model", {})
-            if isinstance(model_section, str):
-                model_section = {"default": model_section}
-            model_section["provider"] = "openrouter"
-            model_section.pop("base_url", None)  # OpenRouter uses default URL
-            disk_cfg["model"] = model_section
-            config_path.write_text(yaml.safe_dump(disk_cfg, sort_keys=False))
-            _set_model_provider(config, "openrouter")
-        except Exception as e:
-            logger.debug("Could not save provider to config.yaml: %s", e)
-
-    elif provider_idx == 1:  # Nous Portal (OAuth)
-        selected_provider = "nous"
-        print()
-        print_header("Nous Portal Login")
-        print_info("This will open your browser to authenticate with Nous Portal.")
-        print_info("You'll need a Nous Research account with an active subscription.")
-        print()
-
-        try:
-            from hermes_cli.auth import _login_nous
-            import argparse
-
-            mock_args = argparse.Namespace(
-                portal_url=None,
-                inference_url=None,
-                client_id=None,
-                scope=None,
-                no_browser=False,
-                timeout=15.0,
-                ca_bundle=None,
-                insecure=False,
-            )
-            pconfig = PROVIDER_REGISTRY["nous"]
-            _login_nous(mock_args, pconfig)
-            _sync_model_from_disk(config)
-
-            # Fetch models for the selection step
-            try:
-                creds = resolve_nous_runtime_credentials(
-                    min_key_ttl_seconds=5 * 60,
-                    timeout_seconds=15.0,
-                )
-                # Use curated model list instead of full /models dump
-                from hermes_cli.models import _PROVIDER_MODELS
-                nous_models = _PROVIDER_MODELS.get("nous", [])
-            except Exception as e:
-                logger.debug("Could not fetch Nous models after login: %s", e)
-
-        except SystemExit:
-            print_warning("Nous Portal login was cancelled or failed.")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-        except Exception as e:
-            print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-
-    elif provider_idx == 2:  # OpenAI Codex
-        selected_provider = "openai-codex"
-        print()
-        print_header("OpenAI Codex Login")
-        print()
-
-        try:
-            import argparse
-
-            mock_args = argparse.Namespace()
-            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
-            # Clear custom endpoint vars that would override provider routing.
-            if existing_custom:
-                save_env_value("OPENAI_BASE_URL", "")
-                save_env_value("OPENAI_API_KEY", "")
-            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-            _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        except SystemExit:
-            print_warning("OpenAI Codex login was cancelled or failed.")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-        except Exception as e:
-            print_error(f"Login failed: {e}")
-            print_info("You can try again later with: hermes model")
-            selected_provider = None
-
-    elif provider_idx == 3:  # Custom endpoint
-        selected_provider = "custom"
-        print()
-        print_header("Custom OpenAI-Compatible Endpoint")
-        print_info("Works with any API that follows OpenAI's chat completions spec")
-        print()
-
-        # Reuse the shared custom endpoint flow from `hermes model`.
-        # This handles: URL/key/model/context-length prompts, endpoint probing,
-        # env saving, config.yaml updates, and custom_providers persistence.
-        from hermes_cli.main import _model_flow_custom
-        _model_flow_custom(config)
-        # _model_flow_custom handles model selection, config, env vars,
-        # and custom_providers. Keep selected_provider = "custom" so
-        # the model selection step below is skipped (line 1631 check)
-        # but vision and TTS setup still run.
-
-    elif provider_idx == 4:  # Z.AI / GLM
-        selected_provider = "zai"
-        print()
-        print_header("Z.AI / GLM API Key")
-        pconfig = PROVIDER_REGISTRY["zai"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info("Get your API key at: https://open.bigmodel.cn/")
-        print()
-
-        existing_key = get_env_value("GLM_API_KEY") or get_env_value("ZAI_API_KEY")
-        api_key = existing_key  # will be overwritten if user enters a new one
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                new_key = prompt("  GLM API key", password=True)
-                if new_key:
-                    api_key = new_key
-                    save_env_value("GLM_API_KEY", api_key)
-                    print_success("GLM API key updated")
-        else:
-            api_key = prompt("  GLM API key", password=True)
-            if api_key:
-                save_env_value("GLM_API_KEY", api_key)
-                print_success("GLM API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Detect the correct z.ai endpoint for this key.
-        # Z.AI has separate billing for general vs coding plans and
-        # global vs China endpoints — we probe to find the right one.
-        zai_base_url = pconfig.inference_base_url
-        if api_key:
+            pool = load_pool(selected_provider)
+            entries = pool.entries()
+            entry_count = len(entries)
+            manual_count = sum(1 for entry in entries if str(getattr(entry, "source", "")).startswith("manual"))
+            auto_count = entry_count - manual_count
             print()
-            print_info("Detecting your z.ai endpoint...")
-            from hermes_cli.auth import detect_zai_endpoint
-
-            detected = detect_zai_endpoint(api_key)
-            if detected:
-                zai_base_url = detected["base_url"]
-                print_success(f"Detected: {detected['label']} endpoint")
-                print_info(f"  URL: {detected['base_url']}")
-                if detected["id"].startswith("coding"):
-                    print_info(
-                        f"  Note: Coding Plan endpoint detected (default model: {detected['model']}). "
-                        f"GLM-5 may still be available depending on your plan tier."
-                    )
-                save_env_value("GLM_BASE_URL", zai_base_url)
-            else:
-                print_warning("Could not verify any z.ai endpoint with this key.")
-                print_info(f"  Using default: {zai_base_url}")
+            print_header("Same-Provider Fallback & Rotation")
+            print_info(
+                "Hermes can keep multiple credentials for one provider and rotate between"
+            )
+            print_info(
+                "them when a credential is exhausted or rate-limited. This preserves"
+            )
+            print_info(
+                "your primary provider while reducing interruptions from quota issues."
+            )
+            print()
+            if auto_count > 0:
                 print_info(
-                    "  If you get billing errors, check your plan at https://open.bigmodel.cn/"
+                    f"Current pooled credentials for {selected_provider}: {entry_count} "
+                    f"({manual_count} manual, {auto_count} auto-detected from env/shared auth)"
                 )
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "zai", zai_base_url)
-        selected_base_url = zai_base_url
-
-    elif provider_idx == 5:  # Kimi / Moonshot
-        selected_provider = "kimi-coding"
-        print()
-        print_header("Kimi / Moonshot API Key")
-        pconfig = PROVIDER_REGISTRY["kimi-coding"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://platform.moonshot.cn/")
-        print()
-
-        existing_key = get_env_value("KIMI_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  Kimi API key", password=True)
-                if api_key:
-                    save_env_value("KIMI_API_KEY", api_key)
-                    print_success("Kimi API key updated")
-        else:
-            api_key = prompt("  Kimi API key", password=True)
-            if api_key:
-                save_env_value("KIMI_API_KEY", api_key)
-                print_success("Kimi API key saved")
             else:
-                print_warning("Skipped - agent won't work without an API key")
+                print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
 
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "kimi-coding", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
+            while prompt_yes_no("Add another credential for same-provider fallback?", False):
+                auth_add_command(
+                    SimpleNamespace(
+                        provider=selected_provider,
+                        auth_type="",
+                        label=None,
+                        api_key=None,
+                        portal_url=None,
+                        inference_url=None,
+                        client_id=None,
+                        scope=None,
+                        no_browser=False,
+                        timeout=15.0,
+                        insecure=False,
+                        ca_bundle=None,
+                        min_key_ttl_seconds=5 * 60,
+                    )
+                )
+                pool = load_pool(selected_provider)
+                entry_count = len(pool.entries())
+                print_info(f"Provider pool now has {entry_count} credential(s).")
 
-    elif provider_idx == 6:  # MiniMax
-        selected_provider = "minimax"
-        print()
-        print_header("MiniMax API Key")
-        pconfig = PROVIDER_REGISTRY["minimax"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://platform.minimaxi.com/")
-        print()
-
-        existing_key = get_env_value("MINIMAX_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  MiniMax API key", password=True)
-                if api_key:
-                    save_env_value("MINIMAX_API_KEY", api_key)
-                    print_success("MiniMax API key updated")
-        else:
-            api_key = prompt("  MiniMax API key", password=True)
-            if api_key:
-                save_env_value("MINIMAX_API_KEY", api_key)
-                print_success("MiniMax API key saved")
+            if entry_count > 1:
+                strategy_labels = [
+                    "Fill-first / sticky — keep using the first healthy credential until it is exhausted",
+                    "Round robin — rotate to the next healthy credential after each selection",
+                    "Random — pick a random healthy credential each time",
+                ]
+                current_strategy = _get_credential_pool_strategies(config).get(selected_provider, "fill_first")
+                default_strategy_idx = {
+                    "fill_first": 0,
+                    "round_robin": 1,
+                    "random": 2,
+                }.get(current_strategy, 0)
+                strategy_idx = prompt_choice(
+                    "Select same-provider rotation strategy:",
+                    strategy_labels,
+                    default_strategy_idx,
+                )
+                strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
+                _set_credential_pool_strategy(config, selected_provider, strategy_value)
+                print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
             else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "minimax", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 7:  # MiniMax China
-        selected_provider = "minimax-cn"
-        print()
-        print_header("MiniMax China API Key")
-        pconfig = PROVIDER_REGISTRY["minimax-cn"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://platform.minimaxi.com/")
-        print()
-
-        existing_key = get_env_value("MINIMAX_CN_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  MiniMax CN API key", password=True)
-                if api_key:
-                    save_env_value("MINIMAX_CN_API_KEY", api_key)
-                    print_success("MiniMax CN API key updated")
-        else:
-            api_key = prompt("  MiniMax CN API key", password=True)
-            if api_key:
-                save_env_value("MINIMAX_CN_API_KEY", api_key)
-                print_success("MiniMax CN API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "minimax-cn", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 8:  # Kilo Code
-        selected_provider = "kilocode"
-        print()
-        print_header("Kilo Code API Key")
-        pconfig = PROVIDER_REGISTRY["kilocode"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://kilo.ai")
-        print()
-
-        existing_key = get_env_value("KILOCODE_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  Kilo Code API key", password=True)
-                if api_key:
-                    save_env_value("KILOCODE_API_KEY", api_key)
-                    print_success("Kilo Code API key updated")
-        else:
-            api_key = prompt("  Kilo Code API key", password=True)
-            if api_key:
-                save_env_value("KILOCODE_API_KEY", api_key)
-                print_success("Kilo Code API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "kilocode", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 9:  # Anthropic
-        selected_provider = "anthropic"
-        print()
-        print_header("Anthropic Authentication")
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.config import save_anthropic_api_key, save_anthropic_oauth_token
-        pconfig = PROVIDER_REGISTRY["anthropic"]
-
-        # Check ALL credential sources
-        import os as _os
-        from agent.anthropic_adapter import (
-            read_claude_code_credentials, is_claude_code_token_valid,
-            run_oauth_setup_token,
-        )
-        cc_creds = read_claude_code_credentials()
-        cc_valid = bool(cc_creds and is_claude_code_token_valid(cc_creds))
-
-        existing_key = (
-            get_env_value("ANTHROPIC_TOKEN")
-            or get_env_value("ANTHROPIC_API_KEY")
-            or _os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-        )
-
-        has_creds = bool(existing_key) or cc_valid
-        needs_auth = not has_creds
-
-        if has_creds:
-            if existing_key:
-                print_info(f"Current credentials: {existing_key[:12]}...")
-            elif cc_valid:
-                print_success("Found valid Claude Code credentials (auto-detected)")
-
-            auth_choices = [
-                "Use existing credentials",
-                "Reauthenticate (new OAuth login)",
-                "Cancel",
-            ]
-            choice_idx = prompt_choice("What would you like to do?", auth_choices, 0)
-            if choice_idx == 1:
-                needs_auth = True
-            elif choice_idx == 2:
-                pass  # fall through to provider config
-
-        if needs_auth:
-            auth_choices = [
-                "Claude Pro/Max subscription (OAuth login)",
-                "Anthropic API key (pay-per-token)",
-            ]
-            auth_idx = prompt_choice("Choose authentication method:", auth_choices, 0)
-
-            if auth_idx == 0:
-                # OAuth setup-token flow
-                try:
-                    print()
-                    print_info("Running 'claude setup-token' — follow the prompts below.")
-                    print_info("A browser window will open for you to authorize access.")
-                    print()
-                    token = run_oauth_setup_token()
-                    if token:
-                        save_anthropic_oauth_token(token, save_fn=save_env_value)
-                        print_success("OAuth credentials saved")
-                    else:
-                        # Subprocess completed but no token auto-detected
-                        print()
-                        token = prompt("Paste setup-token here (if displayed above)", password=True)
-                        if token:
-                            save_anthropic_oauth_token(token, save_fn=save_env_value)
-                            print_success("Setup-token saved")
-                        else:
-                            print_warning("Skipped — agent won't work without credentials")
-                except FileNotFoundError:
-                    print()
-                    print_info("The 'claude' CLI is required for OAuth login.")
-                    print()
-                    print_info("To install: npm install -g @anthropic-ai/claude-code")
-                    print_info("Then run:   claude setup-token")
-                    print_info("Or paste an existing setup-token below:")
-                    print()
-                    token = prompt("Setup-token (sk-ant-oat-...)", password=True)
-                    if token:
-                        save_anthropic_oauth_token(token, save_fn=save_env_value)
-                        print_success("Setup-token saved")
-                    else:
-                        print_warning("Skipped — install Claude Code and re-run setup")
-            else:
-                print()
-                print_info("Get an API key at: https://console.anthropic.com/settings/keys")
-                print()
-                api_key = prompt("API key (sk-ant-...)", password=True)
-                if api_key:
-                    save_anthropic_api_key(api_key, save_fn=save_env_value)
-                    print_success("API key saved")
-                else:
-                    print_warning("Skipped — agent won't work without credentials")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        # Don't save base_url for Anthropic — resolve_runtime_provider()
-        # always hardcodes it. Stale base_urls contaminate other providers.
-        _set_model_provider(config, "anthropic")
-        selected_base_url = ""
-
-    elif provider_idx == 10:  # AI Gateway
-        selected_provider = "ai-gateway"
-        print()
-        print_header("AI Gateway API Key")
-        pconfig = PROVIDER_REGISTRY["ai-gateway"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info("Get your API key at: https://vercel.com/docs/ai-gateway")
-        print()
-
-        existing_key = get_env_value("AI_GATEWAY_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  AI Gateway API key", password=True)
-                if api_key:
-                    save_env_value("AI_GATEWAY_API_KEY", api_key)
-                    print_success("AI Gateway API key updated")
-        else:
-            api_key = prompt("  AI Gateway API key", password=True)
-            if api_key:
-                save_env_value("AI_GATEWAY_API_KEY", api_key)
-                print_success("AI Gateway API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("ai-gateway", pconfig.inference_base_url, default_model="anthropic/claude-opus-4.6")
-        _set_model_provider(config, "ai-gateway", pconfig.inference_base_url)
-
-    elif provider_idx == 11:  # Alibaba Cloud / DashScope
-        selected_provider = "alibaba"
-        print()
-        print_header("Alibaba Cloud / DashScope API Key")
-        pconfig = PROVIDER_REGISTRY["alibaba"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info("Get your API key at: https://modelstudio.console.alibabacloud.com/")
-        print()
-
-        existing_key = get_env_value("DASHSCOPE_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                new_key = prompt("  DashScope API key", password=True)
-                if new_key:
-                    save_env_value("DASHSCOPE_API_KEY", new_key)
-                    print_success("DashScope API key updated")
-        else:
-            new_key = prompt("  DashScope API key", password=True)
-            if new_key:
-                save_env_value("DASHSCOPE_API_KEY", new_key)
-                print_success("DashScope API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _update_config_for_provider("alibaba", pconfig.inference_base_url, default_model="qwen3.5-plus")
-        _set_model_provider(config, "alibaba", pconfig.inference_base_url)
-
-    elif provider_idx == 12:  # OpenCode Zen
-        selected_provider = "opencode-zen"
-        print()
-        print_header("OpenCode Zen API Key")
-        pconfig = PROVIDER_REGISTRY["opencode-zen"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://opencode.ai/auth")
-        print()
-
-        existing_key = get_env_value("OPENCODE_ZEN_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  OpenCode Zen API key", password=True)
-                if api_key:
-                    save_env_value("OPENCODE_ZEN_API_KEY", api_key)
-                    print_success("OpenCode Zen API key updated")
-        else:
-            api_key = prompt("  OpenCode Zen API key", password=True)
-            if api_key:
-                save_env_value("OPENCODE_ZEN_API_KEY", api_key)
-                print_success("OpenCode Zen API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "opencode-zen", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 13:  # OpenCode Go
-        selected_provider = "opencode-go"
-        print()
-        print_header("OpenCode Go API Key")
-        pconfig = PROVIDER_REGISTRY["opencode-go"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print_info("Get your API key at: https://opencode.ai/auth")
-        print()
-
-        existing_key = get_env_value("OPENCODE_GO_API_KEY")
-        if existing_key:
-            print_info(f"Current: {existing_key[:8]}... (configured)")
-            if prompt_yes_no("Update API key?", False):
-                api_key = prompt("  OpenCode Go API key", password=True)
-                if api_key:
-                    save_env_value("OPENCODE_GO_API_KEY", api_key)
-                    print_success("OpenCode Go API key updated")
-        else:
-            api_key = prompt("  OpenCode Go API key", password=True)
-            if api_key:
-                save_env_value("OPENCODE_GO_API_KEY", api_key)
-                print_success("OpenCode Go API key saved")
-            else:
-                print_warning("Skipped - agent won't work without an API key")
-
-        # Clear custom endpoint vars if switching
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "opencode-go", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 14:  # GitHub Copilot
-        selected_provider = "copilot"
-        print()
-        print_header("GitHub Copilot")
-        pconfig = PROVIDER_REGISTRY["copilot"]
-        print_info("Hermes can use GITHUB_TOKEN, GH_TOKEN, or your gh CLI login.")
-        print_info(f"Base URL: {pconfig.inference_base_url}")
-        print()
-
-        copilot_creds = resolve_api_key_provider_credentials("copilot")
-        source = copilot_creds.get("source", "")
-        token = copilot_creds.get("api_key", "")
-        if token:
-            if source in ("GITHUB_TOKEN", "GH_TOKEN"):
-                print_info(f"Current: {token[:8]}... ({source})")
-            elif source == "gh auth token":
-                print_info("Current: authenticated via `gh auth token`")
-            else:
-                print_info("Current: GitHub token configured")
-        else:
-            api_key = prompt("  GitHub token", password=True)
-            if api_key:
-                save_env_value("GITHUB_TOKEN", api_key)
-                print_success("GitHub token saved")
-            else:
-                print_warning("Skipped - agent won't work without a GitHub token or gh auth login")
-
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "copilot", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 15:  # GitHub Copilot ACP
-        selected_provider = "copilot-acp"
-        print()
-        print_header("GitHub Copilot ACP")
-        pconfig = PROVIDER_REGISTRY["copilot-acp"]
-        print_info("Hermes will start `copilot --acp --stdio` for each request.")
-        print_info("Use HERMES_COPILOT_ACP_COMMAND or COPILOT_CLI_PATH to override the command.")
-        print_info(f"Base marker: {pconfig.inference_base_url}")
-        print()
-
-        if existing_custom:
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "copilot-acp", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    elif provider_idx == 16:  # Hugging Face Inference Providers
-        selected_provider = "huggingface"
-        print()
-        print_header("Hugging Face API Token")
-        pconfig = PROVIDER_REGISTRY["huggingface"]
-        print_info(f"Provider: {pconfig.name}")
-        print_info("Get your token at: https://huggingface.co/settings/tokens")
-        print_info("Required permission: 'Make calls to Inference Providers'")
-        print()
-
-        api_key = prompt("  HF Token", password=True)
-        if api_key:
-            save_env_value("HF_TOKEN", api_key)
-            # Clear OpenRouter env vars to prevent routing confusion
-            save_env_value("OPENAI_BASE_URL", "")
-            save_env_value("OPENAI_API_KEY", "")
-        _set_model_provider(config, "huggingface", pconfig.inference_base_url)
-        selected_base_url = pconfig.inference_base_url
-
-    # else: provider_idx == 17 (Keep current) — only shown when a provider already exists
-    # Normalize "keep current" to an explicit provider so downstream logic
-    # doesn't fall back to the generic OpenRouter/static-model path.
-    if selected_provider is None:
-        if current_config_provider:
-            selected_provider = current_config_provider
-        elif active_oauth and active_oauth in PROVIDER_REGISTRY:
-            selected_provider = active_oauth
-        elif existing_custom:
-            selected_provider = "custom"
-        elif existing_or:
-            selected_provider = "openrouter"
+                _set_credential_pool_strategy(config, selected_provider, "fill_first")
+        except Exception as exc:
+            logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
     # ── Vision & Image Analysis Setup ──
     # Keep setup aligned with the actual runtime resolver the vision tools use.
@@ -1628,7 +1068,9 @@ def setup_model_provider(config: dict):
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
-                save_env_value("OPENAI_BASE_URL", _base_url)
+                # Save vision base URL to config (not .env — only secrets go there)
+                _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
+                _vaux["base_url"] = _base_url
                 if "api.openai.com" in _base_url.lower():
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
                     _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
@@ -1650,160 +1092,21 @@ def setup_model_provider(config: dict):
         else:
             print_info("Skipped — add later with 'hermes setup' or configure AUXILIARY_VISION_* settings")
 
-    # ── Model Selection (adapts based on provider) ──
-    if selected_provider != "custom":  # Custom already prompted for model name
-        print_header("Default Model")
 
-        _raw_model = config.get("model", "anthropic/claude-opus-4.6")
-        current_model = (
-            _raw_model.get("default", "anthropic/claude-opus-4.6")
-            if isinstance(_raw_model, dict)
-            else (_raw_model or "anthropic/claude-opus-4.6")
-        )
-        print_info(f"Current: {current_model}")
-
-        if selected_provider == "nous" and nous_models:
-            # Dynamic model list from Nous Portal
-            model_choices = [f"{m}" for m in nous_models]
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            # Post-login validation: warn if current model might not be available
-            if current_model and current_model not in nous_models:
-                print_warning(
-                    f"Your current model ({current_model}) may not be available via Nous Portal."
-                )
-                print_info(
-                    "Select a model from the list, or keep current to use it anyway."
-                )
-                print()
-
-            model_idx = prompt_choice(
-                "Select default model:", model_choices, len(model_choices) - 1
-            )
-
-            if model_idx < len(nous_models):
-                _set_default_model(config, nous_models[model_idx])
-            elif model_idx == len(model_choices) - 2:  # Custom
-                model_name = prompt("  Model name")
-                if model_name:
-                    _set_default_model(config, model_name)
-            # else: keep current
-
-        elif selected_provider == "nous":
-            # Nous login succeeded but model fetch failed — prompt manually
-            # instead of falling through to the OpenRouter static list.
-            print_warning("Could not fetch available models from Nous Portal.")
-            print_info("Enter a Nous model name manually (e.g., claude-opus-4-6).")
-            custom = prompt(f"  Model name (Enter to keep '{current_model}')")
-            if custom:
-                _set_default_model(config, custom)
-        elif selected_provider == "openai-codex":
-            from hermes_cli.codex_models import get_codex_model_ids
-
-            codex_token = None
-            try:
-                codex_creds = resolve_codex_runtime_credentials()
-                codex_token = codex_creds.get("api_key")
-            except Exception as exc:
-                logger.debug("Could not resolve Codex runtime credentials for model list: %s", exc)
-
-            codex_models = get_codex_model_ids(access_token=codex_token)
-
-            model_choices = codex_models + [f"Keep current ({current_model})"]
-            default_codex = 0
-            if current_model in codex_models:
-                default_codex = codex_models.index(current_model)
-            elif current_model:
-                default_codex = len(model_choices) - 1
-
-            model_idx = prompt_choice(
-                "Select default model:", model_choices, default_codex
-            )
-            if model_idx < len(codex_models):
-                _set_default_model(config, codex_models[model_idx])
-            elif model_idx == len(codex_models):
-                custom = prompt("Enter model name")
-                if custom:
-                    _set_default_model(config, custom)
-            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-            _set_model_provider(config, "openai-codex", DEFAULT_CODEX_BASE_URL)
-        elif selected_provider == "copilot-acp":
-            _setup_provider_model_selection(
-                config, selected_provider, current_model,
-                prompt_choice, prompt,
-            )
-            model_cfg = _model_config_dict(config)
-            model_cfg["api_mode"] = "chat_completions"
-            config["model"] = model_cfg
-        elif selected_provider in ("copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "ai-gateway", "opencode-zen", "opencode-go", "alibaba"):
-            _setup_provider_model_selection(
-                config, selected_provider, current_model,
-                prompt_choice, prompt,
-            )
-        elif selected_provider == "anthropic":
-            # Try live model list first, fall back to static
-            from hermes_cli.models import provider_model_ids
-            live_models = provider_model_ids("anthropic")
-            anthropic_models = live_models if live_models else [
-                "claude-opus-4-6",
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5-20251001",
-            ]
-            model_choices = list(anthropic_models)
-            model_choices.append("Custom model")
-            model_choices.append(f"Keep current ({current_model})")
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(anthropic_models):
-                _set_default_model(config, anthropic_models[model_idx])
-            elif model_idx == len(anthropic_models):
-                custom = prompt("Enter model name (e.g., claude-sonnet-4-20250514)")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: keep current
+    if selected_provider == "nous" and nous_subscription_selected:
+        changed_defaults = apply_nous_provider_defaults(config)
+        current_tts = str(config.get("tts", {}).get("provider") or "edge")
+        if "tts" in changed_defaults:
+            print_success("TTS provider set to: OpenAI TTS via your Nous subscription")
         else:
-            # Static list for OpenRouter / fallback (from canonical list)
-            from hermes_cli.models import model_ids, menu_labels
-
-            ids = model_ids()
-            model_choices = menu_labels() + [
-                "Custom model",
-                f"Keep current ({current_model})",
-            ]
-
-            keep_idx = len(model_choices) - 1
-            model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-            if model_idx < len(ids):
-                _set_default_model(config, ids[model_idx])
-            elif model_idx == len(ids):  # Custom
-                custom = prompt("Enter model name (e.g., anthropic/claude-opus-4.6)")
-                if custom:
-                    _set_default_model(config, custom)
-            # else: Keep current
-
-        _final_model = config.get("model", "")
-        if _final_model:
-            _display = (
-                _final_model.get("default", _final_model)
-                if isinstance(_final_model, dict)
-                else _final_model
-            )
-            print_success(f"Model set to: {_display}")
-
-    # Write provider+base_url to config.yaml only after model selection is complete.
-    # This prevents a race condition where the gateway picks up a new provider
-    # before the model name has been updated to match.
-    if selected_provider in ("copilot-acp", "copilot", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic") and selected_base_url is not None:
-        _update_config_for_provider(selected_provider, selected_base_url)
+            print_info(f"Keeping your existing TTS provider: {current_tts}")
 
     save_config(config)
 
-    # Offer TTS provider selection at the end of model setup
-    _setup_tts_provider(config)
+    # Offer TTS provider selection at the end of model setup, except when
+    # Nous subscription defaults are already being applied.
+    if selected_provider != "nous":
+        _setup_tts_provider(config)
 
 
 # =============================================================================
@@ -1871,6 +1174,7 @@ def _setup_tts_provider(config: dict):
     """Interactive TTS provider selection with install flow for NeuTTS."""
     tts_config = config.get("tts", {})
     current_provider = tts_config.get("provider", "edge")
+    subscription_features = get_nous_subscription_features(config)
 
     provider_labels = {
         "edge": "Edge TTS",
@@ -1885,20 +1189,36 @@ def _setup_tts_provider(config: dict):
     print_info(f"Current: {current_label}")
     print()
 
-    choices = [
-        "Edge TTS (free, cloud-based, no setup needed)",
-        "ElevenLabs (premium quality, needs API key)",
-        "OpenAI TTS (good quality, needs API key)",
-        "NeuTTS (local on-device, free, ~300MB model download)",
-        f"Keep current ({current_label})",
-    ]
-    idx = prompt_choice("Select TTS provider:", choices, len(choices) - 1)
+    choices = []
+    providers = []
+    if managed_nous_tools_enabled() and subscription_features.nous_auth_present:
+        choices.append("Nous Subscription (managed OpenAI TTS, billed to your subscription)")
+        providers.append("nous-openai")
+    choices.extend(
+        [
+            "Edge TTS (free, cloud-based, no setup needed)",
+            "ElevenLabs (premium quality, needs API key)",
+            "OpenAI TTS (good quality, needs API key)",
+            "NeuTTS (local on-device, free, ~300MB model download)",
+        ]
+    )
+    providers.extend(["edge", "elevenlabs", "openai", "neutts"])
+    choices.append(f"Keep current ({current_label})")
+    keep_current_idx = len(choices) - 1
+    idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
 
-    if idx == 4:  # Keep current
+    if idx == keep_current_idx:
         return
 
-    providers = ["edge", "elevenlabs", "openai", "neutts"]
     selected = providers[idx]
+    selected_via_nous = selected == "nous-openai"
+    if selected == "nous-openai":
+        selected = "openai"
+        print_info("OpenAI TTS will use the managed Nous gateway and bill to your subscription.")
+        if get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY"):
+            print_warning(
+                "Direct OpenAI credentials are still configured and may take precedence until removed from ~/.hermes/.env."
+            )
 
     if selected == "neutts":
         # Check if already installed
@@ -1936,8 +1256,8 @@ def _setup_tts_provider(config: dict):
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
 
-    elif selected == "openai":
-        existing = get_env_value("VOICE_TOOLS_OPENAI_KEY")
+    elif selected == "openai" and not selected_via_nous:
+        existing = get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
         if not existing:
             print()
             api_key = prompt("OpenAI API key for TTS", password=True)
@@ -2092,63 +1412,99 @@ def setup_terminal_backend(config: dict):
     elif selected_backend == "modal":
         print_success("Terminal backend: Modal")
         print_info("Serverless cloud sandboxes. Each session gets its own container.")
-        print_info("Requires a Modal account: https://modal.com")
+        from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+        from tools.tool_backend_helpers import normalize_modal_mode
 
-        # Check if modal SDK is installed
-        try:
-            __import__("modal")
-        except ImportError:
-            print_info("Installing modal SDK...")
-            import subprocess
-
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                result = subprocess.run(
-                    [
-                        uv_bin,
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "modal",
-                    ],
-                    capture_output=True,
-                    text=True,
-                )
+        managed_modal_available = bool(
+            managed_nous_tools_enabled()
+            and
+            get_nous_subscription_features(config).nous_auth_present
+            and is_managed_tool_gateway_ready("modal")
+        )
+        modal_mode = normalize_modal_mode(config.get("terminal", {}).get("modal_mode"))
+        use_managed_modal = False
+        if managed_modal_available:
+            modal_choices = [
+                "Use my Nous subscription",
+                "Use my own Modal account",
+            ]
+            if modal_mode == "managed":
+                default_modal_idx = 0
+            elif modal_mode == "direct":
+                default_modal_idx = 1
             else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "modal"],
-                    capture_output=True,
-                    text=True,
-                )
-            if result.returncode == 0:
-                print_success("modal SDK installed")
-            else:
-                print_warning(
-                    "Install failed — run manually: pip install modal"
-                )
+                default_modal_idx = 1 if get_env_value("MODAL_TOKEN_ID") else 0
+            modal_mode_idx = prompt_choice(
+                "Select how Modal execution should be billed:",
+                modal_choices,
+                default_modal_idx,
+            )
+            use_managed_modal = modal_mode_idx == 0
 
-        # Modal token
-        print()
-        print_info("Modal authentication:")
-        print_info("  Get your token at: https://modal.com/settings")
-        existing_token = get_env_value("MODAL_TOKEN_ID")
-        if existing_token:
-            print_info("  Modal token: already configured")
-            if prompt_yes_no("  Update Modal credentials?", False):
+        if use_managed_modal:
+            config["terminal"]["modal_mode"] = "managed"
+            print_info("Modal execution will use the managed Nous gateway and bill to your subscription.")
+            if get_env_value("MODAL_TOKEN_ID") or get_env_value("MODAL_TOKEN_SECRET"):
+                print_info(
+                    "Direct Modal credentials are still configured, but this backend is pinned to managed mode."
+                )
+        else:
+            config["terminal"]["modal_mode"] = "direct"
+            print_info("Requires a Modal account: https://modal.com")
+
+            # Check if modal SDK is installed
+            try:
+                __import__("modal")
+            except ImportError:
+                print_info("Installing modal SDK...")
+                import subprocess
+
+                uv_bin = shutil.which("uv")
+                if uv_bin:
+                    result = subprocess.run(
+                        [
+                            uv_bin,
+                            "pip",
+                            "install",
+                            "--python",
+                            sys.executable,
+                            "modal",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                else:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "modal"],
+                        capture_output=True,
+                        text=True,
+                    )
+                if result.returncode == 0:
+                    print_success("modal SDK installed")
+                else:
+                    print_warning("Install failed — run manually: pip install modal")
+
+            # Modal token
+            print()
+            print_info("Modal authentication:")
+            print_info("  Get your token at: https://modal.com/settings")
+            existing_token = get_env_value("MODAL_TOKEN_ID")
+            if existing_token:
+                print_info("  Modal token: already configured")
+                if prompt_yes_no("  Update Modal credentials?", False):
+                    token_id = prompt("    Modal Token ID", password=True)
+                    token_secret = prompt("    Modal Token Secret", password=True)
+                    if token_id:
+                        save_env_value("MODAL_TOKEN_ID", token_id)
+                    if token_secret:
+                        save_env_value("MODAL_TOKEN_SECRET", token_secret)
+            else:
                 token_id = prompt("    Modal Token ID", password=True)
                 token_secret = prompt("    Modal Token Secret", password=True)
                 if token_id:
                     save_env_value("MODAL_TOKEN_ID", token_id)
                 if token_secret:
                     save_env_value("MODAL_TOKEN_SECRET", token_secret)
-        else:
-            token_id = prompt("    Modal Token ID", password=True)
-            token_secret = prompt("    Modal Token Secret", password=True)
-            if token_id:
-                save_env_value("MODAL_TOKEN_ID", token_id)
-            if token_secret:
-                save_env_value("MODAL_TOKEN_SECRET", token_secret)
 
         _prompt_container_resources(config)
 
@@ -2262,6 +1618,8 @@ def setup_terminal_backend(config: dict):
     # Sync terminal backend to .env so terminal_tool picks it up directly.
     # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
     save_env_value("TERMINAL_ENV", selected_backend)
+    if selected_backend == "modal":
+        save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
     save_config(config)
     print()
     print_success(f"Terminal backend set to: {selected_backend}")
@@ -2467,13 +1825,22 @@ def setup_gateway(config: dict):
             print_info("   1. Message @userinfobot on Telegram")
             print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
             print()
+            existing_allowlist = get_env_value("TELEGRAM_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success(
                     "Telegram allowlist configured - only listed users can use the bot"
+                )
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Telegram allowlist: {existing_allowlist}"
                 )
             else:
                 print_info(
@@ -2546,8 +1913,13 @@ def setup_gateway(config: dict):
                 "   You can also use Discord usernames (resolved on gateway start)."
             )
             print()
+            existing_allowlist = get_env_value("DISCORD_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+                "Allowed user IDs or usernames (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 # Clean up common prefixes (user:123, <@123>, <@!123>)
@@ -2562,6 +1934,10 @@ def setup_gateway(config: dict):
                         cleaned_ids.append(uid)
                 save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
                 print_success("Discord allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Discord allowlist: {existing_allowlist}"
+                )
             else:
                 print_info(
                     "⚠️  No allowlist set - anyone in servers with your bot can use it!"
@@ -2658,12 +2034,21 @@ def setup_gateway(config: dict):
                 "   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID"
             )
             print()
+            existing_allowlist = get_env_value("SLACK_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "deny everyone except paired users")
+                + ")"
             )
             if allowed_users:
                 save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Slack allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Slack allowlist: {existing_allowlist}"
+                )
             else:
                 print_warning(
                     "⚠️  No Slack allowlist set - unpaired users will be denied by default."
@@ -2747,12 +2132,21 @@ def setup_gateway(config: dict):
             print_info("🔒 Security: Restrict who can use your bot")
             print_info("   Matrix user IDs look like @username:server")
             print()
+            existing_allowlist = get_env_value("MATRIX_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Matrix allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Matrix allowlist: {existing_allowlist}"
+                )
             else:
                 print_info(
                     "⚠️  No allowlist set - anyone who can message the bot can use it!"
@@ -2793,12 +2187,21 @@ def setup_gateway(config: dict):
             print_info("   To find your user ID: click your avatar → Profile")
             print_info("   or use the API: GET /api/v4/users/me")
             print()
+            existing_allowlist = get_env_value("MATTERMOST_ALLOWED_USERS")
+            if existing_allowlist:
+                print_info(f"   Current allowlist: {existing_allowlist}")
             allowed_users = prompt(
-                "Allowed user IDs (comma-separated, leave empty for open access)"
+                "Allowed user IDs (comma-separated, leave empty to "
+                + ("keep current" if existing_allowlist else "allow open access")
+                + ")"
             )
             if allowed_users:
                 save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
                 print_success("Mattermost allowlist configured")
+            elif existing_allowlist:
+                print_success(
+                    f"Keeping existing Mattermost allowlist: {existing_allowlist}"
+                )
             else:
                 print_info(
                     "⚠️  No allowlist set - anyone who can message the bot can use it!"
@@ -3119,8 +2522,7 @@ def _skip_configured_section(
 
 
 _OPENCLAW_SCRIPT = (
-    PROJECT_ROOT
-    / "optional-skills"
+    get_optional_skills_dir(PROJECT_ROOT / "optional-skills")
     / "migration"
     / "openclaw-migration"
     / "scripts"
@@ -3232,6 +2634,17 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+]
+
+# The returning-user menu intentionally omits standalone TTS because model setup
+# already includes TTS selection and tools setup covers the rest of the provider
+# configuration. Keep this list in the same order as the visible menu entries.
+RETURNING_USER_MENU_SECTION_KEYS = [
+    "model",
+    "terminal",
+    "gateway",
+    "tools",
+    "agent",
 ]
 
 
@@ -3384,8 +2797,7 @@ def run_setup_wizard(args):
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
             # so positional indexing (choice - 3) would dispatch the wrong section.
-            _RETURNING_USER_SECTION_KEYS = ["model", "terminal", "gateway", "tools", "agent"]
-            section_key = _RETURNING_USER_SECTION_KEYS[choice - 3]
+            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 3]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
                 _, label, func = section

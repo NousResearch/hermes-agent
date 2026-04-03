@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +26,14 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
     if value is None:
         return default
-    if isinstance(value, bool):
-        return value
     if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "on")
-    return bool(value)
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        return default
+    return is_truthy_value(value, default=default)
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
@@ -558,6 +562,8 @@ def load_gateway_config() -> GatewayConfig:
                     include_dms = read_cfg.get("include_dms")
                     if include_dms is not None and not os.getenv("DISCORD_READ_INCLUDE_DMS"):
                         os.environ["DISCORD_READ_INCLUDE_DMS"] = str(include_dms).lower()
+                if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
+                    os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -914,4 +920,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-

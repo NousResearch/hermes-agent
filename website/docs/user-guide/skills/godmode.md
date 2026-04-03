@@ -1,4 +1,6 @@
 ---
+sidebar_position: 1
+sidebar_label: "G0DM0D3 (Godmode)"
 title: "G0DM0D3 — Godmode Jailbreaking"
 description: "Automated LLM jailbreaking using G0DM0D3 techniques — system prompt templates, input obfuscation, and multi-model racing"
 ---

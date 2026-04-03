@@ -101,7 +101,14 @@ class TestDetectProviderForModel:
         assert result[0] == "openrouter"
         assert result[1] == "anthropic/claude-opus-4.6"
 
-    def test_bare_name_gets_openrouter_slug(self):
+    def test_bare_name_gets_openrouter_slug(self, monkeypatch):
+        for env_var in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
         """Bare model names should get mapped to full OpenRouter slugs."""
         result = detect_provider_for_model("claude-opus-4.6", "openai-codex")
         assert result is not None

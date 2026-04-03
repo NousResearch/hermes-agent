@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
@@ -41,7 +43,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
 })
-
 import yaml
 
 from hermes_cli.colors import Colors, color
@@ -52,26 +53,86 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 # Managed mode (NixOS declarative config)
 # =============================================================================
 
+_MANAGED_TRUE_VALUES = ("true", "1", "yes")
+_MANAGED_SYSTEM_NAMES = {
+    "brew": "Homebrew",
+    "homebrew": "Homebrew",
+    "nix": "NixOS",
+    "nixos": "NixOS",
+}
+
+
+def get_managed_system() -> Optional[str]:
+    """Return the package manager owning this install, if any."""
+    raw = os.getenv("HERMES_MANAGED", "").strip()
+    if raw:
+        normalized = raw.lower()
+        if normalized in _MANAGED_TRUE_VALUES:
+            return "NixOS"
+        return _MANAGED_SYSTEM_NAMES.get(normalized, raw)
+
+    managed_marker = get_hermes_home() / ".managed"
+    if managed_marker.exists():
+        return "NixOS"
+    return None
+
+
 def is_managed() -> bool:
-    """Check if hermes is running in Nix-managed mode.
+    """Check if Hermes is running in package-manager-managed mode.
 
     Two signals: the HERMES_MANAGED env var (set by the systemd service),
     or a .managed marker file in HERMES_HOME (set by the NixOS activation
     script, so interactive shells also see it).
     """
-    if os.getenv("HERMES_MANAGED", "").lower() in ("true", "1", "yes"):
-        return True
-    managed_marker = get_hermes_home() / ".managed"
-    return managed_marker.exists()
+    return get_managed_system() is not None
+
+
+def get_managed_update_command() -> Optional[str]:
+    """Return the preferred upgrade command for a managed install."""
+    managed_system = get_managed_system()
+    if managed_system == "Homebrew":
+        return "brew upgrade hermes-agent"
+    if managed_system == "NixOS":
+        return "sudo nixos-rebuild switch"
+    return None
+
+
+def recommended_update_command() -> str:
+    """Return the best update command for the current installation."""
+    return get_managed_update_command() or "hermes update"
+
+
+def format_managed_message(action: str = "modify this Hermes installation") -> str:
+    """Build a user-facing error for managed installs."""
+    managed_system = get_managed_system() or "a package manager"
+    raw = os.getenv("HERMES_MANAGED", "").strip().lower()
+
+    if managed_system == "NixOS":
+        env_hint = "true" if raw in _MANAGED_TRUE_VALUES else raw or "true"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by NixOS "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
+            "  sudo nixos-rebuild switch"
+        )
+
+    if managed_system == "Homebrew":
+        env_hint = raw or "homebrew"
+        return (
+            f"Cannot {action}: this Hermes installation is managed by Homebrew "
+            f"(HERMES_MANAGED={env_hint}).\n"
+            "Use:\n"
+            "  brew upgrade hermes-agent"
+        )
+
+    return (
+        f"Cannot {action}: this Hermes installation is managed by {managed_system}.\n"
+        "Use your package manager to upgrade or reinstall Hermes."
+    )
 
 def managed_error(action: str = "modify configuration"):
     """Print user-friendly error for managed mode."""
-    print(
-        f"Cannot {action}: configuration is managed by NixOS (HERMES_MANAGED=true).\n"
-        "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
-        "  sudo nixos-rebuild switch",
-        file=sys.stderr,
-    )
+    print(format_managed_message(action), file=sys.stderr)
 
 
 # =============================================================================
@@ -136,8 +197,9 @@ def ensure_hermes_home():
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "model": "anthropic/claude-opus-4.6",
+    "model": "",
     "fallback_providers": [],
+    "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -151,6 +213,7 @@ DEFAULT_CONFIG = {
     
     "terminal": {
         "backend": "local",
+        "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
         # Environment variables to pass through to sandboxed execution
@@ -185,6 +248,14 @@ DEFAULT_CONFIG = {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
+        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "camofox": {
+            # When true, Hermes sends a stable profile-scoped userId to Camofox
+            # so the server can map it to a persistent browser profile directory.
+            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
+            # When false (default), each session gets a random userId (ephemeral).
+            "managed_persistence": False,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
@@ -194,6 +265,11 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
+
+    # Maximum characters returned by a single read_file call.  Reads that
+    # exceed this are rejected with guidance to use offset+limit.
+    # 100K chars ≈ 25–35K tokens across typical tokenisers.
+    "file_read_max_chars": 100_000,
     
     "compression": {
         "enabled": True,
@@ -285,6 +361,7 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
@@ -351,6 +428,11 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # External memory provider plugin (empty = built-in only).
+        # Set to a provider name to activate: "openviking", "mem0",
+        # "hindsight", "holographic", "retaindb", "byterover".
+        # Only ONE external provider is allowed at a time.
+        "provider": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -392,6 +474,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -441,7 +524,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 10,
+    "_config_version": 11,
 }
 
 # =============================================================================
@@ -456,6 +539,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
+    11: ["TERMINAL_MODAL_MODE"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -674,6 +758,38 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "FIRECRAWL_GATEWAY_URL": {
+        "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_DOMAIN": {
+        "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "prompt": "Tool-gateway domain suffix",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_SCHEME": {
+        "description": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)",
+        "prompt": "Tool-gateway URL scheme",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOL_GATEWAY_USER_TOKEN": {
+        "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)",
+        "prompt": "Tool-gateway user token",
+        "url": None,
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "TAVILY_API_KEY": {
         "description": "Tavily API key for AI-native web search, extract, and crawl",
         "prompt": "Tavily API key",
@@ -704,6 +820,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://browser-use.com/",
         "tools": ["browser_navigate", "browser_click"],
         "password": True,
+        "category": "tool",
+    },
+    "CAMOFOX_URL": {
+        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
+        "prompt": "Camofox server URL",
+        "url": "https://github.com/jo-inc/camofox-browser",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
         "category": "tool",
     },
     "FAL_KEY": {
@@ -1016,6 +1140,15 @@ OPTIONAL_ENV_VARS = {
     },
 }
 
+if not _managed_nous_tools_enabled():
+    for _hidden_var in (
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
+    ):
+        OPTIONAL_ENV_VARS.pop(_hidden_var, None)
+
 
 def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     """
@@ -1318,6 +1451,36 @@ def _expand_env_vars(obj):
     return obj
 
 
+def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Move stale root-level provider/base_url into model section.
+
+    Some users (or older code) placed ``provider:`` and ``base_url:`` at the
+    config root instead of inside ``model:``.  These root-level keys are only
+    used as a fallback when the corresponding ``model.*`` key is empty — they
+    never override an existing ``model.provider`` or ``model.base_url``.
+    After migration the root-level keys are removed so they can't cause
+    confusion on subsequent loads.
+    """
+    # Only act if there are root-level keys to migrate
+    has_root = any(config.get(k) for k in ("provider", "base_url"))
+    if not has_root:
+        return config
+
+    config = dict(config)
+    model = config.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        config["model"] = model
+
+    for key in ("provider", "base_url"):
+        root_val = config.get(key)
+        if root_val and not model.get(key):
+            model[key] = root_val
+        config.pop(key, None)
+
+    return config
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -1359,7 +1522,7 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _expand_env_vars(_normalize_max_turns_config(config))
+    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
 
 
 _SECURITY_COMMENT = """
@@ -1466,7 +1629,7 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
-    normalized = _normalize_max_turns_config(config)
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
 
     # Build optional commented-out sections for features that are off by
     # default or only relevant when explicitly configured.
@@ -1901,7 +2064,9 @@ def set_config_value(key: str, value: str):
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
@@ -1957,6 +2122,7 @@ def set_config_value(key: str, value: str):
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
         "terminal.backend": "TERMINAL_ENV",
+        "terminal.modal_mode": "TERMINAL_MODAL_MODE",
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
@@ -1990,7 +2156,7 @@ def config_command(args):
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
-        if not key or not value:
+        if not key or value is None:
             print("Usage: hermes config set <key> <value>")
             print()
             print("Examples:")

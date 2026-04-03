@@ -187,7 +187,36 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma")
+
+# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
+# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
+GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
+    "# Google model operational directives\n"
+    "Follow these operational rules strictly:\n"
+    "- **Absolute paths:** Always construct and use absolute file paths for all "
+    "file system operations. Combine the project root with relative paths.\n"
+    "- **Verify first:** Use read_file/search_files to check file contents and "
+    "project structure before making changes. Never guess at file contents.\n"
+    "- **Dependency checks:** Never assume a library is available. Check "
+    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
+    "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
+    "paragraphs. Focus on actions and results over narration.\n"
+    "- **Parallel tool calls:** When you need to perform multiple independent "
+    "operations (e.g. reading several files), make all the tool calls in a "
+    "single response rather than sequentially.\n"
+    "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
+    "to prevent CLI tools from hanging on prompts.\n"
+    "- **Keep going:** Work autonomously until the task is fully resolved. "
+    "Don't stop with a plan — execute it.\n"
+)
+
+# Model name substrings that should use the 'developer' role instead of
+# 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
+# give stronger instruction-following weight to the 'developer' role.
+# The swap happens at the API boundary in _build_api_kwargs() so internal
+# message representation stays consistent ("system" everywhere).
+DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 PLATFORM_HINTS = {
     "whatsapp": (
@@ -643,6 +672,73 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
     return result
+
+
+def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
+    """Build a compact Nous subscription capability block for the system prompt."""
+    try:
+        from hermes_cli.nous_subscription import get_nous_subscription_features
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+    except Exception as exc:
+        logger.debug("Failed to import Nous subscription helper: %s", exc)
+        return ""
+
+    if not managed_nous_tools_enabled():
+        return ""
+
+    valid_names = set(valid_tool_names or set())
+    relevant_tool_names = {
+        "web_search",
+        "web_extract",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_console",
+        "browser_close",
+        "browser_press",
+        "browser_get_images",
+        "browser_vision",
+        "image_generate",
+        "text_to_speech",
+        "terminal",
+        "process",
+        "execute_code",
+    }
+
+    if valid_names and not (valid_names & relevant_tool_names):
+        return ""
+
+    features = get_nous_subscription_features()
+
+    def _status_line(feature) -> str:
+        if feature.managed_by_nous:
+            return f"- {feature.label}: active via Nous subscription"
+        if feature.active:
+            current = feature.current_provider or "configured provider"
+            return f"- {feature.label}: currently using {current}"
+        if feature.included_by_default and features.nous_auth_present:
+            return f"- {feature.label}: included with Nous subscription, not currently selected"
+        if feature.key == "modal" and features.nous_auth_present:
+            return f"- {feature.label}: optional via Nous subscription"
+        return f"- {feature.label}: not currently available"
+
+    lines = [
+        "# Nous Subscription",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browserbase) by default. Modal execution is optional.",
+        "Current capability status:",
+    ]
+    lines.extend(_status_line(feature) for feature in features.items())
+    lines.extend(
+        [
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browserbase API keys.",
+            "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
+            "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
+            "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 # =========================================================================

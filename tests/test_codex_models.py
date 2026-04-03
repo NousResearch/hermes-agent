@@ -186,13 +186,29 @@ class TestNormalizeModelForProvider:
         assert changed is True
         assert cli.model == "claude-opus-4.6"
 
+    def test_opencode_go_prefix_stripped(self):
+        cli = _make_cli(model="opencode-go/kimi-k2.5")
+        cli.api_mode = "chat_completions"
+        changed = cli._normalize_model_for_provider("opencode-go")
+        assert changed is True
+        assert cli.model == "kimi-k2.5"
+        assert cli.api_mode == "chat_completions"
+
+    def test_opencode_zen_claude_sets_messages_mode(self):
+        cli = _make_cli(model="opencode-zen/claude-sonnet-4-6")
+        cli.api_mode = "chat_completions"
+        changed = cli._normalize_model_for_provider("opencode-zen")
+        assert changed is True
+        assert cli.model == "claude-sonnet-4-6"
+        assert cli.api_mode == "anthropic_messages"
+
     def test_default_model_replaced(self):
-        """The untouched default (anthropic/claude-opus-4.6) gets swapped."""
+        """No model configured (empty default) gets swapped for codex."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
-                "default": "anthropic/claude-opus-4.6",
-                "base_url": "https://openrouter.ai/api/v1",
+                "default": "",
+                "base_url": "",
                 "provider": "auto",
             },
             "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
@@ -219,12 +235,12 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.3-codex"
 
     def test_default_fallback_when_api_fails(self):
-        """Default model falls back to gpt-5.3-codex when API unreachable."""
+        """No model configured falls back to gpt-5.3-codex when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
-                "default": "anthropic/claude-opus-4.6",
-                "base_url": "https://openrouter.ai/api/v1",
+                "default": "",
+                "base_url": "",
                 "provider": "auto",
             },
             "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},

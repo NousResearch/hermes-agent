@@ -4,8 +4,39 @@ import types
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
+
+
+# ---------------------------------------------------------------------------
+# Module isolation: _import_cli() wipes tools.* / cli / run_agent from
+# sys.modules so it can re-import cli fresh.  Without cleanup the wiped
+# modules leak into subsequent tests on the same xdist worker, breaking
+# mock patches that target "tools.file_tools._get_file_ops" etc.
+# ---------------------------------------------------------------------------
+
+def _reset_modules(prefixes: tuple[str, ...]):
+    for name in list(sys.modules):
+        if any(name == p or name.startswith(p + ".") for p in prefixes):
+            sys.modules.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_cli_and_tool_modules():
+    """Save and restore tools/cli/run_agent modules around every test."""
+    prefixes = ("tools", "cli", "run_agent")
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if any(name == p or name.startswith(p + ".") for p in prefixes)
+    }
+    try:
+        yield
+    finally:
+        _reset_modules(prefixes)
+        sys.modules.update(original_modules)
 
 
 def _install_prompt_toolkit_stubs():
@@ -78,6 +109,13 @@ def _install_prompt_toolkit_stubs():
 
 
 def _import_cli():
+    for name in list(sys.modules):
+        if name == "cli" or name == "run_agent" or name == "tools" or name.startswith("tools."):
+            sys.modules.pop(name, None)
+
+    if "firecrawl" not in sys.modules:
+        sys.modules["firecrawl"] = types.SimpleNamespace(Firecrawl=object)
+
     try:
         importlib.import_module("prompt_toolkit")
     except ModuleNotFoundError:
@@ -269,6 +307,83 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     assert shell.model == "gpt-5.2-codex"
 
 
+def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_tts(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    config = {
+        "model": {"provider": "nous", "default": "claude-opus-4-6"},
+        "tts": {"provider": "elevenlabs"},
+        "browser": {"cloud_provider": "browser-use"},
+    }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_provider_auth_state",
+        lambda provider: {"access_token": "nous-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://inference.example.com/v1",
+            "api_key": "nous-key",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.fetch_nous_models",
+        lambda *args, **kwargs: ["claude-opus-4-6"],
+    )
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="": "claude-opus-4-6")
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
+        lambda: ["Nous subscription enables managed web tools."],
+    )
+
+    hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
+
+    out = capsys.readouterr().out
+    assert "Nous subscription enables managed web tools." in out
+    assert config["tts"]["provider"] == "elevenlabs"
+    assert config["browser"]["cloud_provider"] == "browser-use"
+
+
+def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    config = {
+        "model": {"provider": "nous", "default": "claude-opus-4-6"},
+        "tts": {"provider": "edge"},
+    }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_provider_auth_state",
+        lambda provider: {"access_token": "nous-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda *args, **kwargs: {
+            "base_url": "https://inference.example.com/v1",
+            "api_key": "nous-key",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.fetch_nous_models",
+        lambda *args, **kwargs: ["claude-opus-4-6"],
+    )
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="": "claude-opus-4-6")
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_subscription_explainer_lines",
+        lambda: ["Nous subscription enables managed web tools."],
+    )
+
+    hermes_main._model_flow_nous(config, current_model="claude-opus-4-6")
+
+    out = capsys.readouterr().out
+    assert "Nous subscription enables managed web tools." in out
+    assert "OpenAI TTS via your Nous subscription" in out
+    assert config["tts"]["provider"] == "openai"
+
+
 def test_codex_provider_uses_config_model(monkeypatch):
     """Model comes from config.yaml, not LLM_MODEL env var.
     Config.yaml is the single source of truth to avoid multi-agent conflicts."""
@@ -424,6 +539,7 @@ def test_cmd_model_falls_back_to_auto_on_invalid_provider(monkeypatch, capsys):
 
     monkeypatch.setattr("hermes_cli.auth.resolve_provider", _resolve_provider)
     monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices: len(choices) - 1)
+    monkeypatch.setattr("sys.stdin", type("FakeTTY", (), {"isatty": lambda self: True})())
 
     hermes_main.cmd_model(SimpleNamespace())
     output = capsys.readouterr().out
@@ -459,13 +575,68 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     )
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
 
-    answers = iter(["http://localhost:8000", "local-key", "llm", ""])
+    # After the probe detects a single model ("llm"), the flow asks
+    # "Use this model? [Y/n]:" — confirm with Enter, then context length.
+    answers = iter(["http://localhost:8000", "local-key", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
     hermes_main._model_flow_custom({})
     output = capsys.readouterr().out
 
     assert "Saving the working base URL instead" in output
-    assert saved_env["OPENAI_BASE_URL"] == "http://localhost:8000/v1"
-    assert saved_env["OPENAI_API_KEY"] == "local-key"
+    assert "Detected model: llm" in output
+    # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
+    assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
+
+
+def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
+    monkeypatch.setattr(hermes_main, "_require_tty", lambda *a: None)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"default": "gpt-5", "provider": "nous"}},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: None)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "nous")
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider_id: None)
+    monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices: 0)
+
+    captured = {}
+
+    def _fake_login(login_args, provider_config):
+        captured["portal_url"] = login_args.portal_url
+        captured["inference_url"] = login_args.inference_url
+        captured["client_id"] = login_args.client_id
+        captured["scope"] = login_args.scope
+        captured["no_browser"] = login_args.no_browser
+        captured["timeout"] = login_args.timeout
+        captured["ca_bundle"] = login_args.ca_bundle
+        captured["insecure"] = login_args.insecure
+
+    monkeypatch.setattr("hermes_cli.auth._login_nous", _fake_login)
+
+    hermes_main.cmd_model(
+        SimpleNamespace(
+            portal_url="https://portal.nousresearch.com",
+            inference_url="https://inference.nousresearch.com/v1",
+            client_id="hermes-local",
+            scope="openid profile",
+            no_browser=True,
+            timeout=7.5,
+            ca_bundle="/tmp/local-ca.pem",
+            insecure=True,
+        )
+    )
+
+    assert captured == {
+        "portal_url": "https://portal.nousresearch.com",
+        "inference_url": "https://inference.nousresearch.com/v1",
+        "client_id": "hermes-local",
+        "scope": "openid profile",
+        "no_browser": True,
+        "timeout": 7.5,
+        "ca_bundle": "/tmp/local-ca.pem",
+        "insecure": True,
+    }

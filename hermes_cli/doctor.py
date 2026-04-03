@@ -55,7 +55,7 @@ def _has_provider_env_config(content: str) -> bool:
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
-        from honcho_integration.client import HonchoClientConfig
+        from plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig.from_global_config()
         return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
@@ -406,8 +406,11 @@ def run_doctor(args):
     if terminal_env == "docker":
         if shutil.which("docker"):
             # Check if docker daemon is running
-            result = subprocess.run(["docker", "info"], capture_output=True)
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
                 check_ok("docker", "(daemon running)")
             else:
                 check_fail("docker daemon not running")
@@ -426,12 +429,16 @@ def run_doctor(args):
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
         if ssh_host:
             # Try to connect
-            result = subprocess.run(
-                ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
+            try:
+                result = subprocess.run(
+                    ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
                 check_ok(f"SSH connection to {ssh_host}")
             else:
                 check_fail(f"SSH connection to {ssh_host}")
@@ -702,19 +709,19 @@ def run_doctor(args):
     print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
 
     try:
-        from honcho_integration.client import HonchoClientConfig, resolve_config_path
+        from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
         hcfg = HonchoClientConfig.from_global_config()
         _honcho_cfg_path = resolve_config_path()
 
         if not _honcho_cfg_path.exists():
-            check_warn("Honcho config not found", "run: hermes honcho setup")
+            check_warn("Honcho config not found", "run: hermes memory setup")
         elif not hcfg.enabled:
             check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
         elif not (hcfg.api_key or hcfg.base_url):
-            check_fail("Honcho API key or base URL not set", "run: hermes honcho setup")
-            issues.append("No Honcho API key — run 'hermes honcho setup'")
+            check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
+            issues.append("No Honcho API key — run 'hermes memory setup'")
         else:
-            from honcho_integration.client import get_honcho_client, reset_honcho_client
+            from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
             reset_honcho_client()
             try:
                 get_honcho_client(hcfg)

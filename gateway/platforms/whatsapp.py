@@ -156,6 +156,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
+    def _whatsapp_free_response_chats(self) -> set[str]:
+        raw = self.config.extra.get("free_response_chats")
+        if raw is None:
+            raw = os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
@@ -183,6 +191,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 compiled.append(re.compile(pattern, re.IGNORECASE))
             except re.error as exc:
                 logger.warning("[%s] Invalid WhatsApp mention pattern %r: %s", self.name, pattern, exc)
+        if compiled:
+            logger.info("[%s] Loaded %d WhatsApp mention pattern(s)", self.name, len(compiled))
         return compiled
 
     @staticmethod
@@ -213,9 +223,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if not bot_ids:
             return False
         mentioned_ids = {
-            self._normalize_whatsapp_id(candidate)
+            nid
             for candidate in (data.get("mentionedIds") or [])
-            if self._normalize_whatsapp_id(candidate)
+            if (nid := self._normalize_whatsapp_id(candidate))
         }
         if mentioned_ids & bot_ids:
             return True
@@ -234,8 +244,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns)
 
+    def _clean_bot_mention_text(self, text: str, data: Dict[str, Any]) -> str:
+        if not text:
+            return text
+        bot_ids = self._bot_ids_from_message(data)
+        cleaned = text
+        for bot_id in bot_ids:
+            bare_id = bot_id.split("@", 1)[0]
+            if bare_id:
+                cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
+        return cleaned.strip() or text
+
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
         if not data.get("isGroup"):
+            return True
+        chat_id = str(data.get("chatId") or "")
+        if chat_id in self._whatsapp_free_response_chats():
             return True
         if not self._whatsapp_require_mention():
             return True
@@ -874,6 +898,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # the message text so the agent can read it inline.
             # Cap at 100KB to match Telegram/Discord/Slack behaviour.
             body = data.get("body", "")
+            if data.get("isGroup"):
+                body = self._clean_bot_mention_text(body, data)
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:

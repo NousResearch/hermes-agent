@@ -2871,7 +2871,7 @@ class HermesCLI:
             ]),
             ("Session", [
                 ("Ctrl+C",          "Cancel prompt / interrupt agent / exit"),
-                ("Ctrl+D",          "Exit"),
+                ("Ctrl+D",          "Delete char under cursor (exit when input empty)"),
                 ("Ctrl+Z",          "Suspend to background (fg to resume)"),
             ]),
             ("Drafting", [

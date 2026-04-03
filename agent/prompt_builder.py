@@ -488,11 +488,19 @@ def build_skills_system_prompt(
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
+    # Include the resolved platform so per-platform disabled-skill lists
+    # produce distinct cache entries (gateway serves multiple platforms).
+    _platform_hint = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or ""
+    )
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        _platform_hint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

@@ -7010,6 +7010,9 @@ class HermesCLI:
             buffer.
             """
             pasted_text = event.data or ""
+            # Normalise line endings — Windows \r\n and old Mac \r both become \n
+            # so the 5-line collapse threshold and display are consistent.
+            pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:

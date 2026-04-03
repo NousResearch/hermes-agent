@@ -563,7 +563,7 @@ def delegate_task(
     if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
         for entry in results:
             try:
-                _task_goal = tasks[entry["task_index"]]["goal"] if entry["task_index"] < len(tasks) else ""
+                _task_goal = task_list[entry["task_index"]]["goal"] if entry["task_index"] < len(task_list) else ""
                 parent_agent._memory_manager.on_delegation(
                     task=_task_goal,
                     result=entry.get("summary", "") or "",

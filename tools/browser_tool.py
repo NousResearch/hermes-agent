@@ -65,6 +65,7 @@ import requests
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from agent.auxiliary_client import call_llm
+from hermes_constants import get_hermes_home
 
 try:
     from tools.website_policy import check_website_access
@@ -144,7 +145,7 @@ def _get_command_timeout() -> int:
     ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.
     """
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         config_path = hermes_home / "config.yaml"
         if config_path.exists():
             import yaml
@@ -256,7 +257,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
 
     _cloud_provider_resolved = True
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         config_path = hermes_home / "config.yaml"
         if config_path.exists():
             import yaml
@@ -327,7 +328,7 @@ def _allow_private_urls() -> bool:
     _allow_private_urls_resolved = True
     _cached_allow_private_urls = False  # safe default
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         config_path = hermes_home / "config.yaml"
         if config_path.exists():
             import yaml
@@ -777,7 +778,7 @@ def _find_agent_browser() -> str:
             extra_dirs.append(d)
     extra_dirs.extend(_discover_homebrew_node_dirs())
 
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    hermes_home = get_hermes_home()
     hermes_node_bin = str(hermes_home / "node" / "bin")
     if os.path.isdir(hermes_node_bin):
         extra_dirs.append(hermes_node_bin)
@@ -904,7 +905,7 @@ def _run_browser_command(
 
         # Ensure PATH includes Hermes-managed Node first, Homebrew versioned
         # node dirs (for macOS ``brew install node@24``), then standard system dirs.
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         hermes_node_bin = str(hermes_home / "node" / "bin")
 
         existing_path = browser_env.get("PATH", "")
@@ -1541,7 +1542,7 @@ def _maybe_start_recording(task_id: str):
     if task_id in _recording_sessions:
         return
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         config_path = hermes_home / "config.yaml"
         record_enabled = False
         if config_path.exists():
@@ -1830,7 +1831,7 @@ def _cleanup_old_recordings(max_age_hours=72):
     """Remove browser recordings older than max_age_hours to prevent disk bloat."""
     import time
     try:
-        hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         recordings_dir = hermes_home / "browser_recordings"
         if not recordings_dir.exists():
             return

@@ -667,12 +667,13 @@ class GatewayRunner:
             # what's already saved and avoid overwriting newer entries.
             _current_memory = ""
             try:
-                from tools.memory_tool import MEMORY_DIR
+                from tools.memory_tool import get_memory_dir
+                _mem_dir = get_memory_dir()
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
                     ("USER.md", "USER PROFILE (who the user is)"),
                 ]:
-                    fpath = MEMORY_DIR / fname
+                    fpath = _mem_dir / fname
                     if fpath.exists():
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:
@@ -1821,6 +1822,15 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
 
+            # /approve and /deny must bypass the running-agent interrupt path.
+            # The agent thread is blocked on a threading.Event inside
+            # tools/approval.py — sending an interrupt won't unblock it.
+            # Route directly to the approval handler so the event is signalled.
+            if _cmd_def_inner and _cmd_def_inner.name in ("approve", "deny"):
+                if _cmd_def_inner.name == "approve":
+                    return await self._handle_approve_command(event)
+                return await self._handle_deny_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
@@ -2051,6 +2061,19 @@ class GatewayRunner:
                 skill_cmds = get_skill_commands()
                 cmd_key = f"/{command}"
                 if cmd_key in skill_cmds:
+                    # Check per-platform disabled status before executing.
+                    # get_skill_commands() only applies the *global* disabled
+                    # list at scan time; per-platform overrides need checking
+                    # here because the cache is process-global across platforms.
+                    _skill_name = skill_cmds[cmd_key].get("name", "")
+                    _plat = source.platform.value if source.platform else None
+                    if _plat and _skill_name:
+                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                        if _skill_name in _get_plat_disabled(platform=_plat):
+                            return (
+                                f"The **{_skill_name}** skill is disabled for {_plat}.\n"
+                                f"Enable it with: `hermes skills config`"
+                            )
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
                         cmd_key, user_instruction, task_id=_quick_key
@@ -5829,10 +5852,39 @@ class GatewayRunner:
             from tools.approval import register_gateway_notify, unregister_gateway_notify
 
             def _approval_notify_sync(approval_data: dict) -> None:
-                """Send the approval request to the user from the agent thread."""
+                """Send the approval request to the user from the agent thread.
+
+                If the adapter supports interactive button-based approvals
+                (e.g. Discord's ``send_exec_approval``), use that for a richer
+                UX.  Otherwise fall back to a plain text message with
+                ``/approve`` instructions.
+                """
                 cmd = approval_data.get("command", "")
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 desc = approval_data.get("description", "dangerous command")
+
+                # Prefer button-based approval when the adapter supports it.
+                # Check the *class* for the method, not the instance — avoids
+                # false positives from MagicMock auto-attribute creation in tests.
+                if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_exec_approval(
+                                chat_id=_status_chat_id,
+                                command=cmd,
+                                session_key=_approval_session_key,
+                                description=desc,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                        return
+                    except Exception as _e:
+                        logger.warning(
+                            "Button-based approval failed, falling back to text: %s", _e
+                        )
+
+                # Fallback: plain text approval prompt
+                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"

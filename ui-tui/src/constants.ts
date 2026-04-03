@@ -3,20 +3,45 @@ import type { Role, Usage } from './types.js'
 
 export const COMMANDS: [string, string][] = [
   ['/help', 'commands & hotkeys'],
-  ['/model', 'switch model'],
-  ['/skin', 'change theme'],
-  ['/clear', 'reset chat'],
   ['/new', 'new session'],
+  ['/resume', 'resume a previous session'],
+  ['/title', 'set session title'],
+  ['/history', 'show session list'],
+  ['/clear', 'reset session + chat'],
   ['/undo', 'drop last exchange'],
   ['/retry', 'resend last message'],
+  ['/save', 'save conversation to file'],
   ['/compact', 'toggle compact [focus]'],
-  ['/cost', 'token usage stats'],
-  ['/copy', 'copy last response'],
-  ['/context', 'context window info'],
   ['/compress', 'compress context'],
+  ['/model', 'switch model'],
+  ['/skin', 'change theme'],
+  ['/provider', 'show model/provider info'],
+  ['/prompt', 'set custom system prompt'],
+  ['/personality', 'set personality preset'],
+  ['/verbose', 'cycle tool verbosity'],
+  ['/yolo', 'toggle auto-approve mode'],
+  ['/reasoning', 'set reasoning level'],
+  ['/tools', 'list active tools'],
+  ['/toolsets', 'list toolsets'],
   ['/skills', 'list skills'],
+  ['/stop', 'kill background processes'],
+  ['/background', 'run prompt in background'],
+  ['/btw', 'side question (no tools)'],
+  ['/plan', 'invoke plan skill'],
+  ['/queue', 'queue prompt for next turn'],
+  ['/profile', 'show active profile'],
+  ['/cost', 'token usage stats'],
+  ['/context', 'context window info'],
+  ['/insights', 'usage analytics'],
+  ['/copy', 'copy last response'],
+  ['/paste', 'clipboard info'],
   ['/config', 'show config'],
   ['/status', 'session info'],
+  ['/statusbar', 'toggle status bar'],
+  ['/voice', 'voice mode toggle'],
+  ['/reload-mcp', 'reload MCP servers'],
+  ['/rollback', 'checkpoint info'],
+  ['/browser', 'browser tools info'],
   ['/quit', 'exit hermes']
 ]
 
@@ -47,7 +72,9 @@ export const HOTKEYS: [string, string][] = [
   ['Esc', 'clear input'],
   ['\\+Enter', 'multi-line continuation'],
   ['!cmd', 'run shell command'],
-  ['{!cmd}', 'interpolate shell output inline']
+  ['{!cmd}', 'interpolate shell output inline'],
+  ['/voice record', 'start PTT recording'],
+  ['/voice stop', 'stop + transcribe']
 ]
 
 export const INTERPOLATION_RE = /\{!(.+?)\}/g

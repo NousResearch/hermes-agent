@@ -6,7 +6,7 @@ import { pick } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool } from '../types.js'
 
-export function Thinking({ reasoning, t, tools }: { reasoning: string; t: Theme; tools: ActiveTool[] }) {
+export function Thinking({ reasoning, t, thinking, tools }: { reasoning: string; t: Theme; thinking?: string; tools: ActiveTool[] }) {
   const [frame, setFrame] = useState(0)
   const [verb] = useState(() => pick(VERBS))
   const [face] = useState(() => pick(FACES))
@@ -30,10 +30,10 @@ export function Thinking({ reasoning, t, tools }: { reasoning: string; t: Theme;
           {SPINNER[frame]} {face} {verb}…
         </Text>
       )}
-      {reasoning && (
+      {(reasoning || thinking) && (
         <Text color={t.color.dim} dimColor wrap="truncate-end">
           {'  💭 '}
-          {reasoning.slice(-120).replace(/\n/g, ' ')}
+          {(reasoning || thinking || '').slice(-120).replace(/\n/g, ' ')}
         </Text>
       )}
     </Box>

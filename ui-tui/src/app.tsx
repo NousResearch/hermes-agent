@@ -8,14 +8,16 @@ import { CommandPalette } from './components/commandPalette.js'
 import { MessageLine } from './components/messageLine.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
+import { MaskedPrompt } from './components/maskedPrompt.js'
+import { SessionPicker } from './components/sessionPicker.js'
 import { Thinking } from './components/thinking.js'
 import { COMMANDS, HOTKEYS, INTERPOLATION_RE, MAX_CTX, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
-import type { GatewayClient } from './gatewayClient.js'
-import { type GatewayEvent } from './gatewayClient.js'
+import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
+import * as inputHistory from './lib/history.js'
 import { upsert } from './lib/messages.js'
 import { estimateRows, flat, fmtK, hasInterpolation, pick, userDisplay } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
-import type { ActiveTool, ApprovalReq, ClarifyReq, Msg, SessionInfo, Usage } from './types.js'
+import type { ActiveTool, ApprovalReq, ClarifyReq, Msg, SecretReq, SessionInfo, SudoReq, Usage } from './types.js'
 
 const PLACEHOLDER = pick(PLACEHOLDERS)
 
@@ -39,7 +41,12 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [usage, setUsage] = useState<Usage>(ZERO)
   const [clarify, setClarify] = useState<ClarifyReq | null>(null)
   const [approval, setApproval] = useState<ApprovalReq | null>(null)
+  const [sudo, setSudo] = useState<SudoReq | null>(null)
+  const [secret, setSecret] = useState<SecretReq | null>(null)
+  const [picker, setPicker] = useState(false)
   const [reasoning, setReasoning] = useState('')
+  const [thinkingText, setThinkingText] = useState('')
+  const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [queueEditIdx, setQueueEditIdx] = useState<number | null>(null)
   const [historyIdx, setHistoryIdx] = useState<number | null>(null)
@@ -49,13 +56,13 @@ export function App({ gw }: { gw: GatewayClient }) {
   const buf = useRef('')
   const stickyRef = useRef(true)
   const queueRef = useRef<string[]>([])
-  const historyRef = useRef<string[]>([])
+  const historyRef = useRef<string[]>(inputHistory.load())
   const historyDraftRef = useRef('')
   const queueEditRef = useRef<number | null>(null)
   const lastEmptyAt = useRef(0)
 
   const empty = !messages.length
-  const blocked = !!(clarify || approval)
+  const blocked = !!(clarify || approval || sudo || secret || picker)
 
   const syncQueue = () => setQueuedDisplay([...queueRef.current])
 
@@ -84,9 +91,9 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const pushHistory = (text: string) => {
     const trimmed = text.trim()
-
     if (trimmed && historyRef.current.at(-1) !== trimmed) {
       historyRef.current.push(trimmed)
+      inputHistory.append(trimmed)
     }
   }
 
@@ -128,13 +135,31 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const sys = useCallback((text: string) => setMessages(prev => [...prev, { role: 'system' as const, text }]), [])
 
+  const rpc = (method: string, params: Record<string, unknown> = {}) =>
+    gw.request(method, params).catch((e: Error) => {
+      sys(`error: ${e.message}`)
+    })
+
+  const newSession = (msg?: string) =>
+    rpc('session.create').then((r: any) => {
+      if (!r) return
+      setSid(r.session_id)
+      setMessages([])
+      setUsage(ZERO)
+      setStatus('ready')
+      if (msg) sys(msg)
+    })
+
   const idle = () => {
     setThinking(false)
     setTools([])
     setBusy(false)
     setClarify(null)
     setApproval(null)
+    setSudo(null)
+    setSecret(null)
     setReasoning('')
+    setThinkingText('')
   }
 
   const die = () => {
@@ -229,10 +254,22 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   useInput((ch, key) => {
     if (blocked) {
-      if (key.ctrl && ch === 'c' && approval) {
-        gw.request('approval.respond', { choice: 'deny', session_id: sid }).catch(() => {})
-        setApproval(null)
-        sys('denied')
+      if (key.ctrl && ch === 'c') {
+        if (approval) {
+          gw.request('approval.respond', { choice: 'deny', session_id: sid }).catch(() => {})
+          setApproval(null)
+          sys('denied')
+        } else if (sudo) {
+          gw.request('sudo.respond', { request_id: sudo.requestId, password: '' }).catch(() => {})
+          setSudo(null)
+          sys('sudo cancelled')
+        } else if (secret) {
+          gw.request('secret.respond', { request_id: secret.requestId, value: '' }).catch(() => {})
+          setSecret(null)
+          sys('secret entry cancelled')
+        } else if (picker) {
+          setPicker(false)
+        }
       }
 
       return
@@ -336,12 +373,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           setStatus('forging session…')
-          gw.request('session.create')
-            .then((r: any) => {
-              setSid(r.session_id)
-              setStatus('ready')
-            })
-            .catch((e: Error) => setStatus(`error: ${e.message}`))
+          newSession()
 
           break
 
@@ -351,12 +383,14 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'thinking.delta':
+          if (p?.text) setThinkingText(prev => prev + p.text)
           break
 
         case 'message.start':
           setThinking(true)
           setBusy(true)
           setReasoning('')
+          setThinkingText('')
           setStatus('thinking…')
 
           break
@@ -414,7 +448,24 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'approval.request':
           setApproval({ command: p.command, description: p.description })
           setStatus('approval needed')
+          break
 
+        case 'sudo.request':
+          setSudo({ requestId: p.request_id })
+          setStatus('sudo password needed')
+          break
+
+        case 'secret.request':
+          setSecret({ requestId: p.request_id, prompt: p.prompt, envVar: p.env_var })
+          setStatus('secret input needed')
+          break
+
+        case 'background.complete':
+          sys(`[bg ${p.task_id}] ${p.text}`)
+          break
+
+        case 'btw.complete':
+          sys(`[btw] ${p.text}`)
           break
 
         case 'message.delta':
@@ -474,7 +525,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [gw, sys]
+    [gw, sys, newSession]
   )
 
   useEffect(() => {
@@ -509,8 +560,8 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'clear':
-          setMessages([])
-
+          setStatus('forging session…')
+          newSession()
           return true
 
         case 'quit': // falls through
@@ -522,16 +573,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'new':
           setStatus('forging session…')
-          gw.request('session.create')
-            .then((r: any) => {
-              setSid(r.session_id)
-              setMessages([])
-              setUsage(ZERO)
-              setStatus('ready')
-              sys('new session started')
-            })
-            .catch((e: Error) => setStatus(`error: ${e.message}`))
-
+          newSession('new session started')
           return true
 
         case 'undo':
@@ -539,7 +581,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          gw.request('session.undo', { session_id: sid })
+          rpc('session.undo', { session_id: sid })
             .then((r: any) => {
               if (r.removed > 0) {
                 setMessages(prev => {
@@ -560,28 +602,23 @@ export function App({ gw }: { gw: GatewayClient }) {
                 sys('nothing to undo')
               }
             })
-            .catch((e: Error) => sys(`error: ${e.message}`))
 
           return true
 
         case 'retry':
           if (!lastUserMsg) {
             sys('nothing to retry')
-
             return true
           }
-
+          if (sid) {
+            gw.request('session.undo', { session_id: sid }).catch(() => {})
+          }
           setMessages(prev => {
             const q = [...prev]
-
-            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
-              q.pop()
-            }
-
+            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') q.pop()
             return q
           })
           send(lastUserMsg)
-
           return true
 
         case 'compact':
@@ -595,7 +632,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          gw.request('session.compress', { session_id: sid })
+          rpc('session.compress', { session_id: sid })
             .then((r: any) => {
               sys('context compressed')
 
@@ -603,7 +640,6 @@ export function App({ gw }: { gw: GatewayClient }) {
                 setUsage(r.usage)
               }
             })
-            .catch((e: Error) => sys(`error: ${e.message}`))
 
           return true
 
@@ -656,19 +692,321 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
-        case 'skills':
-          if (!info?.skills || !Object.keys(info.skills).length) {
-            sys('no skills loaded')
+        case 'resume':
+          setPicker(true)
+          return true
 
+        case 'history':
+          if (!sid) { setPicker(true); return true }
+          rpc('session.history', { session_id: sid })
+            .then((r: any) => sys(`session ${sid}: ${r.count} messages in context`))
+          return true
+
+        case 'title':
+          if (!sid) return true
+          if (!arg) {
+            rpc('session.title', { session_id: sid })
+              .then((r: any) => sys(`title: ${r.title || '(none)'}  session: ${r.session_key}`))
             return true
           }
+          rpc('session.title', { session_id: sid, title: arg })
+            .then(() => sys(`title → ${arg}`))
+          return true
 
+        case 'tools':
+          if (!info?.tools || !Object.keys(info.tools).length) {
+            sys('no tools loaded')
+            return true
+          }
           sys(
-            Object.entries(info.skills)
-              .map(([k, vs]) => `${k}: ${vs.join(', ')}`)
+            Object.entries(info.tools)
+              .map(([k, vs]) => `${k} (${vs.length}): ${vs.join(', ')}`)
               .join('\n')
           )
+          return true
 
+        case 'skills':
+          if (!arg || arg === 'list') {
+            if (!info?.skills || !Object.keys(info.skills).length) {
+              sys('no skills loaded')
+              return true
+            }
+            sys(Object.entries(info.skills).map(([k, vs]) => `${k}: ${vs.join(', ')}`).join('\n'))
+            return true
+          }
+          if (arg.startsWith('search ')) {
+            rpc('skills.manage', { action: 'search', query: arg.slice(7).trim() })
+              .then((r: any) => {
+                if (!r.results?.length) { sys('no results'); return }
+                sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
+              })
+            return true
+          }
+          if (arg.startsWith('install ')) {
+            rpc('skills.manage', { action: 'install', query: arg.slice(8).trim() })
+              .then((r: any) => sys(r.installed ? `installed ${r.name}` : 'install failed'))
+            return true
+          }
+          if (arg === 'browse' || arg.startsWith('browse ')) {
+            rpc('skills.manage', { action: 'browse', query: arg.slice(6).trim() })
+              .then((r: any) => {
+                if (!r.results?.length) { sys('no skills available'); return }
+                sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
+              })
+            return true
+          }
+          if (arg.startsWith('inspect ')) {
+            rpc('skills.manage', { action: 'inspect', query: arg.slice(8).trim() })
+              .then((r: any) => sys(JSON.stringify(r.info, null, 2)))
+            return true
+          }
+          sys('usage: /skills [list|search <q>|install <name>|browse|inspect <name>]')
+          return true
+
+        case 'verbose':
+          rpc('config.set', { key: 'verbose', value: arg || 'cycle' })
+            .then((r: any) => sys(`verbose → ${r.value}`))
+          return true
+
+        case 'yolo':
+          rpc('config.set', { key: 'yolo', value: '' })
+            .then((r: any) => sys(`yolo → ${r.value === '1' ? 'on' : 'off'}`))
+          return true
+
+        case 'reasoning':
+          if (!arg) {
+            sys('usage: /reasoning <none|low|medium|high|xhigh|show|hide>')
+            return true
+          }
+          rpc('config.set', { key: 'reasoning', value: arg })
+            .then((r: any) => sys(`reasoning → ${r.value}`))
+          return true
+
+        case 'stop':
+          rpc('process.stop')
+            .then((r: any) => sys(`killed ${r.killed} process(es)`))
+          return true
+
+        case 'profile':
+          gw.request('config.get', { key: 'profile' })
+            .then((r: any) => sys(`profile: ${r.display}`))
+            .catch(() => sys(`profile: ${process.env.HERMES_HOME ?? '~/.hermes'}`))
+          return true
+
+        case 'save':
+          if (!sid) return true
+          rpc('session.save', { session_id: sid })
+            .then((r: any) => sys(`saved to ${r.file}`))
+          return true
+
+        case 'provider':
+          rpc('config.get', { key: 'provider' })
+            .then((r: any) => {
+              const lines = [`model: ${r.model}  provider: ${r.provider}`]
+              if (r.providers?.length) lines.push(`available: ${r.providers.join(', ')}`)
+              sys(lines.join('\n'))
+            })
+          return true
+
+        case 'prompt':
+          if (!arg) {
+            rpc('config.get', { key: 'prompt' })
+              .then((r: any) => sys(`custom prompt: ${r.prompt || '(none set)'}`))
+            return true
+          }
+          rpc('config.set', { key: 'prompt', value: arg })
+            .then((r: any) => sys(r.value ? `prompt set (${r.value.length} chars)` : 'prompt cleared'))
+          return true
+
+        case 'personality':
+          if (!arg) {
+            sys('usage: /personality <name>  (concise, creative, analytical, friendly, none)')
+            return true
+          }
+          rpc('config.set', { key: 'personality', value: arg })
+            .then((r: any) => sys(`personality → ${r.value || 'default'}`))
+          return true
+
+        case 'plan':
+          send(arg ? `/plan ${arg}` : 'Create a detailed plan for the current task.')
+          return true
+
+        case 'background':
+        case 'bg':
+          if (!arg) {
+            sys('usage: /background <prompt>')
+            return true
+          }
+          rpc('prompt.background', { session_id: sid, text: arg })
+            .then((r: any) => sys(`background task ${r.task_id} started`))
+          return true
+
+        case 'btw':
+          if (!arg) {
+            sys('usage: /btw <question>')
+            return true
+          }
+          rpc('prompt.btw', { session_id: sid, text: arg })
+            .then(() => sys('btw running…'))
+          return true
+
+        case 'queue':
+          if (!arg) {
+            sys(`${queueRef.current.length} queued message(s)`)
+            return true
+          }
+          enqueue(arg)
+          sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+          return true
+
+        case 'rollback':
+          if (!sid) return true
+          if (!arg) {
+            rpc('rollback.list', { session_id: sid })
+              .then((r: any) => {
+                if (!r.enabled) { sys('checkpoints not enabled — use hermes --checkpoints'); return }
+                if (!r.checkpoints?.length) { sys('no checkpoints'); return }
+                sys(r.checkpoints.map((c: any, i: number) =>
+                  `  ${i + 1}. ${c.message || c.hash.slice(0, 8)} (${c.timestamp})`
+                ).join('\n'))
+              })
+            return true
+          }
+          if (arg.startsWith('diff ')) {
+            const ref = arg.slice(5).trim()
+            rpc('rollback.list', { session_id: sid }).then((r: any) => {
+              const hash = /^\d+$/.test(ref) ? r.checkpoints?.[parseInt(ref) - 1]?.hash : ref
+              if (!hash) { sys(`checkpoint ${ref} not found`); return }
+              rpc('rollback.diff', { session_id: sid, hash })
+                .then((d: any) => sys(d.stat || d.diff || 'no changes'))
+            })
+            return true
+          }
+          {
+            const parts = arg.trim().split(/\s+/)
+            const ref = parts[0]!
+            const file = parts[1]
+            rpc('rollback.list', { session_id: sid }).then((r: any) => {
+              const hash = /^\d+$/.test(ref) ? r.checkpoints?.[parseInt(ref) - 1]?.hash : ref
+              if (!hash) { sys(`checkpoint ${ref} not found`); return }
+              rpc('rollback.restore', { session_id: sid, hash, ...(file ? { file } : {}) })
+                .then((d: any) => sys(d.success ? `restored${file ? ` ${file}` : ''}` : `failed: ${d.error || 'unknown'}`))
+            })
+          }
+          return true
+
+        case 'insights':
+          rpc('insights.get', { days: arg ? parseInt(arg) : 30 })
+            .then((r: any) => sys(`last ${r.days}d: ${r.sessions} sessions, ${r.messages} messages`))
+          return true
+
+        case 'toolsets':
+          if (!info?.tools) {
+            sys('no toolsets loaded')
+            return true
+          }
+          sys(Object.entries(info.tools).map(([k, vs]) => `${k}: ${vs.length} tools`).join('\n'))
+          return true
+
+        case 'paste':
+          sys('clipboard paste: use your terminal\'s paste shortcut (images not yet supported in TUI)')
+          return true
+
+        case 'reload-mcp':
+        case 'reload_mcp':
+          rpc('reload.mcp', { session_id: sid })
+            .then(() => sys('MCP servers reloaded'))
+          return true
+
+        case 'browser':
+          if (!arg || arg === 'status') {
+            rpc('browser.manage', { action: 'status' })
+              .then((r: any) => sys(r.connected ? `browser: connected (${r.url})` : 'browser: not connected'))
+          } else if (arg === 'connect' || arg.startsWith('connect ')) {
+            const url = arg.split(/\s+/)[1]
+            rpc('browser.manage', { action: 'connect', ...(url ? { url } : {}) })
+              .then((r: any) => sys(`browser connected: ${r.url}`))
+          } else if (arg === 'disconnect') {
+            rpc('browser.manage', { action: 'disconnect' })
+              .then(() => sys('browser disconnected'))
+          } else {
+            sys('usage: /browser [connect|disconnect|status]')
+          }
+          return true
+
+        case 'platforms':
+        case 'gateway':
+          sys('gateway status is not available in TUI mode')
+          return true
+
+        case 'statusbar':
+        case 'sb':
+          setStatusBar(v => !v)
+          sys(`status bar ${statusBar ? 'off' : 'on'}`)
+          return true
+
+        case 'voice':
+          if (!arg || arg === 'status') {
+            rpc('voice.toggle', { action: 'status' })
+              .then((r: any) => sys(`voice: ${r.enabled ? 'on' : 'off'}`))
+          } else if (arg === 'on' || arg === 'off') {
+            rpc('voice.toggle', { action: arg })
+              .then((r: any) => sys(`voice → ${r.enabled ? 'on' : 'off'}`))
+          } else if (arg === 'record') {
+            rpc('voice.record', { action: 'start' })
+              .then(() => sys('recording… (use /voice stop to transcribe)'))
+          } else if (arg === 'stop') {
+            rpc('voice.record', { action: 'stop' })
+              .then((r: any) => {
+                if (r.text) { send(r.text) } else { sys('no speech detected') }
+              })
+          } else if (arg === 'tts') {
+            const last = messages.filter(m => m.role === 'assistant').at(-1)
+            if (last) {
+              rpc('voice.tts', { text: last.text })
+                .then(() => sys('speaking…'))
+            } else {
+              sys('no response to speak')
+            }
+          } else {
+            sys('usage: /voice [on|off|status|record|stop|tts]')
+          }
+          return true
+
+        case 'plugins':
+          rpc('plugins.list')
+            .then((r: any) => {
+              if (!r.plugins?.length) { sys('no plugins installed'); return }
+              sys(r.plugins.map((p: any) => `  ${p.name} v${p.version} ${p.enabled ? '✓' : '✗'}`).join('\n'))
+            })
+          return true
+
+        case 'cron':
+          if (!arg || arg === 'list') {
+            rpc('cron.manage', { action: 'list' })
+              .then((r: any) => {
+                const jobs = r.jobs || r.schedules || []
+                if (!jobs.length) { sys('no cron jobs'); return }
+                sys(jobs.map((j: any) => `  ${j.name}: ${j.schedule} ${j.paused ? '(paused)' : ''}`).join('\n'))
+              })
+          } else {
+            const parts = arg.split(/\s+/)
+            const sub = parts[0]!
+            if (sub === 'add' || sub === 'create') {
+              const name = parts[1] || ''
+              const schedule = parts[2] || ''
+              const prompt = parts.slice(3).join(' ')
+              rpc('cron.manage', { action: 'add', name, schedule, prompt })
+                .then((r: any) => sys(r.message || r.status || 'created'))
+            } else {
+              rpc('cron.manage', { action: sub, name: parts[1] || '' })
+                .then((r: any) => sys(r.message || r.status || JSON.stringify(r)))
+            }
+          }
+          return true
+
+        case 'update':
+          sys('update not available in TUI mode — run: pip install -U hermes-agent')
           return true
 
         case 'model':
@@ -678,9 +1016,8 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          gw.request('config.set', { key: 'model', value: arg })
+          rpc('config.set', { key: 'model', value: arg })
             .then(() => sys(`model → ${arg}`))
-            .catch((e: Error) => sys(`error: ${e.message}`))
 
           return true
 
@@ -691,18 +1028,42 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          gw.request('config.set', { key: 'skin', value: arg })
+          rpc('config.set', { key: 'skin', value: arg })
             .then(() => sys(`skin → ${arg} (restart to apply)`))
-            .catch((e: Error) => sys(`error: ${e.message}`))
 
           return true
 
         default:
-          return false
+          gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
+            .then((r: any) => {
+              if (r.type === 'exec') {
+                sys(r.output || '(no output)')
+              } else if (r.type === 'alias') {
+                slash(`/${r.target}${arg ? ' ' + arg : ''}`)
+              } else if (r.type === 'plugin') {
+                sys(r.output || '(no output)')
+              } else if (r.type === 'skill') {
+                sys(`⚡ loading skill: ${r.name}`)
+                send(r.message)
+              }
+            })
+            .catch(() => {
+              gw.request('command.resolve', { name: name ?? '' })
+                .then((r: any) => {
+                  if (r.canonical && r.canonical !== name) {
+                    sys(`/${name} → /${r.canonical}`)
+                    slash(`/${r.canonical}${arg ? ' ' + arg : ''}`)
+                  } else {
+                    sys(`unknown command: /${name}`)
+                  }
+                })
+                .catch(() => sys(`unknown command: /${name}`))
+            })
+          return true
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [compact, gw, info, lastUserMsg, messages, sid, status, sys, usage]
+    [compact, gw, info, lastUserMsg, messages, newSession, rpc, send, sid, status, sys, usage, statusBar]
   )
 
   const submit = useCallback(
@@ -878,7 +1239,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             </Text>
           )}
 
-          {thinking && <Thinking reasoning={reasoning} t={theme} tools={tools} />}
+          {thinking && <Thinking reasoning={reasoning} t={theme} thinking={thinkingText} tools={tools} />}
         </Box>
 
         {clarify && (
@@ -903,6 +1264,57 @@ export function App({ gw }: { gw: GatewayClient }) {
               setStatus('running…')
             }}
             req={approval}
+            t={theme}
+          />
+        )}
+
+        {sudo && (
+          <MaskedPrompt
+            icon="🔐"
+            label="sudo password required"
+            onSubmit={password => {
+              gw.request('sudo.respond', { request_id: sudo.requestId, password }).catch(() => {})
+              setSudo(null)
+              setStatus('running…')
+            }}
+            t={theme}
+          />
+        )}
+
+        {secret && (
+          <MaskedPrompt
+            icon="🔑"
+            label={secret.prompt}
+            onSubmit={value => {
+              gw.request('secret.respond', { request_id: secret.requestId, value }).catch(() => {})
+              setSecret(null)
+              setStatus('running…')
+            }}
+            sub={`for ${secret.envVar}`}
+            t={theme}
+          />
+        )}
+
+        {picker && (
+          <SessionPicker
+            gw={gw}
+            onCancel={() => setPicker(false)}
+            onSelect={id => {
+              setPicker(false)
+              setStatus('resuming…')
+              gw.request('session.resume', { session_id: id })
+                .then((r: any) => {
+                  setSid(r.session_id)
+                  setMessages([])
+                  setUsage(ZERO)
+                  sys(`resumed session (${r.message_count} messages)`)
+                  setStatus('ready')
+                })
+                .catch((e: Error) => {
+                  sys(`error: ${e.message}`)
+                  setStatus('ready')
+                })
+            }}
             t={theme}
           />
         )}

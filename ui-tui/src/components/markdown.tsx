@@ -144,6 +144,52 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
+    if (line.match(/^>\s?/)) {
+      const quoteLines: string[] = []
+      while (i < lines.length && lines[i]!.match(/^>\s?/)) {
+        quoteLines.push(lines[i]!.replace(/^>\s?/, ''))
+        i++
+      }
+      nodes.push(
+        <Box flexDirection="column" key={key}>
+          {quoteLines.map((ql, qi) => (
+            <Text color={t.color.dim} key={qi}>
+              {'  │ '}<MdInline t={t} text={ql} />
+            </Text>
+          ))}
+        </Box>
+      )
+      continue
+    }
+
+    if (line.includes('|') && line.trim().startsWith('|')) {
+      const tableRows: string[][] = []
+      while (i < lines.length && lines[i]!.trim().startsWith('|')) {
+        const row = lines[i]!.trim()
+        if (!/^[|\s:-]+$/.test(row)) {
+          tableRows.push(
+            row.split('|').filter(Boolean).map(c => c.trim())
+          )
+        }
+        i++
+      }
+      if (tableRows.length) {
+        const widths = tableRows[0]!.map((_, ci) =>
+          Math.max(...tableRows.map(r => (r[ci] ?? '').length))
+        )
+        nodes.push(
+          <Box flexDirection="column" key={key} paddingLeft={2}>
+            {tableRows.map((row, ri) => (
+              <Text color={ri === 0 ? t.color.amber : t.color.cornsilk} key={ri}>
+                {row.map((cell, ci) => cell.padEnd(widths[ci] ?? 0)).join('  ')}
+              </Text>
+            ))}
+          </Box>
+        )
+      }
+      continue
+    }
+
     nodes.push(<MdInline key={key} t={t} text={line} />)
     i++
   }

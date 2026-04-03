@@ -29,12 +29,12 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
-def set_current_session_key(session_key: str):
+def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")
 
 
-def reset_current_session_key(token) -> None:
+def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
 

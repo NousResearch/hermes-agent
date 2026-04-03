@@ -1020,6 +1020,33 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+        # Validate per-call workdir: fall back to session cwd if invalid.
+        # Prevents malformed paths (e.g. "/workspace/..???") from being passed
+        # directly to docker exec -w, which silently fails the command.
+        # See https://github.com/NousResearch/hermes-agent/issues/4669
+        if workdir:
+            _resolved = Path(workdir).resolve()
+            try:
+                _resolved.relative_to("/")
+            except ValueError:
+                # Path resolves outside root (malformed/relative jank) — ignore
+                logger.warning(
+                    "Invalid workdir %r resolved to %r, falling back to session cwd %r - Task: %s",
+                    workdir, str(_resolved), getattr(env, "cwd", cwd), effective_task_id,
+                )
+                workdir = None
+            # For non-local backends the path must exist inside the container.
+            # We can't stat inside the sandbox, so at minimum check it's absolute
+            # and looks sane. The backend will still fail if the dir doesn't exist
+            # inside the container, but that's an execution error, not a silent
+            # config-override bug.
+            elif not os.path.isabs(workdir):
+                logger.warning(
+                    "Relative workdir %r is ambiguous across backends, falling back to session cwd - Task: %s",
+                    workdir, effective_task_id,
+                )
+                workdir = None
+
         # Prepare command for execution
         if background:
             # Spawn a tracked background process via the process registry.

@@ -130,6 +130,14 @@ if _config_path.exists():
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
                     _val = _terminal_cfg[_cfg_key]
+                    # Don't clobber an already-resolved absolute TERMINAL_CWD.
+                    # cli.py resolves "." to os.getcwd() at import time, but
+                    # this module-level code runs again when gateway/run.py is
+                    # imported as a plugin — it would overwrite the absolute
+                    # path with the raw "." and then line 208-211 falls back
+                    # to Path.home().
+                    if _cfg_key == "cwd" and os.path.isabs(os.environ.get(_env_var, "")):
+                        continue
                     if isinstance(_val, list):
                         os.environ[_env_var] = json.dumps(_val)
                     else:

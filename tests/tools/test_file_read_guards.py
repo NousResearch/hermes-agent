@@ -100,9 +100,10 @@ class TestCharacterCountGuard(unittest.TestCase):
     def tearDown(self):
         clear_read_tracker()
 
+    @patch("tools.file_tools.redact_sensitive_text", side_effect=lambda x: x)
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
-    def test_oversized_read_rejected(self, _mock_limit, mock_ops):
+    def test_oversized_read_rejected(self, _mock_limit, mock_ops, _mock_redact):
         """A read that returns >max chars is rejected."""
         big_content = "x" * (_DEFAULT_MAX_READ_CHARS + 1)
         mock_ops.return_value = _make_fake_ops(
@@ -124,9 +125,10 @@ class TestCharacterCountGuard(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertIn("content", result)
 
+    @patch("tools.file_tools.redact_sensitive_text", side_effect=lambda x: x)
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
-    def test_content_under_limit_passes(self, _mock_limit, mock_ops):
+    def test_content_under_limit_passes(self, _mock_limit, mock_ops, _mock_redact):
         """Content just under the limit should pass through fine."""
         mock_ops.return_value = _make_fake_ops(
             content="y" * (_DEFAULT_MAX_READ_CHARS - 1),
@@ -361,9 +363,10 @@ class TestConfigOverride(unittest.TestCase):
         self.assertIn("safety limit", result["error"])
         self.assertIn("50", result["error"])  # should show the configured limit
 
+    @patch("tools.file_tools.redact_sensitive_text", side_effect=lambda x: x)
     @patch("tools.file_tools._get_file_ops")
     @patch("hermes_cli.config.load_config", return_value={"file_read_max_chars": 500_000})
-    def test_custom_config_raises_limit(self, _mock_cfg, mock_ops):
+    def test_custom_config_raises_limit(self, _mock_cfg, mock_ops, _mock_redact):
         """A config value of 500K should allow reads up to 500K chars."""
         # 200K chars would be rejected at the default 100K but passes at 500K
         mock_ops.return_value = _make_fake_ops(

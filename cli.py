@@ -1347,6 +1347,7 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._followup_queue: list = []  # mirror of _pending_input for display (Alt+Enter queued messages)
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
@@ -1600,10 +1601,14 @@ class HermesCLI:
                         ("class:status-bar", " "),
                     ]
 
-            # Append stash indicator when something is stashed
+            # Stash indicator
             if self._stashed_input:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", "📌 stashed"))
+            # Follow-up queue indicator
+            if self._followup_queue:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", f"📬 {len(self._followup_queue)}"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -6923,12 +6928,40 @@ class HermesCLI:
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
-            """Alt+Enter inserts a newline for multi-line input."""
-            event.current_buffer.insert_text('\n')
+            """Alt+Enter: queue message as follow-up (sent after current response).
+
+            When agent is idle, behaves like Enter (sends immediately to _pending_input).
+            When agent is running, queues without interrupting — sent as the next turn.
+            _followup_queue mirrors what's pending for status display.
+            Use Ctrl+J / Ctrl+Enter for inserting a newline in multi-line input.
+            """
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._clarify_state or cli_ref._approval_state:
+                return
+
+            text = event.app.current_buffer.text.strip()
+            has_images = bool(cli_ref._attached_images)
+            if not text and not has_images:
+                return
+
+            images = list(cli_ref._attached_images)
+            cli_ref._attached_images.clear()
+            payload = (text, images) if images else text
+
+            cli_ref._pending_input.put(payload)
+            cli_ref._followup_queue.append(payload)
+            event.app.current_buffer.reset(append_to_history=True)
+
+            queue_depth = len(cli_ref._followup_queue)
+            preview = text[:60] + ("..." if len(text) > 60 else "")
+            if cli_ref._agent_running:
+                _cprint(f"  {_DIM}📬 Queued follow-up #{queue_depth}: \"{preview}\"{_RST}")
+            else:
+                _cprint(f"  {_DIM}📬 Queued: \"{preview}\"{_RST}")
+            event.app.invalidate()
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
+            """Ctrl+J (Ctrl+Enter in most terminals): insert a newline for multi-line input."""
             event.current_buffer.insert_text('\n')
 
         @kb.add('tab', eager=True)
@@ -7531,8 +7564,15 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                stash_hint = " · 📌 stashed" if cli_ref._stashed_input else ""
-                return f"type a message + Enter to interrupt, Ctrl+C to cancel{stash_hint}"
+                hints = []
+                if cli_ref._followup_queue:
+                    hints.append(f"📬 {len(cli_ref._followup_queue)} queued")
+                if cli_ref._stashed_input:
+                    hints.append("📌 stashed")
+                suffix = "  · " + " · ".join(hints) if hints else ""
+                return f"Enter to interrupt · Alt+Enter to queue follow-up{suffix}"
+            if cli_ref._followup_queue:
+                return f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} queued — Alt+Enter to add more"
             if cli_ref._stashed_input:
                 stashed_text = cli_ref._stashed_input[0]
                 preview = stashed_text[:40] + ("..." if len(stashed_text) > 40 else "")
@@ -8027,6 +8067,10 @@ class HermesCLI:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
+                        # Keep _followup_queue in sync — pop the oldest entry if present
+                        if self._followup_queue:
+                            self._followup_queue.pop(0)
+                            app.invalidate()
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:

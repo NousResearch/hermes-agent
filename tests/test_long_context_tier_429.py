@@ -1,9 +1,11 @@
-"""Tests for Anthropic long-context tier 429 handling.
+"""Tests for Anthropic Sonnet long-context tier 429 handling.
 
-When Claude Max users without "extra usage" hit the 1M context tier,
-Anthropic returns HTTP 429 "Extra usage is required for long context
-requests."  This is NOT a transient rate limit — the agent should
+When Claude Max users without "extra usage" hit the 1M context tier
+on Sonnet, Anthropic returns HTTP 429 "Extra usage is required for long
+context requests."  This is NOT a transient rate limit — the agent should
 reduce context_length to 200k and compress instead of retrying.
+
+Only Sonnet is affected — Opus 1M is general access.
 """
 
 import pytest
@@ -20,12 +22,13 @@ class TestLongContextTierDetection:
     """Verify the detection heuristic matches the Anthropic error."""
 
     @staticmethod
-    def _is_long_context_tier_error(status_code, error_msg):
+    def _is_long_context_tier_error(status_code, error_msg, model="claude-sonnet-4.6"):
         error_msg = error_msg.lower()
         return (
             status_code == 429
             and "extra usage" in error_msg
             and "long context" in error_msg
+            and "sonnet" in model.lower()
         )
 
     def test_matches_anthropic_error(self):
@@ -38,6 +41,35 @@ class TestLongContextTierDetection:
         assert self._is_long_context_tier_error(
             429,
             "extra usage is required for long context requests.",
+        )
+
+    def test_matches_openrouter_model_id(self):
+        assert self._is_long_context_tier_error(
+            429,
+            "Extra usage is required for long context requests.",
+            model="anthropic/claude-sonnet-4.6",
+        )
+
+    def test_matches_nous_model_id(self):
+        assert self._is_long_context_tier_error(
+            429,
+            "Extra usage is required for long context requests.",
+            model="claude-sonnet-4-6",
+        )
+
+    def test_rejects_opus(self):
+        """Opus 1M is general access — should NOT trigger reduction."""
+        assert not self._is_long_context_tier_error(
+            429,
+            "Extra usage is required for long context requests.",
+            model="claude-opus-4.6",
+        )
+
+    def test_rejects_opus_openrouter(self):
+        assert not self._is_long_context_tier_error(
+            429,
+            "Extra usage is required for long context requests.",
+            model="anthropic/claude-opus-4.6",
         )
 
     def test_rejects_normal_429(self):
@@ -132,27 +164,41 @@ class TestAgentErrorPath:
         is_rate_limited check fires a fallback switch."""
         error_msg = "extra usage is required for long context requests."
         status_code = 429
+        model = "claude-sonnet-4.6"
 
-        # The long-context check fires first
         _is_long_context_tier_error = (
             status_code == 429
             and "extra usage" in error_msg
             and "long context" in error_msg
+            and "sonnet" in model.lower()
         )
         assert _is_long_context_tier_error
 
-        # So we never reach the generic rate-limit path
-        # (in the real code, `break` exits the retry loop)
+    def test_opus_429_falls_through_to_rate_limit(self):
+        """Opus should NOT match — falls through to generic rate-limit."""
+        error_msg = "extra usage is required for long context requests."
+        status_code = 429
+        model = "claude-opus-4.6"
+
+        _is_long_context_tier_error = (
+            status_code == 429
+            and "extra usage" in error_msg
+            and "long context" in error_msg
+            and "sonnet" in model.lower()
+        )
+        assert not _is_long_context_tier_error
 
     def test_normal_429_still_treated_as_rate_limit(self):
         """A normal 429 should NOT match the long-context check."""
         error_msg = "rate limit exceeded"
         status_code = 429
+        model = "claude-sonnet-4.6"
 
         _is_long_context_tier_error = (
             status_code == 429
             and "extra usage" in error_msg
             and "long context" in error_msg
+            and "sonnet" in model.lower()
         )
         assert not _is_long_context_tier_error
 

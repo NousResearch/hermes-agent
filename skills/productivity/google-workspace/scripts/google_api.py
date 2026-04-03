@@ -44,25 +44,15 @@ SCOPES = [
 ]
 
 
-def _load_token_payload() -> dict:
-    try:
-        return json.loads(TOKEN_PATH.read_text())
-    except Exception:
-        return {}
-
-
-def _normalize_scope_values(values) -> set[str]:
-    if not values:
-        return set()
-    if isinstance(values, str):
-        values = values.split()
-    return {str(value).strip() for value in values if str(value).strip()}
-
-
 def _missing_scopes() -> list[str]:
-    granted = _normalize_scope_values(_load_token_payload().get("scopes") or _load_token_payload().get("scope"))
-    if not granted:
+    try:
+        payload = json.loads(TOKEN_PATH.read_text())
+    except Exception:
         return []
+    raw = payload.get("scopes") or payload.get("scope")
+    if not raw:
+        return []
+    granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
     return sorted(scope for scope in SCOPES if scope not in granted)
 
 

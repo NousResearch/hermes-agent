@@ -56,24 +56,15 @@ REDIRECT_URI = "http://localhost:1"
 def _load_token_payload(path: Path = TOKEN_PATH) -> dict:
     try:
         return json.loads(path.read_text())
-    except FileNotFoundError:
-        return {}
     except Exception:
         return {}
 
 
-def _normalize_scope_values(values) -> set[str]:
-    if not values:
-        return set()
-    if isinstance(values, str):
-        values = values.split()
-    return {str(value).strip() for value in values if str(value).strip()}
-
-
 def _missing_scopes_from_payload(payload: dict) -> list[str]:
-    granted = _normalize_scope_values(payload.get("scopes") or payload.get("scope"))
-    if not granted:
+    raw = payload.get("scopes") or payload.get("scope")
+    if not raw:
         return []
+    granted = {s.strip() for s in (raw.split() if isinstance(raw, str) else raw) if s.strip()}
     return sorted(scope for scope in SCOPES if scope not in granted)
 
 

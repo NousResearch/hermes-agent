@@ -492,3 +492,89 @@ def _xclip_save(dest: Path) -> bool:
         logger.debug("xclip image extraction failed: %s", e)
         dest.unlink(missing_ok=True)
     return False
+
+
+def set_clipboard_text(text: str) -> bool:
+    """Copy text to the system clipboard.
+
+    Supports WSL2 (powershell.exe), macOS (pbcopy),
+    Wayland (wl-copy), and X11 (xclip).
+    Returns True on success, False otherwise.
+    """
+    if sys.platform == "darwin":
+        return _macos_set_text(text)
+    return _linux_set_text(text)
+
+
+def _macos_set_text(text: str) -> bool:
+    """Use pbcopy to set clipboard text on macOS."""
+    try:
+        subprocess.run(
+            ["pbcopy"],
+            input=text, capture_output=True,
+            text=True, timeout=5,
+        )
+        return True
+    except Exception as e:
+        logger.debug("pbcopy failed: %s", e)
+    return False
+
+
+def _linux_set_text(text: str) -> bool:
+    """Try clipboard backends in priority order: WSL2 -> Wayland -> X11."""
+    if _is_wsl():
+        if _wsl_set_text(text):
+            return True
+    if os.environ.get("WAYLAND_DISPLAY"):
+        if _wayland_set_text(text):
+            return True
+    return _xclip_set_text(text)
+
+
+def _wsl_set_text(text: str) -> bool:
+    """Use powershell.exe Set-Clipboard via stdin (safe from injection)."""
+    try:
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive",
+             "-Command", "Set-Clipboard"],
+            input=text, capture_output=True,
+            text=True, timeout=5,
+        )
+        return proc.returncode == 0
+    except FileNotFoundError:
+        logger.debug("powershell.exe not found")
+    except Exception as e:
+        logger.debug("WSL clipboard set failed: %s", e)
+    return False
+
+
+def _wayland_set_text(text: str) -> bool:
+    """Use wl-copy to set clipboard text on Wayland."""
+    try:
+        proc = subprocess.run(
+            ["wl-copy"],
+            input=text, capture_output=True,
+            text=True, timeout=5,
+        )
+        return proc.returncode == 0
+    except FileNotFoundError:
+        logger.debug("wl-copy not installed")
+    except Exception as e:
+        logger.debug("wl-copy failed: %s", e)
+    return False
+
+
+def _xclip_set_text(text: str) -> bool:
+    """Use xclip to set clipboard text on X11."""
+    try:
+        proc = subprocess.run(
+            ["xclip", "-selection", "clipboard"],
+            input=text, capture_output=True,
+            text=True, timeout=5,
+        )
+        return proc.returncode == 0
+    except FileNotFoundError:
+        logger.debug("xclip not installed")
+    except Exception as e:
+        logger.debug("xclip failed: %s", e)
+    return False

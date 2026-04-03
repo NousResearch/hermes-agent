@@ -4415,6 +4415,7 @@ class HermesCLI:
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
+        self._last_response += text
 
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
@@ -4514,6 +4515,16 @@ class HermesCLI:
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
+        # Show copy hint if response contains code blocks
+        if getattr(self, "_last_response", ""):
+            import re as _re
+            _blocks = _re.findall(r'```[\s\S]*?```', self._last_response)
+            if _blocks:
+                _cprint(f"  {_DIM}📋 Ctrl+Y  copy last code block{_RST}")
+                self._has_code_blocks = True
+            else:
+                self._has_code_blocks = False
+
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
@@ -4529,6 +4540,7 @@ class HermesCLI:
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._last_response = ""
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -13392,6 +13404,30 @@ class HermesCLI:
             """
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
+
+
+        @kb.add('c-y')
+        def handle_ctrl_c_copy(event):
+            """Ctrl+Y — copy last code block to clipboard."""
+            import re as _re
+            from hermes_cli.clipboard import set_clipboard_text
+            last = getattr(self, '_last_response', '')
+            blocks = _re.findall(
+                r'(?:```|~~~)(?:[\w-]+)?\n([\s\S]*?)(?:```|~~~)',
+                last
+            )
+            if blocks:
+                code = blocks[-1].strip()
+                try:
+                    if set_clipboard_text(code):
+                        _cprint('  ✅ Code copied to clipboard!')
+                    else:
+                        _cprint('  ❌ Could not copy to clipboard.')
+                except Exception as e:
+                    _cprint(f'  ❌ Clipboard error: {e}')
+            else:
+                _cprint('  ❌ No code block found in last response.')
+            event.app.invalidate()
 
         @kb.add('escape', 'v')
         def handle_alt_v(event):

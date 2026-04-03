@@ -4872,7 +4872,9 @@ class GatewayRunner:
             "user_id": event.source.user_id,
             "timestamp": datetime.now().isoformat(),
         }
-        pending_path.write_text(json.dumps(pending))
+        _tmp_pending = pending_path.with_suffix(".tmp")
+        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 
         # Spawn `hermes update` detached so it survives gateway restart.

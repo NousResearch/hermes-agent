@@ -3228,6 +3228,107 @@ class HermesCLI:
         print()
         return True
 
+    def show_history_full(self) -> None:
+        """Show full conversation history newest-first, piped through a pager.
+
+        Builds a plain-text representation of every user and assistant turn
+        (no truncation) in reverse chronological order so the most recent
+        exchange is visible immediately.  Tool call names are listed inline.
+        Pipes through ``less -R`` when available, otherwise prints directly.
+
+        Called by Ctrl+P (when input is empty) and ``/history full``.
+        """
+        if not self.conversation_history:
+            print("(._.) No conversation history yet.")
+            return
+
+        import re as _re
+        import shutil as _shutil
+        import subprocess as _subprocess
+
+        def _strip_reasoning(t: str) -> str:
+            t = _re.sub(r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*", "", t, flags=_re.DOTALL)
+            return _re.sub(r"<REASONING_SCRATCHPAD>.*$", "", t, flags=_re.DOTALL).strip()
+
+        # Collect visible turns (skip system + tool-result rows)
+        turns = []
+        for msg in self.conversation_history:
+            role = msg.get("role", "")
+            if role in ("system", "tool"):
+                continue
+            content = msg.get("content")
+            tool_calls = msg.get("tool_calls") or []
+
+            if role == "user":
+                text = ""
+                if isinstance(content, list):
+                    parts = []
+                    for p in content:
+                        if isinstance(p, dict):
+                            if p.get("type") == "text":
+                                parts.append(p.get("text", ""))
+                            elif p.get("type") == "image_url":
+                                parts.append("[image]")
+                    text = "\n".join(parts)
+                else:
+                    text = str(content) if content is not None else ""
+                turns.append(("user", text, []))
+
+            elif role == "assistant":
+                text = _strip_reasoning(str(content) if content is not None else "")
+                names = []
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "?") if isinstance(fn, dict) else "?"
+                    if name not in names:
+                        names.append(name)
+                turns.append(("assistant", text, names))
+
+        if not turns:
+            print("(._.) No displayable history.")
+            return
+
+        W = _shutil.get_terminal_size((100, 24)).columns
+        total = len(turns)
+
+        lines = []
+        lines.append(f"  ↻ {total} messages — newest first   (q to quit, / to search)\n")
+        lines.append("═" * W + "\n")
+
+        for i, (role, text, tools) in enumerate(reversed(turns)):
+            idx = total - i
+            if role == "user":
+                header = f"[{idx}/{total}] ● You"
+            else:
+                tc_str = f"  [{', '.join(tools)}]" if tools else ""
+                header = f"[{idx}/{total}] ◆ Hermes{tc_str}"
+            lines.append(f"{header}\n")
+            if text:
+                for line in text.splitlines():
+                    lines.append(f"  {line}\n")
+            elif tools and role == "assistant":
+                lines.append(f"  [tool calls only: {', '.join(tools)}]\n")
+            lines.append("\n")
+            if i < total - 1:
+                lines.append("─" * W + "\n")
+
+        output = "".join(lines)
+
+        # Try to pipe through less -R; fall back to plain print
+        pager = _shutil.which("less") or _shutil.which("more")
+        if pager and pager.endswith("less"):
+            try:
+                proc = _subprocess.Popen(
+                    [pager, "-R", "--no-init", "--quit-if-one-screen"],
+                    stdin=_subprocess.PIPE,
+                )
+                proc.communicate(output.encode("utf-8", errors="replace"))
+                return
+            except Exception:
+                pass
+        # Fallback: print directly (user can scroll iTerm)
+        print(output)
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -4190,7 +4291,13 @@ class HermesCLI:
                 self.show_banner()
                 print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
         elif canonical == "history":
-            self.show_history()
+            parts = cmd_original.split(maxsplit=1)
+            arg = parts[1].strip().lower() if len(parts) > 1 else ""
+            if arg in ("full", "f", "all"):
+                with self._busy_command(self._slow_command_status(cmd_original)):
+                    self.show_history_full()
+            else:
+                self.show_history()
         elif canonical == "title":
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
@@ -7402,15 +7509,14 @@ class HermesCLI:
                 event.app.invalidate()
 
         @kb.add('c-p')
-        def handle_peek(event):
-            """Ctrl+P: peek at collapsed paste content or current input inline.
+        def handle_peek_or_history(event):
+            """Ctrl+P: context-aware inspect.
 
-            If the input contains a [Pasted text #N ... → path] reference,
-            prints the first 20 lines of that file right in the terminal so
-            the user can verify the content without opening an editor (Ctrl+G).
-            If multiple paste references exist, peeks at the first one.
-            If there is no paste reference, prints the first 20 lines of the
-            current buffer text as a preview.
+            - Input has a [Pasted text #N → path] reference → peek paste file
+              (first 20 lines inline; Ctrl+G to open in editor).
+            - Input has other text → preview current input (first 20 lines).
+            - Input is empty + session has history → full history pager
+              (newest message first, piped through less).
             """
             import re as _re
             from prompt_toolkit.application import run_in_terminal
@@ -7419,40 +7525,56 @@ class HermesCLI:
             text = buf.text
 
             _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-            match = _paste_re.search(text)
+            paste_match = _paste_re.search(text)
 
-            def _peek():
-                _PEEK_LINES = 20
-                if match:
-                    p = Path(match.group(1))
+            if paste_match:
+                # --- Peek paste file ---
+                p = Path(paste_match.group(1))
+
+                def _peek_paste():
+                    _PEEK = 20
                     if not p.exists():
                         _cprint(f"  {_DIM}Paste file not found: {p}{_RST}")
                         return
-                    lines = p.read_text(encoding="utf-8").splitlines()
-                    total = len(lines)
-                    shown = lines[:_PEEK_LINES]
+                    plines = p.read_text(encoding="utf-8").splitlines()
+                    total = len(plines)
                     _cprint(f"\n  {_DIM}📄 {p.name} — {total} lines{_RST}")
                     _cprint(f"  {_DIM}{'─' * 60}{_RST}")
-                    for line in shown:
-                        _cprint(f"  {line}")
-                    if total > _PEEK_LINES:
-                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines) — Ctrl+G to edit{_RST}")
+                    for ln in plines[:_PEEK]:
+                        _cprint(f"  {ln}")
+                    if total > _PEEK:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK} more lines) — Ctrl+G to edit in full{_RST}")
                     else:
                         _cprint(f"  {_DIM}{'─' * 60} Ctrl+G to edit{_RST}")
-                elif text.strip():
-                    lines = text.splitlines()
-                    total = len(lines)
-                    shown = lines[:_PEEK_LINES]
+
+                run_in_terminal(_peek_paste)
+
+            elif text.strip():
+                # --- Preview current input ---
+                def _peek_input():
+                    _PEEK = 20
+                    ilines = text.splitlines()
+                    total = len(ilines)
                     _cprint(f"\n  {_DIM}📝 Current input — {total} line{'s' if total != 1 else ''}{_RST}")
                     _cprint(f"  {_DIM}{'─' * 60}{_RST}")
-                    for line in shown:
-                        _cprint(f"  {line}")
-                    if total > _PEEK_LINES:
-                        _cprint(f"  {_DIM}  ... ({total - _PEEK_LINES} more lines){_RST}")
-                else:
-                    _cprint(f"  {_DIM}(input is empty){_RST}")
+                    for ln in ilines[:_PEEK]:
+                        _cprint(f"  {ln}")
+                    if total > _PEEK:
+                        _cprint(f"  {_DIM}  ... ({total - _PEEK} more lines){_RST}")
 
-            run_in_terminal(_peek)
+                run_in_terminal(_peek_input)
+
+            elif cli_ref.conversation_history:
+                # --- Full history pager (newest first) ---
+                def _full_history():
+                    cli_ref.show_history_full()
+
+                run_in_terminal(_full_history)
+
+            else:
+                def _empty():
+                    _cprint(f"  {_DIM}(no history yet){_RST}")
+                run_in_terminal(_empty)
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)

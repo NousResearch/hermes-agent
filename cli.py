@@ -1326,6 +1326,7 @@ class HermesCLI:
         
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
+        self._terminal_title_session: str = ""  # last session title written to terminal title
         
         # Session ID: reuse existing one when resuming, otherwise generate fresh
         if resume:
@@ -2296,6 +2297,7 @@ class HermesCLI:
                 try:
                     self._session_db.set_session_title(self.session_id, self._pending_title)
                     _cprint(f"  Session title applied: {self._pending_title}")
+                    self._set_terminal_title(session_title=self._pending_title)
                     self._pending_title = None
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
@@ -2403,6 +2405,7 @@ class HermesCLI:
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
+                self._set_terminal_title(session_title=session_meta["title"])
             self.console.print(
                 f"[#DAA520]↻ Resumed session [bold]{self.session_id}[/bold]"
                 f"{title_part} "
@@ -2896,6 +2899,61 @@ class HermesCLI:
             for key, desc in bindings:
                 _cprint(f"    {_BOLD}{key:<20}{_RST}{_DIM}{desc}{_RST}")
             _cprint("")
+
+    def _set_terminal_title(self, session_title: str = "", thinking: bool = False) -> None:
+        """Set the terminal window/tab title via OSC escape sequence.
+
+        Format:
+          ⚕ Hermes — session name     (idle, named session)
+          ⚕ Hermes ⏳                  (agent running / thinking)
+          ⚕ Hermes                    (idle, unnamed session)
+
+        Uses the skin's response_label symbol so the indicator matches the
+        active theme (⚕ default, ⚔ Ares, etc.).  Skipped when stdout is not
+        a TTY, when TERM=dumb, or when NO_COLOR is set (indicates a terminal
+        that may not handle OSC sequences).
+        """
+        import sys, os
+        if not sys.stdout.isatty():
+            return
+        if os.environ.get("TERM", "") == "dumb":
+            return
+        if os.environ.get("NO_COLOR"):
+            return
+
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            # Extract just the symbol from response_label (e.g. " ⚕ Hermes " → "⚕")
+            response_label = get_active_skin().get_branding("response_label", " ⚕ Hermes ")
+            # Pull first non-space char as the symbol
+            symbol = next((c for c in response_label.strip() if not c.isalpha() and not c.isspace()), "⚕")
+            agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
+            # Shorten "Hermes Agent" → "Hermes" for compact title
+            short_name = agent_name.split()[0]
+        except Exception:
+            symbol, short_name = "⚕", "Hermes"
+
+        if thinking:
+            title = f"{symbol} {short_name} ⏳"
+        elif session_title:
+            title = f"{symbol} {short_name} — {session_title}"
+        else:
+            title = f"{symbol} {short_name}"
+
+        # OSC 0: set both icon name and window title
+        sys.stdout.write(f"\x1b]0;{title}\x07")
+        sys.stdout.flush()
+        self._terminal_title_session = session_title
+
+    def _update_terminal_title(self, thinking: bool = False) -> None:
+        """Refresh the terminal title using the current session title."""
+        title = self._terminal_title_session
+        if not title and self._session_db:
+            try:
+                title = self._session_db.get_session_title(self.session_id) or ""
+            except Exception:
+                title = ""
+        self._set_terminal_title(session_title=title, thinking=thinking)
 
     def show_help(self):
         """Display help information with categorized commands."""
@@ -4153,6 +4211,7 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    self._set_terminal_title(session_title=new_title)
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -6720,6 +6779,7 @@ class HermesCLI:
             pass
 
         self.show_banner()
+        self._update_terminal_title()  # Set initial terminal title on startup
 
         # One-line Honcho session indicator (TTY-only, not captured by agent).
         # Only show when the user explicitly configured Honcho for Hermes
@@ -8221,6 +8281,7 @@ class HermesCLI:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._update_terminal_title(thinking=True)
                     app.invalidate()  # Refresh status line
 
                     try:
@@ -8228,6 +8289,7 @@ class HermesCLI:
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
+                        self._update_terminal_title(thinking=False)
 
                         # Auto-restore stashed input after agent finishes
                         if self._stashed_input:

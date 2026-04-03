@@ -13,27 +13,36 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
 _sessions: dict[str, dict] = {}
-_methods:  dict[str, callable] = {}
-_clarify_pending: dict[str, threading.Event] = {}
-_clarify_answers: dict[str, str] = {}
+_methods: dict[str, callable] = {}
+_pending: dict[str, threading.Event] = {}
+_answers: dict[str, str] = {}
+_db = None
 
 
-# ── Wire ─────────────────────────────────────────────────────────────
+# ── Plumbing ──────────────────────────────────────────────────────────
 
-def _emit(event_type: str, sid: str, payload: dict | None = None):
-    params = {"type": event_type, "session_id": sid}
+def _get_db():
+    global _db
+    if _db is None:
+        from hermes_state import SessionDB
+        _db = SessionDB()
+    return _db
+
+
+def _emit(event: str, sid: str, payload: dict | None = None):
+    params = {"type": event, "session_id": sid}
     if payload:
         params["payload"] = payload
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "event", "params": params}) + "\n")
     sys.stdout.flush()
 
 
-def _ok(req_id, result: dict) -> dict:
-    return {"jsonrpc": "2.0", "id": req_id, "result": result}
+def _ok(rid, result: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def _err(req_id, code: int, msg: str) -> dict:
-    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": msg}}
+def _err(rid, code: int, msg: str) -> dict:
+    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
 
 
 def method(name: str):
@@ -50,18 +59,56 @@ def handle_request(req: dict) -> dict | None:
     return fn(req.get("id"), req.get("params", {}))
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
+def _sess(params, rid):
+    s = _sessions.get(params.get("session_id", ""))
+    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+
+
+# ── Config I/O ────────────────────────────────────────────────────────
+
+def _load_cfg() -> dict:
+    try:
+        import yaml
+        p = _hermes_home / "config.yaml"
+        if p.exists():
+            with open(p) as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_cfg(cfg: dict):
+    import yaml
+    with open(_hermes_home / "config.yaml", "w") as f:
+        yaml.safe_dump(cfg, f)
+
+
+# ── Blocking prompt factory ──────────────────────────────────────────
+
+def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
+    rid = uuid.uuid4().hex[:8]
+    ev = threading.Event()
+    _pending[rid] = ev
+    payload["request_id"] = rid
+    _emit(event, sid, payload)
+    ev.wait(timeout=timeout)
+    _pending.pop(rid, None)
+    return _answers.pop(rid, "")
+
+
+def _clear_pending():
+    for rid, ev in list(_pending.items()):
+        _answers[rid] = ""
+        ev.set()
+
+
+# ── Agent factory ────────────────────────────────────────────────────
 
 def resolve_skin() -> dict:
     try:
-        import yaml
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
-        cfg_path = _hermes_home / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                cfg = yaml.safe_load(f) or {}
-        init_skin_from_config(cfg)
+        init_skin_from_config(_load_cfg())
         skin = get_active_skin()
         return {"name": skin.name, "colors": skin.colors, "branding": skin.branding}
     except Exception:
@@ -72,32 +119,25 @@ def _resolve_model() -> str:
     env = os.environ.get("HERMES_MODEL", "")
     if env:
         return env
-    try:
-        import yaml
-        cfg_path = _hermes_home / "config.yaml"
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                m = (yaml.safe_load(f) or {}).get("model", "")
-            if isinstance(m, dict):
-                return m.get("default", "")
-            if isinstance(m, str):
-                return m
-    except Exception:
-        pass
+    m = _load_cfg().get("model", "")
+    if isinstance(m, dict):
+        return m.get("default", "")
+    if isinstance(m, str) and m:
+        return m
     return "anthropic/claude-sonnet-4"
 
 
 def _get_usage(agent) -> dict:
-    ga = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
+    g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     return {
-        "input":  ga("session_input_tokens", "session_prompt_tokens"),
-        "output": ga("session_output_tokens", "session_completion_tokens"),
-        "total":  ga("session_total_tokens"),
-        "calls":  ga("session_api_calls"),
+        "input": g("session_input_tokens", "session_prompt_tokens"),
+        "output": g("session_output_tokens", "session_completion_tokens"),
+        "total": g("session_total_tokens"),
+        "calls": g("session_api_calls"),
     }
 
 
-def _collect_session_info(agent) -> dict:
+def _session_info(agent) -> dict:
     info: dict = {"model": getattr(agent, "model", ""), "tools": {}, "skills": {}}
     try:
         from model_tools import get_toolset_for_tool
@@ -114,242 +154,690 @@ def _collect_session_info(agent) -> dict:
     return info
 
 
-def _make_clarify_cb(sid: str):
-    def cb(question: str, choices: list | None) -> str:
-        rid = uuid.uuid4().hex[:8]
-        ev = threading.Event()
-        _clarify_pending[rid] = ev
-        _emit("clarify.request", sid, {"request_id": rid, "question": question, "choices": choices})
-        ev.wait(timeout=300)
-        _clarify_pending.pop(rid, None)
-        return _clarify_answers.pop(rid, "")
-    return cb
+def _agent_cbs(sid: str) -> dict:
+    return dict(
+        tool_start_callback=lambda tc_id, name, args: _emit("tool.start", sid, {"tool_id": tc_id, "name": name}),
+        tool_complete_callback=lambda tc_id, name, args, result: _emit("tool.complete", sid, {"tool_id": tc_id, "name": name}),
+        tool_progress_callback=lambda name, preview, args: _emit("tool.progress", sid, {"name": name, "preview": preview}),
+        tool_gen_callback=lambda name: _emit("tool.generating", sid, {"name": name}),
+        thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
+        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        status_callback=lambda text: _emit("status.update", sid, {"text": text}),
+        clarify_callback=lambda q, c: _block("clarify.request", sid, {"question": q, "choices": c}),
+    )
 
 
-def _register_approval_notify(sid: str, session_key: str):
+def _wire_callbacks(sid: str):
+    from tools.terminal_tool import set_sudo_password_callback
+    from tools.skills_tool import set_secret_capture_callback
+
+    set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
+
+    def secret_cb(env_var, prompt, metadata=None):
+        pl = {"prompt": prompt, "env_var": env_var}
+        if metadata:
+            pl["metadata"] = metadata
+        val = _block("secret.request", sid, pl)
+        if not val:
+            return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
+        from hermes_cli.config import save_env_value_secure
+        return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
+
+    set_secret_capture_callback(secret_cb)
+
+
+def _make_agent(sid: str, key: str, session_id: str | None = None):
+    from run_agent import AIAgent
+    return AIAgent(
+        model=_resolve_model(), quiet_mode=True, platform="tui",
+        session_id=session_id or key, session_db=_get_db(), **_agent_cbs(sid),
+    )
+
+
+def _init_session(sid: str, key: str, agent, history: list):
+    _sessions[sid] = {"agent": agent, "session_key": key, "history": history}
     try:
-        from tools.approval import register_gateway_notify
-        register_gateway_notify(session_key, lambda data: _emit("approval.request", sid, data))
+        from tools.approval import register_gateway_notify, load_permanent_allowlist
+        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        load_permanent_allowlist()
     except Exception:
         pass
+    _wire_callbacks(sid)
+    _emit("session.info", sid, _session_info(agent))
 
 
-# ── Methods ──────────────────────────────────────────────────────────
+def _with_checkpoints(session, fn):
+    return fn(session["agent"]._checkpoint_mgr, os.getenv("TERMINAL_CWD", os.getcwd()))
+
+
+# ── Methods: session ─────────────────────────────────────────────────
 
 @method("session.create")
-def _(req_id, params: dict) -> dict:
+def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
-    session_key = f"tui-{sid}"
-
-    os.environ["HERMES_SESSION_KEY"] = session_key
+    key = f"tui-{sid}"
+    os.environ["HERMES_SESSION_KEY"] = key
     os.environ["HERMES_INTERACTIVE"] = "1"
-
     try:
-        from run_agent import AIAgent
-        agent = AIAgent(
-            model=_resolve_model(),
-            quiet_mode=True,
-            platform="tui",
-            tool_start_callback=lambda tc_id, name, args: _emit("tool.start", sid, {"tool_id": tc_id, "name": name}),
-            tool_complete_callback=lambda tc_id, name, args, result: _emit("tool.complete", sid, {"tool_id": tc_id, "name": name}),
-            tool_progress_callback=lambda name, preview, args: _emit("tool.progress", sid, {"name": name, "preview": preview}),
-            tool_gen_callback=lambda name: _emit("tool.generating", sid, {"name": name}),
-            thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-            reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
-            status_callback=lambda text: _emit("status.update", sid, {"text": text}),
-            clarify_callback=_make_clarify_cb(sid),
-        )
-        _sessions[sid] = {"agent": agent, "session_key": session_key, "history": []}
+        agent = _make_agent(sid, key)
+        _get_db().create_session(key, source="tui", model=_resolve_model())
+        _init_session(sid, key, agent, [])
     except Exception as e:
-        return _err(req_id, 5000, f"agent init failed: {e}")
-
-    _register_approval_notify(sid, session_key)
-
-    from tools.approval import load_permanent_allowlist
-    load_permanent_allowlist()
-
-    _emit("session.info", sid, _collect_session_info(agent))
-    return _ok(req_id, {"session_id": sid})
+        return _err(rid, 5000, f"agent init failed: {e}")
+    return _ok(rid, {"session_id": sid})
 
 
-@method("prompt.submit")
-def _(req_id, params: dict) -> dict:
-    sid, text = params.get("session_id", ""), params.get("text", "")
-    session = _sessions.get(sid)
-    if not session:
-        return _err(req_id, 4001, "session not found")
-
-    agent = session["agent"]
-    history = session["history"]
-    _emit("message.start", sid)
-
-    def run():
-        try:
-            result = agent.run_conversation(
-                text,
-                conversation_history=list(history),
-                stream_callback=lambda delta: _emit("message.delta", sid, {"text": delta}),
-            )
-
-            if isinstance(result, dict):
-                returned_msgs = result.get("messages")
-                if isinstance(returned_msgs, list):
-                    session["history"] = returned_msgs
-                final = result.get("final_response", "")
-                status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
-                _emit("message.complete", sid, {
-                    "text": final or "",
-                    "usage": _get_usage(agent),
-                    "status": status,
-                })
-            else:
-                _emit("message.complete", sid, {"text": str(result), "usage": _get_usage(agent), "status": "complete"})
-
-        except Exception as e:
-            _emit("error", sid, {"message": str(e)})
-
-    threading.Thread(target=run, daemon=True).start()
-    return _ok(req_id, {"status": "streaming"})
-
-
-@method("clarify.respond")
-def _(req_id, params: dict) -> dict:
-    rid = params.get("request_id", "")
-    ev = _clarify_pending.get(rid)
-    if not ev:
-        return _err(req_id, 4003, "no pending clarify request")
-    _clarify_answers[rid] = params.get("answer", "")
-    ev.set()
-    return _ok(req_id, {"status": "ok"})
-
-
-@method("approval.respond")
-def _(req_id, params: dict) -> dict:
-    sid = params.get("session_id", "")
-    choice = params.get("choice", "deny")
-
-    session = _sessions.get(sid)
-    if not session:
-        return _err(req_id, 4001, "session not found")
-
+@method("session.list")
+def _(rid, params: dict) -> dict:
     try:
-        from tools.approval import resolve_gateway_approval
-        n = resolve_gateway_approval(session["session_key"], choice, resolve_all=params.get("all", False))
-        return _ok(req_id, {"resolved": n})
+        rows = _get_db().list_sessions_rich(source="tui", limit=params.get("limit", 20))
+        return _ok(rid, {"sessions": [
+            {"id": s["id"], "title": s.get("title") or "", "preview": s.get("preview") or "",
+             "started_at": s.get("started_at") or 0, "message_count": s.get("message_count") or 0}
+            for s in rows
+        ]})
     except Exception as e:
-        return _err(req_id, 5004, str(e))
+        return _err(rid, 5006, str(e))
+
+
+@method("session.resume")
+def _(rid, params: dict) -> dict:
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    db = _get_db()
+    found = db.get_session(target)
+    if not found:
+        found = db.get_session_by_title(target)
+        if found:
+            target = found["id"]
+        else:
+            return _err(rid, 4007, "session not found")
+    sid = uuid.uuid4().hex[:8]
+    os.environ["HERMES_SESSION_KEY"] = target
+    os.environ["HERMES_INTERACTIVE"] = "1"
+    try:
+        db.reopen_session(target)
+        history = [{"role": m["role"], "content": m["content"]}
+                   for m in db.get_messages(target)
+                   if m.get("role") in ("user", "assistant", "tool", "system")]
+        agent = _make_agent(sid, target, session_id=target)
+        _init_session(sid, target, agent, history)
+    except Exception as e:
+        return _err(rid, 5000, f"resume failed: {e}")
+    return _ok(rid, {"session_id": sid, "resumed": target, "message_count": len(history)})
+
+
+@method("session.title")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    title, key = params.get("title", ""), session["session_key"]
+    if not title:
+        return _ok(rid, {"title": _get_db().get_session_title(key) or "", "session_key": key})
+    try:
+        _get_db().set_session_title(key, title)
+        return _ok(rid, {"title": title})
+    except Exception as e:
+        return _err(rid, 5007, str(e))
 
 
 @method("session.usage")
-def _(req_id, params: dict) -> dict:
-    session = _sessions.get(params.get("session_id", ""))
-    if not session:
-        return _err(req_id, 4001, "session not found")
-    return _ok(req_id, _get_usage(session["agent"]))
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    return err or _ok(rid, _get_usage(session["agent"]))
 
 
 @method("session.history")
-def _(req_id, params: dict) -> dict:
-    session = _sessions.get(params.get("session_id", ""))
-    if not session:
-        return _err(req_id, 4001, "session not found")
-    return _ok(req_id, {"count": len(session.get("history", []))})
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    return err or _ok(rid, {"count": len(session.get("history", []))})
 
 
 @method("session.undo")
-def _(req_id, params: dict) -> dict:
-    session = _sessions.get(params.get("session_id", ""))
-    if not session:
-        return _err(req_id, 4001, "session not found")
-    history = session.get("history", [])
-    removed = 0
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    history, removed = session.get("history", []), 0
     while history and history[-1].get("role") in ("assistant", "tool"):
         history.pop(); removed += 1
     if history and history[-1].get("role") == "user":
         history.pop(); removed += 1
-    return _ok(req_id, {"removed": removed})
+    return _ok(rid, {"removed": removed})
 
 
 @method("session.compress")
-def _(req_id, params: dict) -> dict:
-    session = _sessions.get(params.get("session_id", ""))
-    if not session:
-        return _err(req_id, 4001, "session not found")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
     agent = session["agent"]
     try:
         if hasattr(agent, "compress_context"):
             agent.compress_context()
-        return _ok(req_id, {"status": "compressed", "usage": _get_usage(agent)})
+        return _ok(rid, {"status": "compressed", "usage": _get_usage(agent)})
     except Exception as e:
-        return _err(req_id, 5005, str(e))
+        return _err(rid, 5005, str(e))
 
 
-@method("config.set")
-def _(req_id, params: dict) -> dict:
-    key, value = params.get("key", ""), params.get("value", "")
-
-    if key == "model":
-        os.environ["HERMES_MODEL"] = value
-        return _ok(req_id, {"key": key, "value": value})
-
-    if key == "skin":
-        try:
-            import yaml
-            cfg_path = _hermes_home / "config.yaml"
-            cfg = {}
-            if cfg_path.exists():
-                with open(cfg_path) as f:
-                    cfg = yaml.safe_load(f) or {}
-            cfg["skin"] = value
-            with open(cfg_path, "w") as f:
-                yaml.safe_dump(cfg, f)
-            return _ok(req_id, {"key": key, "value": value})
-        except Exception as e:
-            return _err(req_id, 5001, str(e))
-
-    return _err(req_id, 4002, f"unknown config key: {key}")
+@method("session.save")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    import time as _time
+    filename = f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
+    try:
+        with open(filename, "w") as f:
+            json.dump({"model": getattr(session["agent"], "model", ""), "messages": session.get("history", [])},
+                      f, indent=2, ensure_ascii=False)
+        return _ok(rid, {"file": filename})
+    except Exception as e:
+        return _err(rid, 5011, str(e))
 
 
 @method("session.interrupt")
-def _(req_id, params: dict) -> dict:
-    session = _sessions.get(params.get("session_id", ""))
-    if not session:
-        return _err(req_id, 4001, "session not found")
-
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
     if hasattr(session["agent"], "interrupt"):
         session["agent"].interrupt()
-
-    for rid, ev in list(_clarify_pending.items()):
-        _clarify_answers[rid] = ""
-        ev.set()
-
+    _clear_pending()
     try:
         from tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     except Exception:
         pass
+    return _ok(rid, {"status": "interrupted"})
 
-    return _ok(req_id, {"status": "interrupted"})
+
+# ── Methods: prompt ──────────────────────────────────────────────────
+
+@method("prompt.submit")
+def _(rid, params: dict) -> dict:
+    sid, text = params.get("session_id", ""), params.get("text", "")
+    session = _sessions.get(sid)
+    if not session:
+        return _err(rid, 4001, "session not found")
+    agent, history = session["agent"], session["history"]
+    _emit("message.start", sid)
+
+    def run():
+        try:
+            result = agent.run_conversation(
+                text, conversation_history=list(history),
+                stream_callback=lambda delta: _emit("message.delta", sid, {"text": delta}),
+            )
+            if isinstance(result, dict):
+                if isinstance(result.get("messages"), list):
+                    session["history"] = result["messages"]
+                status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
+                _emit("message.complete", sid, {"text": result.get("final_response", ""), "usage": _get_usage(agent), "status": status})
+            else:
+                _emit("message.complete", sid, {"text": str(result), "usage": _get_usage(agent), "status": "complete"})
+        except Exception as e:
+            _emit("error", sid, {"message": str(e)})
+
+    threading.Thread(target=run, daemon=True).start()
+    return _ok(rid, {"status": "streaming"})
 
 
-@method("shell.exec")
-def _(req_id, params: dict) -> dict:
-    cmd = params.get("command", "")
-    if not cmd:
-        return _err(req_id, 4004, "empty command")
+@method("prompt.background")
+def _(rid, params: dict) -> dict:
+    text, parent = params.get("text", ""), params.get("session_id", "")
+    if not text:
+        return _err(rid, 4012, "text required")
+    task_id = f"bg_{uuid.uuid4().hex[:6]}"
+
+    def run():
+        try:
+            from run_agent import AIAgent
+            result = AIAgent(model=_resolve_model(), quiet_mode=True, platform="tui",
+                             session_id=task_id, max_iterations=30).run_conversation(text)
+            _emit("background.complete", parent, {"task_id": task_id,
+                  "text": result.get("final_response", str(result)) if isinstance(result, dict) else str(result)})
+        except Exception as e:
+            _emit("background.complete", parent, {"task_id": task_id, "text": f"error: {e}"})
+
+    threading.Thread(target=run, daemon=True).start()
+    return _ok(rid, {"task_id": task_id})
+
+
+@method("prompt.btw")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    text, sid = params.get("text", ""), params.get("session_id", "")
+    if not text:
+        return _err(rid, 4012, "text required")
+    snapshot = list(session.get("history", []))
+
+    def run():
+        try:
+            from run_agent import AIAgent
+            result = AIAgent(model=_resolve_model(), quiet_mode=True, platform="tui",
+                             max_iterations=8, enabled_toolsets=[]).run_conversation(text, conversation_history=snapshot)
+            _emit("btw.complete", sid, {"text": result.get("final_response", str(result)) if isinstance(result, dict) else str(result)})
+        except Exception as e:
+            _emit("btw.complete", sid, {"text": f"error: {e}"})
+
+    threading.Thread(target=run, daemon=True).start()
+    return _ok(rid, {"status": "running"})
+
+
+# ── Methods: respond ─────────────────────────────────────────────────
+
+def _respond(rid, params, key):
+    r = params.get("request_id", "")
+    ev = _pending.get(r)
+    if not ev:
+        return _err(rid, 4009, f"no pending {key} request")
+    _answers[r] = params.get(key, "")
+    ev.set()
+    return _ok(rid, {"status": "ok"})
+
+
+@method("clarify.respond")
+def _(rid, params: dict) -> dict:
+    return _respond(rid, params, "answer")
+
+@method("sudo.respond")
+def _(rid, params: dict) -> dict:
+    return _respond(rid, params, "password")
+
+@method("secret.respond")
+def _(rid, params: dict) -> dict:
+    return _respond(rid, params, "value")
+
+@method("approval.respond")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        from tools.approval import resolve_gateway_approval
+        return _ok(rid, {"resolved": resolve_gateway_approval(
+            session["session_key"], params.get("choice", "deny"), resolve_all=params.get("all", False))})
+    except Exception as e:
+        return _err(rid, 5004, str(e))
+
+
+# ── Methods: config ──────────────────────────────────────────────────
+
+@method("config.set")
+def _(rid, params: dict) -> dict:
+    key, value = params.get("key", ""), params.get("value", "")
+
+    if key == "model":
+        os.environ["HERMES_MODEL"] = value
+        return _ok(rid, {"key": key, "value": value})
+
+    if key == "verbose":
+        cycle = ["off", "new", "all", "verbose"]
+        if value and value != "cycle":
+            os.environ["HERMES_VERBOSE"] = value
+            return _ok(rid, {"key": key, "value": value})
+        cur = os.environ.get("HERMES_VERBOSE", "all")
+        try:
+            idx = cycle.index(cur)
+        except ValueError:
+            idx = 2
+        nv = cycle[(idx + 1) % len(cycle)]
+        os.environ["HERMES_VERBOSE"] = nv
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key == "yolo":
+        nv = "0" if os.environ.get("HERMES_YOLO", "0") == "1" else "1"
+        os.environ["HERMES_YOLO"] = nv
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key == "reasoning":
+        if value in ("show", "on"):
+            os.environ["HERMES_SHOW_REASONING"] = "1"
+            return _ok(rid, {"key": key, "value": "show"})
+        if value in ("hide", "off"):
+            os.environ.pop("HERMES_SHOW_REASONING", None)
+            return _ok(rid, {"key": key, "value": "hide"})
+        os.environ["HERMES_REASONING"] = value
+        return _ok(rid, {"key": key, "value": value})
+
+    if key in ("prompt", "personality", "skin"):
+        try:
+            cfg = _load_cfg()
+            if key == "prompt":
+                if value == "clear":
+                    cfg.pop("custom_prompt", None)
+                    nv = ""
+                else:
+                    cfg["custom_prompt"] = value
+                    nv = value
+            elif key == "personality":
+                cfg.setdefault("display", {})["personality"] = value if value not in ("none", "default", "neutral") else ""
+                nv = value
+            else:
+                cfg.setdefault("display", {})[key] = value
+                nv = value
+            _save_cfg(cfg)
+            return _ok(rid, {"key": key, "value": nv})
+        except Exception as e:
+            return _err(rid, 5001, str(e))
+
+    return _err(rid, 4002, f"unknown config key: {key}")
+
+
+@method("config.get")
+def _(rid, params: dict) -> dict:
+    key = params.get("key", "")
+    if key == "provider":
+        try:
+            from hermes_cli.models import list_available_providers, normalize_provider
+            model = _resolve_model()
+            parts = model.split("/", 1)
+            return _ok(rid, {"model": model, "provider": normalize_provider(parts[0]) if len(parts) > 1 else "unknown",
+                             "providers": list_available_providers()})
+        except Exception as e:
+            return _err(rid, 5013, str(e))
+    if key == "profile":
+        from hermes_constants import display_hermes_home
+        return _ok(rid, {"home": str(_hermes_home), "display": display_hermes_home()})
+    if key == "full":
+        return _ok(rid, {"config": _load_cfg()})
+    if key == "prompt":
+        return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
+    return _err(rid, 4002, f"unknown config key: {key}")
+
+
+# ── Methods: tools & system ──────────────────────────────────────────
+
+@method("process.stop")
+def _(rid, params: dict) -> dict:
+    try:
+        from tools.process_registry import ProcessRegistry
+        return _ok(rid, {"killed": ProcessRegistry().kill_all()})
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
+@method("reload.mcp")
+def _(rid, params: dict) -> dict:
+    session = _sessions.get(params.get("session_id", ""))
+    try:
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        shutdown_mcp_servers()
+        discover_mcp_tools()
+        if session:
+            agent = session["agent"]
+            if hasattr(agent, "refresh_tools"):
+                agent.refresh_tools()
+            _emit("session.info", params.get("session_id", ""), _session_info(agent))
+        return _ok(rid, {"status": "reloaded"})
+    except Exception as e:
+        return _err(rid, 5015, str(e))
+
+
+@method("command.resolve")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli.commands import resolve_command
+        r = resolve_command(params.get("name", ""))
+        if r:
+            return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
+        return _err(rid, 4011, f"unknown command: {params.get('name')}")
+    except Exception as e:
+        return _err(rid, 5012, str(e))
+
+
+@method("command.dispatch")
+def _(rid, params: dict) -> dict:
+    name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    session = _sessions.get(params.get("session_id", ""))
+
+    qcmds = _load_cfg().get("quick_commands", {})
+    if name in qcmds:
+        qc = qcmds[name]
+        if qc.get("type") == "exec":
+            r = subprocess.run(qc.get("command", ""), shell=True, capture_output=True, text=True, timeout=30)
+            return _ok(rid, {"type": "exec", "output": (r.stdout or r.stderr)[:4000]})
+        if qc.get("type") == "alias":
+            return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 
     try:
-        from tools.approval import detect_dangerous_command
-        is_dangerous, _, description = detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(req_id, 4005, f"blocked: {description}. Use the agent for dangerous commands (it has approval flow).")
-    except ImportError:
+        from hermes_cli.plugins import get_plugin_command_handler
+        handler = get_plugin_command_handler(name)
+        if handler:
+            return _ok(rid, {"type": "plugin", "output": str(handler(arg) or "")})
+    except Exception:
         pass
 
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd())
-        return _ok(req_id, {"stdout": r.stdout[-4000:], "stderr": r.stderr[-2000:], "code": r.returncode})
-    except subprocess.TimeoutExpired:
-        return _err(req_id, 5002, "command timed out (30s)")
+        from agent.skill_commands import scan_skill_commands, build_skill_invocation_message
+        cmds = scan_skill_commands()
+        key = f"/{name}"
+        if key in cmds:
+            msg = build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
+            if msg:
+                return _ok(rid, {"type": "skill", "message": msg, "name": cmds[key].get("name", name)})
+    except Exception:
+        pass
+
+    return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
+
+
+# ── Methods: voice ───────────────────────────────────────────────────
+
+@method("voice.toggle")
+def _(rid, params: dict) -> dict:
+    action = params.get("action", "status")
+    if action == "status":
+        return _ok(rid, {"enabled": os.environ.get("HERMES_VOICE", "0") == "1"})
+    if action in ("on", "off"):
+        os.environ["HERMES_VOICE"] = "1" if action == "on" else "0"
+        return _ok(rid, {"enabled": action == "on"})
+    return _err(rid, 4013, f"unknown voice action: {action}")
+
+
+@method("voice.record")
+def _(rid, params: dict) -> dict:
+    action = params.get("action", "start")
+    try:
+        if action == "start":
+            from hermes_cli.voice import start_recording
+            start_recording()
+            return _ok(rid, {"status": "recording"})
+        if action == "stop":
+            from hermes_cli.voice import stop_and_transcribe
+            return _ok(rid, {"text": stop_and_transcribe() or ""})
+        return _err(rid, 4019, f"unknown voice action: {action}")
+    except ImportError:
+        return _err(rid, 5025, "voice module not available — install audio dependencies")
     except Exception as e:
-        return _err(req_id, 5003, str(e))
+        return _err(rid, 5025, str(e))
+
+
+@method("voice.tts")
+def _(rid, params: dict) -> dict:
+    text = params.get("text", "")
+    if not text:
+        return _err(rid, 4020, "text required")
+    try:
+        from hermes_cli.voice import speak_text
+        threading.Thread(target=speak_text, args=(text,), daemon=True).start()
+        return _ok(rid, {"status": "speaking"})
+    except ImportError:
+        return _err(rid, 5026, "voice module not available")
+    except Exception as e:
+        return _err(rid, 5026, str(e))
+
+
+# ── Methods: insights ────────────────────────────────────────────────
+
+@method("insights.get")
+def _(rid, params: dict) -> dict:
+    days = params.get("days", 30)
+    try:
+        import time
+        cutoff = time.time() - days * 86400
+        rows = [s for s in _get_db().list_sessions_rich(limit=500) if (s.get("started_at") or 0) >= cutoff]
+        return _ok(rid, {"days": days, "sessions": len(rows), "messages": sum(s.get("message_count", 0) for s in rows)})
+    except Exception as e:
+        return _err(rid, 5017, str(e))
+
+
+# ── Methods: rollback ────────────────────────────────────────────────
+
+@method("rollback.list")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        def go(mgr, cwd):
+            if not mgr.enabled:
+                return _ok(rid, {"enabled": False, "checkpoints": []})
+            return _ok(rid, {"enabled": True, "checkpoints": [
+                {"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("message", "")}
+                for c in mgr.list_checkpoints(cwd)]})
+        return _with_checkpoints(session, go)
+    except Exception as e:
+        return _err(rid, 5020, str(e))
+
+
+@method("rollback.restore")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    target = params.get("hash", "")
+    if not target:
+        return _err(rid, 4014, "hash required")
+    try:
+        return _ok(rid, _with_checkpoints(session, lambda mgr, cwd: mgr.restore(cwd, target)))
+    except Exception as e:
+        return _err(rid, 5021, str(e))
+
+
+@method("rollback.diff")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    target = params.get("hash", "")
+    if not target:
+        return _err(rid, 4014, "hash required")
+    try:
+        r = _with_checkpoints(session, lambda mgr, cwd: mgr.diff(cwd, target))
+        return _ok(rid, {"stat": r.get("stat", ""), "diff": r.get("diff", "")[:4000]})
+    except Exception as e:
+        return _err(rid, 5022, str(e))
+
+
+# ── Methods: browser / plugins / cron / skills ───────────────────────
+
+@method("browser.manage")
+def _(rid, params: dict) -> dict:
+    action = params.get("action", "status")
+    if action == "status":
+        url = os.environ.get("BROWSER_CDP_URL", "")
+        return _ok(rid, {"connected": bool(url), "url": url})
+    if action == "connect":
+        url = params.get("url", "http://localhost:9222")
+        os.environ["BROWSER_CDP_URL"] = url
+        try:
+            from tools.browser_tool import cleanup_all_browsers
+            cleanup_all_browsers()
+        except Exception:
+            pass
+        return _ok(rid, {"connected": True, "url": url})
+    if action == "disconnect":
+        os.environ.pop("BROWSER_CDP_URL", None)
+        try:
+            from tools.browser_tool import cleanup_all_browsers
+            cleanup_all_browsers()
+        except Exception:
+            pass
+        return _ok(rid, {"connected": False})
+    return _err(rid, 4015, f"unknown action: {action}")
+
+
+@method("plugins.list")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        return _ok(rid, {"plugins": [
+            {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
+            for n, i in get_plugin_manager()._plugins.items()]})
+    except Exception:
+        return _ok(rid, {"plugins": []})
+
+
+@method("cron.manage")
+def _(rid, params: dict) -> dict:
+    action, jid = params.get("action", "list"), params.get("name", "")
+    try:
+        from tools.cronjob_tools import cronjob
+        if action == "list":
+            return _ok(rid, json.loads(cronjob(action="list")))
+        if action == "add":
+            return _ok(rid, json.loads(cronjob(action="create", name=jid,
+                                               schedule=params.get("schedule", ""), prompt=params.get("prompt", ""))))
+        if action in ("remove", "pause", "resume"):
+            return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
+        return _err(rid, 4016, f"unknown cron action: {action}")
+    except Exception as e:
+        return _err(rid, 5023, str(e))
+
+
+@method("skills.manage")
+def _(rid, params: dict) -> dict:
+    action, query = params.get("action", "list"), params.get("query", "")
+    try:
+        if action == "list":
+            from hermes_cli.banner import get_available_skills
+            return _ok(rid, {"skills": get_available_skills()})
+        if action == "search":
+            from hermes_cli.skills_hub import unified_search, GitHubAuth, create_source_router
+            raw = unified_search(query, create_source_router(GitHubAuth()), source_filter="all", limit=20) or []
+            return _ok(rid, {"results": [{"name": r.name, "description": r.description} for r in raw]})
+        if action == "install":
+            from hermes_cli.skills_hub import do_install
+            class _Q:
+                def print(self, *a, **k): pass
+            do_install(query, skip_confirm=True, console=_Q())
+            return _ok(rid, {"installed": True, "name": query})
+        if action == "browse":
+            from hermes_cli.skills_hub import browse_skills
+            return _ok(rid, {"results": [{"name": r.get("name", ""), "description": r.get("description", "")}
+                                         for r in (browse_skills(page=int(query) if query.isdigit() else 1) or [])]})
+        if action == "inspect":
+            from hermes_cli.skills_hub import inspect_skill
+            return _ok(rid, {"info": inspect_skill(query) or {}})
+        return _err(rid, 4017, f"unknown skills action: {action}")
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+
+
+# ── Methods: shell ───────────────────────────────────────────────────
+
+@method("shell.exec")
+def _(rid, params: dict) -> dict:
+    cmd = params.get("command", "")
+    if not cmd:
+        return _err(rid, 4004, "empty command")
+    try:
+        from tools.approval import detect_dangerous_command
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        if is_dangerous:
+            return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
+    except ImportError:
+        pass
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd())
+        return _ok(rid, {"stdout": r.stdout[-4000:], "stderr": r.stderr[-2000:], "code": r.returncode})
+    except subprocess.TimeoutExpired:
+        return _err(rid, 5002, "command timed out (30s)")
+    except Exception as e:
+        return _err(rid, 5003, str(e))

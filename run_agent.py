@@ -7380,6 +7380,59 @@ class AIAgent:
                     # compress history and retry, not abort immediately.
                     status_code = getattr(api_error, "status_code", None)
 
+                    # ── Anthropic long-context tier gate ──────────────────
+                    # Anthropic returns HTTP 429 "Extra usage is required for
+                    # long context requests" when a Claude Max (or similar)
+                    # subscription doesn't include the 1M-context tier.  This
+                    # is NOT a transient rate limit — retrying or switching
+                    # credentials won't help.  Reduce context to 200k (the
+                    # standard tier) and compress.
+                    _is_long_context_tier_error = (
+                        status_code == 429
+                        and "extra usage" in error_msg
+                        and "long context" in error_msg
+                    )
+                    if _is_long_context_tier_error:
+                        _reduced_ctx = 200000
+                        compressor = self.context_compressor
+                        old_ctx = compressor.context_length
+                        if old_ctx > _reduced_ctx:
+                            compressor.context_length = _reduced_ctx
+                            compressor.threshold_tokens = int(
+                                _reduced_ctx * compressor.threshold_percent
+                            )
+                            compressor._context_probed = True
+                            # Don't persist — this is a subscription-tier
+                            # limitation, not a model capability.  If the user
+                            # later enables extra usage the 1M limit should
+                            # come back automatically.
+                            compressor._context_probe_persistable = False
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Anthropic long-context tier "
+                                f"requires extra usage — reducing context: "
+                                f"{old_ctx:,} → {_reduced_ctx:,} tokens",
+                                force=True,
+                            )
+
+                        compression_attempts += 1
+                        if compression_attempts <= max_compression_attempts:
+                            original_len = len(messages)
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                approx_tokens=approx_tokens,
+                                task_id=effective_task_id,
+                            )
+                            if len(messages) < original_len or old_ctx > _reduced_ctx:
+                                self._emit_status(
+                                    f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
+                                    f"(was {old_ctx:,}), retrying..."
+                                )
+                                time.sleep(2)
+                                restart_with_compressed_messages = True
+                                break
+                        # Fall through to normal error handling if compression
+                        # is exhausted or didn't help.
+
                     # Eager fallback for rate-limit errors (429 or quota exhaustion).
                     # When a fallback model is configured, switch immediately instead
                     # of burning through retries with exponential backoff -- the

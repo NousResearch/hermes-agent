@@ -3129,17 +3129,18 @@ class HermesCLI:
             _cprint("")
 
     def _set_terminal_title(self, session_title: str = "", thinking: bool = False) -> None:
-        """Set the terminal window/tab title via OSC escape sequence.
+        """Set the terminal tab title via OSC escape sequences.
 
         Format:
-          ⚕ Hermes — session name     (idle, named session)
-          ⚕ Hermes ⏳                  (agent running / thinking)
-          ⚕ Hermes                    (idle, unnamed session)
+          ⚕     (idle — symbol only)
+          ⚕ ⏳  (agent running / thinking)
 
-        Uses the skin's response_label symbol so the indicator matches the
-        active theme (⚕ default, ⚔ Ares, etc.).  Skipped when stdout is not
-        a TTY, when TERM=dumb, or when NO_COLOR is set (indicates a terminal
-        that may not handle OSC sequences).
+        Uses the skin's symbol (⚕ default, ⚔ Ares, etc.).
+
+        OSC 1 sets the tab/icon title explicitly; in iTerm2 this prevents
+        the process name (Python) from being appended to the tab label.
+        OSC 2 sets the window title (shown in the title bar).
+        Skipped when stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
         """
         import sys, os
         if not sys.stdout.isatty():
@@ -3151,25 +3152,16 @@ class HermesCLI:
 
         try:
             from hermes_cli.skin_engine import get_active_skin
-            # Extract just the symbol from response_label (e.g. " ⚕ Hermes " → "⚕")
             response_label = get_active_skin().get_branding("response_label", " ⚕ Hermes ")
-            # Pull first non-space char as the symbol
             symbol = next((c for c in response_label.strip() if not c.isalpha() and not c.isspace()), "⚕")
-            agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
-            # Shorten "Hermes Agent" → "Hermes" for compact title
-            short_name = agent_name.split()[0]
         except Exception:
-            symbol, short_name = "⚕", "Hermes"
+            symbol = "⚕"
 
-        if thinking:
-            title = f"{symbol} {short_name} ⏳"
-        elif session_title:
-            title = f"{symbol} {short_name} — {session_title}"
-        else:
-            title = f"{symbol} {short_name}"
+        tab_title = f"{symbol} ⏳" if thinking else symbol
 
-        # OSC 0: set both icon name and window title
-        sys.stdout.write(f"\x1b]0;{title}\x07")
+        # OSC 1: tab/icon name (iTerm2 uses this as the tab label, no process name appended)
+        # OSC 2: window title (title bar)
+        sys.stdout.write(f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07")
         sys.stdout.flush()
         self._terminal_title_session = session_title
 

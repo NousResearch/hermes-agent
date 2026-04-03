@@ -4693,6 +4693,16 @@ class AIAgent:
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
 
+        # If the fallback is a local server, ensure it's running first.
+        if fb_provider in ("ollama", "lmstudio", "vllm", "llamacpp"):
+            from agent.model_metadata import ensure_ollama_running
+            fb_base = (fb.get("base_url") or "http://localhost:11434").strip()
+            if not ensure_ollama_running(fb_base):
+                logging.warning(
+                    "Fallback to %s failed: local server not running at %s",
+                    fb_provider, fb_base)
+                return self._try_activate_fallback()  # skip, try next
+
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
         # access for Codex providers.

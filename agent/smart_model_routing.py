@@ -200,6 +200,37 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
 
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    # If the cheap model is served by Ollama, ensure the server is running
+    # before attempting to resolve the provider.  Falls through to primary
+    # model if Ollama cannot be started.
+    cheap_provider = str(route.get("provider") or "").strip().lower()
+    if cheap_provider in ("ollama", "lmstudio", "vllm", "llamacpp"):
+        from agent.model_metadata import ensure_ollama_running
+        cheap_base = str(route.get("base_url") or "http://localhost:11434").strip()
+        if not ensure_ollama_running(cheap_base):
+            # Local server unavailable — fall through to primary cloud model
+            return {
+                "model": primary.get("model"),
+                "runtime": {
+                    "api_key": primary.get("api_key"),
+                    "base_url": primary.get("base_url"),
+                    "provider": primary.get("provider"),
+                    "api_mode": primary.get("api_mode"),
+                    "command": primary.get("command"),
+                    "args": list(primary.get("args") or []),
+                    "credential_pool": primary.get("credential_pool"),
+                },
+                "label": None,
+                "signature": (
+                    primary.get("model"),
+                    primary.get("provider"),
+                    primary.get("base_url"),
+                    primary.get("api_mode"),
+                    primary.get("command"),
+                    tuple(primary.get("args") or ()),
+                ),
+            }
+
     explicit_api_key = None
     api_key_env = str(route.get("api_key_env") or "").strip()
     if api_key_env:

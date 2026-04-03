@@ -238,6 +238,54 @@ def is_local_endpoint(base_url: str) -> bool:
     return False
 
 
+def ensure_ollama_running(base_url: str = "http://localhost:11434") -> bool:
+    """Check if Ollama is reachable; if not, attempt to start it.
+
+    Returns True if Ollama is confirmed running, False otherwise.
+    Designed for use in smart routing and fallback activation where
+    the user may have Ollama installed but not running.
+    """
+    import subprocess
+    import time
+
+    import httpx
+
+    # Strip /v1 suffix if present — we probe the native /api/tags endpoint.
+    probe_url = base_url.rstrip("/")
+    if probe_url.endswith("/v1"):
+        probe_url = probe_url[:-3]
+
+    # Quick check: is it already running?
+    try:
+        r = httpx.get(f"{probe_url}/api/tags", timeout=2.0)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+
+    # Try to start ollama serve (daemon mode).
+    try:
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return False
+
+    # Poll for readiness (up to 5 seconds).
+    for _ in range(10):
+        time.sleep(0.5)
+        try:
+            r = httpx.get(f"{probe_url}/api/tags", timeout=1.0)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
 def detect_local_server_type(base_url: str) -> Optional[str]:
     """Detect which local server is running at base_url by probing known endpoints.
 

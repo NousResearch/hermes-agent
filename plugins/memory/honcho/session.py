@@ -827,9 +827,11 @@ class HonchoSessionManager:
         """
         Fetch the user peer's card — a curated list of key facts.
 
-        Fast, no LLM reasoning. Returns raw structured facts Honcho has
-        inferred about the user (name, role, preferences, patterns).
-        Empty list if unavailable.
+        Preferred source is Honcho's session context peer_card. Some Honcho
+        deployments, however, store rich user facts primarily as peer
+        conclusions/representations while leaving peer_card empty. In that
+        case, fall back to the peer-level card and then to stored conclusions
+        so `honcho_profile` still returns useful factual profile data.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -842,14 +844,36 @@ class HonchoSessionManager:
         try:
             ctx = honcho_session.context(
                 summary=False,
-                tokens=200,
+                tokens=self._context_tokens,
                 peer_target=session.user_peer_id,
                 peer_perspective=session.assistant_peer_id,
             )
             card = ctx.peer_card or []
-            return card if isinstance(card, list) else [str(card)]
+            if card:
+                return card if isinstance(card, list) else [str(card)]
         except Exception as e:
-            logger.debug("Failed to fetch peer card from Honcho: %s", e)
+            logger.debug("Failed to fetch session peer card from Honcho: %s", e)
+
+        try:
+            user_peer = self._get_or_create_peer(session.user_peer_id)
+            peer_card = user_peer.get_card() or []
+            if peer_card:
+                return peer_card if isinstance(peer_card, list) else [str(peer_card)]
+        except Exception as e:
+            logger.debug("Failed to fetch peer-level card from Honcho: %s", e)
+
+        try:
+            user_peer = self._get_or_create_peer(session.user_peer_id)
+            conclusions = []
+            for item in user_peer.conclusions.list():
+                content = getattr(item, "content", "")
+                if content:
+                    conclusions.append(str(content))
+                if len(conclusions) >= 25:
+                    break
+            return conclusions
+        except Exception as e:
+            logger.debug("Failed to fetch peer conclusions from Honcho: %s", e)
             return []
 
     def search_context(self, session_key: str, query: str, max_tokens: int = 800) -> str:

@@ -308,12 +308,19 @@ class HonchoMemoryProvider(MemoryProvider):
         )
 
         # ----- B3: resolve_session_name -----
+        import os
         session_title = kwargs.get("session_title")
-        self._session_key = (
-            cfg.resolve_session_name(session_title=session_title, session_id=session_id)
-            or session_id
-            or "hermes-default"
-        )
+        platform = kwargs.get("platform", "cli")
+        user_id = kwargs.get("user_id", "")
+        if user_id:
+            # Preserve per-user isolation for gateway/platform sessions.
+            self._session_key = f"{platform}:{user_id}"
+        else:
+            self._session_key = (
+                cfg.resolve_session_name(cwd=os.getcwd(), session_title=session_title, session_id=session_id)
+                or session_id
+                or "hermes-default"
+            )
         logger.debug("Honcho session key resolved: %s", self._session_key)
 
         # Create session eagerly
@@ -628,6 +635,10 @@ class HonchoMemoryProvider(MemoryProvider):
             return json.dumps({"error": "Honcho is not active for this session."})
 
         try:
+            # Ensure the backing Honcho session is cached before serving any
+            # tool call. This makes tools work on first use in fresh sessions.
+            self._manager.get_or_create(self._session_key)
+
             if tool_name == "honcho_profile":
                 card = self._manager.get_peer_card(self._session_key)
                 if not card:

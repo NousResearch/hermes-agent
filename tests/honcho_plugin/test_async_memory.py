@@ -254,6 +254,43 @@ class TestResolveSessionNameTitle:
 # save() routing per write_frequency
 # ---------------------------------------------------------------------------
 
+class TestGetPeerCardFallbacks:
+    def test_get_peer_card_falls_back_to_peer_level_card(self):
+        mgr = _make_manager()
+        session = _make_session(key="s1")
+        mgr._cache["s1"] = session
+
+        ctx = MagicMock(peer_card=None)
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = ctx
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        peer = MagicMock()
+        peer.get_card.return_value = ["card fact"]
+        mgr._get_or_create_peer = MagicMock(return_value=peer)
+
+        assert mgr.get_peer_card("s1") == ["card fact"]
+
+    def test_get_peer_card_falls_back_to_conclusions_when_cards_empty(self):
+        mgr = _make_manager()
+        session = _make_session(key="s2")
+        mgr._cache["s2"] = session
+
+        ctx = MagicMock(peer_card=None)
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = ctx
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        item1 = MagicMock(content="fact one")
+        item2 = MagicMock(content="fact two")
+        peer = MagicMock()
+        peer.get_card.return_value = None
+        peer.conclusions.list.return_value = [item1, item2]
+        mgr._get_or_create_peer = MagicMock(return_value=peer)
+
+        assert mgr.get_peer_card("s2") == ["fact one", "fact two"]
+
+
 class TestSaveRouting:
     def _make_session_with_message(self, mgr=None):
         sess = _make_session()

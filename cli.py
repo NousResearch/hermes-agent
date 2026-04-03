@@ -66,6 +66,17 @@ from agent.usage_pricing import (
 )
 from hermes_cli.banner import _format_context_length
 
+
+def _print_ascii_banner_fallback(console, model: str, session_id: str | None) -> None:
+    """Fallback banner for terminals that cannot render the default Rich output."""
+    stream = getattr(sys, "__stdout__", None) or sys.stdout
+    stream.write("Hermes Agent\n")
+    stream.write(f"Model: {model}\n")
+    if session_id:
+        stream.write(f"Session: {session_id}\n")
+    stream.write("Banner rendering fell back to ASCII because this terminal encoding does not support the default banner.\n")
+    stream.flush()
+
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
@@ -1962,50 +1973,53 @@ class HermesCLI:
     
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
-        self.console.clear()
-        if self.preloaded_skills and not self._startup_skills_line_shown:
-            skills_label = ", ".join(self.preloaded_skills)
-            self.console.print(
-                f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
-            )
+        try:
+            self.console.clear()
+            if self.preloaded_skills and not self._startup_skills_line_shown:
+                skills_label = ", ".join(self.preloaded_skills)
+                self.console.print(
+                    f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
+                )
+                self.console.print()
+                self._startup_skills_line_shown = True
+
+            # Auto-compact for narrow terminals — the full banner with caduceus
+            # + tool list needs ~80 columns minimum to render without wrapping.
+            term_width = shutil.get_terminal_size().columns
+            use_compact = self.compact or term_width < 80
+
+            if use_compact:
+                self.console.print(_build_compact_banner())
+                self._show_status()
+            else:
+                # Get tools for display
+                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+
+                # Get terminal working directory (where commands will execute)
+                cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+
+                # Get context length for display
+                ctx_len = None
+                if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
+                    ctx_len = self.agent.context_compressor.context_length
+
+                # Build and display the banner
+                build_welcome_banner(
+                    console=self.console,
+                    model=self.model,
+                    cwd=cwd,
+                    tools=tools,
+                    enabled_toolsets=self.enabled_toolsets,
+                    session_id=self.session_id,
+                    context_length=ctx_len,
+                )
+
+            # Show tool availability warnings if any tools are disabled
+            self._show_tool_availability_warnings()
+
             self.console.print()
-            self._startup_skills_line_shown = True
-        
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
-        term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
-        
-        if use_compact:
-            self.console.print(_build_compact_banner())
-            self._show_status()
-        else:
-            # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
-            # Get terminal working directory (where commands will execute)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
-            # Get context length for display
-            ctx_len = None
-            if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                ctx_len = self.agent.context_compressor.context_length
-            
-            # Build and display the banner
-            build_welcome_banner(
-                console=self.console,
-                model=self.model,
-                cwd=cwd,
-                tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
-                session_id=self.session_id,
-                context_length=ctx_len,
-            )
-        
-        # Show tool availability warnings if any tools are disabled
-        self._show_tool_availability_warnings()
-        
-        self.console.print()
+        except UnicodeEncodeError:
+            _print_ascii_banner_fallback(self.console, self.model, self.session_id)
 
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).

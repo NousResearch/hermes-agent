@@ -225,11 +225,11 @@ class RetainDBClient:
         raise RetainDBClientError(message, status_code=response.status_code, payload=payload)
 
     def validate_api_key(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/v1/projects", timeout_ms=5000)
+        response = self._request("GET", "/v1/projects", timeout_ms=10000)
         return list((response or {}).get("projects") or [])
 
     def list_projects(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/v1/projects", timeout_ms=5000)
+        response = self._request("GET", "/v1/projects", timeout_ms=10000)
         return list((response or {}).get("projects") or [])
 
     def create_project(self, name: str) -> dict[str, Any]:
@@ -237,7 +237,7 @@ class RetainDBClient:
             "POST",
             "/v1/projects",
             json_body={"name": name},
-            timeout_ms=5000,
+            timeout_ms=10000,
         )
 
     def query(

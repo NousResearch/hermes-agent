@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from retaindb_integration.client import DEFAULT_BASE_URL, RetainDBClient, RetainDBClientConfig
@@ -138,7 +139,11 @@ def _select_or_create_project(
 
 
 def _smoke_test(client: RetainDBClient, config: RetainDBClientConfig) -> tuple[bool, str]:
-    manager = RetainDBSessionManager(client=client, config=config)
+    smoke_config = replace(
+        config,
+        prefetch_timeout_ms=max(int(config.prefetch_timeout_ms or 0), 8000),
+    )
+    manager = RetainDBSessionManager(client=RetainDBClient(smoke_config), config=smoke_config)
     identity = manager.resolve_identity("hermes-retaindb-setup")
     try:
         manager.get_profile(identity.session_id)

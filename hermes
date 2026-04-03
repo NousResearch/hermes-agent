@@ -7,6 +7,5 @@ Usage: ./hermes [options]
 """
 
 if __name__ == "__main__":
-    from cli import main
-    import fire
-    fire.Fire(main)
+    from hermes_cli.main import main
+    main()

@@ -6009,6 +6009,30 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
+            elif self._memory_manager and self._memory_manager.has_tool(function_name):
+                # Memory provider tools (hindsight_retain, honcho_search, etc.)
+                # These are not in the tool registry — route through MemoryManager.
+                spinner = None
+                if self.quiet_mode and not self.tool_progress_callback:
+                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    emoji = _get_tool_emoji(function_name)
+                    preview = _build_tool_preview(function_name, function_args) or function_name
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner.start()
+                _mem_result = None
+                try:
+                    function_result = self._memory_manager.handle_tool_call(function_name, function_args)
+                    _mem_result = function_result
+                except Exception as tool_error:
+                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
+                    logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                finally:
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif self.quiet_mode:
+                        self._vprint(f"  {cute_msg}")
             elif self.quiet_mode:
                 spinner = None
                 if not self.tool_progress_callback:

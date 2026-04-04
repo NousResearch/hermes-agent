@@ -62,6 +62,7 @@ mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
+a2a = ["a2a-sdk[http-server]>=0.2.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 feishu = ["lark-oapi>=1.5.3,<2"]
 rl = [
@@ -91,6 +92,7 @@ all = [
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
+  "hermes-agent[a2a]",
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
@@ -100,12 +102,13 @@ all = [
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+hermes-a2a = "a2a_adapter.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "a2a_adapter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

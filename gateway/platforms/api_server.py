@@ -552,7 +552,48 @@ class APIServerAdapter(BasePlatformAdapter):
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
 
-            def _on_delta(delta):
+            class _ThinkFilter:
+                def __init__(self, target_q):
+                    self.target_q = target_q
+                    self.in_think = False
+                    self.buf = ""
+                
+                def put(self, chunk: str, suppressed: bool):
+                    if not suppressed:
+                        if self.buf:
+                            self.buf = ""
+                        self.target_q.put(chunk)
+                        return
+                        
+                    self.buf += chunk
+                    while True:
+                        if not self.in_think:
+                            idx = self.buf.find("<think>")
+                            if idx != -1:
+                                self.in_think = True
+                                self.target_q.put("<think>")
+                                self.buf = self.buf[idx + 7:]
+                                continue
+                            else:
+                                if len(self.buf) > 6:
+                                    self.buf = self.buf[-6:]
+                                break
+                        else:
+                            idx = self.buf.find("</think>")
+                            if idx != -1:
+                                self.in_think = False
+                                self.target_q.put(self.buf[:idx + 8])
+                                self.buf = self.buf[idx + 8:]
+                                continue
+                            else:
+                                if len(self.buf) > 7:
+                                    self.target_q.put(self.buf[:-7])
+                                    self.buf = self.buf[-7:]
+                                break
+
+            _filter = _ThinkFilter(_stream_q)
+
+            def _on_delta(delta, suppressed=False):
                 # Filter out None — the agent fires stream_delta_callback(None)
                 # to signal the CLI display to close its response box before
                 # tool execution, but the SSE writer uses None as end-of-stream
@@ -561,7 +602,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # the final answer after tool calls.  The SSE loop detects
                 # completion via agent_task.done() instead.
                 if delta is not None:
-                    _stream_q.put(delta)
+                    _filter.put(delta, suppressed)
 
             def _on_tool_progress(name, preview, args):
                 """Inject tool progress into the SSE stream for Open WebUI."""

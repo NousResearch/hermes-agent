@@ -641,7 +641,9 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred = cred_path.with_suffix(".tmp")
+        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred.replace(cred_path)
         # Restrict permissions (credentials file)
         cred_path.chmod(0o600)
     except (OSError, IOError) as e:
@@ -1596,6 +1598,5 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 
 

@@ -144,7 +144,7 @@ async def async_task(
     # Launch subprocess non-blocking with Popen
     # --output-format json makes hermes emit a JSON object with final_response
     # so the watcher can extract only the clean answer, not the tool call log
-    cmd = [hermes_bin, "-p", profile, "chat", "-Q", "-q", full_prompt]
+    cmd = [hermes_bin, "-p", profile, "chat", "-Q", "-q", full_prompt, "--max-turns", "50", "--yolo"]
     env = os.environ.copy()
 
     try:

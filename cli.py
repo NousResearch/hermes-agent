@@ -1184,10 +1184,6 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
-        # Subagent control panel state
-        self._subagent_panel: dict = {}          # task_index -> SubagentRecord
-        self._subagent_panel_open: bool = False
-        self._subagent_panel_cursor: int = 0
         # Dispatch mode for each queue:
         #   "one_by_one"  — each queued message triggers its own agent turn (default)
         #   "all_at_once" — after a turn, all queued messages are joined and sent as one turn
@@ -1195,8 +1191,6 @@ class HermesCLI:
         self.steering_dispatch = "all_at_once" if str(_sdm).strip().lower() == "all_at_once" else "one_by_one"
         _fdm = CLI_CONFIG["display"].get("followup_dispatch", "one_by_one")
         self.followup_dispatch = "all_at_once" if str(_fdm).strip().lower() == "all_at_once" else "one_by_one"
-        _sar = CLI_CONFIG.get('display', {}).get('stash_auto_restore', False)
-        self.stash_auto_restore: bool = bool(_sar)
         self._show_full_user_message: bool = bool(
             CLI_CONFIG["display"].get("show_full_user_message", False)
         )
@@ -1381,14 +1375,14 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._followup_queue: list = []  # 📬 Alt+Enter queue — entries are {"id": str, "payload": ...}
+        self._cancelled_followups: set = set()  # UUIDs recalled via Alt+Up, skipped in process_loop
+        self._followup_recall_count: int = 0   # how many recalls done in this recall session
+        self._steering_queue: list = []  # 🎯 Enter-during-run queue (busy_input_mode=queue)
+        self._cancelled_steerings: set = set()  # UUIDs recalled via Alt+Down
+        self._steering_recall_count: int = 0
         self._should_exit = False
         self._last_ctrl_c_time = 0
-        self._followup_queue: list = []
-        self._steering_queue: list = []
-        self._cancelled_steerings: set = set()
-        self._stash_list: list = []   # multi-item stash [{id, text, images, stashed_at, preview}]
-        self._stash_panel_open: bool = False
-        self._stash_panel_cursor: int = 0
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -1424,77 +1418,6 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
-
-    # ── Cross-session queue persistence ────────────────────────────────────────
-
-    def _resolve_queues_save_path(self):
-        """Return per-session JSON path for queue persistence, or None."""
-        if self.session_id and getattr(self, "_session_db", None):
-            from hermes_constants import get_hermes_home
-            return get_hermes_home() / "sessions" / self.session_id / "queues.json"
-        return None
-
-    def _load_queues_from_disk(self) -> None:
-        """Restore stash and queues from queues.json (if it exists)."""
-        try:
-            path = self._resolve_queues_save_path()
-            if path and path.is_file():
-                import json as _json
-                data = _json.loads(path.read_text(encoding="utf-8"))
-                self._followup_queue = data.get("followup_queue", [])
-                self._cancelled_followups = set(data.get("cancelled_followups", []))
-                self._steering_queue = data.get("steering_queue", [])
-                self._cancelled_steerings = set(data.get("cancelled_steerings", []))
-                self._stash_list = data.get("stash_list", [])
-                for item in self._stash_list:
-                    item["images"] = [Path(p) for p in item.get("images", [])]
-        except Exception:
-            pass
-
-    def _save_queues_to_disk(self) -> None:
-        """Serialise stash and queues to per-session queues.json (best-effort)."""
-        try:
-            path = self._resolve_queues_save_path()
-            if not path:
-                return
-            path.parent.mkdir(parents=True, exist_ok=True)
-            import json as _json
-
-            def _ser(payload):
-                if isinstance(payload, (tuple, list)) and len(payload) >= 1:
-                    imgs = payload[1] if len(payload) > 1 else []
-                    return (payload[0], [str(i) for i in imgs]) if imgs else payload[0]
-                return payload
-
-            data = {
-                "followup_queue": [
-                    {**it, "payload": _ser(it.get("payload"))} for it in self._followup_queue
-                ],
-                "cancelled_followups": list(self._cancelled_followups),
-                "steering_queue": [
-                    {**it, "payload": _ser(it.get("payload"))} for it in self._steering_queue
-                ],
-                "cancelled_steerings": list(self._cancelled_steerings),
-                "stash_list": [
-                    {**it, "images": [str(p) for p in it.get("images", [])]} for it in self._stash_list
-                ],
-            }
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(_json.dumps(data), encoding="utf-8")
-            tmp.replace(path)
-        except Exception:
-            pass
-
-    def _clear_queues_from_disk(self) -> None:
-        """Remove queues.json on clean exit."""
-        try:
-            path = self._resolve_queues_save_path()
-            if path and path.is_file():
-                path.unlink()
-        except Exception:
-            pass
-
-    # ───────────────────────────────────────────────────────────────────────────
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -1711,10 +1634,9 @@ class HermesCLI:
                     ]
 
             # Stash indicator
-            if self._stash_list:
+            if self._stashed_input:
                 frags.append(("class:status-bar-dim", " │ "))
-                label = f"📌 {len(self._stash_list)}" + (" ▲" if self._stash_panel_open else "")
-                frags.append(("class:status-bar-warn", label))
+                frags.append(("class:status-bar-warn", "📌 stashed"))
             # Follow-up queue (📬) and steering queue (🎯) indicators
             if self._followup_queue:
                 frags.append(("class:status-bar-dim", " │ "))
@@ -1722,15 +1644,6 @@ class HermesCLI:
             if self._steering_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
-            if self._subagent_panel:
-                n_running = sum(1 for r in self._subagent_panel.values() if r.status == "running")
-                if n_running:
-                    frags.append(("class:status-bar-dim", " │ "))
-                    label = f"🔀 {n_running}" + (" ▲" if self._subagent_panel_open else " Ctrl+X")
-                    frags.append(("class:status-bar-warn", label))
-            if self._show_full_user_message:
-                frags.append(("class:status-bar-dim", " │ "))
-                frags.append(("class:status-bar-warn", "↕ full msg"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -1740,67 +1653,6 @@ class HermesCLI:
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
-
-    @staticmethod
-    def _fmt_stash_age(stashed_at: float) -> str:
-        """Return human-readable age string for a stash entry."""
-        import time as _t
-        secs = int(_t.monotonic() - stashed_at)
-        if secs < 10:
-            return "just now"
-        if secs < 90:
-            return f"{secs}s ago"
-        mins = secs // 60
-        if mins < 60:
-            return f"{mins} min ago"
-        return f"{mins // 60}h ago"
-
-    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
-        """Return prompt_toolkit formatted_text fragments for the stash panel box."""
-        W = min(width - 4, 80)
-
-        HDR_PREFIX = "╭─ 📌 Stash ("
-        n = len(stash_list)
-        title_mid = f"{n} item{'s' if n != 1 else ''}) "
-        HDR_SUFFIX = " Ctrl+S ─╮"
-        FTR_PREFIX = "╰"
-        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
-
-        # Header dashes fill between title and suffix
-        # HDR_PREFIX includes emoji (📌 = 2 wide) — measure in display cols
-        hdr_fixed = 2 + len(HDR_PREFIX) - 2 + len(title_mid) + len(HDR_SUFFIX)
-        # 📌 is 2 wide, "╭─ " already counted title chars fine since we
-        # just need to fit in W columns
-        hdr_prefix_str = f"{HDR_PREFIX}{title_mid}"
-        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
-        ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
-
-        # Row inner width: W minus 2 border chars '│' on each side
-        INNER = W - 2
-
-        frags: list = []
-
-        def line(text: str, style: str = "") -> None:
-            frags.append((style, text + "\n"))
-
-        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
-
-        for i, item in enumerate(stash_list):
-            age = self._fmt_stash_age(item["stashed_at"])
-            # Row: " ► [N] {age:<10} {preview} "
-            prefix = f" {'►' if i == cursor else ' '} [{i+1}] {age:<10} "
-            avail = max(0, INNER - len(prefix) - 1)
-            preview = item["preview"][:avail].ljust(avail)
-            row = f"│{prefix}{preview} │"
-            if i == cursor:
-                frags.append(("class:subagent-selected", row + "\n"))
-            else:
-                frags.append(("class:subagent-border", "│"))
-                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
-                frags.append(("class:subagent-border", "│\n"))
-
-        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
-        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -3056,127 +2908,6 @@ class HermesCLI:
             f"{toolsets_info}{provider_info}"
         )
     
-    def _show_keyboard_shortcuts(self):
-        """Display all keyboard shortcuts (/keys command)."""
-        _voice_key_display = "Ctrl+B"
-        try:
-            from hermes_cli.config import load_config
-            _rk = load_config().get("voice", {}).get("record_key", "ctrl+b")
-            _voice_key_display = _rk.replace("ctrl+", "Ctrl+").replace("alt+", "Alt+")
-        except Exception:
-            pass
-        shortcuts = [
-            ("Input", [
-                ("Enter",           "Send message"),
-                ("Alt+Enter",       "Insert newline (multi-line input)"),
-                ("Ctrl+J",          "Insert newline (alternate)"),
-                ("Tab",             "Accept completion / trigger completions"),
-                ("Up / Down",       "Browse input history"),
-            ]),
-            ("Session", [
-                ("Ctrl+C",          "Cancel prompt / interrupt agent / exit"),
-                ("Ctrl+D",          "Delete char under cursor (exit when input empty)"),
-                ("Ctrl+Z",          "Suspend to background (fg to resume)"),
-            ]),
-            ("Drafting", [
-                ("Ctrl+G",          "Open input in external editor ($VISUAL / VS Code)"),
-                ("Ctrl+S",          "Stash input (pop with Ctrl+S; auto-restores after response if buffer empty)"),
-                ("Ctrl+P",          "Peek paste / preview input / full history pager (empty input)"),
-                ("Ctrl+V",          "Paste from clipboard (image-aware)"),
-                ("ESC ESC",         "Clear input buffer and attached images"),
-            ]),
-            ("Subagents", [
-                ("Ctrl+X",          "Toggle subagent panel (↑↓ navigate, K interrupt)"),
-            ]),
-            ("Queues", [
-                ("Alt+Enter",       "📬 Queue follow-up (sent after current response)"),
-                ("Enter (queue mode)", "🎯 Queue steering (busy_input_mode: queue in config)"),
-                ("Alt+↑",          "Recall most recent 📬 follow-up into input"),
-                ("Alt+↓",          "Recall most recent 🎯 steering into input"),
-            ]),
-            ("Voice", [
-                (_voice_key_display, "Toggle voice recording (when voice mode is on)"),
-            ]),
-        ]
-        _cprint(f"\n  {_BOLD}⌨  Keyboard Shortcuts{_RST}\n")
-        for category, bindings in shortcuts:
-            _cprint(f"  {_GOLD}{category}{_RST}")
-            for key, desc in bindings:
-                _cprint(f"    {_BOLD}{key:<20}{_RST}{_DIM}{desc}{_RST}")
-            _cprint("")
-
-    def _set_terminal_title(self, session_title: str = "", thinking: bool = False) -> None:
-        """Set the terminal tab title via OSC escape sequences.
-
-        Format:
-          ⚕     (idle — symbol only)
-          ⚕ ⏳  (agent running / thinking)
-
-        Uses the skin's symbol (⚕ default, ⚔ Ares, etc.).
-
-        OSC 1 sets the tab/icon title explicitly; in iTerm2 this prevents
-        the process name (Python) from being appended to the tab label.
-        OSC 2 sets the window title (shown in the title bar).
-        Skipped when stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
-        """
-        import sys, os
-
-        if os.environ.get("TERM", "") == "dumb" or os.environ.get("NO_COLOR"):
-            return
-        try:
-            if not CLI_CONFIG.get("display", {}).get("terminal_title", True):
-                return
-        except Exception:
-            pass
-
-        try:
-            from hermes_cli.skin_engine import get_active_skin
-            response_label = get_active_skin().get_branding("response_label", " ⚕ Hermes ")
-            symbol = next((c for c in response_label.strip() if not c.isalpha() and not c.isspace()), "⚕")
-        except Exception:
-            symbol = "⚕"
-
-        if session_title:
-            tab_title = f"{symbol} {session_title} ⏳" if thinking else f"{symbol} {session_title}"
-        elif thinking:
-            tab_title = f"{symbol} ⏳"
-        else:
-            tab_title = symbol
-
-        # OSC 0 + ST terminator — confirmed working in iTerm2 debug test
-        seq_b = f"\x1b]0;{tab_title}\x1b\\".encode("utf-8")
-
-        for _attempt in ("ctermid", "__stdout__", "stdout_fd", "stdout_write"):
-            try:
-                if _attempt == "ctermid":
-                    _fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
-                    os.write(_fd, seq_b)
-                    os.close(_fd)
-                elif _attempt == "__stdout__":
-                    _s = getattr(sys, "__stdout__", None)
-                    if _s:
-                        os.write(_s.fileno(), seq_b)
-                elif _attempt == "stdout_fd":
-                    os.write(1, seq_b)
-                elif _attempt == "stdout_write":
-                    sys.stdout.write(seq_b.decode("utf-8"))
-                    sys.stdout.flush()
-                break
-            except Exception:
-                pass
-
-        self._terminal_title_session = session_title
-
-    def _update_terminal_title(self, thinking: bool = False) -> None:
-        """Refresh the terminal title using the current session title."""
-        title = self._terminal_title_session
-        if not title and self._session_db:
-            try:
-                title = self._session_db.get_session_title(self.session_id) or ""
-            except Exception:
-                title = ""
-        self._set_terminal_title(session_title=title, thinking=thinking)
-
     def show_help(self):
         """Display help information with categorized commands."""
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
@@ -4743,8 +4474,6 @@ class HermesCLI:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
-        elif canonical == "stash":
-            self._handle_stash_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
@@ -4877,110 +4606,7 @@ class HermesCLI:
             self._pending_input.put(msg)
         else:
             self.console.print("[bold red]Plan mode unavailable: input queue not initialized[/]")
-
-    def _handle_stash_command(self, cmd: str):
-        """Handle /stash — push, pop, list, clear, or toggle auto-restore.
-
-        Usage:
-            /stash                      List stashed items
-            /stash list                 List stashed items
-            /stash pop [N]              Pop latest (or Nth) item into input buffer
-            /stash push <text>          Push text to stash
-            /stash clear                Clear all stashed items
-            /stash settings / toggle    Toggle auto-restore on/off
-            /stash auto-restore         Show current auto-restore state
-        """
-        parts = cmd.strip().split(maxsplit=2)
-        sub = parts[1].strip().lower() if len(parts) > 1 else ""
-
-        if not sub or sub == "list":
-            if not self._stash_list:
-                _cprint(f"  {_DIM}📌 Nothing stashed{_RST}")
-                return
-            auto = "ON" if self.stash_auto_restore else "OFF"
-            _cprint(f"  {_DIM}📌 {len(self._stash_list)} stashed item{'s' if len(self._stash_list) != 1 else ''} (auto-restore: {auto}):{_RST}")
-            for i, item in enumerate(self._stash_list):
-                age = int(__import__('time').monotonic() - item["stashed_at"])
-                pinned = " ← pinned" if i == 0 else ""
-                _cprint(f"    [{i+1}] {age}s ago — {item['preview'][:60]}{pinned}")
-            _cprint(f"  {_DIM}Use /stash pop [N] to restore · /stash clear to empty · Ctrl+S to open panel{_RST}")
-            return
-
-        if sub == "push":
-            text = parts[2].strip() if len(parts) > 2 else ""
-            if not text:
-                _cprint(f"  {_DIM}Usage: /stash push <text to stash>{_RST}")
-                return
-            self._stash_list.insert(0, {
-                "id": __import__('uuid').uuid4().hex,
-                "text": text,
-                "images": [],
-                "stashed_at": __import__('time').monotonic(),
-                "preview": text[:60] + ("..." if len(text) > 60 else ""),
-            })
-            self._stashed_input = (text, [])
-            _cprint(f"  {_DIM}📌 Pushed: {text[:40]}{'...' if len(text) > 40 else ''}{_RST}")
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
-            return
-
-        if sub == "pop":
-            idx_arg = parts[2].strip() if len(parts) > 2 else ""
-            if not self._stash_list:
-                _cprint(f"  {_DIM}📌 Nothing to pop{_RST}")
-                return
-            idx = 0
-            if idx_arg.isdigit():
-                idx = int(idx_arg) - 1
-                if idx < 0 or idx >= len(self._stash_list):
-                    _cprint(f"  {_DIM}Invalid index (1-{len(self._stash_list)}){_RST}")
-                    return
-            item = self._stash_list.pop(idx)
-            self._stashed_input = None  # prevent auto-restore
-            if hasattr(self, '_app') and self._app:
-                try:
-                    buf = self._app.layout.current_buffer
-                    buf.text = item["text"]
-                    buf.cursor_position = len(item["text"])
-                except Exception:
-                    pass
-            self._attached_images.extend(item.get("images", []))
-            _cprint(f"  {_DIM}📌 Popped: {item['preview'][:40]}{_RST}")
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
-            return
-
-        if sub == "clear":
-            self._stash_list.clear()
-            self._stashed_input = None
-            self._stash_panel_open = False
-            self._stash_panel_cursor = 0
-            _cprint(f"  {_DIM}📌 Stash cleared{_RST}")
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
-            return
-
-        # Allow partial matches for settings (sett, set, settin, tog, etc.)
-        if sub.startswith("sett") or sub.startswith("tog"):
-            self.stash_auto_restore = not self.stash_auto_restore
-            state = "ON" if self.stash_auto_restore else "OFF"
-            _cprint(f"  📌 Auto-restore: {state}")
-            try:
-                save_config_value("display.stash_auto_restore", self.stash_auto_restore)
-                _cprint(f"  {_DIM}(saved to config){_RST}")
-            except Exception as e:
-                _cprint(f"  {_DIM}(config save failed: {e}){_RST}")
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
-            return
-
-        if sub.startswith("auto"):
-            current = "ON" if self.stash_auto_restore else "OFF"
-            _cprint(f"  📌 Auto-restore: {current}")
-            return
-
-        _cprint(f"  {_DIM}Usage: /stash [push|pop|list|clear|settings|toggle|auto-restore]{_RST}")
-
+    
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -7477,14 +7103,17 @@ class HermesCLI:
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     if self.busy_input_mode == "queue":
-                        # Queue for steering instead of interrupting
+                        # Tag and track in the 🎯 steering queue
                         import uuid as _uuid_mod
                         _stag = _uuid_mod.uuid4().hex
                         _steer_text = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        self._steering_queue.append({
-                            "id": _stag, "payload": payload, "text": _steer_text
-                        })
-                        _cprint(f"  🎯 Steer queued ({len(self._steering_queue)}): {_steer_text[:60]}")
+                        cli_ref._steering_queue.append({"id": _stag, "payload": payload, "text": _steer_text})
+                        if cli_ref.steering_dispatch == "one_by_one":
+                            cli_ref._pending_input.put({"_steering_tag": _stag, "payload": payload})
+                        _sdepth = len(cli_ref._steering_queue)
+                        _spreview = _steer_text[:60] + ("..." if len(_steer_text) > 60 else "")
+                        _cprint(f"  {_DIM}🎯 Steering queued #{_sdepth}: \"{_spreview}\"{_RST}")
+                        event.app.invalidate()
                     else:
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
@@ -7502,13 +7131,130 @@ class HermesCLI:
         
         @kb.add('escape', 'enter')
         def handle_alt_enter(event):
-            """Alt+Enter inserts a newline for multi-line input."""
-            event.current_buffer.insert_text('\n')
+            """Alt+Enter: queue message as follow-up (sent after current response).
+
+            When agent is idle, behaves like Enter (sends immediately to _pending_input).
+            When agent is running, queues without interrupting — sent as the next turn.
+            _followup_queue mirrors what's pending for status display.
+            Use Ctrl+J / Ctrl+Enter for inserting a newline in multi-line input.
+            """
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._clarify_state or cli_ref._approval_state:
+                return
+
+            text = event.app.current_buffer.text.strip()
+            has_images = bool(cli_ref._attached_images)
+            if not text and not has_images:
+                return
+
+            images = list(cli_ref._attached_images)
+            cli_ref._attached_images.clear()
+            payload = (text, images) if images else text
+
+            import uuid as _uuid_mod
+            tag = _uuid_mod.uuid4().hex
+            cli_ref._followup_queue.append({"id": tag, "payload": payload, "text": text})
+            if cli_ref.followup_dispatch == "one_by_one":
+                # Wrap with tag so process_loop can identify and cancel by ID, not text
+                cli_ref._pending_input.put({"_followup_tag": tag, "payload": payload})
+            event.app.current_buffer.reset(append_to_history=True)
+
+            queue_depth = len(cli_ref._followup_queue)
+            preview = text[:60] + ("..." if len(text) > 60 else "")
+            if cli_ref._agent_running:
+                _cprint(f"  {_DIM}📬 Queued follow-up #{queue_depth}: \"{preview}\"{_RST}")
+            else:
+                _cprint(f"  {_DIM}📬 Queued: \"{preview}\"{_RST}")
+            event.app.invalidate()
+
+        @kb.add('escape', 'escape')
+        def handle_double_escape(event):
+            """Double ESC: clear the input buffer.
+
+            Press ESC twice quickly to discard the current draft.
+            Single ESC is the prefix for Alt key sequences (escape, enter etc.)
+            so the double-press avoids conflicting with those.
+            """
+            buf = event.app.current_buffer
+            if buf.text or cli_ref._attached_images:
+                buf.reset()
+                cli_ref._attached_images.clear()
+                event.app.invalidate()
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
+
+        @kb.add('escape', 'up')
+        def handle_recall_followup(event):
+            """Alt+Up: recall the most recently queued follow-up back into the input.
+
+            Pops the last item from _followup_queue (LIFO — most recent first) and
+            appends its text to the current input, separated by '\\n---\\n'.
+            If multiple follow-ups are queued, repeated Alt+Up recalls them one by one.
+            The recalled item is added to _cancelled_followups so process_loop skips it.
+            """
+            if not cli_ref._followup_queue:
+                return
+
+            buf = event.app.current_buffer
+
+            # Pop the most recently queued item (last = most recent)
+            item = cli_ref._followup_queue.pop()
+            recalled_text = item["text"]
+
+            # Cancel by UUID — immune to duplicate-text false positives
+            cli_ref._cancelled_followups.add(item["id"])
+
+            # Append to current buffer — separator only from the second recall onwards
+            current = buf.text
+            if cli_ref._followup_recall_count > 0 and current.strip():
+                buf.text = current.rstrip() + '\n---\n' + recalled_text
+            else:
+                buf.text = (current + recalled_text) if current else recalled_text
+            buf.cursor_position = len(buf.text)
+            cli_ref._followup_recall_count += 1
+
+            remaining = len(cli_ref._followup_queue)
+            if remaining:
+                _cprint(f"  {_DIM}📬 Recalled follow-up ({remaining} still queued){_RST}")
+            else:
+                cli_ref._followup_recall_count = 0
+                _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
+            event.app.invalidate()
+
+        @kb.add('escape', 'down')
+        def handle_recall_steering(event):
+            """Alt+Down: recall the most recently queued steering message into the input.
+
+            Symmetric to Alt+Up (follow-up recall) but operates on the 🎯 steering queue.
+            Items are popped LIFO and appended with \\n---\\n separators from the second
+            recall onwards.  Recalled items are UUID-cancelled so process_loop skips them.
+            """
+            if not cli_ref._steering_queue:
+                return
+
+            buf = event.app.current_buffer
+
+            item = cli_ref._steering_queue.pop()
+            recalled_text = item["text"]
+            cli_ref._cancelled_steerings.add(item["id"])
+
+            current = buf.text
+            if cli_ref._steering_recall_count > 0 and current.strip():
+                buf.text = current.rstrip() + '\n---\n' + recalled_text
+            else:
+                buf.text = (current + recalled_text) if current else recalled_text
+            buf.cursor_position = len(buf.text)
+            cli_ref._steering_recall_count += 1
+
+            remaining = len(cli_ref._steering_queue)
+            if remaining:
+                _cprint(f"  {_DIM}🎯 Recalled steering ({remaining} still queued){_RST}")
+            else:
+                cli_ref._steering_recall_count = 0
+                _cprint(f"  {_DIM}🎯 Steering recalled — queue empty{_RST}")
+            event.app.invalidate()
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
@@ -7703,282 +7449,6 @@ class HermesCLI:
                 os.write(1, msg.encode())
                 os.kill(0, _sig.SIGTSTP)
             run_in_terminal(_suspend)
-
-        @kb.add('c-g')
-        def handle_external_editor(event):
-            """Ctrl+G: open current input in $VISUAL / $EDITOR / VS Code.
-
-            Smart file detection:
-            - If the input contains a paste reference [Pasted text #N ... → path],
-              open that paste file directly so the user edits the full content.
-            - Otherwise, write the input to a temp file and open that.
-
-            The editor runs inside run_in_terminal() so the TUI is suspended
-            cleanly.  On close the buffer is updated with the file contents.
-            """
-            if cli_ref._agent_running or cli_ref._clarify_state or cli_ref._sudo_state:
-                return
-
-            buf = event.app.current_buffer
-            original_text = buf.text
-
-            from prompt_toolkit.application import run_in_terminal
-
-            def _run_editor():
-                import subprocess, shlex, re as _re
-
-                # Detect paste file reference in the input
-                _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-                paste_match = _paste_re.search(original_text)
-
-                if paste_match:
-                    edit_file = Path(paste_match.group(1))
-                    if not edit_file.exists():
-                        _cprint(f"  {_DIM}Paste file not found: {edit_file}{_RST}")
-                        return
-                    is_paste_file = True
-                else:
-                    edit_dir = _hermes_home / "editor"
-                    edit_dir.mkdir(parents=True, exist_ok=True)
-                    edit_file = edit_dir / "prompt.md"
-                    edit_file.write_text(original_text, encoding="utf-8")
-                    is_paste_file = False
-
-                # Resolve editor: $VISUAL > $EDITOR > code --wait > cursor --wait > vi
-                editor_cmd = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ""
-                if not editor_cmd:
-                    for candidate in ("code", "cursor"):
-                        if shutil.which(candidate):
-                            editor_cmd = f"{candidate} --wait"
-                            break
-                    else:
-                        editor_cmd = "vi"
-
-                try:
-                    _cprint(f"  {_DIM}📝 {editor_cmd} {edit_file}{_RST}")
-                    parts = shlex.split(editor_cmd)
-                    subprocess.run(parts + [str(edit_file)], check=False)
-                    new_text = edit_file.read_text(encoding="utf-8")
-
-                    if is_paste_file:
-                        # Rebuild the paste reference with updated line count
-                        line_count = new_text.count('\n') + 1
-                        ref = paste_match.group(0)
-                        # Replace old ref keeping the rest of the input intact
-                        updated_ref = _re.sub(
-                            r'\d+ lines',
-                            f'{line_count} lines',
-                            ref,
-                        )
-                        final_text = original_text.replace(ref, updated_ref)
-                    else:
-                        final_text = new_text
-
-                    # Update the buffer in the app thread
-                    def _update():
-                        buf.text = final_text
-                        buf.cursor_position = len(final_text)
-                        event.app.invalidate()
-
-                    event.app.loop.call_soon_threadsafe(_update)
-
-                    if new_text != (edit_file.read_text(encoding="utf-8") if is_paste_file else original_text):
-                        _cprint(f"  {_DIM}📝 Editor content loaded ({len(new_text)} chars){_RST}")
-                    else:
-                        _cprint(f"  {_DIM}📝 No changes from editor{_RST}")
-                except Exception as e:
-                    _cprint(f"  {_DIM}Editor error: {e}{_RST}")
-
-            run_in_terminal(_run_editor)
-
-        @kb.add('c-s')
-        def handle_stash(event):
-            """Ctrl+S: push to multi-item stash or pop/browse stash.
-
-            Buffer has content → push to front of stash list, clear buffer.
-            Buffer empty + panel open → close panel.
-            Buffer empty + 1 item → pop immediately.
-            Buffer empty + 2+ items → open stash browser panel.
-            Buffer empty + stash empty → print notice.
-            """
-            import uuid as _uuid_mod, time as _time_mod
-            buf = event.app.current_buffer
-            text = buf.text.strip()
-            has_images = bool(cli_ref._attached_images)
-
-            if cli_ref._stash_panel_open:
-                # Ctrl+S closes the panel
-                cli_ref._stash_panel_open = False
-                event.app.invalidate()
-                return
-
-            if text or has_images:
-                # Push to stash
-                images = list(cli_ref._attached_images)
-                cli_ref._attached_images.clear()
-                preview = text[:60] + ("..." if len(text) > 60 else "")
-                cli_ref._stash_list.insert(0, {
-                    "id": _uuid_mod.uuid4().hex,
-                    "text": buf.text,
-                    "images": images,
-                    "stashed_at": _time_mod.monotonic(),
-                    "preview": preview or f"[{len(images)} image{'s' if len(images) != 1 else ''}]",
-                })
-                # Also mirror into _stashed_input for auto-restore + single-item pop
-                cli_ref._stashed_input = (buf.text, images)
-                buf.reset()
-                _cprint(f"  {_DIM}📌 Input stashed (Ctrl+S to pop; auto-restores if buffer empty after response){_RST}")
-                event.app.invalidate()
-            elif cli_ref._stash_list:
-                # --- Pop stash into input ---
-                item = cli_ref._stash_list.pop(0)
-                cli_ref._stashed_input = (item["text"], item["images"])
-                stashed_text, stashed_images = cli_ref._stashed_input
-                cli_ref._stashed_input = None
-                if stashed_images:
-                    cli_ref._attached_images.extend(stashed_images)
-                buf.text = stashed_text
-                buf.cursor_position = len(stashed_text)
-                cli_ref._stash_panel_open = False
-                cli_ref._stash_panel_cursor = 0
-                _cprint(f"  {_DIM}📌 Stash restored{_RST}")
-                event.app.invalidate()
-            else:
-                _cprint(f"  {_DIM}📌 Nothing stashed{_RST}")
-
-        # --- Stash panel keyboard navigation (when panel is open) ---
-        _stash_panel_active = Condition(
-            lambda: cli_ref._stash_panel_open and bool(cli_ref._stash_list)
-        )
-
-        @kb.add('escape', filter=_stash_panel_active)
-        def stash_panel_close_esc(event):
-            """Escape: close stash panel."""
-            cli_ref._stash_panel_open = False
-            cli_ref._stash_panel_cursor = 0
-            event.app.invalidate()
-
-        @kb.add('up', filter=_stash_panel_active)
-        def stash_panel_up(event):
-            """Up: move cursor up in stash panel."""
-            if cli_ref._stash_panel_cursor > 0:
-                cli_ref._stash_panel_cursor -= 1
-                event.app.invalidate()
-
-        @kb.add('down', filter=_stash_panel_active)
-        def stash_panel_down(event):
-            """Down: move cursor down in stash panel."""
-            if cli_ref._stash_panel_cursor < len(cli_ref._stash_list) - 1:
-                cli_ref._stash_panel_cursor += 1
-                event.app.invalidate()
-
-        @kb.add('enter', filter=_stash_panel_active)
-        def stash_panel_restore(event):
-            """Enter: restore selected stash item into input buffer."""
-            buf = event.app.current_buffer
-            idx = cli_ref._stash_panel_cursor
-            if 0 <= idx < len(cli_ref._stash_list):
-                item = cli_ref._stash_list.pop(idx)
-                cli_ref._attached_images.extend(item.get("images", []))
-                buf.text = item["text"]
-                buf.cursor_position = len(item["text"])
-                cli_ref._stashed_input = None  # don't trigger auto-restore
-                cli_ref._stash_panel_open = False
-                cli_ref._stash_panel_cursor = 0
-                _cprint(f"  {_DIM}📌 Stash item restored{_RST}")
-                event.app.invalidate()
-
-        @kb.add('d', filter=_stash_panel_active)
-        def stash_panel_delete(event):
-            """D: delete selected stash item."""
-            idx = cli_ref._stash_panel_cursor
-            if 0 <= idx < len(cli_ref._stash_list):
-                removed = cli_ref._stash_list.pop(idx)
-                if cli_ref._stash_panel_cursor >= len(cli_ref._stash_list) and cli_ref._stash_panel_cursor > 0:
-                    cli_ref._stash_panel_cursor -= 1
-                _cprint(f"  {_DIM}📌 Stash item deleted: {removed['preview'][:40]}{_RST}")
-                event.app.invalidate()
-
-        @kb.add('c-p')
-        def handle_peek_or_history(event):
-            """Ctrl+P: context-aware inspect.
-
-            - Input has a [Pasted text #N → path] reference → peek paste file
-              (first 20 lines inline; Ctrl+G to open in editor).
-            - Input has other text → preview current input (first 20 lines).
-            - Input is empty + session has history → full history pager
-              (newest message first, piped through less).
-            """
-            import re as _re
-            from prompt_toolkit.application import run_in_terminal
-
-            buf = event.app.current_buffer
-            text = buf.text
-
-            _paste_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-            paste_match = _paste_re.search(text)
-
-            if paste_match:
-                # --- Peek paste file ---
-                p = Path(paste_match.group(1))
-
-                def _peek_paste():
-                    _PEEK = 20
-                    if not p.exists():
-                        _cprint(f"  {_DIM}Paste file not found: {p}{_RST}")
-                        return
-                    plines = p.read_text(encoding="utf-8").splitlines()
-                    total = len(plines)
-                    _cprint(f"\n  {_DIM}📄 {p.name} — {total} lines{_RST}")
-                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
-                    for ln in plines[:_PEEK]:
-                        _cprint(f"  {ln}")
-                    if total > _PEEK:
-                        _cprint(f"  {_DIM}  ... ({total - _PEEK} more lines) — Ctrl+G to edit in full{_RST}")
-                    else:
-                        _cprint(f"  {_DIM}{'─' * 60} Ctrl+G to edit{_RST}")
-
-                run_in_terminal(_peek_paste)
-
-            elif text.strip():
-                # --- Preview current input ---
-                def _peek_input():
-                    _PEEK = 20
-                    ilines = text.splitlines()
-                    total = len(ilines)
-                    _cprint(f"\n  {_DIM}📝 Current input — {total} line{'s' if total != 1 else ''}{_RST}")
-                    _cprint(f"  {_DIM}{'─' * 60}{_RST}")
-                    for ln in ilines[:_PEEK]:
-                        _cprint(f"  {ln}")
-                    if total > _PEEK:
-                        _cprint(f"  {_DIM}  ... ({total - _PEEK} more lines){_RST}")
-
-                run_in_terminal(_peek_input)
-
-            elif cli_ref.conversation_history:
-                # --- Full history pager (newest first) ---
-                def _full_history():
-                    cli_ref.show_history_full()
-
-                run_in_terminal(_full_history)
-
-            else:
-                def _empty():
-                    _cprint(f"  {_DIM}(no history yet){_RST}")
-                run_in_terminal(_empty)
-
-        @kb.add('c-o')
-        def handle_ctrl_o(event):
-            """Ctrl+O: toggle full user message display.
-
-            When on, multiline messages are printed in full instead of
-            showing only the first line + (+N lines).
-            Indicated by '↕ full msg' in the status bar.
-            """
-            cli_ref._show_full_user_message = not cli_ref._show_full_user_message
-            state = "ON" if cli_ref._show_full_user_message else "OFF"
-            _cprint(f"  {_DIM}↕ Full user message display: {state}{_RST}")
-            event.app.invalidate()
 
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
@@ -8262,27 +7732,27 @@ class HermesCLI:
             if cli_ref._agent_running:
                 hints = []
                 if cli_ref._followup_queue:
-                    hints.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑ to recall)")
+                    hints.append(f"📬 {len(cli_ref._followup_queue)}")
                 if cli_ref._steering_queue:
-                    hints.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓ to recall)")
-                if cli_ref._stash_list:
-                    hints.append(f"📌 {len(cli_ref._stash_list)} stashed")
+                    hints.append(f"🎯 {len(cli_ref._steering_queue)}")
+                if cli_ref._stashed_input:
+                    hints.append("📌 stashed")
                 suffix = "  · " + " · ".join(hints) if hints else ""
                 # Hint depends on busy_input_mode
                 if cli_ref.busy_input_mode == "queue":
                     return f"Enter to steer (🎯) · Alt+Enter to follow-up (📬){suffix}"
-                return f"Enter to interrupt · Alt+Enter to follow-up (📬){suffix}"
+                return f"Enter to interrupt · Alt+Enter to queue follow-up (📬){suffix}"
             if cli_ref._followup_queue or cli_ref._steering_queue:
                 parts = []
                 if cli_ref._followup_queue:
-                    parts.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑)")
+                    parts.append(f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} — Alt+Up to recall")
                 if cli_ref._steering_queue:
-                    parts.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓)")
+                    parts.append(f"🎯 {len(cli_ref._steering_queue)} steering — Alt+Down to recall")
                 return "  ·  ".join(parts)
-            if cli_ref._stash_list:
-                n = len(cli_ref._stash_list)
-                preview = cli_ref._stash_list[0]["preview"][:40]
-                return f"📌 {n} stashed: \"{preview}\" — Ctrl+S to browse/pop"
+            if cli_ref._stashed_input:
+                stashed_text = cli_ref._stashed_input[0]
+                preview = stashed_text[:40] + ("..." if len(stashed_text) > 40 else "")
+                return f"📌 stashed: \"{preview}\" — Ctrl+S to pop"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -8619,77 +8089,26 @@ class HermesCLI:
         # the corresponding interactive prompt is active.
         completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
 
-        # Build the base layout list so subagent/stash panels can inject widgets.
-        _layout_children = self._build_tui_layout_children(
-            sudo_widget=sudo_widget,
-            secret_widget=secret_widget,
-            approval_widget=approval_widget,
-            clarify_widget=clarify_widget,
-            spinner_widget=spinner_widget,
-            spacer=spacer,
-            status_bar=status_bar,
-            input_rule_top=input_rule_top,
-            image_bar=image_bar,
-            input_area=input_area,
-            input_rule_bot=input_rule_bot,
-            voice_status_bar=voice_status_bar,
-            completions_menu=completions_menu,
+        layout = Layout(
+            HSplit(
+                self._build_tui_layout_children(
+                    sudo_widget=sudo_widget,
+                    secret_widget=secret_widget,
+                    approval_widget=approval_widget,
+                    clarify_widget=clarify_widget,
+                    spinner_widget=spinner_widget,
+                    spacer=spacer,
+                    status_bar=status_bar,
+                    input_rule_top=input_rule_top,
+                    image_bar=image_bar,
+                    input_area=input_area,
+                    input_rule_bot=input_rule_bot,
+                    voice_status_bar=voice_status_bar,
+                    completions_menu=completions_menu,
+                )
+            )
         )
-        # Inject the subagent panel widget just before the status bar.
-        # Done here (not via _get_extra_tui_widgets) so the extension hook
-        # stays clean for subclass use.
-        try:
-            from hermes_cli.subagent_panel import render_panel as _render_panel
-            from prompt_toolkit.application import get_app as _get_app
-            _cli_ref = self
-            _panel_filter = Condition(
-                lambda: _cli_ref._subagent_panel_open and bool(_cli_ref._subagent_panel)
-            )
-            _panel_widget = ConditionalContainer(
-                content=Window(
-                    content=FormattedTextControl(
-                        lambda: _render_panel(
-                            sorted(_cli_ref._subagent_panel.values(), key=lambda r: r.index),
-                            _cli_ref._subagent_panel_cursor,
-                            _get_app().output.get_size().columns,
-                        )
-                    ),
-                    dont_extend_height=True,
-                ),
-                filter=_panel_filter,
-            )
-            status_idx = _layout_children.index(status_bar)
-            _layout_children.insert(status_idx, _panel_widget)
-        except Exception:
-            pass
-
-        # Inject the stash panel widget just before the status bar (above subagent panel).
-        try:
-            from prompt_toolkit.application import get_app as _get_stash_app
-            _stash_cli_ref = self
-            _stash_filter = Condition(
-                lambda: _stash_cli_ref._stash_panel_open and bool(_stash_cli_ref._stash_list)
-            )
-            _stash_widget = ConditionalContainer(
-                content=Window(
-                    content=FormattedTextControl(
-                        lambda: _stash_cli_ref._render_stash_panel(
-                            _stash_cli_ref._stash_list,
-                            _stash_cli_ref._stash_panel_cursor,
-                            _get_stash_app().output.get_size().columns,
-                        )
-                    ),
-                    dont_extend_height=True,
-                ),
-                filter=_stash_filter,
-            )
-            _stash_status_idx = _layout_children.index(status_bar)
-            _layout_children.insert(_stash_status_idx, _stash_widget)
-        except Exception:
-            pass
-
-        layout = Layout(HSplit(_layout_children))
-
+        
         # Style for the application
         self._tui_style_base = {
             'input-area': '#FFF8DC',
@@ -8824,6 +8243,26 @@ class HermesCLI:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
+                        # Unwrap tagged items (📬 followup or 🎯 steering)
+                        if isinstance(user_input, dict):
+                            if "_followup_tag" in user_input:
+                                tag = user_input["_followup_tag"]
+                                user_input = user_input["payload"]
+                                if self._followup_queue:
+                                    self._followup_queue.pop(0)
+                                    app.invalidate()
+                                if tag in self._cancelled_followups:
+                                    self._cancelled_followups.discard(tag)
+                                    continue
+                            elif "_steering_tag" in user_input:
+                                tag = user_input["_steering_tag"]
+                                user_input = user_input["payload"]
+                                if self._steering_queue:
+                                    self._steering_queue.pop(0)
+                                    app.invalidate()
+                                if tag in self._cancelled_steerings:
+                                    self._cancelled_steerings.discard(tag)
+                                    continue
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
@@ -8923,47 +8362,44 @@ class HermesCLI:
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""
-                        self._update_terminal_title(thinking=False)
 
-                        # Auto-restore stashed input after agent finishes,
-                        # but only if stash_auto_restore is enabled and the
-                        # buffer is empty — never clobber text the user started
-                        # typing while the agent was responding.
-                        if self._stashed_input and self.stash_auto_restore:
-                            stashed_text, stashed_images = self._stashed_input
-                            try:
-                                buf = app.layout.current_buffer
-                                if buf.text.strip():
-                                    # Buffer has content — leave stash intact,
-                                    # user can pop it manually with Ctrl+S.
-                                    _cprint(f"  {_DIM}📌 Stash kept (buffer not empty — Ctrl+S to pop){_RST}")
+                        # all_at_once dispatch: drain queues and combine into one message
+                        for _qname, _queue, _tag_key, _mode, _icon in [
+                            ("steering",  self._steering_queue,  "_steering_tag",  self.steering_dispatch,  "🎯"),
+                            ("followup",  self._followup_queue,  "_followup_tag",  self.followup_dispatch,  "📬"),
+                        ]:
+                            if _mode == "all_at_once" and _queue:
+                                # Filter out cancelled items, then drain the whole queue
+                                _items = [
+                                    it for it in _queue
+                                    if it["id"] not in (
+                                        self._cancelled_steerings if _qname == "steering"
+                                        else self._cancelled_followups
+                                    )
+                                ]
+                                _queue.clear()
+                                if _qname == "steering":
+                                    self._cancelled_steerings.clear()
                                 else:
-                                    self._stashed_input = None
-                                    if stashed_images:
-                                        self._attached_images.extend(stashed_images)
-                                    buf.text = stashed_text
-                                    buf.cursor_position = len(stashed_text)
-                                    _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
-                            except Exception:
-                                pass
+                                    self._cancelled_followups.clear()
+                                if _items:
+                                    # Join text with separator; images from last item only
+                                    _texts = [it["text"] for it in _items]
+                                    _combined_text = "\n---\n".join(_texts)
+                                    # Carry images from all items
+                                    _all_images = []
+                                    for it in _items:
+                                        p = it["payload"]
+                                        if isinstance(p, tuple):
+                                            _all_images.extend(p[1])
+                                    _combined = (_combined_text, _all_images) if _all_images else _combined_text
+                                    _cprint(
+                                        f"  {_DIM}{_icon} Dispatching {len(_items)} queued message"
+                                        f"{'s' if len(_items) != 1 else ''} as one turn{_RST}"
+                                    )
+                                    self._pending_input.put(_combined)
 
                         app.invalidate()  # Refresh status line
-
-                        # Dispatch steering queue after agent finishes
-                        if self._steering_queue:
-                            if self.steering_dispatch == "all_at_once":
-                                # Join all steering items into one message
-                                steer_items = [it.get("text", "") for it in self._steering_queue if isinstance(it, dict)]
-                                combined = " ".join(steer_items)
-                                self._steering_queue.clear()
-                                _cprint(f"  {_DIM}🎯 {len(steer_items)} steering item{'s' if len(steer_items) != 1 else ''} dispatched (all-at-once){_RST}")
-                                self._pending_input.put(combined)
-                            else:
-                                # Dispatch first steering item one-by-one
-                                item = self._steering_queue.pop(0)
-                                payload = item.get("payload", item.get("text", "")) if isinstance(item, dict) else item
-                                _cprint(f"  {_DIM}🎯 Steering dispatched: {str(payload)[:60]}{_RST}")
-                                self._pending_input.put(payload)
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

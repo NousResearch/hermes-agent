@@ -42,11 +42,13 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
 
 
-def _make_adapter(dm_topics_config=None):
-    """Create a TelegramAdapter with optional DM topics config."""
+def _make_adapter(dm_topics_config=None, group_topics_config=None):
+    """Create a TelegramAdapter with optional DM/group topics config."""
     extra = {}
     if dm_topics_config is not None:
         extra["dm_topics"] = dm_topics_config
+    if group_topics_config is not None:
+        extra["group_topics"] = group_topics_config
     config = PlatformConfig(enabled=True, token="***", extra=extra)
     adapter = TelegramAdapter(config)
     return adapter
@@ -485,3 +487,161 @@ def test_build_message_event_no_auto_skill_without_thread():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.auto_skill is None
+
+
+# ── _build_message_event: group_topics skill binding ──
+
+# The telegram mock sets sys.modules["telegram.constants"] = telegram_mod (root mock),
+# so `from telegram.constants import ChatType` in telegram.py resolves to
+# telegram_mod.ChatType — not telegram_mod.constants.ChatType.  We must use
+# the same ChatType object the production code sees so equality checks work.
+from telegram.constants import ChatType as _ChatType  # noqa: E402
+
+
+def test_group_topic_skill_binding():
+    """Group topic with skill config should set auto_skill on the event."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "Engineering", "thread_id": 5, "skill": "software-development"},
+                {"name": "Sales", "thread_id": 12, "skill": "sales-framework"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="hello"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "software-development"
+    assert event.source.chat_topic == "Engineering"
+
+
+def test_group_topic_skill_binding_second_topic():
+    """A different thread_id in the same group should resolve its own skill."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "Engineering", "thread_id": 5, "skill": "software-development"},
+                {"name": "Sales", "thread_id": 12, "skill": "sales-framework"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=12, text="deal update"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "sales-framework"
+    assert event.source.chat_topic == "Sales"
+
+
+def test_group_topic_no_skill_binding():
+    """Group topic without a skill key should have auto_skill=None but set chat_topic."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "General", "thread_id": 1},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=1, text="hey"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic == "General"
+
+
+def test_group_topic_unmapped_thread_id():
+    """Thread ID not in config should fall through — no skill, no topic name."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "Engineering", "thread_id": 5, "skill": "software-development"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=999, text="random"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic is None
+
+
+def test_group_topic_unmapped_chat_id():
+    """Chat ID not in group_topics config should fall through silently."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "Engineering", "thread_id": 5, "skill": "software-development"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1009999999999, chat_type=_ChatType.SUPERGROUP, thread_id=5, text="wrong group"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic is None
+
+
+def test_group_topic_no_config():
+    """No group_topics config at all should be fine — no skill, no topic."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()  # no group_topics_config
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.GROUP, thread_id=5, text="hi"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill is None
+    assert event.source.chat_topic is None
+
+
+def test_group_topic_chat_id_int_string_coercion():
+    """chat_id as string in config should match integer chat.id via str() coercion."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": "-1001234567890",  # string, not int
+            "topics": [
+                {"name": "Dev", "thread_id": "7", "skill": "hermes-agent-dev"},
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=7, text="test"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "hermes-agent-dev"
+    assert event.source.chat_topic == "Dev"

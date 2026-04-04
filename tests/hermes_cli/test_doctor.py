@@ -58,7 +58,7 @@ class TestHonchoDoctorConfigDetection:
         fake_config = SimpleNamespace(enabled=True, api_key="***")
 
         monkeypatch.setattr(
-            "honcho_integration.client.HonchoClientConfig.from_global_config",
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             lambda: fake_config,
         )
 
@@ -68,7 +68,7 @@ class TestHonchoDoctorConfigDetection:
         fake_config = SimpleNamespace(enabled=True, api_key="")
 
         monkeypatch.setattr(
-            "honcho_integration.client.HonchoClientConfig.from_global_config",
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             lambda: fake_config,
         )
 

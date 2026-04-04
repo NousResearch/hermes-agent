@@ -114,6 +114,8 @@ _DEFAULT_PROVIDER_MODELS = {
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
+    "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
+    "opencode-go": ["glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.5", "minimax-m2.7"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
@@ -189,6 +191,8 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         fetch_api_models,
         fetch_github_model_catalog,
         normalize_copilot_model_id,
+        normalize_opencode_model_id,
+        opencode_model_api_mode,
     )
 
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -242,6 +246,11 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 f"    Use \"Custom model\" if the model you expect isn't listed."
             )
 
+    if provider_id in {"opencode-zen", "opencode-go"}:
+        provider_models = [normalize_opencode_model_id(provider_id, mid) for mid in provider_models]
+        current_model = normalize_opencode_model_id(provider_id, current_model)
+        provider_models = list(dict.fromkeys(mid for mid in provider_models if mid))
+
     model_choices = list(provider_models)
     model_choices.append("Custom model")
     model_choices.append(f"Keep current ({current_model})")
@@ -259,6 +268,8 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 catalog=catalog,
                 api_key=api_key,
             ) or selected_model
+        elif provider_id in {"opencode-zen", "opencode-go"}:
+            selected_model = normalize_opencode_model_id(provider_id, selected_model)
         _set_default_model(config, selected_model)
     elif model_idx == len(provider_models):
         custom = prompt_fn("Enter model name")
@@ -269,6 +280,8 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                     catalog=catalog,
                     api_key=api_key,
                 ) or custom
+            elif provider_id in {"opencode-zen", "opencode-go"}:
+                selected_model = normalize_opencode_model_id(provider_id, custom)
             else:
                 selected_model = custom
             _set_default_model(config, selected_model)
@@ -300,6 +313,10 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
             catalog=catalog,
             api_key=api_key,
         )
+    elif provider_id in {"opencode-zen", "opencode-go"} and selected_model:
+        model_cfg = _model_config_dict(config)
+        model_cfg["api_mode"] = opencode_model_api_mode(provider_id, selected_model)
+        config["model"] = model_cfg
 
 
 def _sync_model_from_disk(config: Dict[str, Any]) -> None:
@@ -678,6 +695,8 @@ def _print_setup_summary(config: dict, hermes_home):
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
     ):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+    elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
+        tool_status.append(("Text-to-Speech (MiniMax)", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -1163,6 +1182,7 @@ def _setup_tts_provider(config: dict):
         "edge": "Edge TTS",
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
+        "minimax": "MiniMax TTS",
         "neutts": "NeuTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
@@ -1182,10 +1202,11 @@ def _setup_tts_provider(config: dict):
             "Edge TTS (free, cloud-based, no setup needed)",
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
+            "MiniMax TTS (high quality with voice cloning, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "minimax", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1247,6 +1268,18 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
                 print_success("OpenAI TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "minimax":
+        existing = get_env_value("MINIMAX_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("MiniMax API key for TTS", password=True)
+            if api_key:
+                save_env_value("MINIMAX_API_KEY", api_key)
+                print_success("MiniMax TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"

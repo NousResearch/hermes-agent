@@ -334,10 +334,11 @@ class TestExpiredCodexFallback:
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
-        """OAuth-style tokens should get is_oauth=True (token is not sk-ant-api-*)."""
+        """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
         # Mock resolve_anthropic_token to return an OAuth-style token
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
-             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
+             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _try_anthropic, AnthropicAuxiliaryClient
             client, model = _try_anthropic()
@@ -769,9 +770,13 @@ class TestAuxiliaryPoolAwareness:
         Many local models (Qwen-VL, LLaVA, etc.) support vision.
         When no OpenRouter/Nous/Codex is available, try the custom endpoint.
         """
-        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:1234/v1")
-        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("http://localhost:1234/v1", "local-key")), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_vision_auxiliary_client()
         assert client is not None  # Custom endpoint picked up as fallback

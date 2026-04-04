@@ -303,6 +303,43 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _build_media_placeholder(event) -> str:
+    """Build a text placeholder for media-only events so they aren't dropped.
+
+    When a photo/document is queued during active processing and later
+    dequeued, only .text is extracted.  If the event has no caption,
+    the media would be silently lost.  This builds a placeholder that
+    the vision enrichment pipeline will replace with a real description.
+    """
+    parts = []
+    media_urls = getattr(event, "media_urls", None) or []
+    media_types = getattr(event, "media_types", None) or []
+    for i, url in enumerate(media_urls):
+        mtype = media_types[i] if i < len(media_types) else ""
+        if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
+            parts.append(f"[User sent an image: {url}]")
+        elif mtype.startswith("audio/"):
+            parts.append(f"[User sent audio: {url}]")
+        else:
+            parts.append(f"[User sent a file: {url}]")
+    return "\n".join(parts)
+
+
+def _dequeue_pending_text(adapter, session_key: str) -> str | None:
+    """Consume and return the text of a pending queued message.
+
+    Preserves media context for captionless photo/document events by
+    building a placeholder so the message isn't silently dropped.
+    """
+    event = adapter.get_pending_message(session_key)
+    if not event:
+        return None
+    text = event.text
+    if not text and getattr(event, "media_urls", None):
+        text = _build_media_placeholder(event)
+    return text
+
+
 def _check_unavailable_skill(command_name: str) -> str | None:
     """Check if a command matches a known-but-inactive skill.
 
@@ -312,19 +349,23 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     # Normalize: command uses hyphens, skill names may use hyphens or underscores
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import SKILLS_DIR, _get_disabled_skill_names
+        from tools.skills_tool import _get_disabled_skill_names
+        from agent.skill_utils import get_all_skills_dirs
         disabled = _get_disabled_skill_names()
 
-        # Check disabled built-in skills
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+        # Check disabled skills across all dirs (local + external)
+        for skills_dir in get_all_skills_dirs():
+            if not skills_dir.exists():
                 continue
-            name = skill_md.parent.name.lower().replace("_", "-")
-            if name == normalized and name in disabled:
-                return (
-                    f"The **{command_name}** skill is installed but disabled.\n"
-                    f"Enable it with: `hermes skills config`"
-                )
+            for skill_md in skills_dir.rglob("SKILL.md"):
+                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                    continue
+                name = skill_md.parent.name.lower().replace("_", "-")
+                if name == normalized and name in disabled:
+                    return (
+                        f"The **{command_name}** skill is installed but disabled.\n"
+                        f"Enable it with: `hermes skills config`"
+                    )
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_hermes_home, get_optional_skills_dir
@@ -411,10 +452,14 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 class GatewayRunner:
     """
     Main gateway controller.
-    
+
     Manages the lifecycle of all platform adapters and routes
     messages to/from the agent.
     """
+
+    # Class-level defaults so partial construction in tests doesn't
+    # blow up on attribute access.
+    _running_agents_ts: Dict[str, float] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -446,6 +491,7 @@ class GatewayRunner:
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
+        self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
         # Cache AIAgent instances per session to preserve prompt caching.
@@ -474,8 +520,6 @@ class GatewayRunner:
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
-        self._honcho_managers: Dict[str, Any] = {}
-        self._honcho_configs: Dict[str, Any] = {}
 
 
 
@@ -508,61 +552,9 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
-    def _get_or_create_gateway_honcho(self, session_key: str):
-        """Return a persistent Honcho manager/config pair for this gateway session."""
-        if not hasattr(self, "_honcho_managers"):
-            self._honcho_managers = {}
-        if not hasattr(self, "_honcho_configs"):
-            self._honcho_configs = {}
 
-        if session_key in self._honcho_managers:
-            return self._honcho_managers[session_key], self._honcho_configs.get(session_key)
 
-        try:
-            from honcho_integration.client import HonchoClientConfig, get_honcho_client
-            from honcho_integration.session import HonchoSessionManager
 
-            hcfg = HonchoClientConfig.from_global_config()
-            if not hcfg.enabled or not (hcfg.api_key or hcfg.base_url):
-                return None, hcfg
-
-            client = get_honcho_client(hcfg)
-            manager = HonchoSessionManager(
-                honcho=client,
-                config=hcfg,
-                context_tokens=hcfg.context_tokens,
-            )
-            self._honcho_managers[session_key] = manager
-            self._honcho_configs[session_key] = hcfg
-            return manager, hcfg
-        except Exception as e:
-            logger.debug("Gateway Honcho init failed for %s: %s", session_key, e)
-            return None, None
-
-    def _shutdown_gateway_honcho(self, session_key: str) -> None:
-        """Flush and close the persistent Honcho manager for a gateway session."""
-        managers = getattr(self, "_honcho_managers", None)
-        configs = getattr(self, "_honcho_configs", None)
-        if managers is None or configs is None:
-            return
-
-        manager = managers.pop(session_key, None)
-        configs.pop(session_key, None)
-        if not manager:
-            return
-        try:
-            manager.shutdown()
-        except Exception as e:
-            logger.debug("Gateway Honcho shutdown failed for %s: %s", session_key, e)
-
-    def _shutdown_all_gateway_honcho(self) -> None:
-        """Flush and close all persistent Honcho managers."""
-        managers = getattr(self, "_honcho_managers", None)
-        if not managers:
-            return
-        for session_key in list(managers.keys()):
-            self._shutdown_gateway_honcho(session_key)
-    
     # -- Setup skill availability ----------------------------------------
 
     def _has_setup_skill(self) -> bool:
@@ -627,7 +619,6 @@ class GatewayRunner:
     def _flush_memories_for_session(
         self,
         old_session_id: str,
-        honcho_session_key: Optional[str] = None,
     ):
         """Prompt the agent to save memories/skills before context is lost.
 
@@ -660,9 +651,9 @@ class GatewayRunner:
                 model=model,
                 max_iterations=8,
                 quiet_mode=True,
+                skip_memory=True,  # Flush agent — no memory provider
                 enabled_toolsets=["memory", "skills"],
                 session_id=old_session_id,
-                honcho_session_key=honcho_session_key,
             )
             # Fully silence the flush agent — quiet_mode only suppresses init
             # messages; tool call output still leaks to the terminal through
@@ -680,12 +671,13 @@ class GatewayRunner:
             # what's already saved and avoid overwriting newer entries.
             _current_memory = ""
             try:
-                from tools.memory_tool import MEMORY_DIR
+                from tools.memory_tool import get_memory_dir
+                _mem_dir = get_memory_dir()
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
                     ("USER.md", "USER PROFILE (who the user is)"),
                 ]:
-                    fpath = MEMORY_DIR / fname
+                    fpath = _mem_dir / fname
                     if fpath.exists():
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:
@@ -725,22 +717,14 @@ class GatewayRunner:
             tmp_agent.run_conversation(
                 user_message=flush_prompt,
                 conversation_history=msgs,
-                sync_honcho=False,
             )
             logger.info("Pre-reset memory flush completed for session %s", old_session_id)
-            # Flush any queued Honcho writes before the session is dropped
-            if getattr(tmp_agent, '_honcho', None):
-                try:
-                    tmp_agent._honcho.shutdown()
-                except Exception:
-                    pass
         except Exception as e:
             logger.debug("Pre-reset memory flush failed for session %s: %s", old_session_id, e)
 
     async def _async_flush_memories(
         self,
         old_session_id: str,
-        honcho_session_key: Optional[str] = None,
     ):
         """Run the sync memory flush in a thread pool so it won't block the event loop."""
         loop = asyncio.get_event_loop()
@@ -748,7 +732,6 @@ class GatewayRunner:
             None,
             self._flush_memories_for_session,
             old_session_id,
-            honcho_session_key,
         )
 
     @property
@@ -1291,7 +1274,14 @@ class GatewayRunner:
                     )
                     try:
                         await self._async_flush_memories(entry.session_id, key)
-                        self._shutdown_gateway_honcho(key)
+                        # Shut down memory provider on the cached agent
+                        cached_agent = self._running_agents.get(key)
+                        if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
+                            try:
+                                if hasattr(cached_agent, 'shutdown_memory_provider'):
+                                    cached_agent.shutdown_memory_provider()
+                            except Exception:
+                                pass
                         # Mark as flushed and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -1425,6 +1415,12 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key[:20])
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+            # Shut down memory provider at actual session boundary
+            try:
+                if hasattr(agent, 'shutdown_memory_provider'):
+                    agent.shutdown_memory_provider()
+            except Exception:
+                pass
 
         for platform, adapter in list(self.adapters.items()):
             try:
@@ -1446,7 +1442,6 @@ class GatewayRunner:
         self._running_agents.clear()
         self._pending_messages.clear()
         self._pending_approvals.clear()
-        self._shutdown_all_gateway_honcho()
         self._shutdown_event.set()
         
         from gateway.status import remove_pid_file, write_runtime_status
@@ -1750,6 +1745,21 @@ class GatewayRunner:
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
         _quick_key = self._session_key_for_source(source)
+
+        # Staleness eviction: if an entry has been in _running_agents for
+        # longer than the agent timeout, it's a leaked lock from a hung or
+        # crashed handler.  Evict it so the session isn't permanently stuck.
+        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+        _STALE_TTL = (_raw_stale_timeout + 60) if _raw_stale_timeout > 0 else float("inf")
+        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
+        if _quick_key in self._running_agents and _stale_ts and (time.time() - _stale_ts) > _STALE_TTL:
+            logger.warning(
+                "Evicting stale _running_agents entry for %s (age: %.0fs)",
+                _quick_key[:30], time.time() - _stale_ts,
+            )
+            del self._running_agents[_quick_key]
+            self._running_agents_ts.pop(_quick_key, None)
+
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
@@ -1816,6 +1826,15 @@ class GatewayRunner:
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
+
+            # /approve and /deny must bypass the running-agent interrupt path.
+            # The agent thread is blocked on a threading.Event inside
+            # tools/approval.py — sending an interrupt won't unblock it.
+            # Route directly to the approval handler so the event is signalled.
+            if _cmd_def_inner and _cmd_def_inner.name in ("approve", "deny"):
+                if _cmd_def_inner.name == "approve":
+                    return await self._handle_approve_command(event)
+                return await self._handle_deny_command(event)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -1971,6 +1990,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "branch":
+            return await self._handle_branch_command(event)
+
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
@@ -2047,6 +2069,19 @@ class GatewayRunner:
                 skill_cmds = get_skill_commands()
                 cmd_key = f"/{command}"
                 if cmd_key in skill_cmds:
+                    # Check per-platform disabled status before executing.
+                    # get_skill_commands() only applies the *global* disabled
+                    # list at scan time; per-platform overrides need checking
+                    # here because the cache is process-global across platforms.
+                    _skill_name = skill_cmds[cmd_key].get("name", "")
+                    _plat = source.platform.value if source.platform else None
+                    if _plat and _skill_name:
+                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                        if _skill_name in _get_plat_disabled(platform=_plat):
+                            return (
+                                f"The **{_skill_name}** skill is disabled for {_plat}.\n"
+                                f"Enable it with: `hermes skills config`"
+                            )
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
                         cmd_key, user_instruction, task_id=_quick_key
@@ -2075,6 +2110,7 @@ class GatewayRunner:
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[_quick_key] = time.time()
 
         try:
             return await self._handle_message_with_agent(event, source, _quick_key)
@@ -2085,6 +2121,7 @@ class GatewayRunner:
             # not linger or the session would be permanently locked out.
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
+            self._running_agents_ts.pop(_quick_key, None)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -2355,7 +2392,18 @@ class GatewayRunner:
                     # 85% * 1.4 = 119% of context — which exceeds the model's limit
                     # and prevented hygiene from ever firing for ~200K models (GLM-5).
 
-                _needs_compress = _approx_tokens >= _compress_token_threshold
+                # Hard safety valve: force compression if message count is
+                # extreme, regardless of token estimates.  This breaks the
+                # death spiral where API disconnects prevent token data
+                # collection, which prevents compression, which causes more
+                # disconnects.  400 messages is well above normal sessions
+                # but catches runaway growth before it becomes unrecoverable.
+                # (#2153)
+                _HARD_MSG_LIMIT = 400
+                _needs_compress = (
+                    _approx_tokens >= _compress_token_threshold
+                    or _msg_count >= _HARD_MSG_LIMIT
+                )
 
                 if _needs_compress:
                     logger.info(
@@ -2449,7 +2497,8 @@ class GatewayRunner:
             )
         
         # One-time prompt if no home channel is set for this platform
-        if not history and source.platform and source.platform != Platform.LOCAL:
+        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
+        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):
@@ -2804,20 +2853,12 @@ class GatewayRunner:
                             skip_db=agent_persisted,
                         )
             
-            # Update session with actual prompt token count and model from the agent
+            # Token counts and model are now persisted by the agent directly.
+            # Keep only last_prompt_tokens here for context-window tracking and
+            # compression decisions.
             self.session_store.update_session(
                 session_entry.session_key,
-                input_tokens=agent_result.get("input_tokens", 0),
-                output_tokens=agent_result.get("output_tokens", 0),
-                cache_read_tokens=agent_result.get("cache_read_tokens", 0),
-                cache_write_tokens=agent_result.get("cache_write_tokens", 0),
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
-                model=agent_result.get("model"),
-                estimated_cost_usd=agent_result.get("estimated_cost_usd"),
-                cost_status=agent_result.get("cost_status"),
-                cost_source=agent_result.get("cost_source"),
-                provider=agent_result.get("provider"),
-                base_url=agent_result.get("base_url"),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -2999,8 +3040,6 @@ class GatewayRunner:
                 _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
-
-        self._shutdown_gateway_honcho(session_key)
         self._evict_cached_agent(session_key)
         
         # Reset the session
@@ -4151,7 +4190,6 @@ class GatewayRunner:
                     user_message=btw_prompt,
                     conversation_history=history_snapshot,
                     task_id=task_id,
-                    sync_honcho=False,
                 )
 
             loop = asyncio.get_event_loop()
@@ -4329,9 +4367,9 @@ class GatewayRunner:
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
             "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes.",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown.",
-            "verbose": "⚙️ Tool progress: **VERBOSE** — full args and results.",
+            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (short previews).",
+            "all": "⚙️ Tool progress: **ALL** — every tool call shown (short previews).",
+            "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
         }
 
         raw_progress = user_config.get("display", {}).get("tool_progress", "all")
@@ -4533,8 +4571,6 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
 
-        self._shutdown_gateway_honcho(session_key)
-
         # Clear any running agent for this session key
         if session_key in self._running_agents:
             del self._running_agents[session_key]
@@ -4553,6 +4589,96 @@ class GatewayRunner:
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
+
+    async def _handle_branch_command(self, event: MessageEvent) -> str:
+        """Handle /branch [name] — fork the current session into a new independent copy.
+
+        Copies conversation history to a new session so the user can explore
+        a different approach without losing the original.
+        Inspired by Claude Code's /branch command.
+        """
+        import uuid as _uuid
+
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Load the current session and its transcript
+        current_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(current_entry.session_id)
+        if not history:
+            return "No conversation to branch — send a message first."
+
+        branch_name = event.get_command_args().strip()
+
+        # Generate the new session ID
+        from datetime import datetime as _dt
+        now = _dt.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        short_uuid = _uuid.uuid4().hex[:6]
+        new_session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Determine branch title
+        if branch_name:
+            branch_title = branch_name
+        else:
+            current_title = self._session_db.get_session_title(current_entry.session_id)
+            base = current_title or "branch"
+            branch_title = self._session_db.get_next_title_in_lineage(base)
+
+        parent_session_id = current_entry.session_id
+
+        # Create the new session with parent link
+        try:
+            self._session_db.create_session(
+                session_id=new_session_id,
+                source=source.platform.value if source.platform else "gateway",
+                model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                parent_session_id=parent_session_id,
+            )
+        except Exception as e:
+            logger.error("Failed to create branch session: %s", e)
+            return f"Failed to create branch: {e}"
+
+        # Copy conversation history to the new session
+        for msg in history:
+            try:
+                self._session_db.append_message(
+                    session_id=new_session_id,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    tool_name=msg.get("tool_name") or msg.get("name"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    reasoning=msg.get("reasoning"),
+                )
+            except Exception:
+                pass  # Best-effort copy
+
+        # Set title
+        try:
+            self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception:
+            pass
+
+        # Switch the session store entry to the new session
+        new_entry = self.session_store.switch_session(session_key, new_session_id)
+        if not new_entry:
+            return "Branch created but failed to switch to it."
+
+        # Evict any cached agent for this session
+        self._evict_cached_agent(session_key)
+
+        msg_count = len([m for m in history if m.get("role") == "user"])
+        return (
+            f"⑂ Branched to **{branch_title}**"
+            f" ({msg_count} message{'s' if msg_count != 1 else ''} copied)\n"
+            f"Original: `{parent_session_id}`\n"
+            f"Branch: `{new_session_id}`\n"
+            f"Use `/resume` to switch back to the original."
+        )
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
@@ -4844,7 +4970,9 @@ class GatewayRunner:
             "user_id": event.source.user_id,
             "timestamp": datetime.now().isoformat(),
         }
-        pending_path.write_text(json.dumps(pending))
+        _tmp_pending = pending_path.with_suffix(".tmp")
+        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 
         # Spawn `hermes update` detached so it survives gateway restart.
@@ -5364,7 +5492,10 @@ class GatewayRunner:
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
-        tool_progress_enabled = progress_mode != "off"
+        # Disable tool progress for webhooks - they don't support message editing,
+        # so each progress line would be sent as a separate message.
+        from gateway.config import Platform
+        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -5386,22 +5517,28 @@ class GatewayRunner:
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
             
-            # Verbose mode: show detailed arguments
-            if progress_mode == "verbose" and args:
-                import json as _json
-                args_str = _json.dumps(args, ensure_ascii=False, default=str)
-                if len(args_str) > 200:
-                    args_str = args_str[:197] + "..."
-                msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+            # Verbose mode: show detailed arguments, respects tool_preview_length
+            if progress_mode == "verbose":
+                if args:
+                    from agent.display import get_tool_preview_max_len
+                    _pl = get_tool_preview_max_len()
+                    import json as _json
+                    args_str = _json.dumps(args, ensure_ascii=False, default=str)
+                    _cap = _pl if _pl > 0 else 200
+                    if len(args_str) > _cap:
+                        args_str = args_str[:_cap - 3] + "..."
+                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                elif preview:
+                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                else:
+                    msg = f"{emoji} {tool_name}..."
                 progress_queue.put(msg)
                 return
             
+            # "all" / "new" modes: short preview, always truncated (40 chars)
             if preview:
-                # Truncate preview unless config says unlimited
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                if _pl > 0 and len(preview) > _pl:
-                    preview = preview[:_pl - 3] + "..."
+                if len(preview) > 40:
+                    preview = preview[:37] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
@@ -5445,11 +5582,13 @@ class GatewayRunner:
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
             can_edit = True          # False once an edit fails (platform doesn't support it)
+            _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
+            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
             while True:
                 try:
                     raw = progress_queue.get_nowait()
-                    
+
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
@@ -5460,6 +5599,19 @@ class GatewayRunner:
                         msg = raw
                         progress_lines.append(msg)
 
+                    # Throttle edits: batch rapid tool updates into fewer
+                    # API calls to avoid hitting Telegram flood control.
+                    # (grammY auto-retry pattern: proactively rate-limit
+                    # instead of reacting to 429s.)
+                    _now = time.monotonic()
+                    _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
+                    if _remaining > 0:
+                        # Wait out the throttle interval, then loop back to
+                        # drain any additional queued messages before sending
+                        # a single batched edit.
+                        await asyncio.sleep(_remaining)
+                        continue
+
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
                         full_text = "\n".join(progress_lines)
@@ -5469,8 +5621,15 @@ class GatewayRunner:
                             content=full_text,
                         )
                         if not result.success:
-                            # Platform doesn't support editing — stop trying,
-                            # send just this new line as a separate message
+                            _err = (getattr(result, "error", "") or "").lower()
+                            if "flood" in _err or "retry after" in _err:
+                                # Flood control hit — disable further edits,
+                                # switch to sending new messages only for
+                                # important updates.  Don't block 23s.
+                                logger.info(
+                                    "[%s] Progress edits disabled due to flood control",
+                                    adapter.name,
+                                )
                             can_edit = False
                             await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                     else:
@@ -5483,6 +5642,8 @@ class GatewayRunner:
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+
+                    _last_edit_ts = time.monotonic()
 
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
@@ -5529,15 +5690,25 @@ class GatewayRunner:
         _loop_for_step = asyncio.get_event_loop()
         _hooks_ref = self.hooks
 
-        def _step_callback_sync(iteration: int, tool_names: list) -> None:
+        def _step_callback_sync(iteration: int, prev_tools: list) -> None:
             try:
+                # prev_tools may be list[str] or list[dict] with "name"/"result"
+                # keys.  Normalise to keep "tool_names" backward-compatible for
+                # user-authored hooks that do ', '.join(tool_names)'.
+                _names: list[str] = []
+                for _t in (prev_tools or []):
+                    if isinstance(_t, dict):
+                        _names.append(_t.get("name") or "")
+                    else:
+                        _names.append(str(_t))
                 asyncio.run_coroutine_threadsafe(
                     _hooks_ref.emit("agent:step", {
                         "platform": source.platform.value if source.platform else "",
                         "user_id": source.user_id,
                         "session_id": session_id,
                         "iteration": iteration,
-                        "tool_names": tool_names,
+                        "tool_names": _names,
+                        "tools": prev_tools,
                     }),
                     _loop_for_step,
                 )
@@ -5603,7 +5774,6 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
-            honcho_manager, honcho_config = self._get_or_create_gateway_honcho(session_key)
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             # Set up streaming consumer if enabled
@@ -5676,9 +5846,6 @@ class GatewayRunner:
                     provider_data_collection=pr.get("data_collection"),
                     session_id=session_id,
                     platform=platform_key,
-                    honcho_session_key=session_key,
-                    honcho_manager=honcho_manager,
-                    honcho_config=honcho_config,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -5788,13 +5955,47 @@ class GatewayRunner:
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
-            from tools.approval import register_gateway_notify, unregister_gateway_notify
+            from tools.approval import (
+                register_gateway_notify,
+                reset_current_session_key,
+                set_current_session_key,
+                unregister_gateway_notify,
+            )
 
             def _approval_notify_sync(approval_data: dict) -> None:
-                """Send the approval request to the user from the agent thread."""
+                """Send the approval request to the user from the agent thread.
+
+                If the adapter supports interactive button-based approvals
+                (e.g. Discord's ``send_exec_approval``), use that for a richer
+                UX.  Otherwise fall back to a plain text message with
+                ``/approve`` instructions.
+                """
                 cmd = approval_data.get("command", "")
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 desc = approval_data.get("description", "dangerous command")
+
+                # Prefer button-based approval when the adapter supports it.
+                # Check the *class* for the method, not the instance — avoids
+                # false positives from MagicMock auto-attribute creation in tests.
+                if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_exec_approval(
+                                chat_id=_status_chat_id,
+                                command=cmd,
+                                session_key=_approval_session_key,
+                                description=desc,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                        return
+                    except Exception as _e:
+                        logger.warning(
+                            "Button-based approval failed, falling back to text: %s", _e
+                        )
+
+                # Fallback: plain text approval prompt
+                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
@@ -5815,11 +6016,13 @@ class GatewayRunner:
                     logger.error("Failed to send approval request: %s", _e)
 
             _approval_session_key = session_key or ""
+            _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
@@ -5996,11 +6199,68 @@ class GatewayRunner:
                         break
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
-        
+
+        # Periodic "still working" notifications for long-running tasks.
+        # Fires every 10 minutes so the user knows the agent hasn't died.
+        _NOTIFY_INTERVAL = 600  # 10 minutes
+        _notify_start = time.time()
+
+        async def _notify_long_running():
+            _notify_adapter = self.adapters.get(source.platform)
+            if not _notify_adapter:
+                return
+            while True:
+                await asyncio.sleep(_NOTIFY_INTERVAL)
+                _elapsed_mins = int((time.time() - _notify_start) // 60)
+                try:
+                    await _notify_adapter.send(
+                        source.chat_id,
+                        f"⏳ Still working... ({_elapsed_mins} minutes elapsed)",
+                        metadata=_status_thread_metadata,
+                    )
+                except Exception as _ne:
+                    logger.debug("Long-running notification error: %s", _ne)
+
+        _notify_task = asyncio.create_task(_notify_long_running())
+
         try:
-            # Run in thread pool to not block
+            # Run in thread pool to not block.  Cap total execution time
+            # so a hung API call or runaway tool doesn't permanently lock
+            # the session.  Default 10 minutes; override with env var.
+            # Set to 0 for no limit (infinite).
+            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, run_sync)
+            try:
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, run_sync),
+                    timeout=_agent_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Agent execution timed out after %.0fs for session %s",
+                    _agent_timeout, session_key,
+                )
+                # Interrupt the agent if it's still running so the thread
+                # pool worker is freed.
+                _timed_out_agent = agent_holder[0]
+                if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
+                    _timed_out_agent.interrupt("Execution timed out")
+                _timeout_mins = int(_agent_timeout // 60)
+                response = {
+                    "final_response": (
+                        f"⏱️ Request timed out after {_timeout_mins} minutes. "
+                        "The agent may have been stuck on a tool or API call.\n"
+                        "To increase the limit, set HERMES_AGENT_TIMEOUT in your .env "
+                        "(value in seconds, 0 = no limit) and restart the gateway.\n"
+                        "Try again, or use /reset to start fresh."
+                    ),
+                    "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
+                    "api_calls": 0,
+                    "tools": tools_holder[0] or [],
+                    "history_offset": 0,
+                    "failed": True,
+                }
 
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
@@ -6028,18 +6288,12 @@ class GatewayRunner:
             pending = None
             if result and adapter and session_key:
                 if result.get("interrupted"):
-                    # Interrupted — consume the interrupt message
-                    pending_event = adapter.get_pending_message(session_key)
-                    if pending_event:
-                        pending = pending_event.text
-                    elif result.get("interrupt_message"):
+                    pending = _dequeue_pending_text(adapter, session_key)
+                    if not pending and result.get("interrupt_message"):
                         pending = result.get("interrupt_message")
                 else:
-                    # Normal completion — check for /queue'd messages that were
-                    # stored without triggering an interrupt.
-                    pending_event = adapter.get_pending_message(session_key)
-                    if pending_event:
-                        pending = pending_event.text
+                    pending = _dequeue_pending_text(adapter, session_key)
+                    if pending:
                         logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
             
             if pending:
@@ -6095,10 +6349,11 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                 )
         finally:
-            # Stop progress sender and interrupt monitor
+            # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
+            _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -6115,9 +6370,11 @@ class GatewayRunner:
             tracking_task.cancel()
             if session_key and session_key in self._running_agents:
                 del self._running_agents[session_key]
+            if session_key:
+                self._running_agents_ts.pop(session_key, None)
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
                     try:
                         await task

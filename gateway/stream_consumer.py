@@ -174,12 +174,12 @@ class GatewayStreamConsumer:
                         self._already_sent = True
                         self._last_sent_text = text
                     else:
-                        # Edit not supported by this adapter — stop streaming,
-                        # let the normal send path handle the final response.
-                        # Without this guard, adapters like Signal/Email would
-                        # flood the chat with a new message every edit_interval.
+                        # If an edit fails mid-stream (especially Telegram flood control),
+                        # stop progressive edits and let the normal final send path deliver
+                        # the complete answer instead of leaving the user with a partial.
                         logger.debug("Edit failed, disabling streaming for this adapter")
                         self._edit_supported = False
+                        self._already_sent = False
                 else:
                     # Editing not supported — skip intermediate updates.
                     # The final response will be sent by the normal path.

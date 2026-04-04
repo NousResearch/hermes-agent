@@ -37,6 +37,7 @@ _PROVIDER_ENV_HINTS = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_TOKEN",
     "OPENAI_BASE_URL",
+    "NOUS_API_KEY",
     "GLM_API_KEY",
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
@@ -44,6 +45,12 @@ _PROVIDER_ENV_HINTS = (
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "HF_TOKEN",
+    "AI_GATEWAY_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_GO_API_KEY",
 )
 
 
@@ -55,7 +62,7 @@ def _has_provider_env_config(content: str) -> bool:
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
-        from honcho_integration.client import HonchoClientConfig
+        from plugins.memory.honcho.client import HonchoClientConfig
 
         cfg = HonchoClientConfig.from_global_config()
         return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
@@ -257,7 +264,60 @@ def run_doctor(args):
                 manual_issues.append(f"Create {_DHH}/config.yaml manually")
             else:
                 check_warn("config.yaml not found", "(using defaults)")
-    
+
+    # Check config version and stale keys
+    config_path = HERMES_HOME / 'config.yaml'
+    if config_path.exists():
+        try:
+            from hermes_cli.config import check_config_version, migrate_config
+            current_ver, latest_ver = check_config_version()
+            if current_ver < latest_ver:
+                check_warn(
+                    f"Config version outdated (v{current_ver} → v{latest_ver})",
+                    "(new settings available)"
+                )
+                if should_fix:
+                    try:
+                        migrate_config(interactive=False, quiet=False)
+                        check_ok("Config migrated to latest version")
+                        fixed_count += 1
+                    except Exception as mig_err:
+                        check_warn(f"Auto-migration failed: {mig_err}")
+                        issues.append("Run 'hermes setup' to migrate config")
+                else:
+                    issues.append("Run 'hermes doctor --fix' or 'hermes setup' to migrate config")
+            else:
+                check_ok(f"Config version up to date (v{current_ver})")
+        except Exception:
+            pass
+
+        # Detect stale root-level model keys (known bug source — PR #4329)
+        try:
+            import yaml
+            with open(config_path) as f:
+                raw_config = yaml.safe_load(f) or {}
+            stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
+            if stale_root_keys:
+                check_warn(
+                    f"Stale root-level config keys: {', '.join(stale_root_keys)}",
+                    "(should be under 'model:' section)"
+                )
+                if should_fix:
+                    model_section = raw_config.setdefault("model", {})
+                    for k in stale_root_keys:
+                        if not model_section.get(k):
+                            model_section[k] = raw_config.pop(k)
+                        else:
+                            raw_config.pop(k)
+                    with open(config_path, "w") as f:
+                        yaml.dump(raw_config, f, default_flow_style=False)
+                    check_ok("Migrated stale root-level keys into model section")
+                    fixed_count += 1
+                else:
+                    issues.append("Stale root-level provider/base_url in config.yaml — run 'hermes doctor --fix'")
+        except Exception:
+            pass
+
     # =========================================================================
     # Check: Auth providers
     # =========================================================================
@@ -379,6 +439,31 @@ def run_doctor(args):
             check_warn(f"{_DHH}/state.db exists but has issues: {e}")
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
+
+    # Check WAL file size (unbounded growth indicates missed checkpoints)
+    wal_path = hermes_home / "state.db-wal"
+    if wal_path.exists():
+        try:
+            wal_size = wal_path.stat().st_size
+            if wal_size > 50 * 1024 * 1024:  # 50 MB
+                check_warn(
+                    f"WAL file is large ({wal_size // (1024*1024)} MB)",
+                    "(may indicate missed checkpoints)"
+                )
+                if should_fix:
+                    import sqlite3
+                    conn = sqlite3.connect(str(state_db_path))
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    conn.close()
+                    new_size = wal_path.stat().st_size if wal_path.exists() else 0
+                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
+                    fixed_count += 1
+                else:
+                    issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
+            elif wal_size > 10 * 1024 * 1024:  # 10 MB
+                check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
+        except Exception:
+            pass
 
     _check_gateway_service_linger(issues)
     
@@ -566,17 +651,22 @@ def run_doctor(args):
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
 
-    # -- API-key providers (Z.AI/GLM, Kimi, MiniMax, MiniMax-CN) --
+    # -- API-key providers --
     # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
+        ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
+        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
         ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
+        ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         "https://opencode.ai/zen/go/v1/models", "OPENCODE_GO_BASE_URL", True),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
@@ -709,19 +799,19 @@ def run_doctor(args):
     print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
 
     try:
-        from honcho_integration.client import HonchoClientConfig, resolve_config_path
+        from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
         hcfg = HonchoClientConfig.from_global_config()
         _honcho_cfg_path = resolve_config_path()
 
         if not _honcho_cfg_path.exists():
-            check_warn("Honcho config not found", "run: hermes honcho setup")
+            check_warn("Honcho config not found", "run: hermes memory setup")
         elif not hcfg.enabled:
             check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
         elif not (hcfg.api_key or hcfg.base_url):
-            check_fail("Honcho API key or base URL not set", "run: hermes honcho setup")
-            issues.append("No Honcho API key — run 'hermes honcho setup'")
+            check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
+            issues.append("No Honcho API key — run 'hermes memory setup'")
         else:
-            from honcho_integration.client import get_honcho_client, reset_honcho_client
+            from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
             reset_honcho_client()
             try:
                 get_honcho_client(hcfg)
@@ -736,6 +826,36 @@ def run_doctor(args):
         check_warn("honcho-ai not installed", "pip install honcho-ai")
     except Exception as _e:
         check_warn("Honcho check failed", str(_e))
+
+    # =========================================================================
+    # Mem0 memory
+    # =========================================================================
+    print()
+    print(color("◆ Mem0 Memory", Colors.CYAN, Colors.BOLD))
+
+    try:
+        from plugins.memory.mem0 import _load_config as _load_mem0_config
+        mem0_cfg = _load_mem0_config()
+        mem0_key = mem0_cfg.get("api_key", "")
+        if mem0_key:
+            check_ok("Mem0 API key configured")
+            check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+            # Check if mem0.json exists but is missing api_key (the bug we fixed)
+            mem0_json = HERMES_HOME / "mem0.json"
+            if mem0_json.exists():
+                try:
+                    import json as _json
+                    file_cfg = _json.loads(mem0_json.read_text())
+                    if not file_cfg.get("api_key") and mem0_key:
+                        check_info("api_key from .env (not in mem0.json) — this is fine")
+                except Exception:
+                    pass
+        else:
+            check_warn("Mem0 not configured", "(set MEM0_API_KEY in .env or run hermes memory setup)")
+    except ImportError:
+        check_warn("Mem0 plugin not loadable", "(optional)")
+    except Exception as _e:
+        check_warn("Mem0 check failed", str(_e))
 
     # =========================================================================
     # Profiles

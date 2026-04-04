@@ -656,9 +656,10 @@ class TestBlockingApprovalE2E:
         for t in threads:
             t.join(timeout=5)
 
-        assert all(r is not None for r in results)
-        assert sorted(r["approved"] for r in results) == [False, True]
-        assert sum("BLOCKED" in (r.get("message") or "") for r in results) == 1
+        assert len(results) == 2
+        vals = list(results.values())
+        assert sorted(v["approved"] for v in vals) == [False, True]
+        assert sum("BLOCKED" in (v.get("message") or "") for v in vals) == 1
         unregister_gateway_notify(session_key)
 
 

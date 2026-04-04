@@ -31,6 +31,6 @@ edge-tts
 croniter
 
 # Optional: For messaging platform integrations (gateway)
-python-telegram-bot>=20.0
+python-telegram-bot[webhooks]>=22.6
 discord.py>=2.0
 aiohttp>=3.9.0

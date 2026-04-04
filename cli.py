@@ -2951,28 +2951,35 @@ class HermesCLI:
 
         tab_title = f"{symbol} ⏳" if thinking else symbol
 
-        # OSC 1: tab/icon name (iTerm2 uses this as the tab label, no process name appended)
+        # OSC 1: tab/icon name (iTerm2 uses this as the explicit tab label)
         # OSC 2: window title (title bar)
         seq = f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07"
+        seq_b = seq.encode("utf-8")
 
-        # When inside the prompt_toolkit TUI, write through the app's Output
-        # object so the sequence is synchronised with the render loop and
-        # doesn't interleave with prompt_toolkit's own writes to fd 1
-        # (which would cause the raw bytes to appear as literal text).
-        # Outside the TUI (startup, non-interactive mode) fall back to a
-        # direct write on the real stdout fd.
+        # Write directly to the controlling terminal device via os.ctermid().
+        # This bypasses ALL Python I/O layers, prompt_toolkit's output buffers,
+        # patch_stdout's StdoutProxy, and any stdout redirections — the bytes
+        # go straight to the TTY the user is looking at.
+        written = False
         try:
-            from prompt_toolkit.application import get_app as _get_app
-            _app = _get_app()
-            _app.output.write_raw(seq)
-            _app.output.flush()
+            _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
+            os.write(_tty_fd, seq_b)
+            os.close(_tty_fd)
+            written = True
         except Exception:
-            # Not in app context — write directly to the real fd
+            pass
+
+        if not written:
+            # Fallback: try real stdout fd directly
             try:
-                os.write(real_out.fileno(), seq.encode())
+                os.write(real_out.fileno(), seq_b)
             except Exception:
-                real_out.write(seq)
-                real_out.flush()
+                try:
+                    real_out.write(seq)
+                    real_out.flush()
+                except Exception:
+                    pass
+
         self._terminal_title_session = session_title
 
     def _update_terminal_title(self, thinking: bool = False) -> None:

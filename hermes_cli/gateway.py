@@ -1087,6 +1087,26 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
 
 def launchd_restart():
+    label = get_launchd_label()
+    plist_path = get_launchd_plist_path()
+
+    # Refresh plist if code changed (e.g. after hermes update)
+    refresh_launchd_plist_if_needed()
+
+    # Try atomic kill+restart via kickstart -k (macOS 10.10+).
+    # This avoids the race where KeepAlive respawns the process
+    # between stop and start, causing _wait_for_gateway_exit to hang.
+    try:
+        subprocess.run(
+            ["launchctl", "kickstart", "-kp", f"gui/{os.getuid()}/{label}"],
+            check=True, capture_output=True, text=True,
+        )
+        print("✓ Service restarted")
+        return
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # Fallback: stop → wait → start
     try:
         launchd_stop()
     except subprocess.CalledProcessError as e:

@@ -87,7 +87,9 @@ def _load_snapshots() -> Dict[str, str]:
 
 def _save_snapshots(data: Dict[str, str]) -> None:
     _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
-    _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
+    _tmp = _SNAPSHOT_STORE.with_suffix(".tmp")
+    _tmp.write_text(json.dumps(data, indent=2))
+    _tmp.replace(_SNAPSHOT_STORE)
 
 
 # -------------------------------------------------------------------------

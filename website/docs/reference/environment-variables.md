@@ -25,6 +25,10 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
+| `HERMES_CLAUDE_CLI_COMMAND` | Override Claude CLI binary path (default: `claude`) |
+| `CLAUDE_CLI_PATH` | Alias for `HERMES_CLAUDE_CLI_COMMAND` |
+| `HERMES_CLAUDE_CLI_ARGS` | Extra Claude CLI arguments appended before the prompt payload |
+| `HERMES_CLAUDE_CLI_BASE_URL` | Override Claude CLI marker base URL (default: `claude-cli://local`) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |
 | `Z_AI_API_KEY` | Alias for `GLM_API_KEY` |
@@ -63,7 +67,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `alibaba`, `deepseek`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `claude-cli`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `alibaba`, `deepseek`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |

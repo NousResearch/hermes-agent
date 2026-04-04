@@ -772,7 +772,7 @@ class AIAgent:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
-                if self.provider == "copilot-acp":
+                if self.provider in {"copilot-acp", "claude-cli"}:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -886,12 +886,16 @@ class AIAgent:
                 print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
-        # Get available tools with filtering
+        # Get available tools with filtering. Claude CLI backend currently runs
+        # in text-in/text-out mode, so keep Hermes-side tools disabled to avoid
+        # misleading prompts and unsupported tool-call expectations.
         self.tools = get_tool_definitions(
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
+        if self.provider == "claude-cli":
+            self.tools = []
         
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
@@ -3371,6 +3375,17 @@ class AIAgent:
             client = CopilotACPClient(**client_kwargs)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
+        if self.provider == "claude-cli" or str(client_kwargs.get("base_url", "")).startswith("claude-cli://"):
+            from agent.claude_cli_client import ClaudeCLIClient
+
+            client = ClaudeCLIClient(**client_kwargs)
+            logger.info(
+                "Claude CLI client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),

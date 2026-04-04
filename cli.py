@@ -3269,6 +3269,56 @@ class HermesCLI:
         print()
         return True
 
+    def show_sessions_full(self) -> None:
+        """Show all resumable sessions through a pager (same mechanism as Ctrl+P history).
+
+        Fetches up to 200 recent sessions and pipes the formatted list through
+        ``less`` so the user can scroll, search with '/', and pick an ID to
+        resume with ``/resume <id>``.
+        """
+        import shutil as _shutil
+        import subprocess as _subprocess
+
+        sessions = self._list_recent_sessions(limit=200)
+        if not sessions:
+            print("  No other sessions found.")
+            return
+
+        from hermes_cli.main import _relative_time
+
+        W = min(_shutil.get_terminal_size().columns, 120)
+        id_w, time_w, title_w = 24, 13, 34
+        prev_w = max(W - id_w - time_w - title_w - 6, 20)
+
+        header = (
+            f"  {'Title':<{title_w}} {'Last Active':<{time_w}} {'Preview':<{prev_w}} {'ID'}\n"
+            f"  {'─' * title_w} {'─' * time_w} {'─' * prev_w} {'─' * id_w}\n"
+        )
+        rows = []
+        for s in sessions:
+            title    = (s.get("title") or "—")[:title_w - 1]
+            last_act = _relative_time(s.get("last_active"))
+            preview  = (s.get("preview") or "")[:prev_w - 1]
+            rows.append(
+                f"  {title:<{title_w}} {last_act:<{time_w}} {preview:<{prev_w}} {s['id']}\n"
+            )
+
+        footer = "\n  /resume <id or title>  to continue a session\n"
+        output = header + "".join(rows) + footer
+
+        pager = _shutil.which("less") or _shutil.which("more")
+        if pager and pager.endswith("less"):
+            try:
+                proc = _subprocess.Popen(
+                    [pager, "-R", "--no-init", "--quit-if-one-screen"],
+                    stdin=_subprocess.PIPE,
+                )
+                proc.communicate(output.encode("utf-8", errors="replace"))
+                return
+            except Exception:
+                pass
+        print(output)
+
     def show_history_full(self) -> None:
         """Show full conversation history newest-first, piped through a pager.
 
@@ -3498,10 +3548,7 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
-                return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+            self.show_sessions_full()
             return
 
         if not self._session_db:

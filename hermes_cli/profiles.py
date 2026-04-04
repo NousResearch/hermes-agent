@@ -66,6 +66,19 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+# Root-level entries to exclude during --clone-all when the source is the
+# default (~/.hermes) profile.  The default profile contains infrastructure
+# (repo checkout, virtualenv, git worktrees, installed binaries) that named
+# profiles never have.  Everything else (state.db, sessions, logs, caches)
+# IS profile data — clone-all means "complete snapshot".
+_CLONE_ALL_DEFAULT_EXCLUDE = frozenset({
+    "hermes-agent",         # repo checkout + venv + node_modules (~2 GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-clone
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages (if any at root level)
+})
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -418,9 +431,23 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
-        # Strip runtime files
+        # Full copy of source profile data.  When the source is the default
+        # profile (~/.hermes) we exclude infrastructure directories that are
+        # NOT profile data (hermes-agent/ alone is 2+ GB).  For named
+        # profiles no root-level exclusions are needed.
+        is_default = (source_dir == _get_default_hermes_home())
+
+        def _ignore(directory: str, contents: list) -> set:
+            ignored: set = set()
+            for c in contents:
+                if c == "__pycache__" or c.endswith((".sock", ".tmp")):
+                    ignored.add(c)
+            if is_default and Path(directory) == source_dir:
+                ignored.update(c for c in contents if c in _CLONE_ALL_DEFAULT_EXCLUDE)
+            return ignored
+
+        shutil.copytree(source_dir, profile_dir, ignore=_ignore)
+        # Strip any remaining runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
     else:

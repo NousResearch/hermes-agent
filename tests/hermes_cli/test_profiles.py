@@ -171,6 +171,42 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
 
+    def test_clone_all_excludes_default_infrastructure(self, profile_env):
+        """clone-all from default profile excludes hermes-agent/, profiles/, etc."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        # Simulate infrastructure dirs that only the default profile has
+        (default_home / "hermes-agent" / ".git").mkdir(parents=True)
+        (default_home / "hermes-agent" / "venv" / "bin").mkdir(parents=True)
+        (default_home / "hermes-agent" / "README.md").write_text("repo")
+        (default_home / "profiles" / "other").mkdir(parents=True)
+        (default_home / "profiles" / "other" / "config.yaml").write_text("x")
+        (default_home / "bin").mkdir(exist_ok=True)
+        (default_home / "bin" / "tool").write_text("binary")
+        # Profile data that SHOULD be copied (including state)
+        (default_home / "skills" / "my-skill").mkdir(parents=True)
+        (default_home / "skills" / "my-skill" / "SKILL.md").write_text("skill")
+        (default_home / "config.yaml").write_text("model: gpt-4")
+        (default_home / ".env").write_text("KEY=val")
+        (default_home / "state.db").write_text("sessions-data")
+        (default_home / "sessions").mkdir(exist_ok=True)
+        (default_home / "logs").mkdir(exist_ok=True)
+        (default_home / "logs" / "gateway.log").write_text("log")
+
+        profile_dir = create_profile("cloned", clone_all=True, no_alias=True)
+
+        # Infrastructure must be excluded
+        assert not (profile_dir / "hermes-agent").exists()
+        assert not (profile_dir / "profiles").exists()
+        assert not (profile_dir / "bin").exists()
+        # All profile data must be present — clone-all means "complete snapshot"
+        assert (profile_dir / "skills" / "my-skill" / "SKILL.md").read_text() == "skill"
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        assert (profile_dir / ".env").read_text() == "KEY=val"
+        assert (profile_dir / "state.db").read_text() == "sessions-data"
+        assert (profile_dir / "sessions").exists()
+        assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
+
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)

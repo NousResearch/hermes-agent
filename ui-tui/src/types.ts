@@ -43,3 +43,10 @@ export interface SecretReq {
   prompt: string
   requestId: string
 }
+
+/** From `commands.catalog` — mirrors hermes_cli.commands COMMANDS + SUBCOMMANDS + skills. */
+export interface SlashCatalog {
+  canon: Record<string, string>
+  pairs: [string, string][]
+  sub: Record<string, string[]>
+}

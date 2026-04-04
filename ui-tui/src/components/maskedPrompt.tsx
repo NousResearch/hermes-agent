@@ -5,7 +5,11 @@ import { useState } from 'react'
 import type { Theme } from '../theme.js'
 
 export function MaskedPrompt({
-  icon, label, onSubmit, sub, t
+  icon,
+  label,
+  onSubmit,
+  sub,
+  t
 }: {
   icon: string
   label: string
@@ -17,8 +21,10 @@ export function MaskedPrompt({
 
   return (
     <Box flexDirection="column">
-      <Text bold color={t.color.warn}>{icon} {label}</Text>
-      {sub && <Text color={t.color.dim}>  {sub}</Text>}
+      <Text bold color={t.color.warn}>
+        {icon} {label}
+      </Text>
+      {sub && <Text color={t.color.dim}> {sub}</Text>}
 
       <Box>
         <Text color={t.color.label}>{'> '}</Text>

@@ -441,8 +441,18 @@ class PluginManager:
         plugin cannot break the core agent loop.
 
         Returns a list of non-``None`` return values from callbacks.
-        This allows hooks like ``pre_llm_call`` to contribute context
-        that the agent core can collect and inject.
+
+        For ``pre_llm_call``, callbacks may return a dict describing
+        context to inject into the current turn's user message::
+
+            {"context": "recalled text..."}
+            "recalled text..."          # plain string, equivalent
+
+        Context is ALWAYS injected into the user message, never the
+        system prompt.  This preserves the prompt cache prefix — the
+        system prompt stays identical across turns so cached tokens
+        are reused.  All injected context is ephemeral — never
+        persisted to session DB.
         """
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []

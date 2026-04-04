@@ -7,6 +7,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
+- GET  /v1/sessions                — lists sessions from the shared DB (source/limit/offset)
 - GET  /health                     — health check
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
@@ -456,7 +457,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent plus per-provider model list."""
-        auth_err=self._...est)
+        auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
@@ -1237,6 +1238,50 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _handle_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions — list sessions from the shared DB."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        source_param = request.rel_url.query.get("source") or None
+        try:
+            limit = min(int(request.rel_url.query.get("limit", 50)), 200)
+        except (ValueError, TypeError):
+            limit = 50
+        try:
+            offset = max(int(request.rel_url.query.get("offset", 0)), 0)
+        except (ValueError, TypeError):
+            offset = 0
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response({"object": "list", "data": [], "count": 0})
+
+        try:
+            sessions = db.list_sessions_rich(
+                source=source_param,
+                exclude_sources=["tool"],
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as e:
+            logger.warning("list_sessions_rich failed: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+        data = [
+            {
+                "id": s.get("id"),
+                "title": s.get("title"),
+                "preview": s.get("preview"),
+                "last_active": s.get("last_active"),
+                "source": s.get("source"),
+                "message_count": s.get("message_count"),
+            }
+            for s in sessions
+        ]
+        return web.json_response({"object": "list", "data": data, "count": len(data)})
+
     # ------------------------------------------------------------------
     # Output extraction helper
     # ------------------------------------------------------------------
@@ -1357,6 +1402,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/v1/sessions", self._handle_sessions)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

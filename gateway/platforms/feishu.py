@@ -1060,6 +1060,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 lambda data: self._on_reaction_event("im.message.reaction.deleted_v1", data)
             )
             .register_p2_card_action_trigger(self._on_card_action_trigger)
+            # Suppress noisy SDK errors for unhandled events (#4789)
+            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(
+                lambda data: None  # Ignore bot p2p chat entered events
+            )
             .build()
         )
 

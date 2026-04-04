@@ -34,8 +34,24 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
 
-MAX_CONCURRENT_CHILDREN = 3
+_MAX_CONCURRENT_CHILDREN_DEFAULT = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+
+
+def _get_max_concurrent_children() -> int:
+    """Return max parallel subagents from config, defaulting to 6."""
+    try:
+        cfg = _load_config()
+        v = cfg.get("max_concurrent_children")
+        if v is not None:
+            return max(1, int(v))
+    except Exception:
+        pass
+    return _MAX_CONCURRENT_CHILDREN_DEFAULT
+
+
+# Module-level alias kept for backwards compat with any external references
+MAX_CONCURRENT_CHILDREN = _MAX_CONCURRENT_CHILDREN_DEFAULT
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
@@ -447,7 +463,7 @@ def delegate_task(
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
-        task_list = tasks[:MAX_CONCURRENT_CHILDREN]
+        task_list = tasks[:_get_max_concurrent_children()]
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
@@ -505,7 +521,7 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+        with ThreadPoolExecutor(max_workers=_get_max_concurrent_children()) as executor:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -768,9 +784,10 @@ DELEGATE_TASK_SCHEMA = {
                     },
                     "required": ["goal"],
                 },
-                "maxItems": 3,
+                "maxItems": 6,
                 "description": (
-                    "Batch mode: up to 3 tasks to run in parallel. Each gets "
+                    "Batch mode: up to 3 tasks to run in parallel by default (configurable via "
+                    "delegation.max_concurrent_children in config.yaml). Each gets "
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),

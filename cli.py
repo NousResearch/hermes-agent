@@ -1992,6 +1992,9 @@ class HermesCLI:
             except Exception:
                 label = "⚕ Hermes"
                 _text_hex = "#FFF8DC"
+            _stitle = getattr(self, "_terminal_title_session", "")
+            if _stitle:
+                label = f"{label} — {_stitle}"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
             try:
@@ -4718,6 +4721,9 @@ class HermesCLI:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
+                    _stitle = getattr(self, "_terminal_title_session", "")
+                    if _stitle:
+                        label = f"{label} — {_stitle}"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -6430,7 +6436,14 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        try:
+                            from hermes_cli.skin_engine import get_active_skin
+                            label = get_active_skin().get_branding("response_label", " ⚕ Hermes ")
+                        except Exception:
+                            label = " ⚕ Hermes "
+                        _stitle = getattr(self, "_terminal_title_session", "")
+                        if _stitle:
+                            label = f"{label.rstrip()} — {_stitle} "
                         fill = w - 2 - len(label)
                         _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
@@ -6637,6 +6650,9 @@ class HermesCLI:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
+                _stitle = getattr(self, "_terminal_title_session", "")
+                if _stitle:
+                    label = f"{label} — {_stitle}"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response

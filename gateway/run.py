@@ -1779,8 +1779,13 @@ class GatewayRunner:
                     running_agent.interrupt("Stop requested")
                 # Force-clean: remove the session lock regardless of agent state
                 adapter = self.adapters.get(source.platform)
-                if adapter and hasattr(adapter, 'get_pending_message'):
-                    adapter.get_pending_message(_quick_key)  # consume and discard
+                if adapter:
+                    if hasattr(adapter, 'clear_pending_messages'):
+                        adapter.clear_pending_messages(_quick_key)
+                    elif hasattr(adapter, '_pending_messages'):
+                        adapter._pending_messages.pop(_quick_key, None)
+                    elif hasattr(adapter, 'get_pending_message'):
+                        adapter.get_pending_message(_quick_key)
                 self._pending_messages.pop(_quick_key, None)
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
@@ -1800,8 +1805,13 @@ class GatewayRunner:
                     running_agent.interrupt("Session reset requested")
                 # Clear any pending messages so the old text doesn't replay
                 adapter = self.adapters.get(source.platform)
-                if adapter and hasattr(adapter, 'get_pending_message'):
-                    adapter.get_pending_message(_quick_key)  # consume and discard
+                if adapter:
+                    if hasattr(adapter, 'clear_pending_messages'):
+                        adapter.clear_pending_messages(_quick_key)
+                    elif hasattr(adapter, '_pending_messages'):
+                        adapter._pending_messages.pop(_quick_key, None)
+                    elif hasattr(adapter, 'get_pending_message'):
+                        adapter.get_pending_message(_quick_key)
                 self._pending_messages.pop(_quick_key, None)
                 # Clean up the running agent entry so the reset handler
                 # doesn't think an agent is still active.
@@ -1823,7 +1833,10 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
+                    if hasattr(adapter, 'enqueue_pending_message'):
+                        adapter.enqueue_pending_message(_quick_key, queued_event)
+                    else:
+                        adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
 
             # /approve and /deny must bypass the running-agent interrupt path.
@@ -1839,19 +1852,8 @@ class GatewayRunner:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    # Reuse adapter queue semantics so photo bursts merge cleanly.
-                    if _quick_key in adapter._pending_messages:
-                        existing = adapter._pending_messages[_quick_key]
-                        if getattr(existing, "message_type", None) == MessageType.PHOTO:
-                            existing.media_urls.extend(event.media_urls)
-                            existing.media_types.extend(event.media_types)
-                            if event.text:
-                                if not existing.text:
-                                    existing.text = event.text
-                                elif event.text not in existing.text:
-                                    existing.text = f"{existing.text}\n\n{event.text}".strip()
-                        else:
-                            adapter._pending_messages[_quick_key] = event
+                    if hasattr(adapter, 'enqueue_pending_message'):
+                        adapter.enqueue_pending_message(_quick_key, event, merge_photo_bursts=True)
                     else:
                         adapter._pending_messages[_quick_key] = event
                 return None
@@ -1869,9 +1871,18 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    if hasattr(adapter, 'enqueue_pending_message'):
+                        adapter.enqueue_pending_message(_quick_key, event)
+                    else:
+                        adapter._pending_messages[_quick_key] = event
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                if hasattr(adapter, 'enqueue_pending_message'):
+                    adapter.enqueue_pending_message(_quick_key, event)
+                else:
+                    adapter._pending_messages[_quick_key] = event
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:
                 self._pending_messages[_quick_key] += "\n" + event.text
@@ -6098,7 +6109,13 @@ class GatewayRunner:
                 if hasattr(adapter, 'has_pending_interrupt') and adapter.has_pending_interrupt(session_key):
                     agent = agent_holder[0]
                     if agent:
-                        pending_event = adapter.get_pending_message(session_key)
+                        # Peek (don't consume) so replay can process the same
+                        # message after the interrupted run returns.
+                        pending_event = (
+                            adapter.peek_pending_message(session_key)
+                            if hasattr(adapter, 'peek_pending_message')
+                            else adapter.get_pending_message(session_key)
+                        )
                         pending_text = pending_event.text if pending_event else None
                         logger.debug("Interrupt detected from adapter, signaling agent...")
                         agent.interrupt(pending_text)

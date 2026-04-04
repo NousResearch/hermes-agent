@@ -297,7 +297,6 @@ async def test_stop_clears_pending_messages():
     # Queue a pending message in the adapter too
     adapter = runner.adapters[Platform.TELEGRAM]
     adapter._pending_messages[session_key] = _make_event(text="queued")
-    adapter.get_pending_message = MagicMock(return_value=_make_event(text="queued"))
     adapter.has_pending_interrupt = MagicMock(return_value=False)
 
     stop_event = _make_event(text="/stop")
@@ -305,7 +304,7 @@ async def test_stop_clears_pending_messages():
 
     # Pending messages must be cleared
     assert session_key not in runner._pending_messages
-    adapter.get_pending_message.assert_called_once_with(session_key)
+    assert session_key not in adapter._pending_messages
 
 
 # ------------------------------------------------------------------

@@ -147,8 +147,8 @@ class TestQueueConsumptionAfterCompletion:
         assert retrieved is not None
         assert retrieved.text == "process this after"
 
-    def test_multiple_queues_last_one_wins(self):
-        """If user /queue's multiple times, last message overwrites."""
+    def test_multiple_queues_are_fifo(self):
+        """Queued messages should preserve arrival order (no overwrite)."""
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
@@ -159,7 +159,14 @@ class TestQueueConsumptionAfterCompletion:
                 source=MagicMock(),
                 message_id=f"q-{text}",
             )
-            adapter._pending_messages[session_key] = event
+            adapter.enqueue_pending_message(session_key, event)
 
-        retrieved = adapter.get_pending_message(session_key)
-        assert retrieved.text == "third"
+        first = adapter.get_pending_message(session_key)
+        second = adapter.get_pending_message(session_key)
+        third = adapter.get_pending_message(session_key)
+        none_left = adapter.get_pending_message(session_key)
+
+        assert first and first.text == "first"
+        assert second and second.text == "second"
+        assert third and third.text == "third"
+        assert none_left is None

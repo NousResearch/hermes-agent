@@ -144,7 +144,7 @@ class TestInterruptKeyConsistency:
         )
         await adapter.handle_message(event)
 
-        queued = adapter._pending_messages[session_key]
+        queued = adapter.get_pending_message(session_key)
         assert queued is event
         assert queued.media_urls == ["/tmp/photo-a.jpg"]
         assert interrupt_event.is_set() is False

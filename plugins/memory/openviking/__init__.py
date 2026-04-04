@@ -283,9 +283,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Provide brief info about the knowledge base
         try:
             # Check what's in the knowledge base via a root listing
-            resp = self._client.post("/api/v1/browse", {"action": "stat", "path": "viking://"})
-            result = resp.get("result", {})
-            children = result.get("children", 0)
+            resp = self._client.get("/api/v1/fs/ls", params={"uri": "viking://"})
+            result = resp.get("result", [])
+            children = len(result) if isinstance(result, list) else 0
             if children == 0:
                 return ""
             return (
@@ -495,16 +495,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return json.dumps({"error": "uri is required"})
 
         level = args.get("level", "overview")
-        # Map our level names to OpenViking endpoints
+        # Map our level names to OpenViking GET endpoints
         if level == "abstract":
-            resp = self._client.post("/api/v1/read/abstract", {"uri": uri})
+            resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
         elif level == "full":
-            resp = self._client.post("/api/v1/read", {"uri": uri, "level": "read"})
+            resp = self._client.get("/api/v1/content/read", params={"uri": uri})
         else:  # overview
-            resp = self._client.post("/api/v1/read", {"uri": uri, "level": "overview"})
+            resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
 
-        result = resp.get("result", {})
-        content = result.get("content", "")
+        result = resp.get("result", "")
+        # result is a plain string from the content endpoints
+        content = result if isinstance(result, str) else result.get("content", "")
 
         # Truncate very long content to avoid flooding the context
         if len(content) > 8000:
@@ -520,20 +521,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
         action = args.get("action", "list")
         path = args.get("path", "viking://")
 
-        resp = self._client.post("/api/v1/browse", {
-            "action": action,
-            "path": path,
-        })
+        # Map action to the correct fs endpoint (all GET with uri= param)
+        endpoint_map = {"tree": "/api/v1/fs/tree", "list": "/api/v1/fs/ls", "stat": "/api/v1/fs/stat"}
+        endpoint = endpoint_map.get(action, "/api/v1/fs/ls")
+        resp = self._client.get(endpoint, params={"uri": path})
         result = resp.get("result", {})
 
-        # Format for readability
-        if action == "list" and "entries" in result:
+        # Format list/tree results for readability
+        if action in ("list", "tree") and isinstance(result, list):
             entries = []
-            for e in result["entries"][:50]:  # cap at 50 entries
+            for e in result[:50]:  # cap at 50 entries
                 entries.append({
-                    "name": e.get("name", ""),
+                    "name": e.get("rel_path", e.get("name", "")),
                     "uri": e.get("uri", ""),
-                    "type": "dir" if e.get("is_dir") else "file",
+                    "type": "dir" if e.get("isDir") else "file",
+                    "abstract": e.get("abstract", ""),
                 })
             return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
 

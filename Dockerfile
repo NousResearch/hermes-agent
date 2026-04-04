@@ -1,18 +1,22 @@
-FROM astral/uv:trixie-slim
+FROM ghcr.io/astral-sh/uv:trixie-slim
 
 WORKDIR /opt/hermes
 
-# Install system packages and Playwright browser dependencies.
+# Install system packages required
 RUN apt-get update &&\
     apt-get install -y --no-install-recommends \
-        build-essential git curl nodejs npm ripgrep ffmpeg gcc python3 python3-pip python3-dev libffi-dev systemctl &&\
-    npx playwright install chromium --with-deps --only-shell &&\
+        git curl nodejs npm ripgrep ffmpeg gcc python3 python3-pip systemctl &&\
     rm -rf /var/lib/apt/lists/* &&\
     npm cache clean --force
 
 # Install root Node.js dependencies.
 COPY package*.json ./
 RUN npm ci --omit=dev --no-audit &&\
+    npm cache clean --force
+
+# Install the shell chromium browser.
+RUN npx playwright install chromium --with-deps --only-shell &&\
+    rm -rf /var/lib/apt/lists/* &&\
     npm cache clean --force
 
 # Install WhatsApp bridge dependencies.

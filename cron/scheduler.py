@@ -644,8 +644,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 ```
 {error_msg}
-
-{traceback.format_exc()}
 ```
 """
         return False, output, "", error_msg

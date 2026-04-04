@@ -400,6 +400,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -408,13 +409,21 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        If *model_override* is provided and is not "hermes-agent", it is used
+        as the model instead of the value from config.yaml.  This lets Open
+        WebUI (or any OpenAI-compatible frontend) select the underlying LLM
+        via the ``model`` field in the chat completions request.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        if model_override and model_override not in ("hermes-agent",):
+            model = model_override
+        else:
+            model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -446,25 +455,71 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
-        auth_err = self._check_auth(request)
+        """GET /v1/models — return hermes-agent plus per-provider model list."""
+        auth_err=self._...est)
         if auth_err:
             return auth_err
 
-        return web.json_response({
-            "object": "list",
-            "data": [
-                {
-                    "id": "hermes-agent",
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "hermes",
-                    "permission": [],
-                    "root": "hermes-agent",
-                    "parent": None,
-                }
-            ],
-        })
+        now = int(time.time())
+
+        # Always include the default hermes-agent entry (uses config.yaml model)
+        models = [
+            {
+                "id": "hermes-agent",
+                "object": "model",
+                "created": now,
+                "owned_by": "hermes",
+                "permission": [],
+                "root": "hermes-agent",
+                "parent": None,
+                "description": "Default model from config.yaml",
+            }
+        ]
+
+        # Add per-provider models based on which API keys are configured
+        try:
+            from hermes_cli.models import _PROVIDER_MODELS
+            import os
+
+            _provider_env: list[tuple[str, str]] = [
+                ("anthropic",    "ANTHROPIC_API_KEY"),
+                ("openrouter",   "OPENROUTER_API_KEY"),
+                ("nous",         "NOUS_API_KEY"),
+                ("deepseek",     "DEEPSEEK_API_KEY"),
+                ("zai",          "GLM_API_KEY"),
+                ("kimi-coding",  "KIMI_API_KEY"),
+                ("minimax",      "MINIMAX_API_KEY"),
+                ("opencode-zen", "OPENCODE_ZEN_API_KEY"),
+                ("opencode-go",  "OPENCODE_GO_API_KEY"),
+            ]
+
+            seen: set[str] = {"hermes-agent"}
+            for provider, env_var in _provider_env:
+                if not os.getenv(env_var):
+                    continue
+                for model_id in _PROVIDER_MODELS.get(provider, []):
+                    if model_id in seen:
+                        continue
+                    seen.add(model_id)
+                    # Normalise to provider/model format for anthropic native
+                    display_id = (
+                        f"anthropic/{model_id}"
+                        if provider == "anthropic" and "/" not in model_id
+                        else model_id
+                    )
+                    models.append({
+                        "id": display_id,
+                        "object": "model",
+                        "created": now,
+                        "owned_by": provider,
+                        "permission": [],
+                        "root": display_id,
+                        "parent": None,
+                    })
+        except Exception:
+            pass  # Fall back to hermes-agent only
+
+        return web.json_response({"object": "list", "data": models})
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -571,6 +626,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                model_override=model_name,
             ))
 
             return await self._write_sse_chat_completion(
@@ -585,6 +641,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=model_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1245,6 +1302,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1265,6 +1323,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

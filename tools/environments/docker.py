@@ -332,10 +332,9 @@ class DockerEnvironment(BaseEnvironment):
                     mount_entry["container_path"],
                 )
 
-            # Mount the skills directory so skill scripts/templates are
-            # available inside the container at the same relative path.
-            skills_mount = get_skills_directory_mount()
-            if skills_mount:
+            # Mount skill directories (local + external) so skill
+            # scripts/templates are available inside the container.
+            for skills_mount in get_skills_directory_mount():
                 volume_args.extend([
                     "-v",
                     f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",

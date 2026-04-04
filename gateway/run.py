@@ -349,19 +349,23 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     # Normalize: command uses hyphens, skill names may use hyphens or underscores
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import SKILLS_DIR, _get_disabled_skill_names
+        from tools.skills_tool import _get_disabled_skill_names
+        from agent.skill_utils import get_all_skills_dirs
         disabled = _get_disabled_skill_names()
 
-        # Check disabled built-in skills
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+        # Check disabled skills across all dirs (local + external)
+        for skills_dir in get_all_skills_dirs():
+            if not skills_dir.exists():
                 continue
-            name = skill_md.parent.name.lower().replace("_", "-")
-            if name == normalized and name in disabled:
-                return (
-                    f"The **{command_name}** skill is installed but disabled.\n"
-                    f"Enable it with: `hermes skills config`"
-                )
+            for skill_md in skills_dir.rglob("SKILL.md"):
+                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                    continue
+                name = skill_md.parent.name.lower().replace("_", "-")
+                if name == normalized and name in disabled:
+                    return (
+                        f"The **{command_name}** skill is installed but disabled.\n"
+                        f"Enable it with: `hermes skills config`"
+                    )
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_hermes_home, get_optional_skills_dir

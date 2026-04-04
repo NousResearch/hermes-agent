@@ -110,29 +110,31 @@ class TestSkillsDirectoryMount:
         (skills_dir / "test-skill" / "SKILL.md").write_text("# test")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            mount = get_skills_directory_mount()
+            mounts = get_skills_directory_mount()
 
-        assert mount is not None
-        assert mount["host_path"] == str(skills_dir)
-        assert mount["container_path"] == "/root/.hermes/skills"
+        assert len(mounts) >= 1
+        assert mounts[0]["host_path"] == str(skills_dir)
+        assert mounts[0]["container_path"] == "/root/.hermes/skills"
 
     def test_returns_none_when_no_skills_dir(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            mount = get_skills_directory_mount()
+            mounts = get_skills_directory_mount()
 
-        assert mount is None
+        # No local skills dir → no local mount (external dirs may still appear)
+        local_mounts = [m for m in mounts if m["container_path"].endswith("/skills")]
+        assert local_mounts == []
 
     def test_custom_container_base(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         (hermes_home / "skills").mkdir(parents=True)
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            mount = get_skills_directory_mount(container_base="/home/user/.hermes")
+            mounts = get_skills_directory_mount(container_base="/home/user/.hermes")
 
-        assert mount["container_path"] == "/home/user/.hermes/skills"
+        assert mounts[0]["container_path"] == "/home/user/.hermes/skills"
 
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""
@@ -146,9 +148,10 @@ class TestSkillsDirectoryMount:
         (skills_dir / "evil_link").symlink_to(secret)
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            mount = get_skills_directory_mount()
+            mounts = get_skills_directory_mount()
 
-        assert mount is not None
+        assert len(mounts) >= 1
+        mount = mounts[0]
         # The mount path should be a sanitized copy, not the original
         safe_path = Path(mount["host_path"])
         assert safe_path != skills_dir
@@ -166,9 +169,9 @@ class TestSkillsDirectoryMount:
         (skills_dir / "skill.md").write_text("ok")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            mount = get_skills_directory_mount()
+            mounts = get_skills_directory_mount()
 
-        assert mount["host_path"] == str(skills_dir)
+        assert mounts[0]["host_path"] == str(skills_dir)
 
 
 class TestIterSkillsFiles:

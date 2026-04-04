@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.claude_cli_client import ClaudeCLIClient
+from agent.claude_cli_client import ClaudeCLIClient, _CLAUDE_CLI_DISABLED_TOOLS
 
 
 def _completed(stdout: str):
@@ -50,3 +50,18 @@ def test_existing_seeded_session_id_retries_with_resume_when_cli_reports_in_use(
     assert "--resume" in calls[1]
     assert seeded_id in calls[1]
     assert resp.choices[0].message.content == "resumed"
+
+
+def test_build_command_disables_claude_builtin_tools():
+    client = ClaudeCLIClient(command="claude", session_id="hermes-session-1")
+
+    cmd = client._build_command(
+        model="claude-sonnet-4-6",
+        prompt_text="hi",
+    )
+
+    pairs = list(zip(cmd, cmd[1:]))
+    disabled_tools = [value for flag, value in pairs if flag == "--disallowedTools"]
+
+    assert disabled_tools == list(_CLAUDE_CLI_DISABLED_TOOLS)
+    assert cmd[:5] == ["claude", "-p", "--output-format", "json", "--model"]

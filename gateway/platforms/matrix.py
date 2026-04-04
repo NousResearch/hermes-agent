@@ -922,11 +922,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 if not self._is_bot_mentioned(body, formatted_body):
                     return
 
-            # Strip mention from body when present.
-            if self._is_bot_mentioned(body, source_content.get("formatted_body")):
-                body = self._strip_mention(body)
-                if not body:
-                    return
+        # Strip mention from body when present (including in DMs).
+        if self._is_bot_mentioned(body, source_content.get("formatted_body")):
+            body = self._strip_mention(body)
 
         # Auto-thread: create a thread for non-DM, non-threaded messages.
         if not is_dm and not thread_id:
@@ -1076,10 +1074,13 @@ class MatrixAdapter(BasePlatformAdapter):
             in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
 
             if require_mention and not is_free_room and not in_bot_thread:
-                # Media messages have no formatted_body; check plain body only.
                 formatted_body = source_content.get("formatted_body")
                 if not self._is_bot_mentioned(body, formatted_body):
                     return
+
+        # Strip mention from body when present (including in DMs).
+        if self._is_bot_mentioned(body, source_content.get("formatted_body")):
+            body = self._strip_mention(body)
 
         # Auto-thread: create a thread for non-DM, non-threaded messages.
         if not is_dm and not thread_id:

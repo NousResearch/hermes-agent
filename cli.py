@@ -834,20 +834,43 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+# Matches common markdown characters: #heading, *bold*, `code`, |table|,
+# >blockquote, [link], ~strikethrough, double-newline (block break),
+# and numbered lists (1. item).  Checked against the first 500 chars only
+# to avoid scanning multi-KB responses — if markdown is present it almost
+# always appears early (headers, opening paragraph, first code fence).
 _MD_SYNTAX_RE = re.compile(r'[#*`|>\[~]|\n\n|^\d+\.\s|\n\d+\.\s', re.MULTILINE)
 
 
 def _has_markdown_syntax(text: str) -> bool:
-    """Fast check for markdown syntax in first 500 chars (avoids parser overhead)."""
+    """Fast-path check: skip Rich Markdown parser when text is plain.
+
+    Avoids the overhead of markdown lexing for responses that contain no
+    markdown syntax at all (common for short answers and tool output).
+    Inspired by claude-code's hasMarkdownSyntax() optimisation.
+    """
     return bool(_MD_SYNTAX_RE.search(text[:500] if len(text) > 500 else text))
 
 
-def _render_response(text: str, as_markdown: bool = True):
-    """Render assistant response as Rich Markdown or plain ANSI text."""
+def _render_response(text: str, as_markdown: bool = True,
+                     code_theme: str = "monokai",
+                     text_color: str = ""):
+    """Render assistant response as Rich Markdown or plain ANSI text.
+
+    When *as_markdown* is True the text is parsed through Rich's Markdown
+    renderer with Pygments syntax-highlighted code blocks.  *code_theme*
+    selects the Pygments colour scheme (defaults to monokai); *text_color*
+    sets the base paragraph colour so plain prose matches the active skin
+    while headings, bold, and code keep their own element-specific styles
+    (Rich Markdown's ``style`` parameter layers underneath element styles,
+    unlike Panel's ``style`` which overrides everything).
+    """
     if not as_markdown or not text or not _has_markdown_syntax(text):
         return _rich_text_from_ansi(text)
     try:
-        return _RichMarkdown(text, code_theme="monokai")
+        # Use skin text colour as base style; "none" means default terminal colour
+        md_style = text_color if text_color else "none"
+        return _RichMarkdown(text, code_theme=code_theme, style=md_style)
     except Exception:
         return _rich_text_from_ansi(text)
 
@@ -2021,6 +2044,8 @@ class HermesCLI:
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
+        # Render any trailing incomplete markdown block that was held in
+        # buffer waiting for more tokens (e.g. unclosed paragraph at EOT).
         if self.markdown_enabled and self._stream_md_buf:
             remaining = self._stream_md_buf[self._stream_md_rendered:]
             if remaining.strip():
@@ -2042,8 +2067,14 @@ class HermesCLI:
     def _find_block_boundary(self, buf: str, start: int) -> int:
         """Find the last safe markdown block split point.
 
-        Tracks code fence state (``` open/close) and only splits at
-        double-newline boundaries outside fences.
+        Scans *buf* from *start* looking for double-newline paragraph
+        breaks (``\\n\\n``) that are **not** inside a fenced code block
+        (backtick or tilde).  Returns the char offset just after the last
+        safe boundary found, or *start* if no safe split exists yet.
+
+        This prevents the streaming renderer from chopping a code block
+        in half — the block is held in buffer until the closing fence
+        arrives, then rendered in one piece with syntax highlighting.
         """
         in_fence = self._stream_md_fence_open
         last_boundary = start
@@ -2063,9 +2094,17 @@ class HermesCLI:
         return last_boundary
 
     def _render_markdown_chunk(self, chunk: str) -> None:
-        """Render a markdown fragment to terminal via _cprint."""
+        """Render a complete markdown block to the terminal.
+
+        Uses a lazily-created Rich Console + StringIO buffer (reused
+        across calls to avoid per-chunk allocation).  Output is routed
+        through ``_cprint`` so it renders correctly inside prompt_toolkit's
+        ``patch_stdout`` context.  Falls back to plain-text printing if
+        the Markdown parser raises for any reason.
+        """
         if not chunk.strip():
             return
+        # Lazy-init: create Console + buffer once per streaming session
         if self._stream_md_console is None:
             from io import StringIO
             self._stream_md_iobuf = StringIO()
@@ -2081,14 +2120,31 @@ class HermesCLI:
         buf.truncate()
         self._stream_md_console.width = shutil.get_terminal_size((80, 24)).columns
         try:
-            self._stream_md_console.print(_RichMarkdown(chunk, code_theme="monokai"))
+            # Use skin-aware code theme and text colour for streamed blocks
+            _theme = getattr(self, "_stream_md_code_theme", "monokai")
+            _color = getattr(self, "_stream_md_text_color", "")
+            _md_style = _color if _color else "none"
+            self._stream_md_console.print(
+                _RichMarkdown(chunk, code_theme=_theme, style=_md_style)
+            )
         except Exception:
             self._stream_md_console.print(chunk)
         for line in buf.getvalue().rstrip("\n").split("\n"):
             _cprint(line)
 
     def _emit_stream_markdown(self, text: str) -> None:
-        """Accumulate streamed tokens and render complete markdown blocks."""
+        """Accumulate streamed tokens and render complete markdown blocks.
+
+        Tokens are appended to ``_stream_md_buf``.  On each call we scan
+        for the last double-newline boundary outside a code fence (via
+        ``_find_block_boundary``).  Everything before that boundary is a
+        complete markdown block — we render it through Rich Markdown once
+        and trim it from the buffer.  The trailing incomplete block stays
+        buffered until more tokens arrive or ``_flush_stream`` renders it.
+
+        This is O(unstable-block-size) per token, not O(full-text),
+        inspired by claude-code's StreamingMarkdown component.
+        """
         if not text:
             return
 
@@ -2106,6 +2162,9 @@ class HermesCLI:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
+                # Capture skin settings for markdown chunk rendering
+                self._stream_md_code_theme = _skin.get_color("code_theme", "monokai")
+                self._stream_md_text_color = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
                 label = "⚕ Hermes"
             w = shutil.get_terminal_size().columns
@@ -2133,12 +2192,15 @@ class HermesCLI:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
-        # Markdown streaming state
-        self._stream_md_buf = ""
-        self._stream_md_rendered = 0
-        self._stream_md_fence_open = False
-        self._stream_md_console = None
-        self._stream_md_iobuf = None
+        # Markdown streaming state — block-by-block rendering inspired by
+        # claude-code's monotonic stable-prefix boundary approach.
+        self._stream_md_buf = ""           # accumulated text awaiting render
+        self._stream_md_rendered = 0       # char offset of already-rendered content
+        self._stream_md_fence_open = False # True when inside a ``` or ~~~ code fence
+        self._stream_md_console = None     # lazily-created Console for chunk rendering
+        self._stream_md_iobuf = None       # StringIO backing the streaming Console
+        self._stream_md_code_theme = "monokai"  # Pygments theme from active skin
+        self._stream_md_text_color = ""         # base text colour from active skin
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -4591,7 +4653,12 @@ class HermesCLI:
                         _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
-                    _renderable = _render_response(response, self.markdown_enabled)
+                    # Skin-aware markdown rendering for background task output
+                    _code_theme = _skin.get_color("code_theme", "monokai")
+                    _renderable = _render_response(
+                        response, self.markdown_enabled,
+                        code_theme=_code_theme, text_color=_resp_text,
+                    )
                     _panel_kw = dict(
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
@@ -4716,8 +4783,14 @@ class HermesCLI:
                     except Exception:
                         _resp_color = "#4F6D4A"
 
+                    # Skin-aware markdown rendering for /btw output
+                    _code_theme = _skin.get_color("code_theme", "monokai")
+                    _btw_text = _skin.get_color("banner_text", "#FFF8DC")
                     ChatConsole().print(Panel(
-                        _render_response(response, self.markdown_enabled),
+                        _render_response(
+                            response, self.markdown_enabled,
+                            code_theme=_code_theme, text_color=_btw_text,
+                        ),
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
@@ -4948,7 +5021,11 @@ class HermesCLI:
             print()
 
     def _handle_markdown_command(self, cmd: str):
-        """Handle /markdown [on|off] — toggle markdown rendering."""
+        """Handle /markdown [on|off] — toggle Rich Markdown rendering.
+
+        With no argument, shows current state.  Persists the preference
+        to ``display.markdown`` in the user's config.yaml.
+        """
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2 or not parts[1].strip():
@@ -6526,7 +6603,13 @@ class HermesCLI:
                     pass
                 else:
                     _chat_console = ChatConsole()
-                    _renderable = _render_response(response, self.markdown_enabled)
+                    # Skin-aware markdown: code_theme from skin (or monokai),
+                    # banner_text as base paragraph colour.
+                    _code_theme = _skin.get_color("code_theme", "monokai") if hasattr(_skin, "get_color") else "monokai"
+                    _renderable = _render_response(
+                        response, self.markdown_enabled,
+                        code_theme=_code_theme, text_color=_resp_text,
+                    )
                     _panel_kw = dict(
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
@@ -6534,6 +6617,9 @@ class HermesCLI:
                         box=rich_box.HORIZONTALS,
                         padding=(1, 2),
                     )
+                    # Omit Panel style= when markdown is on — Panel's style
+                    # overrides ALL child styles, washing out heading/code colours.
+                    # Markdown's own style= parameter layers underneath instead.
                     if not self.markdown_enabled:
                         _panel_kw["style"] = _resp_text
                     _chat_console.print(Panel(_renderable, **_panel_kw))

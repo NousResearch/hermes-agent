@@ -852,6 +852,11 @@ class TelegramAdapter(BasePlatformAdapter):
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
                                 )
+                                # Stale topic cleanup: remove deleted topic from config
+                                self._remove_group_topic(
+                                    chat_id=int(chat_id),
+                                    thread_id=effective_thread_id,
+                                )
                                 effective_thread_id = None
                                 continue
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
@@ -2825,6 +2830,45 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._group_topics_config = group_topics
         except Exception as e:
             logger.debug("[%s] Failed to update group topic in config: %s", self.name, e)
+
+    def _remove_group_topic(self, chat_id: int, thread_id: int) -> None:
+        """Remove a deleted group forum topic from config.yaml."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+            group_topics = (
+                config.get("platforms", {}).get("telegram", {})
+                .get("extra", {}).get("group_topics", [])
+            )
+            if not group_topics:
+                return
+            changed = False
+            for chat_entry in group_topics:
+                if int(chat_entry.get("chat_id", 0)) != int(chat_id):
+                    continue
+                topics = chat_entry.get("topics", [])
+                original_len = len(topics)
+                chat_entry["topics"] = [
+                    t for t in topics if t.get("thread_id") != int(thread_id)
+                ]
+                if len(chat_entry["topics"]) < original_len:
+                    changed = True
+                break
+            if changed:
+                with open(config_path, "w") as f:
+                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                logger.info(
+                    "[%s] Removed deleted group topic (thread_id=%s) from config.yaml",
+                    self.name, thread_id,
+                )
+                self._group_topics_config = group_topics
+        except Exception as e:
+            logger.debug("[%s] Failed to remove group topic from config: %s", self.name, e)
 
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""

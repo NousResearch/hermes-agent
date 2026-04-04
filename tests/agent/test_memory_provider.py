@@ -1,6 +1,9 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import os
+from pathlib import Path
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -528,12 +531,46 @@ class TestSingleProviderGating:
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""
 
+    @staticmethod
+    def _write_user_memory_plugin(name: str, *, description: str = "") -> None:
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        plugin_dir = hermes_home / "plugins" / name
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "__init__.py").write_text(
+            "\n".join(
+                [
+                    "from agent.memory_provider import MemoryProvider",
+                    "",
+                    "class UserMemoryProvider(MemoryProvider):",
+                    f"    @property\n    def name(self):\n        return {name!r}",
+                    "    def is_available(self):\n        return True",
+                    "    def initialize(self, session_id, **kwargs):\n        return None",
+                    "    def get_tool_schemas(self):\n        return []",
+                ]
+            )
+            + "\n"
+        )
+        if description:
+            (plugin_dir / "plugin.yaml").write_text(f"description: {description}\n")
+
     def test_discover_finds_providers(self):
         """discover_memory_providers returns available providers."""
         from plugins.memory import discover_memory_providers
         providers = discover_memory_providers()
         names = [name for name, _, _ in providers]
         assert "holographic" in names  # always available (no external deps)
+
+    def test_discover_includes_user_installed_provider(self):
+        from plugins.memory import discover_memory_providers
+
+        self._write_user_memory_plugin("usermem", description="user memory plugin")
+
+        providers = discover_memory_providers()
+        provider_map = {name: (desc, available) for name, desc, available in providers}
+
+        assert "usermem" in provider_map
+        assert provider_map["usermem"][0] == "user memory plugin"
+        assert provider_map["usermem"][1] is True
 
     def test_load_provider_by_name(self):
         """load_memory_provider returns a working provider instance."""
@@ -542,6 +579,28 @@ class TestPluginMemoryDiscovery:
         assert p is not None
         assert p.name == "holographic"
         assert p.is_available()
+
+    def test_load_user_installed_provider_by_name(self):
+        from plugins.memory import load_memory_provider
+
+        self._write_user_memory_plugin("usermem")
+
+        p = load_memory_provider("usermem")
+        assert p is not None
+        assert p.name == "usermem"
+        assert p.is_available()
+
+    def test_bundled_provider_takes_precedence_over_user_plugin(self):
+        from plugins.memory import load_memory_provider
+
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        plugin_dir = hermes_home / "plugins" / "holographic"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "__init__.py").write_text("raise RuntimeError('user plugin should not be loaded')\n")
+
+        p = load_memory_provider("holographic")
+        assert p is not None
+        assert p.name == "holographic"
 
     def test_load_nonexistent_returns_none(self):
         """load_memory_provider returns None for unknown names."""

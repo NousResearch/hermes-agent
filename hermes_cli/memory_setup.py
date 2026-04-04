@@ -125,12 +125,29 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
+def _find_provider_dir(provider_name: str) -> Path | None:
+    """Locate memory provider dir, preferring bundled over user-installed plugins."""
+    bundled = Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    if bundled.is_dir():
+        return bundled
+
+    from hermes_constants import get_hermes_home
+
+    user_plugin = get_hermes_home() / "plugins" / provider_name
+    if user_plugin.is_dir():
+        return user_plugin
+
+    return None
+
+
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from pathlib import Path as _Path
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    plugin_dir = _find_provider_dir(provider_name)
+    if not plugin_dir:
+        return
+
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return

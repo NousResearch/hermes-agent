@@ -4,9 +4,9 @@ Scans ``plugins/memory/<name>/`` directories for memory provider plugins.
 Each subdirectory must contain ``__init__.py`` with a class implementing
 the MemoryProvider ABC.
 
-Memory providers are separate from the general plugin system — they live
-in the repo and are always available without user installation. Only ONE
-can be active at a time, selected via ``memory.provider`` in config.yaml.
+Memory providers can be bundled in ``plugins/memory/`` or installed by users
+under ``{HERMES_HOME}/plugins/``. Only ONE external provider can be active at
+a time, selected via ``memory.provider`` in config.yaml.
 
 Usage:
     from plugins.memory import discover_memory_providers, load_memory_provider
@@ -22,11 +22,36 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
+
+
+def _user_plugins_dir() -> Path:
+    """Return the user plugin install directory: {HERMES_HOME}/plugins."""
+    return get_hermes_home() / "plugins"
+
+
+def _resolve_provider_dirs() -> Dict[str, Path]:
+    """Resolve provider directories with bundled plugins taking precedence."""
+    provider_dirs: Dict[str, Path] = {}
+    for base_dir in (_MEMORY_PLUGINS_DIR, _user_plugins_dir()):
+        if not base_dir.is_dir():
+            continue
+
+        for child in sorted(base_dir.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            if not (child / "__init__.py").exists():
+                continue
+            # Keep first match so bundled plugins (scanned first) win.
+            provider_dirs.setdefault(child.name, child)
+
+    return provider_dirs
 
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
@@ -37,15 +62,11 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     and does a lightweight availability check.
     """
     results = []
-    if not _MEMORY_PLUGINS_DIR.is_dir():
+    provider_dirs = _resolve_provider_dirs()
+    if not provider_dirs:
         return results
 
-    for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
-        if not child.is_dir() or child.name.startswith(("_", ".")):
-            continue
-        init_file = child / "__init__.py"
-        if not init_file.exists():
-            continue
+    for provider_name, child in sorted(provider_dirs.items()):
 
         # Read description from plugin.yaml if available
         desc = ""
@@ -70,7 +91,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         except Exception:
             available = False
 
-        results.append((child.name, desc, available))
+        results.append((provider_name, desc, available))
 
     return results
 
@@ -80,9 +101,15 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
 
     Returns None if the provider is not found or fails to load.
     """
-    provider_dir = _MEMORY_PLUGINS_DIR / name
-    if not provider_dir.is_dir():
-        logger.debug("Memory provider '%s' not found in %s", name, _MEMORY_PLUGINS_DIR)
+    provider_dirs = _resolve_provider_dirs()
+    provider_dir = provider_dirs.get(name)
+    if not provider_dir:
+        logger.debug(
+            "Memory provider '%s' not found in bundled (%s) or user plugins (%s)",
+            name,
+            _MEMORY_PLUGINS_DIR,
+            _user_plugins_dir(),
+        )
         return None
 
     try:

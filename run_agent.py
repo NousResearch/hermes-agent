@@ -1787,47 +1787,92 @@ class AIAgent:
         Uses _last_flushed_db_idx to track which messages have already been
         written, so repeated calls (from multiple exit paths) only write
         truly new messages — preventing the duplicate-write bug (#860).
+
+        Includes retry logic with exponential backoff for transient SQLite
+        errors (database locked, busy, timeout) to prevent session indexing
+        failures during high-concurrency scenarios.
         """
         if not self._session_db:
             return
         self._apply_persist_user_message_override(messages)
-        try:
-            # If create_session() failed at startup (e.g. transient lock), the
-            # session row may not exist yet.  ensure_session() uses INSERT OR
-            # IGNORE so it is a no-op when the row is already there.
-            self._session_db.ensure_session(
-                self.session_id,
-                source=self.platform or "cli",
-                model=self.model,
-            )
-            start_idx = len(conversation_history) if conversation_history else 0
-            flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
-                role = msg.get("role", "unknown")
-                content = msg.get("content")
-                tool_calls_data = None
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tool_calls_data = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
-                    session_id=self.session_id,
-                    role=role,
-                    content=content,
-                    tool_name=msg.get("tool_name"),
-                    tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+
+        import sqlite3
+        import time
+
+        max_retries = 3
+        base_delay = 0.1  # 100ms
+
+        for attempt in range(max_retries):
+            try:
+                # If create_session() failed at startup (e.g. transient lock), the
+                # session row may not exist yet.  ensure_session() uses INSERT OR
+                # IGNORE so it is a no-op when the row is already there.
+                self._session_db.ensure_session(
+                    self.session_id,
+                    source=self.platform or "cli",
+                    model=self.model,
                 )
-            self._last_flushed_db_idx = len(messages)
-        except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+                start_idx = len(conversation_history) if conversation_history else 0
+                flush_from = max(start_idx, self._last_flushed_db_idx)
+                for msg in messages[flush_from:]:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content")
+                    tool_calls_data = None
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        tool_calls_data = [
+                            {"name": tc.function.name, "arguments": tc.function.arguments}
+                            for tc in msg.tool_calls
+                        ]
+                    elif isinstance(msg.get("tool_calls"), list):
+                        tool_calls_data = msg["tool_calls"]
+                    self._session_db.append_message(
+                        session_id=self.session_id,
+                        role=role,
+                        content=content,
+                        tool_name=msg.get("tool_name"),
+                        tool_calls=tool_calls_data,
+                        tool_call_id=msg.get("tool_call_id"),
+                        finish_reason=msg.get("finish_reason"),
+                        reasoning=msg.get("reasoning") if role == "assistant" else None,
+                        reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
+                        codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                    )
+                self._last_flushed_db_idx = len(messages)
+                # Success - exit retry loop
+                return
+
+            except sqlite3.OperationalError as e:
+                # Transient SQLite errors (locked, busy, timeout) - retry with backoff
+                error_msg = str(e).lower()
+                is_transient = any(
+                    err in error_msg
+                    for err in ("locked", "busy", "timeout", "database is locked")
+                )
+
+                if is_transient and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff: 100ms, 200ms, 400ms
+                    logger.warning(
+                        "Session DB locked (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt + 1, max_retries, delay, e
+                    )
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Non-transient error or max retries exceeded - log prominently
+                    logger.error(
+                        "Failed to persist session %s to SQLite after %d attempts: %s",
+                        self.session_id, attempt + 1, e
+                    )
+                    # Don't swallow the error - let it propagate so caller knows
+                    raise
+
+            except Exception as e:
+                # Non-SQLite errors - log and re-raise
+                logger.error(
+                    "Session DB persist failed for %s: %s",
+                    self.session_id, e
+                )
+                raise
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

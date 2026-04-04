@@ -1945,6 +1945,16 @@ async def _send_simplex(extra, chat_id, message, chunks, media_files):
         if not connected:
             return {"error": "SimpleX: failed to connect to simplex-chat WebSocket"}
 
+        # connect() schedules _ws_listener via create_task; the actual WebSocket
+        # object (adapter._ws) is set inside that task on its first iteration.
+        # Yield to the event loop until _ws is populated (normally < 0.5s).
+        for _ in range(50):
+            if adapter._ws is not None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            return {"error": "SimpleX: WebSocket not ready after connect()"}
+
         last_result = None
 
         # Send text chunks

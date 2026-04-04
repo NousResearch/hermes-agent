@@ -104,6 +104,7 @@ class SimplexAdapter(BasePlatformAdapter):
     """SimpleX Chat adapter using simplex-chat WebSocket API."""
 
     platform = Platform.SIMPLEX
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SIMPLEX)

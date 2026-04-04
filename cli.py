@@ -7959,9 +7959,9 @@ class HermesCLI:
             if cli_ref._followup_queue or cli_ref._steering_queue:
                 parts = []
                 if cli_ref._followup_queue:
-                    parts.append(f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} — Alt+Up to recall")
+                    parts.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑)")
                 if cli_ref._steering_queue:
-                    parts.append(f"🎯 {len(cli_ref._steering_queue)} steering — Alt+Down to recall")
+                    parts.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓)")
                 return "  ·  ".join(parts)
             if cli_ref._stashed_input:
                 stashed_text = cli_ref._stashed_input[0]

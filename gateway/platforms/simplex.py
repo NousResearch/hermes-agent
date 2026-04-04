@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -638,44 +639,69 @@ class SimplexAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text message."""
-        if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            # Use the /_send structured API with numeric group ID (#<id>) to
-            # avoid ambiguity when multiple groups share the same display name.
-            # Use json.dumps for the full payload to correctly escape newlines,
-            # backslashes, and other special characters in the message text.
-            composed = json.dumps([{"msgContent": {"type": "text", "text": content}}])
-            command = f"/_send #{group_id} json {composed}"
-        else:
-            command = f"@{chat_id} {content}"
+        """Send a text message.
 
-        # SimpleX CLI uses @ prefix for DMs and # prefix for groups:
-        #   @<contactId> <message>  or  #<groupId> <message>
-        # The structured API form is:
-        #   /_send @<contactId> json [{"msgContent":{"type":"text","text":"..."}}]
-        # The simpler chat command form also works for plain text.
+        If *content* contains ``MEDIA:<path>`` tags (embedded by TTS/audio
+        tools to signal file attachments), they are stripped from the text
+        and sent as native voice notes via :meth:`send_voice`.
+        """
+        # Extract and strip MEDIA:<path> tags before sending as text.
+        _voice_exts = {".ogg", ".mp3", ".wav", ".m4a", ".opus"}
+        media_paths = re.findall(r'MEDIA:(\S+)', content)
+        if media_paths:
+            content = re.sub(r'MEDIA:\S+', '', content).strip()
 
-        result = await self._send_command(command)
-
-        if result is not None:
-            result_type = result.get("type", "")
-            if result_type in ("newChatItems", "newChatItem"):
-                return SendResult(success=True)
-            elif "error" in str(result_type).lower():
-                return SendResult(
-                    success=False,
-                    error=f"SimpleX error: {result.get('chatError', result)}",
-                )
+        text_result = SendResult(success=True)
+        if content:
+            if chat_id.startswith("group:"):
+                group_id = chat_id[6:]
+                # Use the /_send structured API with numeric group ID (#<id>) to
+                # avoid ambiguity when multiple groups share the same display name.
+                # The plain '#<name>' chat command looks up by display name and
+                # fails if the name is not unique or matches the wrong group.
+                # Use json.dumps for the full payload to correctly escape newlines,
+                # backslashes, and other special characters in the message text.
+                composed = json.dumps([{"msgContent": {"type": "text", "text": content}}])
+                command = f"/_send #{group_id} json {composed}"
             else:
-                # Got a response we don't recognize — treat as success
-                return SendResult(success=True)
+                command = f"@{chat_id} {content}"
 
-        # If we got no response but no error either, consider it sent
-        # (simplex-chat may not always send a correlation response)
-        if result is None and self._ws:
-            return SendResult(success=True)
-        return SendResult(success=False, error="WebSocket not connected")
+            # SimpleX CLI uses @ prefix for DMs and # prefix for groups:
+            #   @<contactId> <message>  or  #<groupId> <message>
+            # The structured API form is:
+            #   /_send @<contactId> json [{"msgContent":{"type":"text","text":"..."}}]
+            # The simpler chat command form also works for plain text.
+
+            result = await self._send_command(command)
+
+            if result is not None:
+                result_type = result.get("type", "")
+                if result_type in ("newChatItems", "newChatItem"):
+                    text_result = SendResult(success=True)
+                elif "error" in str(result_type).lower():
+                    text_result = SendResult(
+                        success=False,
+                        error=f"SimpleX error: {result.get('chatError', result)}",
+                    )
+                # else: unrecognised response type — treat as success
+            elif not self._ws:
+                # No response and no WebSocket — connection is gone
+                text_result = SendResult(success=False, error="WebSocket not connected")
+
+        if not text_result.success:
+            return text_result
+
+        # Send any MEDIA attachments extracted at the top of this method.
+        for path in media_paths:
+            is_voice = os.path.splitext(path)[1].lower() in _voice_exts
+            if is_voice:
+                media_result = await self.send_voice(chat_id, path)
+            else:
+                media_result = await self.send_document(chat_id, path)
+            if not media_result.success:
+                return media_result
+
+        return text_result
 
     async def send_image(
         self,

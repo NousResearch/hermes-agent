@@ -897,6 +897,25 @@ def _atexit_cleanup():
 atexit.register(_atexit_cleanup)
 
 
+def _validate_workdir(workdir: Optional[str], fallback: Optional[str]) -> Optional[str]:
+    """Validate a per-call workdir and return it or *fallback* if invalid.
+
+    Rejects paths that are not absolute or contain suspicious traversal
+    sequences so that an invalid workdir never reaches ``docker exec -w``.
+    """
+    if not workdir:
+        return fallback
+    # Must be an absolute POSIX or Windows-style path
+    if not (workdir.startswith("/") or (len(workdir) >= 3 and workdir[1] == ":")):
+        logger.warning("workdir %r is not absolute, falling back to session cwd", workdir)
+        return fallback
+    # Reject path-traversal patterns (e.g. "/workspace/..???")
+    if ".." in workdir:
+        logger.warning("workdir %r contains '..', falling back to session cwd", workdir)
+        return fallback
+    return workdir
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1092,7 +1111,7 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
-            effective_cwd = workdir or cwd
+            effective_cwd = _validate_workdir(workdir, cwd)
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -1170,8 +1189,9 @@ def terminal_tool(
             while retry_count <= max_retries:
                 try:
                     execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
+                    validated_workdir = _validate_workdir(workdir, None)
+                    if validated_workdir:
+                        execute_kwargs["cwd"] = validated_workdir
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

@@ -357,13 +357,25 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
-            )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            import platform
+            try:
+                command_list = shlex.split(command_template, posix=platform.system() != "Windows")
+            except ValueError as e:
+                return {"success": False, "transcript": "", "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template: {e}"}
+
+            formatted_command = []
+            for arg in command_list:
+                try:
+                    formatted_command.append(arg.format(
+                        input_path=prepared_input,
+                        output_dir=output_dir,
+                        language=language,
+                        model=normalized_model,
+                    ))
+                except KeyError as e:
+                    return {"success": False, "transcript": "", "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}"}
+
+            subprocess.run(formatted_command, shell=False, check=True, capture_output=True, text=True)
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
@@ -382,14 +394,8 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             )
             return {"success": True, "transcript": transcript_text, "provider": "local_command"}
 
-    except KeyError as e:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}",
-        }
     except subprocess.CalledProcessError as e:
-        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        details = e.stderr.strip() if e.stderr else (e.stdout.strip() if e.stdout else str(e))
         logger.error("Local STT command failed for %s: %s", file_path, details)
         return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
     except Exception as e:

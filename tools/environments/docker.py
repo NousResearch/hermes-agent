@@ -569,25 +569,33 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
-            try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
-                )
-                subprocess.Popen(stop_cmd, shell=True)
-            except Exception as e:
-                logger.warning("Failed to stop container %s: %s", self._container_id, e)
-
-            if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
+            import threading
+            import time
+            
+            cid = self._container_id
+            docker_cmd = self._docker_exe
+            is_persistent = self._persistent
+            
+            def _bg_stop():
                 try:
-                    subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
-                    )
+                    # Docker natively supports timeout for stop.
+                    res = subprocess.run([docker_cmd, "stop", "-t", "60", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if res.returncode != 0:
+                        subprocess.run([docker_cmd, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception as e:
+                    logger.warning("Failed to stop container %s: %s", cid, e)
+
+            def _bg_remove():
+                time.sleep(3)
+                try:
+                    subprocess.run([docker_cmd, "rm", "-f", cid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+
+            threading.Thread(target=_bg_stop, daemon=True).start()
+            if not is_persistent:
+                threading.Thread(target=_bg_remove, daemon=True).start()
+                
             self._container_id = None
 
         if not self._persistent:

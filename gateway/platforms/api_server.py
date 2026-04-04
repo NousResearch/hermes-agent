@@ -421,6 +421,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
+        # Load fallback provider chain so the API server platform has the
+        # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
+        from gateway.run import GatewayApp
+        fallback_model = GatewayApp._load_fallback_model()
+
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -434,6 +439,7 @@ class APIServerAdapter(BasePlatformAdapter):
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             session_db=self._ensure_session_db(),
+            fallback_model=fallback_model,
         )
         return agent
 

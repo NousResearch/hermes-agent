@@ -125,6 +125,15 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "copilot-vscode": ProviderConfig(
+        id="copilot-vscode",
+        name="GitHub Copilot (VSCode)",
+        auth_type="oauth_device_code",
+        inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
+        portal_base_url="https://github.com",
+        client_id="Iv1.b507a08c87ecfe98",
+        scope="read:user",
+    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",
@@ -738,6 +747,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "vscode-copilot": "copilot-vscode", "copilot-vsc": "copilot-vscode", "vscode": "copilot-vscode",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -1829,6 +1839,56 @@ def resolve_nous_runtime_credentials(
     }
 
 
+def resolve_copilot_vscode_runtime_credentials() -> Dict[str, Any]:
+    """
+    Resolve GitHub Copilot (VSCode) runtime credentials.
+
+    Ensures the Copilot token is valid (refreshes if needed using the stored
+    GitHub token). Concurrent processes coordinate through the auth store lock.
+
+    Returns dict with: provider, base_url, api_key.
+    """
+    from hermes_cli.copilot_auth import get_copilot_token_with_refresh
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "copilot-vscode")
+
+        if not state:
+            raise AuthError(
+                "Hermes is not logged into GitHub Copilot (VSCode). "
+                "Run `hermes login --provider copilot-vscode` to authenticate.",
+                provider="copilot-vscode",
+                code="copilot_vscode_auth_missing",
+                relogin_required=True,
+            )
+
+        # Get or refresh the Copilot token (this updates state in-place)
+        try:
+            copilot_token = get_copilot_token_with_refresh(state)
+        except ValueError as exc:
+            raise AuthError(
+                str(exc),
+                provider="copilot-vscode",
+                code="copilot_vscode_token_refresh_failed",
+                relogin_required=True,
+            )
+
+        # Persist updated state if token was refreshed
+        _save_provider_state(auth_store, "copilot-vscode", state)
+        _save_auth_store(auth_store)
+
+    pconfig = PROVIDER_REGISTRY["copilot-vscode"]
+    base_url = pconfig.inference_base_url
+
+    return {
+        "provider": "copilot-vscode",
+        "base_url": base_url,
+        "api_key": copilot_token,
+        "source": "copilot-token-exchange",
+    }
+
+
 # =============================================================================
 # Status helpers
 # =============================================================================
@@ -1872,6 +1932,24 @@ def get_codex_auth_status() -> Dict[str, Any]:
             "auth_store": str(_auth_file_path()),
             "error": str(exc),
         }
+
+
+def get_copilot_vscode_auth_status() -> Dict[str, Any]:
+    """Status snapshot for GitHub Copilot (VSCode) auth."""
+    state = get_provider_auth_state("copilot-vscode")
+    if not state:
+        return {
+            "logged_in": False,
+            "base_url": None,
+            "copilot_token_expires_at": None,
+            "has_github_token": False,
+        }
+    return {
+        "logged_in": bool(state.get("github_token")),
+        "base_url": PROVIDER_REGISTRY["copilot-vscode"].inference_base_url,
+        "copilot_token_expires_at": state.get("copilot_token_expires_at"),
+        "has_github_token": bool(state.get("github_token")),
+    }
 
 
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
@@ -1942,6 +2020,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "copilot-vscode":
+        return get_copilot_vscode_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     # API-key providers
@@ -2563,6 +2643,80 @@ def _nous_device_code_login(
         force_refresh=False,
         force_mint=True,
     )
+
+
+def _login_copilot_vscode(args, pconfig: ProviderConfig) -> None:
+    """GitHub Copilot (VSCode) OAuth device authorization flow."""
+    from hermes_cli.copilot_auth import copilot_vscode_device_code_login
+
+    print()
+    print("Signing in to GitHub Copilot (VSCode)...")
+    print("This uses the official VSCode OAuth flow with automatic token refresh.")
+    print()
+
+    try:
+        # Run the device code flow
+        creds = copilot_vscode_device_code_login(
+            host="github.com",
+            timeout_seconds=300.0,
+        )
+
+        if not creds:
+            print()
+            print("Login failed or was cancelled.")
+            raise SystemExit(1)
+
+        # Store tokens in auth.json under providers.copilot-vscode
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            state = {
+                "github_token": creds["github_token"],
+                "copilot_token": creds["copilot_token"],
+                "copilot_token_expires_at": creds["copilot_token_expires_at"],
+            }
+            _save_provider_state(auth_store, "copilot-vscode", state)
+            saved_to = _save_auth_store(auth_store)
+
+        inference_base_url = pconfig.inference_base_url
+        config_path = _update_config_for_provider("copilot-vscode", inference_base_url)
+        
+        print()
+        print("Login successful!")
+        from hermes_constants import display_hermes_home as _dhh
+        print(f"  Auth state: {saved_to}")
+        print(f"  Config updated: {config_path} (model.provider=copilot-vscode)")
+
+        # Fetch and display available models
+        try:
+            from hermes_cli.models import fetch_github_model_catalog
+            
+            print()
+            print("Fetching available models...")
+            model_ids = fetch_github_model_catalog(
+                api_key=creds["copilot_token"],
+                base_url=inference_base_url,
+            )
+            
+            if model_ids:
+                print(f"Found {len(model_ids)} available models.")
+                selected_model = _prompt_model_selection(model_ids)
+                if selected_model:
+                    _save_model_choice(selected_model)
+                    print(f"Default model set to: {selected_model}")
+            else:
+                print("No models available for GitHub Copilot.")
+        except Exception as exc:
+            print()
+            print(f"Login succeeded, but could not fetch available models. Reason: {exc}")
+            logger.debug("Model fetch error", exc_info=True)
+
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
+    except Exception as exc:
+        print(f"Login failed: {exc}")
+        logger.exception("copilot-vscode login error")
+        raise SystemExit(1)
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:

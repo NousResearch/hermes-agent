@@ -913,6 +913,7 @@ def select_provider_and_model(args=None):
         "openai-codex": "OpenAI Codex",
         "copilot-acp": "GitHub Copilot ACP",
         "copilot": "GitHub Copilot",
+        "copilot-vscode": "GitHub Copilot (VSCode)",
         "anthropic": "Anthropic",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
@@ -940,6 +941,7 @@ def select_provider_and_model(args=None):
         ("openai-codex", "OpenAI Codex"),
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
+        ("copilot-vscode", "GitHub Copilot (VSCode) (OAuth with token refresh)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
@@ -1013,6 +1015,8 @@ def select_provider_and_model(args=None):
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
+    elif selected_provider == "copilot-vscode":
+        _model_flow_copilot_vscode(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
@@ -2012,6 +2016,141 @@ def _model_flow_copilot_acp(config, current_model=""):
     deactivate_provider()
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
+def _model_flow_copilot_vscode(config, current_model=""):
+    """GitHub Copilot (VSCode) flow using OAuth with automatic token refresh."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_provider_auth_state,
+        resolve_copilot_vscode_runtime_credentials,
+    )
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.models import (
+        fetch_github_model_catalog,
+        github_model_reasoning_efforts,
+        copilot_model_api_mode,
+        normalize_copilot_model_id,
+        _PROVIDER_MODELS,
+    )
+
+    provider_id = "copilot-vscode"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    # Check if user is logged in
+    state = get_provider_auth_state(provider_id)
+    if not state or not state.get("github_token"):
+        print("Not logged into GitHub Copilot (VSCode).")
+        print()
+        print("  This provider uses the official VSCode OAuth flow with automatic token refresh.")
+        print("  Run `hermes login --provider copilot-vscode` to authenticate.")
+        print()
+        try:
+            choice = input("  Start login now? [Y/n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        
+        if choice in ("", "y", "yes"):
+            try:
+                from hermes_cli.auth import _login_copilot_vscode
+                _login_copilot_vscode(None, pconfig)
+                print()
+            except Exception as exc:
+                print(f"  Login failed: {exc}")
+                return
+        else:
+            print("  Cancelled.")
+            return
+    else:
+        print("  GitHub Copilot (VSCode): ✓ (logged in)")
+        print()
+
+    # Get credentials and fetch model catalog
+    try:
+        creds = resolve_copilot_vscode_runtime_credentials()
+        api_key = creds.get("api_key", "")
+    except Exception as exc:
+        print(f"  Error resolving credentials: {exc}")
+        return
+
+    effective_base = pconfig.inference_base_url
+
+    catalog = fetch_github_model_catalog(api_key)
+    live_models = [item.get("id", "") for item in catalog if item.get("id")] if catalog else None
+    normalized_current_model = normalize_copilot_model_id(
+        current_model,
+        catalog=catalog,
+        api_key=api_key,
+    ) or current_model
+
+    if live_models:
+        model_list = [model_id for model_id in live_models if model_id]
+        print(f"  Found {len(model_list)} model(s) from GitHub Copilot")
+    else:
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print("  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults.")
+            print('    Use "Enter custom model name" if you do not see your model.')
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=normalized_current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        selected = normalize_copilot_model_id(
+            selected,
+            catalog=catalog,
+            api_key=api_key,
+        ) or selected
+        initial_cfg = load_config()
+        current_effort = _current_reasoning_effort(initial_cfg)
+        reasoning_efforts = github_model_reasoning_efforts(
+            selected,
+            catalog=catalog,
+            api_key=api_key,
+        )
+        selected_effort = None
+        if reasoning_efforts:
+            print(f"  {selected} supports reasoning controls.")
+            selected_effort = _prompt_reasoning_effort_selection(
+                reasoning_efforts, current_effort=current_effort
+            )
+
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        model["api_mode"] = copilot_model_api_mode(
+            selected,
+            catalog=catalog,
+            api_key=api_key,
+        )
+        if selected_effort is not None:
+            _set_reasoning_effort(cfg, selected_effort)
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+        if reasoning_efforts:
+            if selected_effort == "none":
+                print("Reasoning disabled for this model.")
+            elif selected_effort:
+                print(f"Reasoning effort set to: {selected_effort}")
+    else:
+        print("No change.")
 
 
 def _model_flow_kimi(config, current_model=""):

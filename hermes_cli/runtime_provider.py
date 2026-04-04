@@ -16,6 +16,7 @@ from hermes_cli.auth import (
     resolve_provider,
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
+    resolve_copilot_vscode_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -645,6 +646,17 @@ def resolve_runtime_provider(
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "hermes-auth-store"),
             "last_refresh": creds.get("last_refresh"),
+            "requested_provider": requested_provider,
+        }
+
+    if provider == "copilot-vscode":
+        creds = resolve_copilot_vscode_runtime_credentials()
+        return {
+            "provider": "copilot-vscode",
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "source": creds.get("source", "copilot-token-exchange"),
             "requested_provider": requested_provider,
         }
 

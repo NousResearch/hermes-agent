@@ -112,6 +112,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-pro",
         "grok-code-fast-1",
     ],
+    "copilot-vscode": [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4.5",
+        "claude-haiku-4.5",
+        "gemini-2.5-pro",
+        "grok-code-fast-1",
+    ],
     "zai": [
         "glm-5",
         "glm-5-turbo",
@@ -261,6 +277,7 @@ _PROVIDER_LABELS = {
     "copilot-acp": "GitHub Copilot ACP",
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
+    "copilot-vscode": "GitHub Copilot (VSCode)",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
@@ -287,6 +304,9 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "vscode-copilot": "copilot-vscode",
+    "copilot-vsc": "copilot-vscode",
+    "vscode": "copilot-vscode",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -343,7 +363,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+        "openrouter", "nous", "openai-codex", "copilot", "copilot-vscode", "copilot-acp",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
@@ -616,8 +636,20 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         from hermes_cli.codex_models import get_codex_model_ids
 
         return get_codex_model_ids()
-    if normalized in {"copilot", "copilot-acp"}:
+    if normalized in {"copilot", "copilot-vscode", "copilot-acp"}:
         try:
+            # For copilot-vscode, use copilot-vscode credentials if available
+            if normalized == "copilot-vscode":
+                from hermes_cli.auth import resolve_copilot_vscode_runtime_credentials
+                try:
+                    creds = resolve_copilot_vscode_runtime_credentials()
+                    api_key = creds.get("api_key", "")
+                    live = _fetch_github_models(api_key)
+                    if live:
+                        return live
+                except Exception:
+                    pass
+            # For copilot or when copilot-vscode creds not available, try copilot creds
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
             if live:
                 return live
@@ -625,6 +657,7 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+        return list(_PROVIDER_MODELS.get(normalized, []))
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

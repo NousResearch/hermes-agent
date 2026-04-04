@@ -575,8 +575,18 @@ class ProcessRegistry:
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+                # Non-local -- kill inside sandbox.
+                # Validate PID is a positive integer to prevent command
+                # injection via manipulated sandbox output.
+                if isinstance(session.pid, int) and session.pid > 0:
+                    session.env_ref.execute(
+                        f"kill {session.pid} 2>/dev/null", timeout=5
+                    )
+                else:
+                    logger.warning(
+                        "Refusing to kill process with suspicious PID: %r",
+                        session.pid,
+                    )
             session.exited = True
             session.exit_code = -15  # SIGTERM
             self._move_to_finished(session)

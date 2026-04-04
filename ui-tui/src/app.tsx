@@ -14,6 +14,7 @@ import { Thinking } from './components/thinking.js'
 import { COMMANDS, HOTKEYS, INTERPOLATION_RE, MAX_CTX, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
 import * as inputHistory from './lib/history.js'
+import { writeOsc52Clipboard } from './lib/osc52.js'
 import { upsert } from './lib/messages.js'
 import { estimateRows, flat, fmtK, hasInterpolation, pick, userDisplay } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
@@ -661,7 +662,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          process.stdout.write(`\x1b]52;c;${Buffer.from(target.text).toString('base64')}\x07`)
+          writeOsc52Clipboard(target.text)
           sys('copied to clipboard')
 
           return true

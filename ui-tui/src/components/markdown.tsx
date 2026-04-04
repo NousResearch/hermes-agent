@@ -8,50 +8,51 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   const re = /(\[(.+?)\]\((https?:\/\/[^\s)]+)\)|\*\*(.+?)\*\*|`([^`]+)`|\*(.+?)\*|(https?:\/\/[^\s]+))/g
 
   let last = 0
-  let match: RegExpExecArray | null
 
-  while ((match = re.exec(text)) !== null) {
-    if (match.index > last) {
+  for (const m of text.matchAll(re)) {
+    const i = m.index ?? 0
+
+    if (i > last) {
       parts.push(
         <Text color={t.color.cornsilk} key={parts.length}>
-          {text.slice(last, match.index)}
+          {text.slice(last, i)}
         </Text>
       )
     }
 
-    if (match[2] && match[3]) {
+    if (m[2] && m[3]) {
       parts.push(
         <Text color={t.color.amber} key={parts.length} underline>
-          {match[2]}
+          {m[2]}
         </Text>
       )
-    } else if (match[4]) {
+    } else if (m[4]) {
       parts.push(
         <Text bold color={t.color.cornsilk} key={parts.length}>
-          {match[4]}
+          {m[4]}
         </Text>
       )
-    } else if (match[5]) {
+    } else if (m[5]) {
       parts.push(
         <Text color={t.color.amber} dimColor key={parts.length}>
-          {match[5]}
+          {m[5]}
         </Text>
       )
-    } else if (match[6]) {
+    } else if (m[6]) {
       parts.push(
         <Text color={t.color.cornsilk} italic key={parts.length}>
-          {match[6]}
+          {m[6]}
         </Text>
       )
-    } else if (match[7]) {
+    } else if (m[7]) {
       parts.push(
         <Text color={t.color.amber} key={parts.length} underline>
-          {match[7]}
+          {m[7]}
         </Text>
       )
     }
 
-    last = match.index + match[0].length
+    last = i + m[0].length
   }
 
   if (last < text.length) {

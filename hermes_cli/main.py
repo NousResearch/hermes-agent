@@ -173,39 +173,41 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from hermes_cli.config import get_env_path, get_hermes_home, load_config
-    from hermes_cli.auth import get_auth_status
+    from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
+    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
 
-    # Determine whether Hermes itself has been explicitly configured (model
-    # in config that isn't the hardcoded default). Used below to gate external
-    # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
-    # the setup wizard on a fresh install.
-    from hermes_cli.config import DEFAULT_CONFIG
-    _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
     cfg = load_config()
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
-        _model_name = (model_cfg.get("default") or "").strip()
+        model_name = (model_cfg.get("default") or "").strip()
     elif isinstance(model_cfg, str):
-        _model_name = model_cfg.strip()
+        model_name = model_cfg.strip()
     else:
-        _model_name = ""
-    _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
+        model_name = ""
 
-    # Check env vars (may be set by .env or shell).
-    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
-    # often don't require an API key.
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    default_model = DEFAULT_CONFIG.get("model", "")
+    has_hermes_config = bool(model_name and model_name != default_model)
 
-    # Collect all provider env vars
-    provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
-            provider_env_vars.update(pconfig.api_key_env_vars)
+    provider_env_vars = {
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "OPENAI_BASE_URL",
+    }
+    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        # Copilot shell env vars like GH_TOKEN/GITHUB_TOKEN are often present for
+        # unrelated GitHub workflows and should not silently skip Hermes setup on a
+        # fresh install. Copilot still counts below via explicit gh CLI detection.
+        if provider_id == "copilot":
+            continue
+        provider_env_vars.update(pconfig.api_key_env_vars)
+
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 
-    # Check .env file for keys
     env_file = get_env_path()
     if env_file.exists():
         try:
@@ -214,24 +216,19 @@ def _has_any_provider_configured() -> bool:
                 if line.startswith("#") or "=" not in line:
                     continue
                 key, _, val = line.partition("=")
-                val = val.strip().strip("'\"")
-                if key.strip() in provider_env_vars and val:
+                if key.strip() in provider_env_vars and val.strip().strip("'\""):
                     return True
         except Exception:
             pass
 
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
     try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        if _try_gh_cli_token():
+            return True
     except Exception:
         pass
 
-    # Check for Nous Portal OAuth credentials
     auth_file = get_hermes_home() / "auth.json"
     if auth_file.exists():
         try:
@@ -245,11 +242,6 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-
-    # Check config.yaml — if model is a dict with an explicit provider set,
-    # the user has gone through setup (fresh installs have model as a plain
-    # string).  Also covers custom endpoints that store api_key/base_url in
-    # config rather than .env.
     if isinstance(model_cfg, dict):
         cfg_provider = (model_cfg.get("provider") or "").strip()
         cfg_base_url = (model_cfg.get("base_url") or "").strip()
@@ -257,10 +249,7 @@ def _has_any_provider_configured() -> bool:
         if cfg_provider or cfg_base_url or cfg_api_key:
             return True
 
-    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # Only count these if Hermes has been explicitly configured — Claude Code
-    # being installed doesn't mean the user wants Hermes to use their tokens.
-    if _has_hermes_config:
+    if has_hermes_config:
         try:
             from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
             creds = read_claude_code_credentials()
@@ -4038,7 +4027,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "claude-cli", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

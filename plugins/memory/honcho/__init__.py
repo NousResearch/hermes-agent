@@ -632,6 +632,15 @@ class HonchoMemoryProvider(MemoryProvider):
         # See: https://github.com/NousResearch/hermes-agent/issues/5102
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
+            if self._sync_thread.is_alive():
+                return json.dumps(
+                    {
+                        "error": (
+                            "Honcho is still synchronizing session state. "
+                            "Please retry the tool call."
+                        )
+                    }
+                )
 
         try:
             if tool_name == "honcho_profile":

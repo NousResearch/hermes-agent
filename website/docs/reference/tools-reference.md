@@ -66,14 +66,9 @@ This page documents the built-in Hermes tool registry as it exists in code. Avai
 | `ha_list_entities` | List Home Assistant entities. Optionally filter by domain (light, switch, climate, sensor, binary_sensor, cover, fan, etc.) or by area name (living room, kitchen, bedroom, etc.). | — |
 | `ha_list_services` | List available Home Assistant services (actions) for device control. Shows what actions can be performed on each device type and what parameters they accept. Use this to discover how to control devices found via ha_list_entities. | — |
 
-## `honcho` toolset
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `honcho_conclude` | Write a conclusion about the user back to Honcho's memory. Conclusions are persistent facts that build the user's profile — preferences, corrections, clarifications, project context, or anything the user tells you that should be remembered… | — |
-| `honcho_context` | Ask Honcho a natural language question and get a synthesized answer. Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. Can query about any peer: the user (default), the AI assistant, or any named p… | — |
-| `honcho_profile` | Retrieve the user's peer card from Honcho — a curated list of key facts about them (name, role, preferences, communication style, patterns). Fast, no LLM reasoning, minimal cost. Use this at conversation start or when you need a quick fact… | — |
-| `honcho_search` | Semantic search over Honcho's stored context about the user. Returns raw excerpts ranked by relevance to your query — no LLM synthesis. Cheaper and faster than honcho_context. Good when you want to find specific past facts and reason over… | — |
+:::note
+**Honcho tools** (`honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Plugins](../user-guide/features/plugins.md) for installation and usage.
+:::
 
 ## `image_gen` toolset
 

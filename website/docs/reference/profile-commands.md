@@ -126,7 +126,7 @@ This permanently deletes the profile's entire directory including all config, me
 hermes profile show <name>
 ```
 
-Displays details about a profile including its home directory, configured model, active platforms, and disk usage.
+Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
 
 | Argument | Description |
 |----------|-------------|
@@ -136,12 +136,14 @@ Displays details about a profile including its home directory, configured model,
 
 ```bash
 $ hermes profile show work
-Profile:    work
-Home:       ~/.hermes/profiles/work
-Model:      anthropic/claude-sonnet-4
-Platforms:  telegram, discord
-Skills:     12 installed
-Disk:       48 MB
+Profile: work
+Path:    ~/.hermes/profiles/work
+Model:   anthropic/claude-sonnet-4 (anthropic)
+Gateway: stopped
+Skills:  12
+.env:    exists
+SOUL.md: exists
+Alias:   ~/.local/bin/work
 ```
 
 ## `hermes profile alias`

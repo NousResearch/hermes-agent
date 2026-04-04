@@ -58,7 +58,8 @@ def _load_config() -> dict:
     if config_path.exists():
         try:
             file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            config.update({k: v for k, v in file_cfg.items() if v})
+            config.update({k: v for k, v in file_cfg.items()
+                           if v is not None and v != ""})
         except Exception:
             pass
 

@@ -103,6 +103,55 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_can_clear_previous_errors(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="discord conflict",
+            platform="discord",
+            platform_state="fatal",
+            error_code="discord_token_lock",
+            error_message="Discord bot token already in use.",
+        )
+
+        status.write_runtime_status(
+            gateway_state="running",
+            exit_reason=None,
+            platform="discord",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"]["discord"]["state"] == "connected"
+        assert payload["platforms"]["discord"]["error_code"] is None
+        assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_omitted_args_preserve_previous_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="discord conflict",
+            platform="discord",
+            platform_state="fatal",
+            error_code="discord_token_lock",
+            error_message="Discord bot token already in use.",
+        )
+
+        status.write_runtime_status(platform="discord", platform_state="connected")
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "startup_failed"
+        assert payload["exit_reason"] == "discord conflict"
+        assert payload["platforms"]["discord"]["state"] == "connected"
+        assert payload["platforms"]["discord"]["error_code"] == "discord_token_lock"
+        assert payload["platforms"]["discord"]["error_message"] == "Discord bot token already in use."
+
 
 class TestScopedLocks:
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):

@@ -2,6 +2,11 @@ name: Build Branch Image
 
 on:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        type: string
 
 concurrency:
   group: docker-branch-${{ github.ref }}
@@ -18,6 +23,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.branch }}
           submodules: recursive
 
       - name: Set up Docker Buildx
@@ -33,8 +39,8 @@ jobs:
       - name: Extract branch slug
         id: branch
         run: |
-          BRANCH="${GITHUB_REF#refs/heads/}"
-          SLUG="${BRANCH//\//-}"
+          SLUG="${{ inputs.branch }}"
+          SLUG="${SLUG//\//-}"
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
       - name: Build image

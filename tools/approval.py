@@ -866,3 +866,9 @@ def check_all_command_guards(command: str, env_type: str,
             save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None}
+
+
+# Load permanent allowlist from config on module import so that patterns
+# persisted via '/approve always' in a previous session take effect
+# immediately without requiring an explicit call at startup.
+load_permanent_allowlist()

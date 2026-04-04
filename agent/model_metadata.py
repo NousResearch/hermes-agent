@@ -439,6 +439,8 @@ def fetch_endpoint_model_metadata(
     if alternate and alternate not in candidates:
         candidates.append(alternate)
 
+    if not api_key:
+        api_key = os.environ.get("LITELLM_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     last_error: Optional[Exception] = None
 

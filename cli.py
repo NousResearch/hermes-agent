@@ -2902,7 +2902,7 @@ class HermesCLI:
             ]),
             ("Drafting", [
                 ("Ctrl+G",          "Open input in external editor ($VISUAL / VS Code)"),
-                ("Ctrl+S",          "Stash input (pop with Ctrl+S, auto-restores after response)"),
+                ("Ctrl+S",          "Stash input (pop with Ctrl+S; auto-restores after response if buffer empty)"),
                 ("Ctrl+P",          "Peek paste / preview input / full history pager (empty input)"),
                 ("Ctrl+V",          "Paste from clipboard (image-aware)"),
                 ("ESC ESC",         "Clear input buffer and attached images"),
@@ -7608,7 +7608,7 @@ class HermesCLI:
                 cli_ref._stashed_input = (text, images_snapshot)
                 cli_ref._attached_images.clear()
                 buf.reset()
-                _cprint(f"  {_DIM}📌 Input stashed (Ctrl+S to pop, auto-restores after response){_RST}")
+                _cprint(f"  {_DIM}📌 Input stashed (Ctrl+S to pop; auto-restores if buffer empty after response){_RST}")
                 event.app.invalidate()
             elif cli_ref._stashed_input:
                 # --- Pop stash into input ---
@@ -8636,17 +8636,24 @@ class HermesCLI:
                         self._spinner_text = ""
                         self._update_terminal_title(thinking=False)
 
-                        # Auto-restore stashed input after agent finishes
+                        # Auto-restore stashed input after agent finishes,
+                        # but only if the buffer is empty — never clobber text
+                        # the user started typing while the agent was responding.
                         if self._stashed_input:
                             stashed_text, stashed_images = self._stashed_input
-                            self._stashed_input = None
-                            if stashed_images:
-                                self._attached_images.extend(stashed_images)
                             try:
                                 buf = app.layout.current_buffer
-                                buf.text = stashed_text
-                                buf.cursor_position = len(stashed_text)
-                                _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
+                                if buf.text.strip():
+                                    # Buffer has content — leave stash intact,
+                                    # user can pop it manually with Ctrl+S.
+                                    _cprint(f"  {_DIM}📌 Stash kept (buffer not empty — Ctrl+S to pop){_RST}")
+                                else:
+                                    self._stashed_input = None
+                                    if stashed_images:
+                                        self._attached_images.extend(stashed_images)
+                                    buf.text = stashed_text
+                                    buf.cursor_position = len(stashed_text)
+                                    _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
                             except Exception:
                                 pass
 

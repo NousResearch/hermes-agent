@@ -924,6 +924,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "synthetic": "Synthetic",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active)
@@ -951,6 +952,7 @@ def select_provider_and_model(args=None):
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
+        ("synthetic", "Synthetic — US-based inference API. Pay-per-use or subscription."),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1023,7 +1025,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "synthetic"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 

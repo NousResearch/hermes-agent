@@ -5447,6 +5447,7 @@ class AIAgent:
                             content=args.get("content"),
                             old_text=args.get("old_text"),
                             store=self._memory_store,
+                            session_id=self.session_id,
                         )
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
@@ -5605,6 +5606,7 @@ class AIAgent:
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
+                session_id=self.session_id,
             )
             # Bridge: notify external memory provider of built-in memory writes
             if self._memory_manager and function_args.get("action") in ("add", "replace"):
@@ -5962,6 +5964,7 @@ class AIAgent:
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
+                    session_id=self.session_id,
                 )
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
@@ -6651,6 +6654,14 @@ class AIAgent:
         # External memory provider: prefetch once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling
         # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
+        _builtin_prefetch_cache = ""
+        if self._memory_store:
+            try:
+                _query = user_message if isinstance(user_message, str) else ""
+                _builtin_prefetch_cache = self._memory_store.search_for_recall(_query) or ""
+            except Exception:
+                pass
+
         _ext_prefetch_cache = ""
         if self._memory_manager:
             try:
@@ -6718,11 +6729,13 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                # External memory provider prefetch: inject cached recalled context
-                if idx == current_turn_user_idx and msg.get("role") == "user" and _ext_prefetch_cache:
+                # Builtin + external memory recall: inject cached relevant context
+                if idx == current_turn_user_idx and msg.get("role") == "user":
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + _ext_prefetch_cache
+                        _recall_parts = [part for part in (_builtin_prefetch_cache, _ext_prefetch_cache) if part]
+                        if _recall_parts:
+                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_recall_parts)
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved

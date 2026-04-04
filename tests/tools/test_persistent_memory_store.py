@@ -16,6 +16,17 @@ def store(tmp_path):
 
 
 class TestPersistentMemoryStoreBasics:
+    def test_uses_live_hermes_home_when_env_changes_before_init(self, tmp_path, monkeypatch):
+        dynamic_home = tmp_path / "dynamic-home"
+        monkeypatch.setenv("HERMES_HOME", str(dynamic_home))
+
+        from tools.persistent_memory_store import PersistentMemoryStore
+
+        store = PersistentMemoryStore(memory_char_limit=500, user_char_limit=300)
+
+        assert store.db_path == dynamic_home / "memory.db"
+        assert store.memory_dir == dynamic_home / "memories"
+
     def test_initializes_database_file(self, store):
         assert store.db_path.exists()
         conn = sqlite3.connect(store.db_path)

@@ -68,13 +68,11 @@ class PersistentMemoryStore:
     ):
         resolved_db_path = db_path
         if resolved_db_path is None:
-            dynamic_db_path = get_default_db_path()
-            resolved_db_path = DEFAULT_DB_PATH if Path(DEFAULT_DB_PATH) != Path(dynamic_db_path) else dynamic_db_path
+            resolved_db_path = get_default_db_path()
 
         resolved_memory_dir = memory_dir
         if resolved_memory_dir is None:
-            dynamic_memory_dir = get_default_memory_dir()
-            resolved_memory_dir = DEFAULT_MEMORY_DIR if Path(DEFAULT_MEMORY_DIR) != Path(dynamic_memory_dir) else dynamic_memory_dir
+            resolved_memory_dir = get_default_memory_dir()
 
         self.db_path = Path(resolved_db_path)
         self.memory_dir = Path(resolved_memory_dir)

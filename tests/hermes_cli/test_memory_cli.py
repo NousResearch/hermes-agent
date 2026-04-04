@@ -131,3 +131,17 @@ def test_memory_status_reports_hot_memory_selection(tmp_path, monkeypatch, capsy
     assert "Never expose secrets in chat" in out
     assert "path: hot_memory" in out
     assert "entry_type=constraint" in out
+
+
+def test_memory_status_reports_retrieval_split(tmp_path, monkeypatch, capsys):
+    home = tmp_path / ".hermes"
+    monkeypatch.setattr(memory_cli, "get_hermes_home", lambda: home)
+    store = memory_cli._store()
+    store.add_entry("user", "Never use flattery or padding")
+
+    memory_cli.memory_command(Namespace(memory_action="status", output=None, input=None))
+    out = capsys.readouterr().out
+
+    assert "Recall paths:" in out
+    assert "hot memory: persistent steering facts" in out
+    assert "session_search: transcript/session history" in out

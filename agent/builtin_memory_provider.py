@@ -75,8 +75,13 @@ class BuiltinMemoryProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Built-in memory doesn't do query-based recall — it's injected via system_prompt_block."""
-        return ""
+        """Return deeper built-in recall beyond the hot system prompt block."""
+        if not self._store or not query:
+            return ""
+        try:
+            return self._store.search_for_recall(query)
+        except Exception:
+            return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Built-in memory doesn't auto-sync turns — writes happen via the memory tool."""

@@ -432,9 +432,16 @@ class TestBuiltinMemoryProvider:
         p = BuiltinMemoryProvider(memory_store=None, memory_enabled=True)
         assert p.system_prompt_block() == ""
 
-    def test_prefetch_returns_empty(self):
-        p = BuiltinMemoryProvider()
-        assert p.prefetch("anything") == ""
+    def test_prefetch_returns_relevant_context_from_builtin_store(self):
+        store = MagicMock()
+        store.search_for_recall.return_value = "## Builtin Memory Recall\n- Project uses sqlite for local state"
+
+        p = BuiltinMemoryProvider(memory_store=store)
+
+        result = p.prefetch("what database do we use?")
+
+        assert "Builtin Memory Recall" in result
+        store.search_for_recall.assert_called_once_with("what database do we use?")
 
     def test_store_property(self):
         store = MagicMock()

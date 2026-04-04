@@ -109,6 +109,30 @@ class MemoryStore:
             return "workflow"
         return "lesson"
 
+    def _classify_write(self, target: str, content: str) -> Dict[str, str]:
+        lower = content.lower()
+        if target == "user":
+            if lower.startswith("never ") or "do not" in lower or "don't" in lower:
+                return {"entry_type": "prohibition", "strength": "hard_rule", "source": "user_explicit"}
+            if "prefer" in lower or "likes" in lower or "dislike" in lower or "hate" in lower:
+                strength = "strong_pref" if "prefer" in lower or "hate" in lower or "dislike" in lower else "soft_pref"
+                return {"entry_type": "user_preference", "strength": strength, "source": "user_explicit"}
+            if "timezone" in lower or "name" in lower or "role" in lower:
+                return {"entry_type": "user_identity", "strength": "contextual", "source": "user_explicit"}
+            if "must" in lower or "always" in lower:
+                return {"entry_type": "workflow_rule", "strength": "hard_rule", "source": "user_explicit"}
+            return {"entry_type": "workflow_rule", "strength": "strong_pref", "source": "user_explicit"}
+
+        if lower.startswith("never ") or "do not" in lower or "don't" in lower or "secret" in lower:
+            return {"entry_type": "constraint", "strength": "hard_rule", "source": "user_explicit"}
+        if "project" in lower or "repo" in lower or "uses " in lower:
+            return {"entry_type": "project_convention", "strength": "contextual", "source": "user_explicit"}
+        if "workflow" in lower or "command" in lower:
+            return {"entry_type": "workflow_rule", "strength": "strong_pref", "source": "user_explicit"}
+        if "path" in lower or "runtime" in lower or "home" in lower or "installed" in lower:
+            return {"entry_type": "environment_fact", "strength": "contextual", "source": "user_explicit"}
+        return {"entry_type": "lesson", "strength": "contextual", "source": "user_explicit"}
+
     def _load_target_from_backend(self, target: str) -> List[str]:
         rows = self._backend_store().list_entries(target)
         return [row["content"] for row in rows]
@@ -168,14 +192,23 @@ class MemoryStore:
     def _refresh_live_entries(self, target: str):
         self._set_entries(target, self._load_target_from_backend(target))
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, session_id: str | None = None) -> Dict[str, Any]:
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
-        result = self._backend_store().add_entry(target, content, kind=self._entry_kind(target, content))
+        meta = self._classify_write(target, content)
+        result = self._backend_store().add_entry(
+            target,
+            content,
+            kind=self._entry_kind(target, content),
+            entry_type=meta["entry_type"],
+            strength=meta["strength"],
+            source=meta["source"],
+            created_in_session_id=session_id,
+        )
         self._refresh_live_entries(target)
         if not result.get("success"):
             current = self._char_count(target)
@@ -185,7 +218,7 @@ class MemoryStore:
             return result
         return self._success_response(target, result.get("message", "Entry added."))
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str, session_id: str | None = None) -> Dict[str, Any]:
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -195,7 +228,17 @@ class MemoryStore:
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
-        result = self._backend_store().replace_entry(target, old_text, new_content, kind=self._entry_kind(target, new_content))
+        meta = self._classify_write(target, new_content)
+        result = self._backend_store().replace_entry(
+            target,
+            old_text,
+            new_content,
+            kind=self._entry_kind(target, new_content),
+            entry_type=meta["entry_type"],
+            strength=meta["strength"],
+            source=meta["source"],
+            created_in_session_id=session_id,
+        )
         self._refresh_live_entries(target)
         if not result.get("success"):
             return result
@@ -217,6 +260,34 @@ class MemoryStore:
 
     def render_live_for_system_prompt(self, target: str) -> Optional[str]:
         return self._backend_store().render_prompt_block(target, char_limit=self._char_limit(target))
+
+    def search_for_recall(self, query: str, target: str | None = None, limit: int = 3) -> str:
+        query = (query or "").strip()
+        if not query:
+            return ""
+        targets = [target] if target in {"memory", "user"} else ["user", "memory"]
+        terms = [term.lower() for term in query.replace("?", " ").split() if len(term.strip()) >= 3]
+        rows = []
+        for current_target in targets:
+            for row in self._backend_store().list_entries(current_target, include_inactive=False):
+                content = row["content"]
+                hay = content.lower()
+                score = 0
+                for term in terms:
+                    if term in hay:
+                        score += 2
+                if score == 0 and any(word in hay for word in query.lower().split()):
+                    score = 1
+                if score > 0:
+                    rows.append((score, current_target, content))
+        rows.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+        rows = rows[:limit]
+        if not rows:
+            return ""
+        lines = ["## Builtin Memory Recall"]
+        for _, current_target, content in rows:
+            lines.append(f"- [{current_target}] {content} | path: memory_search")
+        return "\n".join(lines)
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
@@ -256,6 +327,7 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    session_id: str = None,
 ) -> str:
     if store is None:
         return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
@@ -264,13 +336,13 @@ def memory_tool(
     if action == "add":
         if not content:
             return json.dumps({"success": False, "error": "Content is required for 'add' action."}, ensure_ascii=False)
-        result = store.add(target, content)
+        result = store.add(target, content, session_id=session_id)
     elif action == "replace":
         if not old_text:
             return json.dumps({"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False)
         if not content:
             return json.dumps({"success": False, "error": "content is required for 'replace' action."}, ensure_ascii=False)
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, old_text, content, session_id=session_id)
     elif action == "remove":
         if not old_text:
             return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)

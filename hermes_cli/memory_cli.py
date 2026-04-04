@@ -60,6 +60,9 @@ def memory_command(args) -> None:
         print(f"snapshot rows: {entries['entry_count']}")
         print(f"MEMORY.md: {memory_md}")
         print(f"USER.md: {user_md}")
+        print("Recall paths:")
+        print("- hot memory: persistent steering facts")
+        print("- session_search: transcript/session history")
 
         type_lines = _format_type_breakdown(store)
         if type_lines:

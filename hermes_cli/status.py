@@ -305,6 +305,19 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
+
+    def _fallback_gateway_check() -> bool:
+        try:
+            import json
+            pid_file = get_hermes_home() / "gateway.pid"
+            if not pid_file.exists():
+                return False
+            raw = pid_file.read_text().strip()
+            data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
+            os.kill(int(data["pid"]), 0)
+            return True
+        except Exception:
+            return False
     
     if sys.platform.startswith('linux'):
         try:
@@ -322,6 +335,10 @@ def show_status(args):
             is_active = result.stdout.strip() == "active"
         except subprocess.TimeoutExpired:
             is_active = False
+            
+        if not is_active:
+            is_active = _fallback_gateway_check()
+            
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
         print("  Manager:      systemd (user)")
         

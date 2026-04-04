@@ -135,7 +135,14 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             "thread_id": origin.get("thread_id"),
         }
 
-    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+    _KNOWN_PLATFORMS = {
+            "telegram", "discord", "slack", "whatsapp", "signal",
+            "matrix", "mattermost", "dingtalk", "feishu", "wecom",
+            "sms", "email", "webhook",
+        }
+        if platform_name.lower() not in _KNOWN_PLATFORMS:
+            return None
+        chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
     if not chat_id:
         return None
 

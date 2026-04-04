@@ -123,6 +123,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("make-index", "Generate topic index for vault folders",
+               "Tools & Skills", cli_only=True,
+               args_hint="[folder_name]",
+               subcommands=("Clippings", "DeepResearchReports", "YT Research Reports", "Personal Tech Deep Dives", "stats")),
+    CommandDef("kb", "Knowledge Base v2: compile, query, lint, stats",
+               "Tools & Skills",
+               args_hint="[command]",
+               subcommands=("compile", "query", "lint", "stats", "status", "output")),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
@@ -137,6 +145,18 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
+
+    # GSD Workflow
+    CommandDef("gsd", "GSD project workflow commands", "Project",
+               subcommands=("init", "map", "autonomous", "executor", "verifier", "status", "next")),
+    CommandDef("gsd:init", "Initialize a new GSD project", "Project"),
+    CommandDef("gsd:map", "Analyze existing codebase before planning", "Project"),
+    CommandDef("gsd:autonomous", "Run all GSD phases autonomously", "Project",
+               args_hint="[--from N]"),
+    CommandDef("gsd:executor", "Execute GSD phase plans via subagents", "Project",
+               args_hint="<phase>"),
+    CommandDef("gsd:verifier", "Verify GSD phase against success criteria", "Project",
+               args_hint="<phase>"),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",

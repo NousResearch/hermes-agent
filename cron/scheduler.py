@@ -234,17 +234,9 @@ def _build_job_prompt(job: dict) -> str:
     prompt = job.get("prompt", "")
     skills = job.get("skills")
 
-    # Always prepend [SILENT] guidance so the cron agent can suppress
-    # delivery when it has nothing new or noteworthy to report.
-    silent_hint = (
-        "[SYSTEM: If you have a meaningful status report or findings, "
-        "send them — that is the whole point of this job. Only respond "
-        "with exactly \"[SILENT]\" (nothing else) when there is genuinely "
-        "nothing new to report. [SILENT] suppresses delivery to the user. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
-    prompt = silent_hint + prompt
+    # NOTE: [SILENT] guidance removed - job prompts already contain their own
+    # delivery instructions. This was causing conflicts where jobs that should
+    # ALWAYS produce output were getting truncated due to mixed instructions.
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []

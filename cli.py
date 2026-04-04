@@ -3942,6 +3942,67 @@ class HermesCLI:
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
     
+    def _handle_make_index_command(self, cmd: str):
+        """Handle /make-index command to generate vault topic indexes."""
+        import subprocess
+        import shlex
+        
+        # Parse arguments
+        parts = shlex.split(cmd)[1:] if len(shlex.split(cmd)) > 1 else []
+        folder = parts[0] if parts else "Clippings"
+        
+        # Handle stats option
+        if folder == "stats" or folder == "--stats":
+            result = subprocess.run(
+                ["python3", str(Path.home() / ".hermes/skills/make-index/script.py"), "--stats"],
+                capture_output=True, text=True
+            )
+            print(result.stdout)
+            return
+        
+        # Run the index generator
+        result = subprocess.run(
+            ["python3", str(Path.home() / ".hermes/skills/make-index/script.py"), folder],
+            capture_output=True, text=True
+        )
+        
+        if result.returncode == 0:
+            print(result.stdout)
+            print(f"\n✅ Index generated! Opening in Obsidian...")
+            # Open the INDEX.md file
+            vault_path = Path.home() / "Documents" / "great-vault"
+            index_path = vault_path / folder / "INDEX.md"
+            if index_path.exists():
+                subprocess.run(["open", str(index_path)])
+        else:
+            print(f"❌ Error: {result.stderr}")
+    
+    def _handle_kb_command(self, cmd: str):
+        """Handle /kb command for Knowledge Base v2."""
+        import subprocess
+        import shlex
+        
+        # Parse arguments
+        parts = shlex.split(cmd)[1:] if len(shlex.split(cmd)) > 1 else []
+        subcommand = parts[0] if parts else "status"
+        
+        # Build the command
+        vault_path = Path.home() / "Documents" / "great-vault"
+        kb_script = vault_path / ".kb" / "scripts" / "cli.py"
+        
+        # Run the KB CLI
+        result = subprocess.run(
+            ["python3", str(kb_script)] + parts,
+            capture_output=True, text=True
+        )
+        
+        if result.returncode == 0:
+            print(result.stdout)
+        else:
+            print(f"❌ Error: {result.stderr}")
+            if result.stdout:
+                print(result.stdout)
+    
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -4160,6 +4221,10 @@ class HermesCLI:
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "make-index":
+            self._handle_make_index_command(cmd_original)
+        elif canonical == "kb":
+            self._handle_kb_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "statusbar":

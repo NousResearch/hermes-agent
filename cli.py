@@ -7946,16 +7946,16 @@ class HermesCLI:
             if cli_ref._agent_running:
                 hints = []
                 if cli_ref._followup_queue:
-                    hints.append(f"📬 {len(cli_ref._followup_queue)}")
+                    hints.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑ to recall)")
                 if cli_ref._steering_queue:
-                    hints.append(f"🎯 {len(cli_ref._steering_queue)}")
+                    hints.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓ to recall)")
                 if cli_ref._stashed_input:
                     hints.append("📌 stashed")
                 suffix = "  · " + " · ".join(hints) if hints else ""
                 # Hint depends on busy_input_mode
                 if cli_ref.busy_input_mode == "queue":
                     return f"Enter to steer (🎯) · Alt+Enter to follow-up (📬){suffix}"
-                return f"Enter to interrupt · Alt+Enter to queue follow-up (📬){suffix}"
+                return f"Enter to interrupt · Alt+Enter to follow-up (📬){suffix}"
             if cli_ref._followup_queue or cli_ref._steering_queue:
                 parts = []
                 if cli_ref._followup_queue:

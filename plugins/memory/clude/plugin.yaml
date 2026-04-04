@@ -1,0 +1,6 @@
+name: clude
+version: 1.0.0
+description: "Clude — generative memory with semantic search, emotional valence, importance decay, and graph-linked recall."
+pip_dependencies: []
+hooks:
+  - on_session_end

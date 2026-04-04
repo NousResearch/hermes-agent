@@ -234,9 +234,15 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho cost-awareness config parse error: %s", e)
 
             # ----- Port #1969: aiPeer sync from SOUL.md -----
+            # Only sync if aiPeer wasn't explicitly configured at root OR in host block.
+            # cfg.ai_peer default is "hermes" — if it differs, user customized it.
             try:
                 hermes_home = kwargs.get("hermes_home", "")
-                if hermes_home and not cfg.raw.get("aiPeer"):
+                already_configured = (
+                    cfg.raw.get("aiPeer") is not None
+                    or (cfg.ai_peer and cfg.ai_peer != "hermes")
+                )
+                if hermes_home and not already_configured:
                     soul_path = Path(hermes_home) / "SOUL.md"
                     if soul_path.exists():
                         soul_text = soul_path.read_text(encoding="utf-8").strip()

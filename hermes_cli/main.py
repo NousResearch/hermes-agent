@@ -199,9 +199,15 @@ def _has_any_provider_configured() -> bool:
 
     # Collect all provider env vars
     provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
-            provider_env_vars.update(pconfig.api_key_env_vars)
+    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        # Copilot shell env vars like GH_TOKEN/GITHUB_TOKEN are often present for
+        # unrelated GitHub workflows and should not silently skip Hermes setup on a
+        # fresh install. Copilot still counts below via explicit gh CLI detection.
+        if provider_id == "copilot":
+            continue
+        provider_env_vars.update(pconfig.api_key_env_vars)
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 
@@ -220,14 +226,11 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
     try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
+        from hermes_cli.copilot_auth import _try_gh_cli_token
+
+        if _try_gh_cli_token():
+            return True
     except Exception:
         pass
 
@@ -912,6 +915,7 @@ def select_provider_and_model(args=None):
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
         "copilot-acp": "GitHub Copilot ACP",
+        "claude-cli": "Claude CLI",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
         "zai": "Z.AI / GLM",
@@ -939,6 +943,7 @@ def select_provider_and_model(args=None):
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openai-codex", "OpenAI Codex"),
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+        ("claude-cli", "Claude CLI (spawns local `claude -p --output-format json`)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
@@ -1011,6 +1016,8 @@ def select_provider_and_model(args=None):
         _model_flow_openai_codex(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "claude-cli":
+        _model_flow_claude_cli(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -1998,6 +2005,74 @@ def _model_flow_copilot_acp(config, current_model=""):
         catalog=catalog,
         api_key=catalog_api_key,
     ) or selected
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
+def _model_flow_claude_cli(config, current_model=""):
+    """Claude CLI flow using the local Claude Code binary as the inference backend."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "claude-cli"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = status.get("resolved_command") or status.get("command") or "claude"
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Claude CLI delegates Hermes turns to your local `claude` binary.")
+    print("  Hermes uses the local CLI for model inference instead of Anthropic's direct API.")
+    print("  Hermes keeps this backend in text-in/text-out mode for now, so Hermes-side tools stay disabled.")
+    print("  Later turns automatically resume the same Claude CLI conversation when available.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print("  Set HERMES_CLAUDE_CLI_COMMAND or CLAUDE_CLI_PATH if Claude CLI is installed elsewhere.")
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
     _save_model_choice(selected)
 
     cfg = load_config()
@@ -4038,7 +4113,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "claude-cli", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
         default=None,
         help="Inference provider (default: auto)"
     )

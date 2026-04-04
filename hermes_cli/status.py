@@ -152,12 +152,20 @@ def show_status(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
+        from hermes_cli.auth import (
+            get_nous_auth_status,
+            get_codex_auth_status,
+            get_external_process_provider_status,
+        )
         nous_status = get_nous_auth_status()
         codex_status = get_codex_auth_status()
+        copilot_acp_status = get_external_process_provider_status("copilot-acp")
+        claude_cli_status = get_external_process_provider_status("claude-cli")
     except Exception:
         nous_status = {}
         codex_status = {}
+        copilot_acp_status = {}
+        claude_cli_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
     print(
@@ -187,6 +195,25 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+
+    for label, status, configure_hint in (
+        ("Copilot ACP", copilot_acp_status, "Set HERMES_COPILOT_ACP_COMMAND if Copilot CLI is installed elsewhere"),
+        ("Claude CLI", claude_cli_status, "Set HERMES_CLAUDE_CLI_COMMAND if Claude CLI is installed elsewhere"),
+    ):
+        configured = bool(status.get("logged_in") or status.get("configured"))
+        print(
+            f"  {label:<12}  {check_mark(configured)} "
+            f"{'configured' if configured else 'not configured (run: hermes model)'}"
+        )
+        if configured:
+            command = status.get("resolved_command") or status.get("command") or "(unknown)"
+            base_url = status.get("base_url") or "(unknown)"
+            args = " ".join(status.get("args") or []) or "(default)"
+            print(f"    Command:    {command}")
+            print(f"    Args:       {args}")
+            print(f"    Backend:    {base_url}")
+        else:
+            print(f"    Hint:       {configure_hint}")
 
     # =========================================================================
     # Nous Subscription Features

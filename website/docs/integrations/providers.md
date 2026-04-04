@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Claude CLI** | `hermes model` (spawns local `claude -p --output-format json` for inference) |
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
@@ -131,6 +132,34 @@ model:
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API (first priority) |
 | `HERMES_COPILOT_ACP_COMMAND` | Override the Copilot CLI binary path (default: `copilot`) |
 | `HERMES_COPILOT_ACP_ARGS` | Override ACP args (default: `--acp --stdio`) |
+
+### Claude CLI backend
+
+Use Claude Code itself as the inference backend instead of calling Anthropic
+directly. This is useful when Anthropic changes billing or subscription policy
+for third-party harness traffic and you want Hermes to route inference through
+your locally installed `claude` binary.
+
+```bash
+hermes chat --provider claude-cli --model claude-cli/claude-sonnet-4-6
+# Requires the Claude CLI in PATH and an existing `claude auth` / subscription session
+```
+
+This backend is currently text-in/text-out only. Hermes disables its own tool
+schemas for `claude-cli` sessions, but it still tracks prompt/completion usage
+and context-window status so the CLI status bar remains accurate.
+
+Hermes also reuses the same Claude CLI conversation across turns for a given
+Hermes session. The first call seeds a stable Claude `--session-id`, then later
+turns switch to Claude CLI `--resume` automatically when the CLI returns its
+session handle.
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `HERMES_CLAUDE_CLI_COMMAND` | Override the Claude CLI binary path (default: `claude`) |
+| `CLAUDE_CLI_PATH` | Alias for `HERMES_CLAUDE_CLI_COMMAND` |
+| `HERMES_CLAUDE_CLI_ARGS` | Extra args appended before the prompt payload |
+| `HERMES_CLAUDE_CLI_BASE_URL` | Optional marker URL override for remote wrappers |
 
 ### First-Class Chinese AI Providers
 

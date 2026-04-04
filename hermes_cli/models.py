@@ -96,6 +96,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "claude-cli": [
+        "claude-cli/claude-opus-4-6",
+        "claude-cli/claude-sonnet-4-6",
+        "claude-cli/claude-opus-4-5-20251101",
+        "claude-cli/claude-sonnet-4-5-20250929",
+        "claude-cli/claude-opus-4-20250514",
+        "claude-cli/claude-sonnet-4-20250514",
+        "claude-cli/claude-haiku-4-5-20251001",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -259,6 +268,7 @@ _PROVIDER_LABELS = {
     "openrouter": "OpenRouter",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "claude-cli": "Claude CLI",
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
     "zai": "Z.AI / GLM",
@@ -287,6 +297,8 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "claude-local": "claude-cli",
+    "claude-binary": "claude-cli",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -343,7 +355,7 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Canonical providers in display order
     _PROVIDER_ORDER = [
-        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
+        "openrouter", "nous", "openai-codex", "copilot", "copilot-acp", "claude-cli",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",

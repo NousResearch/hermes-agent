@@ -475,3 +475,24 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
     assert "Browser Automation (Browserbase)" not in output
     assert "Browser Automation" in output
     assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output
+
+
+def test_setup_claude_cli_uses_model_picker_and_saves_provider(tmp_path, monkeypatch):
+    """Claude CLI provider saves correctly through delegation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+
+    def fake_select():
+        _write_model_config("claude-cli", "claude-cli://local", "claude-cli/claude-sonnet-4-6")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "claude-cli"

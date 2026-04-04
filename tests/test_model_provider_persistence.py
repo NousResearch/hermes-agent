@@ -257,3 +257,42 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("provider") == "opencode-go"
         assert model.get("default") == "minimax-m2.5"
         assert model.get("api_mode") == "anthropic_messages"
+
+
+    def test_claude_cli_provider_saved_when_selected(self, config_home):
+        """_model_flow_claude_cli should persist provider/base_url/model together."""
+        from hermes_cli.main import _model_flow_claude_cli
+        from hermes_cli.config import load_config
+
+        with patch(
+            "hermes_cli.auth.get_external_process_provider_status",
+            return_value={
+                "resolved_command": "/usr/local/bin/claude",
+                "command": "claude",
+                "base_url": "claude-cli://local",
+            },
+        ), patch(
+            "hermes_cli.auth.resolve_external_process_provider_credentials",
+            return_value={
+                "provider": "claude-cli",
+                "api_key": "claude-cli",
+                "base_url": "claude-cli://local",
+                "command": "/usr/local/bin/claude",
+                "args": [],
+                "source": "process",
+            },
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="claude-cli/claude-sonnet-4-6",
+        ), patch(
+            "hermes_cli.auth._save_model_choice",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ):
+            _model_flow_claude_cli(load_config(), "old-model")
+
+        import yaml
+        cfg = yaml.safe_load((config_home / "config.yaml").read_text())
+        assert cfg["model"]["provider"] == "claude-cli"
+        assert cfg["model"]["base_url"] == "claude-cli://local"
+        assert cfg["model"]["api_mode"] == "chat_completions"

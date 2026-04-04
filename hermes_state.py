@@ -986,6 +986,15 @@ class SessionDB:
             messages.append(msg)
         return messages
 
+    def count_messages(self, session_id: str) -> int:
+        """Return the number of messages for a session in SQLite."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+            return cursor.fetchone()[0]
+
     # =========================================================================
     # Search
     # =========================================================================

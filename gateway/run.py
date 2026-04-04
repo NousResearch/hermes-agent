@@ -334,6 +334,25 @@ def _log_gateway_disposition(
     logger.info(" ".join(parts))
     return context
 
+
+def _build_run_state_context(
+    state: str,
+    *,
+    source: Optional[SessionSource] = None,
+    session_key: Optional[str] = None,
+    event: Optional[MessageEvent] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    context = _build_gateway_disposition_context(
+        state,
+        source=source,
+        session_key=session_key,
+        event=event,
+        reason=reason,
+    )
+    context["state"] = state
+    return context
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -556,6 +575,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._gateway_run_states: Dict[str, Dict[str, Any]] = {}
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1764,6 +1784,12 @@ class GatewayRunner:
         """
         source = event.source
         run_id = _ensure_gateway_run_id(event)
+        await self._update_gateway_run_state(
+            "received",
+            source=source,
+            event=event,
+            reason="message_received",
+        )
 
         # Check if user is authorized
         if not self._is_user_authorized(source):
@@ -1775,13 +1801,18 @@ class GatewayRunner:
                 # prevent spamming the user with repeated messages when
                 # multiple DMs arrive in quick succession.
                 if self.pairing_store._is_rate_limited(platform_name, source.user_id):
-                    ctx = _log_gateway_disposition(
+                    _log_gateway_disposition(
                         "unauthorized_rate_limited",
                         source=source,
                         event=event,
                         reason="pairing_rate_limited",
                     )
-                    await self.hooks.emit("gateway:state", ctx)
+                    await self._update_gateway_run_state(
+                        "unauthorized_rate_limited",
+                        source=source,
+                        event=event,
+                        reason="pairing_rate_limited",
+                    )
                     return None
                 code = self.pairing_store.generate_code(
                     platform_name, source.user_id, source.user_name or ""
@@ -1926,14 +1957,20 @@ class GatewayRunner:
                             adapter._pending_messages[_quick_key] = event
                     else:
                         adapter._pending_messages[_quick_key] = event
-                ctx = _log_gateway_disposition(
+                _log_gateway_disposition(
                     "queued_without_interrupt",
                     source=source,
                     session_key=_quick_key,
                     event=event,
                     reason="photo_follow_up_active_run",
                 )
-                await self.hooks.emit("gateway:state", ctx)
+                await self._update_gateway_run_state(
+                    "queued",
+                    source=source,
+                    session_key=_quick_key,
+                    event=event,
+                    reason="photo_follow_up_active_run",
+                )
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
@@ -1957,14 +1994,20 @@ class GatewayRunner:
                 self._pending_messages[_quick_key] += "\n" + event.text
             else:
                 self._pending_messages[_quick_key] = event.text
-            ctx = _log_gateway_disposition(
+            _log_gateway_disposition(
                 "interrupt_requested",
                 source=source,
                 session_key=_quick_key,
                 event=event,
                 reason="active_run_interrupted_by_new_input",
             )
-            await self.hooks.emit("gateway:state", ctx)
+            await self._update_gateway_run_state(
+                "interrupted",
+                source=source,
+                session_key=_quick_key,
+                event=event,
+                reason="active_run_interrupted_by_new_input",
+            )
             return None
 
         # Check for commands
@@ -2214,6 +2257,13 @@ class GatewayRunner:
         """Inner handler that runs under the _running_agents sentinel guard."""
 
         run_id = _ensure_gateway_run_id(event)
+
+        await self._update_gateway_run_state(
+            "running",
+            source=source,
+            event=event,
+            reason="agent_handler_entered",
+        )
 
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
@@ -2851,6 +2901,13 @@ class GatewayRunner:
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
+            await self._update_gateway_run_state(
+                "completed",
+                source=source,
+                session_key=session_key,
+                event=event,
+                reason="agent_completed",
+            )
             
             # Check for pending process watchers (check_interval on background processes)
             try:
@@ -5530,6 +5587,35 @@ class GatewayRunner:
         if _lock:
             with _lock:
                 self._agent_cache.pop(session_key, None)
+
+    async def _update_gateway_run_state(
+        self,
+        state: str,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        event: Optional[MessageEvent] = None,
+        reason: Optional[str] = None,
+    ) -> dict[str, Any]:
+        context = _build_run_state_context(
+            state,
+            source=source,
+            session_key=session_key,
+            event=event,
+            reason=reason,
+        )
+        run_id = context.get("run_id")
+        store = getattr(self, "_gateway_run_states", None)
+        if store is None:
+            store = {}
+            self._gateway_run_states = store
+        if run_id:
+            current = store.get(run_id, {}).copy()
+            current.update(context)
+            current["updated_at"] = datetime.now().isoformat()
+            store[run_id] = current
+        await self.hooks.emit("gateway:state", context)
+        return context
 
     async def _run_agent(
         self,

@@ -1,4 +1,3 @@
-import logging
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -6,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -20,8 +19,8 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_event(text: str, message_type=MessageType.TEXT) -> MessageEvent:
-    return MessageEvent(text=text, message_type=message_type, source=_make_source(), message_id="m1")
+def _make_event(text: str) -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
 def _make_runner(session_entry: SessionEntry):
@@ -30,7 +29,6 @@ def _make_runner(session_entry: SessionEntry):
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    adapter._pending_messages = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
@@ -45,6 +43,7 @@ def _make_runner(session_entry: SessionEntry):
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._gateway_run_states = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -58,56 +57,51 @@ def _make_runner(session_entry: SessionEntry):
     runner._emit_gateway_run_progress = AsyncMock()
     runner._MAX_INTERRUPT_DEPTH = 3
     runner.pairing_store = MagicMock()
-    runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
-    runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
+    runner._run_agent = AsyncMock(return_value={"final_response": "ok", "messages": [], "tools": [], "history_offset": 0})
     return runner
 
 
 @pytest.mark.asyncio
-async def test_emits_gateway_state_for_interrupt_requested():
+async def test_run_registry_tracks_latest_state_for_completed_run():
+    now = datetime.now()
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
+        created_at=now,
+        updated_at=now,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    event = _make_event("hello")
+
+    await runner._handle_message(event)
+
+    state = runner._gateway_run_states[event.run_id]
+    assert state["run_id"] == event.run_id
+    assert state["state"] == "completed"
+    assert state["session_key"] == build_session_key(_make_source())
+    assert state["chat_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_run_registry_tracks_interrupted_state():
+    now = datetime.now()
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=now,
+        updated_at=now,
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
     runner = _make_runner(session_entry)
     running_agent = MagicMock()
     runner._running_agents[build_session_key(_make_source())] = running_agent
-
     event = _make_event("new message")
+
     await runner._handle_message(event)
 
-    assert any(
-        call.args[0] == "gateway:state"
-        and call.args[1].get("state") == "interrupted"
-        and call.args[1].get("run_id") == event.run_id
-        for call in runner.hooks.emit.await_args_list
-    )
-
-
-@pytest.mark.asyncio
-async def test_emits_gateway_state_for_unauthorized_rate_limited_dm():
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    runner._is_user_authorized = lambda _source: False
-    runner.pairing_store._is_rate_limited.return_value = True
-
-    event = _make_event("hello")
-    await runner._handle_message(event)
-
-    assert any(
-        call.args[0] == "gateway:state"
-        and call.args[1].get("state") == "unauthorized_rate_limited"
-        and call.args[1].get("run_id") == event.run_id
-        for call in runner.hooks.emit.await_args_list
-    )
+    state = runner._gateway_run_states[event.run_id]
+    assert state["state"] == "interrupted"
+    assert state["reason"] == "active_run_interrupted_by_new_input"

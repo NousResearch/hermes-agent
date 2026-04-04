@@ -7946,22 +7946,22 @@ class HermesCLI:
             if cli_ref._agent_running:
                 hints = []
                 if cli_ref._followup_queue:
-                    hints.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑ to recall)")
+                    hints.append(f"📬 {len(cli_ref._followup_queue)}")
                 if cli_ref._steering_queue:
-                    hints.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓ to recall)")
+                    hints.append(f"🎯 {len(cli_ref._steering_queue)}")
                 if cli_ref._stashed_input:
                     hints.append("📌 stashed")
                 suffix = "  · " + " · ".join(hints) if hints else ""
                 # Hint depends on busy_input_mode
                 if cli_ref.busy_input_mode == "queue":
                     return f"Enter to steer (🎯) · Alt+Enter to follow-up (📬){suffix}"
-                return f"Enter to interrupt · Alt+Enter to follow-up (📬){suffix}"
+                return f"Enter to interrupt · Alt+Enter to queue follow-up (📬){suffix}"
             if cli_ref._followup_queue or cli_ref._steering_queue:
                 parts = []
                 if cli_ref._followup_queue:
-                    parts.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑)")
+                    parts.append(f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} — Alt+Up to recall")
                 if cli_ref._steering_queue:
-                    parts.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓)")
+                    parts.append(f"🎯 {len(cli_ref._steering_queue)} steering — Alt+Down to recall")
                 return "  ·  ".join(parts)
             if cli_ref._stashed_input:
                 stashed_text = cli_ref._stashed_input[0]

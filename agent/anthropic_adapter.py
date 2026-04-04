@@ -451,25 +451,49 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     return None
 
 
-def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
+def _resolve_hermes_oauth_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Resolve a token from Hermes-managed OAuth credentials, refreshing if needed."""
+    creds = creds or read_hermes_oauth_credentials()
+    if creds and is_claude_code_token_valid(creds):
+        logger.debug("Using Hermes-managed Anthropic OAuth credentials")
+        return creds["accessToken"]
+    if creds:
+        logger.debug("Hermes-managed Anthropic OAuth credentials expired — attempting refresh")
+        refreshed = refresh_hermes_oauth_token()
+        if refreshed:
+            return refreshed
+        logger.debug("Hermes OAuth refresh failed — re-run 'hermes auth add anthropic' or 'hermes model'")
+    return None
+
+
+def _prefer_refreshable_file_backed_token(
+    env_token: str,
+    claude_creds: Optional[Dict[str, Any]],
+    hermes_creds: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Prefer refreshable file-backed OAuth creds over a static env token.
 
     Hermes historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
     later refresh impossible because the static env token wins before we ever
-    inspect Claude Code's refreshable credential file. If we have a refreshable
-    Claude Code credential record, prefer it over the static env OAuth token.
+    inspect refreshable credential stores. If we have a refreshable Hermes PKCE
+    or Claude Code credential record, prefer it over the static env OAuth token.
     """
-    if not env_token or not _is_oauth_token(env_token) or not isinstance(creds, dict):
-        return None
-    if not creds.get("refreshToken"):
+    if not env_token or not _is_oauth_token(env_token):
         return None
 
-    resolved = _resolve_claude_code_token_from_credentials(creds)
-    if resolved and resolved != env_token:
-        logger.debug(
-            "Preferring Claude Code credential file over static env OAuth token so refresh can proceed"
-        )
-        return resolved
+    for label, creds, resolver in (
+        ("Hermes OAuth", hermes_creds, _resolve_hermes_oauth_token_from_credentials),
+        ("Claude Code", claude_creds, _resolve_claude_code_token_from_credentials),
+    ):
+        if not isinstance(creds, dict) or not creds.get("refreshToken"):
+            continue
+        resolved = resolver(creds)
+        if resolved and resolved != env_token:
+            logger.debug(
+                "Preferring %s credential file over static env OAuth token so refresh can proceed",
+                label,
+            )
+            return resolved
     return None
 
 
@@ -486,6 +510,10 @@ def get_anthropic_token_source(token: Optional[str] = None) -> str:
     cc_env_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_env_token and cc_env_token == token:
         return "claude_code_oauth_token_env"
+
+    hermes_creds = read_hermes_oauth_credentials()
+    if hermes_creds and hermes_creds.get("accessToken") == token:
+        return "hermes_oauth_credentials"
 
     creds = read_claude_code_credentials()
     if creds and creds.get("accessToken") == token:
@@ -506,38 +534,48 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      1. ANTHROPIC_TOKEN env var (legacy/static setup token)
+         — but prefer refreshable Hermes/Claude credential stores when available
       2. CLAUDE_CODE_OAUTH_TOKEN env var
-      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+         — but prefer refreshable Hermes/Claude credential stores when available
+      3. Hermes-managed OAuth credentials (~/.hermes/.anthropic_oauth.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Claude Code credentials (~/.claude/.credentials.json)
+         — with automatic refresh if expired and a refresh token is available
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
-    creds = read_claude_code_credentials()
+    claude_creds = read_claude_code_credentials()
+    hermes_creds = read_hermes_oauth_credentials()
 
-    # 1. Hermes-managed OAuth/setup token env var
+    # 1. Legacy/static OAuth token in env — allow refreshable stores to override.
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
-        preferred = _prefer_refreshable_claude_code_token(token, creds)
+        preferred = _prefer_refreshable_file_backed_token(token, claude_creds, hermes_creds)
         if preferred:
             return preferred
         return token
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 2. Claude Code setup-token env — allow refreshable stores to override.
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
-        preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
+        preferred = _prefer_refreshable_file_backed_token(cc_token, claude_creds, hermes_creds)
         if preferred:
             return preferred
         return cc_token
 
-    # 3. Claude Code credential file
-    resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
+    # 3. Hermes-native PKCE credentials.
+    resolved_hermes_token = _resolve_hermes_oauth_token_from_credentials(hermes_creds)
+    if resolved_hermes_token:
+        return resolved_hermes_token
+
+    # 4. Claude Code credential file.
+    resolved_claude_token = _resolve_claude_code_token_from_credentials(claude_creds)
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:

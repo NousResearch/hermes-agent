@@ -64,6 +64,11 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._HERMES_OAUTH_FILE",
+        tmp_path / "hermes" / ".anthropic_oauth.json",
+    )
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("claude@example.com")
     monkeypatch.setattr(
@@ -92,6 +97,14 @@ def test_auth_add_anthropic_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:hermes_pkce"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["expires_at_ms"] == 1711234567000
+
+    hermes_oauth = json.loads((tmp_path / "hermes" / ".anthropic_oauth.json").read_text())
+    assert hermes_oauth["accessToken"] == token
+    assert hermes_oauth["refreshToken"] == "refresh-token"
+
+    claude_creds = json.loads((tmp_path / ".claude" / ".credentials.json").read_text())
+    assert claude_creds["claudeAiOauth"]["accessToken"] == token
+    assert claude_creds["claudeAiOauth"]["refreshToken"] == "refresh-token"
 
 
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):

@@ -2227,8 +2227,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 
 def _run_anthropic_oauth_flow(save_env_value):
-    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
+    """Run Anthropic OAuth login, preferring Hermes-native PKCE over static setup-tokens."""
     from agent.anthropic_adapter import (
+        run_hermes_oauth_login,
+        read_hermes_oauth_credentials,
         run_oauth_setup_token,
         read_claude_code_credentials,
         is_claude_code_token_valid,
@@ -2238,15 +2240,29 @@ def _run_anthropic_oauth_flow(save_env_value):
         use_anthropic_claude_code_credentials,
     )
 
-    def _activate_claude_code_credentials_if_available() -> bool:
-        try:
-            creds = read_claude_code_credentials()
-        except Exception:
-            creds = None
-        if creds and (
+    def _is_refreshable(creds) -> bool:
+        return bool(creds) and (
             is_claude_code_token_valid(creds)
             or bool(creds.get("refreshToken"))
-        ):
+        )
+
+    def _activate_file_backed_credentials_if_available() -> bool:
+        try:
+            hermes_creds = read_hermes_oauth_credentials()
+        except Exception:
+            hermes_creds = None
+        if _is_refreshable(hermes_creds):
+            use_anthropic_claude_code_credentials(save_fn=save_env_value)
+            print("  ✓ Hermes OAuth credentials linked.")
+            from hermes_constants import display_hermes_home as _dhh_fn
+            print(f"    Hermes will use its refreshable credential store directly instead of copying a setup-token into {_dhh_fn()}/.env.")
+            return True
+
+        try:
+            claude_creds = read_claude_code_credentials()
+        except Exception:
+            claude_creds = None
+        if _is_refreshable(claude_creds):
             use_anthropic_claude_code_credentials(save_fn=save_env_value)
             print("  ✓ Claude Code credentials linked.")
             from hermes_constants import display_hermes_home as _dhh_fn
@@ -2254,14 +2270,28 @@ def _run_anthropic_oauth_flow(save_env_value):
             return True
         return False
 
+    print()
+    print("  Starting Hermes-native Anthropic OAuth login.")
+    print("  A browser window will open for you to authorize access.")
+    print()
+    token = run_hermes_oauth_login()
+    if token:
+        if _activate_file_backed_credentials_if_available():
+            return True
+        save_anthropic_oauth_token(token, save_fn=save_env_value)
+        print("  ✓ OAuth credentials saved.")
+        return True
+
+    print("  Hermes-native OAuth login did not complete.")
+    print()
+
     try:
-        print()
-        print("  Running 'claude setup-token' — follow the prompts below.")
+        print("  Falling back to 'claude setup-token' — follow the prompts below.")
         print("  A browser window will open for you to authorize access.")
         print()
         token = run_oauth_setup_token()
         if token:
-            if _activate_claude_code_credentials_if_available():
+            if _activate_file_backed_credentials_if_available():
                 return True
             save_anthropic_oauth_token(token, save_fn=save_env_value)
             print("  ✓ OAuth credentials saved.")
@@ -2287,9 +2317,10 @@ def _run_anthropic_oauth_flow(save_env_value):
     except FileNotFoundError:
         # Claude CLI not installed — guide user through manual setup
         print()
-        print("  The 'claude' CLI is required for OAuth login.")
+        print("  Claude Code is not installed, so Hermes could not fall back to 'claude setup-token'.")
         print()
-        print("  To install and authenticate:")
+        print("  You can still authenticate with Hermes-native OAuth by re-running this flow,")
+        print("  or install Claude Code for the setup-token fallback:")
         print()
         print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
         print("    2. Run:                  claude setup-token")

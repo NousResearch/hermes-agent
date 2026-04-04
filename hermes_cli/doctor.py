@@ -623,7 +623,12 @@ def run_doctor(args):
     else:
         check_warn("OpenRouter API", "(not configured)")
     
-    anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    anthropic_key = None
+    try:
+        from agent.anthropic_adapter import resolve_anthropic_token
+        anthropic_key = resolve_anthropic_token()
+    except Exception:
+        anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
         print("  Checking Anthropic API...", end="", flush=True)
         try:

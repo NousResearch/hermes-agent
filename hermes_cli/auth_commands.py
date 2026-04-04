@@ -176,6 +176,20 @@ def auth_add_command(args) -> None:
         creds = anthropic_mod.run_hermes_oauth_login_pure()
         if not creds:
             raise SystemExit("Anthropic OAuth login did not return credentials.")
+
+        # Persist the same refreshable OAuth credentials to Hermes/Claude files so
+        # status, doctor, and non-pool Anthropic paths stay in sync with auth add.
+        anthropic_mod._save_hermes_oauth_credentials(
+            creds["access_token"],
+            creds.get("refresh_token", ""),
+            creds.get("expires_at_ms", 0),
+        )
+        anthropic_mod._write_claude_code_credentials(
+            creds["access_token"],
+            creds.get("refresh_token", ""),
+            creds.get("expires_at_ms", 0),
+        )
+
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["access_token"],
             _oauth_default_label(provider, len(pool.entries()) + 1),

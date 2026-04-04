@@ -6,7 +6,17 @@ import { pick } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool } from '../types.js'
 
-export function Thinking({ reasoning, t, thinking, tools }: { reasoning: string; t: Theme; thinking?: string; tools: ActiveTool[] }) {
+export function Thinking({
+  reasoning,
+  t,
+  thinking,
+  tools
+}: {
+  reasoning: string
+  t: Theme
+  thinking?: string
+  tools: ActiveTool[]
+}) {
   const [frame, setFrame] = useState(0)
   const [verb] = useState(() => pick(VERBS))
   const [face] = useState(() => pick(FACES))

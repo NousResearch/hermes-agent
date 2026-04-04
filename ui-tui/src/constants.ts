@@ -23,6 +23,7 @@ export const HOTKEYS: [string, string][] = [
   ['Ctrl+C', 'interrupt / clear / exit'],
   ['Ctrl+D', 'exit'],
   ['Ctrl+L', 'clear screen'],
+  ['Ctrl+V', 'paste clipboard image (same as /paste)'],
   ['Tab', 'complete /commands (registry-aware)'],
   ['↑/↓', 'queue edit (if queued) / input history'],
   ['PgUp/PgDn', 'scroll messages'],

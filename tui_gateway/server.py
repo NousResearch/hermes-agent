@@ -195,7 +195,13 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
 
 
 def _init_session(sid: str, key: str, agent, history: list):
-    _sessions[sid] = {"agent": agent, "session_key": key, "history": history}
+    _sessions[sid] = {
+        "agent": agent,
+        "session_key": key,
+        "history": history,
+        "attached_images": [],
+        "image_counter": 0,
+    }
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
         register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
@@ -208,6 +214,38 @@ def _init_session(sid: str, key: str, agent, history: list):
 
 def _with_checkpoints(session, fn):
     return fn(session["agent"]._checkpoint_mgr, os.getenv("TERMINAL_CWD", os.getcwd()))
+
+
+def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
+    """Pre-analyze attached images via vision and prepend descriptions to user text."""
+    import asyncio, json as _json
+    from tools.vision_tools import vision_analyze_tool
+
+    prompt = (
+        "Describe everything visible in this image in thorough detail. "
+        "Include any text, code, data, objects, people, layout, colors, "
+        "and any other notable visual information."
+    )
+
+    parts: list[str] = []
+    for path in image_paths:
+        p = Path(path)
+        if not p.exists():
+            continue
+        hint = f"[You can examine it with vision_analyze using image_url: {p}]"
+        try:
+            r = _json.loads(asyncio.run(vision_analyze_tool(image_url=str(p), user_prompt=prompt)))
+            desc = r.get("analysis", "") if r.get("success") else None
+            parts.append(f"[The user attached an image:\n{desc}]\n{hint}" if desc
+                         else f"[The user attached an image but analysis failed.]\n{hint}")
+        except Exception:
+            parts.append(f"[The user attached an image but analysis failed.]\n{hint}")
+
+    text = user_text or ""
+    prefix = "\n\n".join(parts)
+    if prefix:
+        return f"{prefix}\n\n{text}" if text else prefix
+    return text or "What do you see in this image?"
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -367,8 +405,10 @@ def _(rid, params: dict) -> dict:
 
     def run():
         try:
+            images = session.pop("attached_images", [])
+            prompt = _enrich_with_attached_images(text, images) if images else text
             result = agent.run_conversation(
-                text, conversation_history=list(history),
+                prompt, conversation_history=list(history),
                 stream_callback=lambda delta: _emit("message.delta", sid, {"text": delta}),
             )
             if isinstance(result, dict):
@@ -383,6 +423,32 @@ def _(rid, params: dict) -> dict:
 
     threading.Thread(target=run, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
+
+
+@method("clipboard.paste")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        from datetime import datetime
+        from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
+    except Exception as e:
+        return _err(rid, 5027, f"clipboard unavailable: {e}")
+
+    if not has_clipboard_image():
+        return _ok(rid, {"attached": False, "message": "No image found in clipboard"})
+
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_path = img_dir / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
+
+    if not save_clipboard_image(img_path):
+        return _ok(rid, {"attached": False, "message": "Clipboard has image but extraction failed"})
+
+    session.setdefault("attached_images", []).append(str(img_path))
+    return _ok(rid, {"attached": True, "path": str(img_path), "count": len(session["attached_images"])})
 
 
 @method("prompt.background")

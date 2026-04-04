@@ -357,6 +357,12 @@ def save_permanent_allowlist(patterns: set):
         logger.warning("Could not save allowlist: %s", e)
 
 
+# Load permanent allowlist entries from config on module import so that
+# patterns saved via '/approve always' in previous sessions are available
+# immediately when is_approved() is first called.
+load_permanent_allowlist()
+
+
 # =========================================================================
 # Approval prompting + orchestration
 # =========================================================================

@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -126,7 +127,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                 remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
                 parent_dir = str(Path(remote_path).parent)
                 mkdir_cmd = self._build_ssh_command()
-                mkdir_cmd.append(f"mkdir -p {parent_dir}")
+                mkdir_cmd.append(f"mkdir -p {shlex.quote(parent_dir)}")
                 subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
                 cmd = rsync_base + [mount_entry["host_path"], f"{dest_prefix}:{remote_path}"]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -139,7 +140,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             for skills_mount in get_skills_directory_mount(container_base=container_base):
                 remote_path = skills_mount["container_path"]
                 mkdir_cmd = self._build_ssh_command()
-                mkdir_cmd.append(f"mkdir -p {remote_path}")
+                mkdir_cmd.append(f"mkdir -p {shlex.quote(remote_path)}")
                 subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
                 cmd = rsync_base + [
                     skills_mount["host_path"].rstrip("/") + "/",
@@ -181,7 +182,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
     def _read_temp_files(self, *paths: str) -> list[str]:
         if len(paths) == 1:
             cmd = self._build_ssh_command()
-            cmd.append(f"cat {paths[0]} 2>/dev/null")
+            cmd.append(f"cat {shlex.quote(paths[0])} 2>/dev/null")
             try:
                 result = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=10,
@@ -192,7 +193,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
 
         delim = f"__HERMES_SEP_{self._session_id}__"
         script = "; ".join(
-            f"cat {p} 2>/dev/null; echo '{delim}'" for p in paths
+            f"cat {shlex.quote(p)} 2>/dev/null; echo '{delim}'" for p in paths
         )
         cmd = self._build_ssh_command()
         cmd.append(script)
@@ -217,7 +218,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
 
     def _cleanup_temp_files(self):
         cmd = self._build_ssh_command()
-        cmd.append(f"rm -f {self._temp_prefix}-*")
+        cmd.append(f"rm -f -- {shlex.quote(self._temp_prefix)}-*")
         try:
             subprocess.run(cmd, capture_output=True, timeout=5)
         except (subprocess.TimeoutExpired, OSError):
@@ -228,7 +229,7 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                          stdin_data: str | None = None) -> dict:
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
-        wrapped = f'cd {work_dir} && {exec_command}'
+        wrapped = f"cd {shlex.quote(work_dir)} && {exec_command}"
         effective_timeout = timeout or self.timeout
 
         if sudo_stdin is not None and stdin_data is not None:

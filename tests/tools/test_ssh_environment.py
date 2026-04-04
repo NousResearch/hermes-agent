@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 from unittest.mock import MagicMock
 
@@ -65,6 +66,81 @@ class TestBuildSSHCommand:
     def test_user_host_suffix(self):
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
+
+
+class TestSSHCommandQuoting:
+    @pytest.fixture(autouse=True)
+    def _mock_connection(self, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_ensure_ssh_available", lambda: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/tester")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_sync_skills_and_credentials", lambda self: None)
+        monkeypatch.setattr(ssh_env.time, "sleep", lambda _: None)
+
+    def test_execute_oneshot_quotes_injection_like_workdir(self, monkeypatch):
+        captured = {}
+
+        class _DummyProc:
+            def __init__(self, cmd):
+                captured["cmd"] = cmd
+                self.stdout = iter([])
+                self.stdin = MagicMock()
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(ssh_env.subprocess, "Popen", lambda *a, **k: _DummyProc(a[0]))
+
+        env = SSHEnvironment(host="h", user="u", persistent=False)
+        result = env._execute_oneshot("printf ok", cwd="/tmp/a; touch /tmp/pwned #")
+
+        assert result["returncode"] == 0
+        assert captured["cmd"][-1] == "cd '/tmp/a; touch /tmp/pwned #' && printf ok"
+
+    def test_execute_oneshot_quotes_space_containing_workdir(self, monkeypatch):
+        captured = {}
+
+        class _DummyProc:
+            def __init__(self, cmd):
+                captured["cmd"] = cmd
+                self.stdout = iter([])
+                self.stdin = MagicMock()
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(ssh_env.subprocess, "Popen", lambda *a, **k: _DummyProc(a[0]))
+
+        env = SSHEnvironment(host="h", user="u", persistent=False)
+        result = env._execute_oneshot("pwd", cwd="/tmp/release artifacts")
+
+        assert result["returncode"] == 0
+        assert captured["cmd"][-1] == "cd '/tmp/release artifacts' && pwd"
+
+    def test_read_temp_files_and_cleanup_quote_remote_paths(self, monkeypatch):
+        calls = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+
+        env = SSHEnvironment(host="h", user="u", persistent=False)
+        env._session_id = "abc123"
+
+        env._read_temp_files("/tmp/file name; touch /tmp/pwned #")
+        env._read_temp_files("/tmp/one path", "/tmp/two;rm -rf /")
+        env._cleanup_temp_files()
+
+        assert calls[0][-1] == f"cat {shlex.quote('/tmp/file name; touch /tmp/pwned #')} 2>/dev/null"
+        assert calls[1][-1] == (
+            f"cat {shlex.quote('/tmp/one path')} 2>/dev/null; echo '__HERMES_SEP_abc123__'; "
+            f"cat {shlex.quote('/tmp/two;rm -rf /')} 2>/dev/null; echo '__HERMES_SEP_abc123__'"
+        )
+        assert calls[2][-1] == "rm -f -- /tmp/hermes-ssh-abc123-*"
 
 
 class TestTerminalToolConfig:

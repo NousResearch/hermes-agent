@@ -13,6 +13,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import subprocess
 import sys
 import traceback
 
@@ -314,6 +315,32 @@ def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
     skills = job.get("skills")
+
+    # Run data-collection script if configured, inject output as context.
+    script_path = job.get("script")
+    if script_path:
+        success, script_output = _run_job_script(script_path)
+        if success:
+            if script_output:
+                prompt = (
+                    "## Script Output\n"
+                    "The following data was collected by a pre-run script. "
+                    "Use it as context for your analysis.\n\n"
+                    f"```\n{script_output}\n```\n\n"
+                    f"{prompt}"
+                )
+            else:
+                prompt = (
+                    "[Script ran successfully but produced no output.]\n\n"
+                    f"{prompt}"
+                )
+        else:
+            prompt = (
+                "## Script Error\n"
+                "The data-collection script failed. Report this to the user.\n\n"
+                f"```\n{script_output}\n```\n\n"
+                f"{prompt}"
+            )
 
     # Always prepend [SILENT] guidance so the cron agent can suppress
     # delivery when it has nothing new or noteworthy to report.

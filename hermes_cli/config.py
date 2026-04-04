@@ -487,6 +487,8 @@ DEFAULT_CONFIG = {
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "scope": "dangerous_only",
+        "companion_gate": True,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

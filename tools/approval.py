@@ -363,6 +363,33 @@ def _get_approval_timeout() -> int:
         return 60
 
 
+def _get_approval_scope() -> str:
+    """Read the approval scope from config.
+
+    Returns 'dangerous_only' (default) or 'all_mutating'.
+    - dangerous_only: only dangerous command patterns trigger approval
+    - all_mutating: every tool with mutates=True triggers approval
+    """
+    scope = _get_approval_config().get("scope", "dangerous_only")
+    if isinstance(scope, str) and scope.strip().lower() in ("all_mutating", "dangerous_only"):
+        return scope.strip().lower()
+    return "dangerous_only"
+
+
+def _get_companion_gate() -> bool:
+    """Read whether the companion gate is enabled from config.
+
+    When True (default), the API server emits SSE approval_request events
+    for the companion app. When False, falls back to chat-platform approval.
+    """
+    val = _get_approval_config().get("companion_gate", True)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes")
+    return True
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 

@@ -303,7 +303,14 @@ class APIServerAdapter(BasePlatformAdapter):
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Approval gate: pending requests keyed by request_id
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
-        self._approval_timeout: int = int(extra.get("approval_timeout", 30))
+        # Read timeout from config, fall back to extra, fall back to 30s
+        try:
+            from tools.approval import _get_approval_timeout, _get_companion_gate
+            self._approval_timeout: int = _get_approval_timeout()
+            self._companion_gate: bool = _get_companion_gate()
+        except Exception:
+            self._approval_timeout = int(extra.get("approval_timeout", 30))
+            self._companion_gate = True
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -701,7 +708,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 from tools.approval import pop_pending
                 # Use session_id as the session_key for API server sessions
-                pending = pop_pending(session_id)
+                pending = pop_pending(session_id) if self._companion_gate else None
                 if pending:
                     import threading as _threading
                     request_id = f"apr-{uuid.uuid4().hex[:12]}"

@@ -491,4 +491,5 @@ registry.register(
     check_fn=_check_ha_available,
     emoji="🏠",
     mutates=True,
+    requires_confirmation=True,
 )

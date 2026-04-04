@@ -1090,7 +1090,17 @@ class AIAgent:
                     self._memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
-        
+
+        # Guardrail pipeline (agno-inspired) — config-gated, off by default
+        self._guardrail_pipeline = None
+        try:
+            guardrail_config = _agent_cfg.get("guardrails", [])
+            if guardrail_config:
+                from agent.guardrails import GuardrailPipeline
+                self._guardrail_pipeline = GuardrailPipeline.from_config(guardrail_config)
+        except Exception:
+            pass  # Guardrails are optional
+
         # Honcho AI-native memory (cross-session user modeling)
         # Reads $HERMES_HOME/honcho.json (instance) or ~/.honcho/config.json (global).
         self._honcho = None  # HonchoSessionManager | None
@@ -5688,9 +5698,18 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
-        # HITL approval check
+        # HITL approval check — requires_confirmation tools, or all mutating
+        # tools when approvals.scope == "all_mutating"
         from tools.registry import registry as _reg
-        if _reg.tool_requires_confirmation(function_name):
+        _needs_confirmation = _reg.tool_requires_confirmation(function_name)
+        if not _needs_confirmation:
+            try:
+                from tools.approval import _get_approval_scope
+                if _get_approval_scope() == "all_mutating" and _reg.is_mutating(function_name):
+                    _needs_confirmation = True
+            except Exception:
+                pass
+        if _needs_confirmation:
             action = self._approval_manager.check_approval(
                 tool_name=function_name,
                 tool_call_id=effective_task_id,
@@ -6663,6 +6682,18 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
+
+        # Guardrail: check user input before processing
+        if self._guardrail_pipeline:
+            _gr = self._guardrail_pipeline.check_input(user_message)
+            if not _gr.passed:
+                return {
+                    "final_response": f"Input blocked by {_gr.guardrail} guardrail: {_gr.reason}",
+                    "messages": [], "api_calls": 0, "completed": False,
+                    "partial": False, "interrupted": False, "guardrail_blocked": True,
+                    "model": self.model, "provider": self.provider,
+                    "input_tokens": 0, "output_tokens": 0,
+                }
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
@@ -8682,6 +8713,13 @@ class AIAgent:
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
+
+        # Guardrail: check agent output before returning
+        if final_response and self._guardrail_pipeline:
+            _gr_out = self._guardrail_pipeline.check_output(final_response)
+            if not _gr_out.passed:
+                logger.warning("Output guardrail blocked response: %s", _gr_out.reason)
+                final_response = f"[Response redacted by {_gr_out.guardrail} guardrail: {_gr_out.reason}]"
 
         # Build result with interrupt info if applicable
         result = {

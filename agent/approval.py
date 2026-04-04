@@ -11,6 +11,7 @@ Inspired by agno's @approval decorator and RequiredAction system.
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional
@@ -170,8 +171,27 @@ class ApprovalManager:
             except Exception as e:
                 logger.debug("Clarify callback failed: %s", e)
                 action.deny(f"Approval request failed: {e}")
+        elif os.environ.get("HERMES_GATEWAY_SESSION"):
+            # Gateway mode: bridge to submit_pending so the API server's
+            # SSE approval flow can handle it via the companion app.
+            try:
+                from tools.approval import submit_pending
+                session_key = os.environ.get("HERMES_SESSION_KEY", "default")
+                args_preview = json.dumps(action.args, ensure_ascii=False)[:200]
+                submit_pending(session_key, {
+                    "command": f"{action.tool_name}({args_preview})",
+                    "pattern_key": f"tool:{action.tool_name}",
+                    "pattern_keys": [f"tool:{action.tool_name}"],
+                    "description": f"Tool '{action.tool_name}' requires confirmation",
+                })
+                # Return denied — the api_server SSE writer will detect
+                # the pending approval and handle it via the companion.
+                action.deny("Routed to gateway approval gate")
+            except Exception as e:
+                logger.debug("Gateway approval bridge failed: %s", e)
+                action.deny(f"Approval request failed: {e}")
         else:
-            # No callback available — use timeout action as default
+            # No callback and not gateway — use timeout action as default
             if action.timeout_action == "proceed":
                 action.approve()
             else:

@@ -217,6 +217,23 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
+# Approval Gate
+# =============================================================================
+# Controls how dangerous or sensitive commands are handled before execution.
+#
+# approvals:
+#   mode: manual           # manual | smart | off
+#                          # manual: always prompt user for dangerous commands
+#                          # smart: LLM pre-screens, escalates uncertain cases
+#                          # off: skip all approval checks (--yolo mode)
+#   scope: dangerous_only  # dangerous_only | all_mutating
+#                          # dangerous_only: only regex-matched dangerous patterns
+#                          # all_mutating: every tool with side effects needs approval
+#   companion_gate: true   # Emit SSE approval events for companion macOS app.
+#                          # When false, falls back to chat-platform approval.
+#   timeout: 60            # Seconds before auto-deny on unanswered approval
+
+# =============================================================================
 # Security Scanning (tirith)
 # =============================================================================
 # Optional pre-exec command security scanning via tirith.

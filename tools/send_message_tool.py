@@ -904,4 +904,5 @@ registry.register(
     check_fn=_check_send_message,
     emoji="📨",
     mutates=True,
+    requires_confirmation=True,
 )

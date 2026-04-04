@@ -271,6 +271,35 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
 logger = logging.getLogger(__name__)
 
+
+def _log_gateway_disposition(
+    disposition: str,
+    *,
+    source: Optional[SessionSource] = None,
+    session_key: Optional[str] = None,
+    event: Optional[MessageEvent] = None,
+    reason: Optional[str] = None,
+) -> None:
+    parts = ["gateway_disposition", f"disposition={disposition}"]
+    if source is not None:
+        if getattr(source, "platform", None):
+            parts.append(f"platform={source.platform.value}")
+        if getattr(source, "chat_id", None):
+            parts.append(f"chat_id={source.chat_id}")
+        if getattr(source, "user_id", None):
+            parts.append(f"user_id={source.user_id}")
+    if session_key:
+        parts.append(f"session_key={session_key}")
+    if event is not None and getattr(event, "message_id", None):
+        parts.append(f"message_id={event.message_id}")
+    if event is not None:
+        cmd = event.get_command() if hasattr(event, "get_command") else None
+        if cmd:
+            parts.append(f"command={cmd}")
+    if reason:
+        parts.append(f"reason={reason}")
+    logger.info(" ".join(parts))
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -2873,6 +2902,13 @@ class GatewayRunner:
             # when already_sent is True, so media files would never be
             # delivered without this.
             if agent_result.get("already_sent"):
+                _log_gateway_disposition(
+                    "streamed_already_sent",
+                    source=source,
+                    session_key=session_key,
+                    event=event,
+                    reason="stream_consumer_delivered_response",
+                )
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -3809,6 +3845,7 @@ class GatewayRunner:
             local_files, _ = adapter.extract_local_files(cleaned)
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _partial_failure = False
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -3818,52 +3855,88 @@ class GatewayRunner:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if ext in _AUDIO_EXTS:
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
+                        result = await adapter.send_image_file(
                             chat_id=event.source.chat_id,
                             image_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    if result is not None and not getattr(result, 'success', False):
+                        _partial_failure = True
+                        _log_gateway_disposition(
+                            'post_stream_media_partial_failure',
+                            source=event.source,
+                            event=event,
+                            reason=f'media_send_failed:{ext}',
+                        )
                 except Exception as e:
+                    _partial_failure = True
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    _log_gateway_disposition(
+                        'post_stream_media_partial_failure',
+                        source=event.source,
+                        event=event,
+                        reason='media_send_exception',
+                    )
 
             for file_path in local_files:
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
+                        result = await adapter.send_image_file(
                             chat_id=event.source.chat_id,
                             image_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    if result is not None and not getattr(result, 'success', False):
+                        _partial_failure = True
+                        _log_gateway_disposition(
+                            'post_stream_media_partial_failure',
+                            source=event.source,
+                            event=event,
+                            reason=f'local_file_send_failed:{ext}',
+                        )
                 except Exception as e:
-                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
-
+                    _partial_failure = True
+                    logger.warning("[%s] Post-stream local-file delivery failed: %s", adapter.name, e)
+                    _log_gateway_disposition(
+                        'post_stream_media_partial_failure',
+                        source=event.source,
+                        event=event,
+                        reason='local_file_send_exception',
+                    )
         except Exception as e:
-            logger.warning("Post-stream media extraction failed: %s", e)
+            logger.warning("[%s] Post-stream media extraction failed: %s", adapter.name, e)
+            _log_gateway_disposition(
+                'post_stream_media_partial_failure',
+                source=event.source,
+                event=event,
+                reason='media_extraction_exception',
+            )
+
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
@@ -6240,6 +6313,12 @@ class GatewayRunner:
                 logger.error(
                     "Agent execution timed out after %.0fs for session %s",
                     _agent_timeout, session_key,
+                )
+                _log_gateway_disposition(
+                    "timeout",
+                    source=source,
+                    session_key=session_key,
+                    reason=f"agent_timeout:{int(_agent_timeout or 0)}s",
                 )
                 # Interrupt the agent if it's still running so the thread
                 # pool worker is freed.

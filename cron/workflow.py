@@ -122,6 +122,9 @@ class Workflow:
     id: str = ""
     name: str = ""
     description: str = ""
+    schedule: str = ""  # Cron expression (e.g., "0 7 * * 1-5") or empty for manual
+    enabled: bool = True
+    next_run_at: float = 0.0
     steps: List[Step] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_run_at: float = 0.0
@@ -134,6 +137,9 @@ class Workflow:
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "schedule": self.schedule,
+            "enabled": self.enabled,
+            "next_run_at": self.next_run_at,
             "steps": [s.to_dict() for s in self.steps],
             "created_at": self.created_at,
             "last_run_at": self.last_run_at,
@@ -324,3 +330,86 @@ def delete_workflow(workflow_id: str) -> bool:
         save_workflows(workflows)
         return True
     return False
+
+
+# ============================================================================
+# Scheduling integration (called by cron/scheduler.py tick())
+# ============================================================================
+
+def get_due_workflows() -> List[Workflow]:
+    """Return workflows that are due to run based on their schedule."""
+    now = time.time()
+    due = []
+    for wf in load_workflows():
+        if not wf.enabled or not wf.schedule:
+            continue
+        if wf.status == "running":
+            continue  # Already executing
+        if wf.next_run_at <= 0:
+            # First run — compute from schedule
+            next_time = _compute_next_run(wf.schedule)
+            if next_time and next_time <= now:
+                due.append(wf)
+        elif wf.next_run_at <= now:
+            due.append(wf)
+    return due
+
+
+def advance_workflow_schedule(workflow_id: str) -> None:
+    """Advance a workflow's next_run_at to the next occurrence."""
+    workflows = load_workflows()
+    for wf in workflows:
+        if wf.id == workflow_id and wf.schedule:
+            next_time = _compute_next_run(wf.schedule)
+            wf.next_run_at = next_time or 0.0
+            break
+    save_workflows(workflows)
+
+
+def tick_workflows() -> int:
+    """Check and run all due workflows. Called by cron/scheduler.py tick().
+
+    Returns number of workflows executed.
+    """
+    due = get_due_workflows()
+    if not due:
+        return 0
+
+    executed = 0
+    for wf in due:
+        try:
+            # Advance schedule BEFORE execution (crash-safe)
+            advance_workflow_schedule(wf.id)
+
+            result = execute_workflow(wf)
+
+            # Update workflow state
+            wf.last_run_at = time.time()
+            wf.status = result.get("status", "completed")
+            save_workflow(wf)
+
+            logger.info(
+                "Workflow '%s' completed: %d/%d steps",
+                wf.name, result.get("completed", 0), result.get("total_tasks", len(wf.steps)),
+            )
+            executed += 1
+        except Exception as e:
+            logger.warning("Workflow '%s' failed: %s", wf.name, e)
+            try:
+                wf.status = "failed"
+                save_workflow(wf)
+            except Exception:
+                pass
+
+    return executed
+
+
+def _compute_next_run(cron_expr: str) -> Optional[float]:
+    """Compute the next run time from a cron expression. Returns epoch float or None."""
+    try:
+        from croniter import croniter
+        from hermes_time import now as _hermes_now
+        cron = croniter(cron_expr, _hermes_now())
+        return cron.get_next(float)
+    except Exception:
+        return None

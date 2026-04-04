@@ -936,6 +936,9 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        # Provider health tracking (agno-inspired dynamic failover)
+        from agent.provider_health import ProviderHealthTracker
+        self._provider_health = ProviderHealthTracker()
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -4722,6 +4725,13 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        # Record failure for the current provider before switching
+        if self.provider:
+            try:
+                self._provider_health.record_failure(self.provider, error="fallback_triggered")
+            except Exception:
+                pass
+
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
@@ -6701,6 +6711,16 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+
+        # Tracing (optional — collects spans for tool calls and LLM calls)
+        self._trace_collector = None
+        try:
+            from agent.tracing import TraceCollector
+            self._trace_collector = TraceCollector(
+                session_id=self.session_id, name="run_conversation"
+            )
+        except Exception:
+            pass
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -7486,6 +7506,14 @@ class AIAgent:
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
                         self.session_cache_write_tokens += canonical_usage.cache_write_tokens
                         self.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                        # Record provider health: success
+                        if self.provider:
+                            try:
+                                _api_dur = (time.time() - _api_start_time) * 1000 if '_api_start_time' in dir() else 0
+                                self._provider_health.record_success(self.provider, latency_ms=_api_dur)
+                            except Exception:
+                                pass
 
                         cost_result = estimate_usage_cost(
                             self.model,
@@ -8713,6 +8741,14 @@ class AIAgent:
             if msg.get("role") == "assistant" and msg.get("reasoning"):
                 last_reasoning = msg["reasoning"]
                 break
+
+        # Persist trace data
+        if self._trace_collector and self._session_db:
+            try:
+                from agent.tracing import persist_trace
+                persist_trace(self._trace_collector.to_trace(), self._session_db, self.session_id)
+            except Exception:
+                pass
 
         # Guardrail: check agent output before returning
         if final_response and self._guardrail_pipeline:

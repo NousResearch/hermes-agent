@@ -612,4 +612,5 @@ registry.register(
     is_async=True,
     emoji="👁️",
     mutates=False,
+    cache_config={"ttl": 600},  # 10-min cache — same image+prompt = same result
 )

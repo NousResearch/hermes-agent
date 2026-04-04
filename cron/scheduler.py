@@ -609,6 +609,17 @@ def tick(verbose: bool = True) -> int:
             except Exception as resolve_err:
                 logger.debug("Prediction resolution failed: %s", resolve_err)
 
+        # Run due workflows (lightweight DAG engine alongside flat jobs)
+        try:
+            from cron.workflow import tick_workflows
+            wf_count = tick_workflows()
+            if wf_count > 0:
+                executed += wf_count
+                if verbose:
+                    logger.info("Executed %d workflow(s)", wf_count)
+        except Exception as wf_err:
+            logger.debug("Workflow tick failed: %s", wf_err)
+
         return executed
     finally:
         if fcntl:

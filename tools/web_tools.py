@@ -2043,6 +2043,7 @@ registry.register(
     requires_env=_web_requires_env(),
     emoji="🔍",
     mutates=False,
+    cache_config={"ttl": 300},  # 5-min cache — avoid redundant searches within session
 )
 registry.register(
     name="web_extract",
@@ -2055,4 +2056,5 @@ registry.register(
     is_async=True,
     emoji="📄",
     mutates=False,
+    cache_config={"ttl": 600},  # 10-min cache — page content changes slowly
 )

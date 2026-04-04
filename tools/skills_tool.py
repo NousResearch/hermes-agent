@@ -1439,6 +1439,7 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
     mutates=False,
+    cache_config={"ttl": 900},  # 15-min cache — skills don't change mid-session
 )
 registry.register(
     name="skill_view",

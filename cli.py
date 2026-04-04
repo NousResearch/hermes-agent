@@ -3296,8 +3296,8 @@ class HermesCLI:
 
         W = min(_shutil.get_terminal_size().columns - 4, 116)
 
-        def _label(s: dict) -> str:
-            """Best available label: title if set, else first user message."""
+        def _title(s: dict) -> str:
+            """Best available title: set title, else first user message as fallback."""
             t = (s.get("title") or "").strip()
             if not t:
                 t = (s.get("preview") or "").strip()
@@ -3314,7 +3314,7 @@ class HermesCLI:
                 return sessions
             return [
                 s for s in sessions
-                if q in _label(s).lower()
+                if q in _title(s).lower()
                 or q in (s.get("preview") or "").lower()
                 or q in s["id"].lower()
             ]
@@ -3328,13 +3328,13 @@ class HermesCLI:
             lines = []
             # header
             lines.append(HTML(
-                f"<ansibrightblack>  {'Label':<40} {'Age':<12} {'Preview':<{W - 58}} ID</ansibrightblack>\n"
+                f"<ansibrightblack>  {'Title':<40} {'Age':<12} {'Preview':<{W - 58}} ID</ansibrightblack>\n"
                 f"<ansibrightblack>  {'─' * 40} {'─' * 12} {'─' * (W - 58)} {'─' * 8}</ansibrightblack>\n"
             ))
             if not filtered:
                 lines.append(HTML("<ansiyellow>  (no matches)</ansiyellow>\n"))
             for i, s in enumerate(filtered):
-                label   = _label(s)[:39]
+                label   = _title(s)[:39]
                 age     = _relative_time(s.get("last_active"))
                 preview = (s.get("preview") or "")[:W - 59]
                 sid     = s["id"][:8]
@@ -3437,16 +3437,16 @@ class HermesCLI:
             from hermes_cli.main import _relative_time
 
             W = min(_shutil.get_terminal_size().columns, 120)
-            id_w, time_w, label_w = 24, 13, 38
-            prev_w = max(W - id_w - time_w - label_w - 6, 20)
+            id_w, time_w, title_w = 24, 13, 38
+            prev_w = max(W - id_w - time_w - title_w - 6, 20)
             rows = [
-                f"  {'Label':<{label_w}} {'Age':<{time_w}} {'Preview':<{prev_w}} ID\n",
-                f"  {'─' * label_w} {'─' * time_w} {'─' * prev_w} {'─' * id_w}\n",
+                f"  {'Title':<{title_w}} {'Age':<{time_w}} {'Preview':<{prev_w}} ID\n",
+                f"  {'─' * title_w} {'─' * time_w} {'─' * prev_w} {'─' * id_w}\n",
             ]
             for s in sessions:
-                label = ((s.get("title") or s.get("preview") or s["id"]))[:label_w - 1]
+                t = (s.get("title") or s.get("preview") or s["id"])[:title_w - 1]
                 rows.append(
-                    f"  {label:<{label_w}} {_relative_time(s.get('last_active')):<{time_w}} "
+                    f"  {t:<{title_w}} {_relative_time(s.get('last_active')):<{time_w}} "
                     f"{(s.get('preview') or '')[:prev_w - 1]:<{prev_w}} {s['id']}\n"
                 )
             rows.append("\n  /resume <id or title>  to continue a session\n")
